@@ -94,6 +94,7 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
       : record;
   return {
     filters: {
+      ...(filtersRaw.unansweredOnly === true ? { unansweredOnly: true } : {}),
       statuses: uniqueValidValues<TaskStatus>(filtersRaw.statuses, STATUS_SET),
       priorities: uniqueValidValues<TaskPriority>(
         filtersRaw.priorities,

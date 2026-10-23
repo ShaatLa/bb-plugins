@@ -7,6 +7,7 @@ import type {
 } from "../../shared/contract.js";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { QuestionCount } from "../../components/question-count";
 import type { TaskRowMeta } from "./data.js";
 import { activeWorkLabel, formatDueDate, partitionLabels } from "./lib.js";
 import type { EditFn } from "./property-menus.js";
@@ -90,6 +91,7 @@ function LabelChips({
 }
 
 interface TaskRowProps {
+  unansweredQuestions?: number;
   task: Task;
   meta: TaskRowMeta | undefined;
   project: Project | undefined;
@@ -104,6 +106,7 @@ interface TaskRowProps {
 }
 
 export const TaskRow = memo(function TaskRow({
+  unansweredQuestions,
   task,
   meta,
   project,
@@ -175,6 +178,7 @@ export const TaskRow = memo(function TaskRow({
         <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
           {task.type === "epic" ? <span className={RAIL_CHIP_CLASS}><Icon name="Zap" className="size-3" />Epic</span> : null}
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
+          <QuestionCount count={unansweredQuestions} />
           <LabelChips task={task} labelsById={labelsById} />
           {task.dueDate !== null ? (
             <span className={`${RAIL_CHIP_CLASS} shrink-0 tabular-nums`}>

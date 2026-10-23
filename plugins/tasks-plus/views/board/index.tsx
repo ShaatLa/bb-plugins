@@ -38,6 +38,7 @@ import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { QuestionCount, useQuestionCounts } from "../../components/question-count";
 
 const DRAG_THRESHOLD_PX = 5;
 
@@ -85,6 +86,7 @@ function WorkingAgentsChip({ threads }: { threads: TaskThread[] }) {
 }
 
 interface TaskCardProps {
+  unansweredQuestions?: number;
   task: Task;
   labelsById: Map<string, Label>;
   meta: BoardCardMeta;
@@ -96,6 +98,7 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  unansweredQuestions,
   task,
   labelsById,
   meta,
@@ -132,6 +135,7 @@ function TaskCard({
         {task.title}
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <QuestionCount count={unansweredQuestions} />
         <PriorityIcon priority={task.priority} />
         {labels.map((label) => (
           <span
@@ -211,6 +215,7 @@ export function BoardView({ projectId }: BoardViewProps) {
   );
 
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
+  const questionCounts = useQuestionCounts(board.data?.tasks ?? []);
   useEffect(() => {
     setColumns(undefined);
   }, [projectId]);
@@ -222,6 +227,7 @@ export function BoardView({ projectId }: BoardViewProps) {
   const labelOptions = labelFilterOptions([...(board.data?.labelsById.values() ?? [])]);
   const labelIds = selectedLabelIds(labelOptions, filters.labelNames);
   const visibleColumns = columns && groupColumns(Object.values(columns).flat().filter((task) =>
+    (!filters.unansweredOnly || (questionCounts.data?.get(task.id) ?? 0) > 0) &&
     (filters.type === undefined || task.type === filters.type) &&
     (filters.labelNames.length === 0 || labelIds.length > 0) &&
     matchesFilters(task, filters.statuses, filters.priorities, labelIds),
@@ -438,6 +444,7 @@ export function BoardView({ projectId }: BoardViewProps) {
           task={task}
           labelsById={labelsById}
           meta={metaByTaskId.get(task.id) ?? EMPTY_META}
+          unansweredQuestions={questionCounts.data?.get(task.id)}
           dragging={drag?.taskId === task.id}
           cardRef={(element) => {
             if (element) cardRefs.current.set(task.id, element);
@@ -495,6 +502,9 @@ export function BoardView({ projectId }: BoardViewProps) {
         labelOptions={labelOptions}
         taskCount={Object.values(visibleColumns).reduce((count, tasks) => count + tasks.length, 0)}
       />
+      {filters.unansweredOnly && questionCounts.error ? (
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">Couldn't load question counts. <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>Retry questions</Button></p>
+      ) : null}
     <div
       ref={boardRef}
       className={cn(
@@ -516,6 +526,7 @@ export function BoardView({ projectId }: BoardViewProps) {
             task={ghostTask}
             labelsById={labelsById}
             meta={metaByTaskId.get(ghostTask.id) ?? EMPTY_META}
+            unansweredQuestions={questionCounts.data?.get(ghostTask.id)}
             ghost
           />
         </div>
