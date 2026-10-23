@@ -252,6 +252,7 @@ describe("project archives", () => {
       taskId: source.task.id,
       prompt: "Which platforms?",
       mode: "multiple",
+      allowOther: true,
       options: ["macOS", "Linux"],
     });
     const { question: answered } = await structured.handlers.answerQuestion({
@@ -259,6 +260,7 @@ describe("project archives", () => {
       selectedOptionIds: question.options.map((option) => option.id),
       revision: question.revision,
       authorName: "Owner",
+      answerText: "Windows later",
     });
     const comment = source.store.tasks.createComment({
       taskId: source.task.id,
@@ -280,6 +282,8 @@ describe("project archives", () => {
     await importProject(target.bb, target.store, out, false);
     const restored = createStructuredStore(target.bb, target.store);
     expect(restored.listQuestions(source.task.id)).toEqual([answered]);
+    expect(answered.history).toHaveLength(1);
+    expect(answered.answerText).toBe("Windows later");
     expect(restored.listTemplates(source.project.id)).toEqual(
       structured.listTemplates(source.project.id),
     );

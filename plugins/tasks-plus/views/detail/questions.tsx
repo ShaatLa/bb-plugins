@@ -12,14 +12,18 @@ function QuestionAnswer({
   onError,
 }: {
   question: TaskQuestion;
-  onSave: (ids: string[]) => Promise<void>;
+  onSave: (ids: string[], answerText: string | null) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [selected, setSelected] = useState(question.selectedOptionIds);
+  const [other, setOther] = useState(question.answerText !== null);
+  const [text, setText] = useState(question.answerText ?? "");
+  const answerText = other ? text.trim() || null : null;
   const [saving, setSaving] = useState(false);
   const unchanged =
     JSON.stringify([...selected].sort()) ===
-    JSON.stringify([...question.selectedOptionIds].sort());
+      JSON.stringify([...question.selectedOptionIds].sort()) &&
+    answerText === question.answerText;
   return (
     <fieldset
       className="space-y-2 rounded-md border border-border p-3"
@@ -43,19 +47,45 @@ function QuestionAnswer({
             type={question.mode === "single" ? "radio" : "checkbox"}
             name={question.id}
             checked={selected.includes(option.id)}
-            onChange={(event) =>
+            onChange={(event) => {
+              if (question.mode === "single") setOther(false);
               setSelected(
                 question.mode === "single"
                   ? [option.id]
                   : event.target.checked
                     ? [...selected, option.id]
                     : selected.filter((id) => id !== option.id),
-              )
-            }
+              );
+            }}
           />
           <span className="min-w-0 break-words">{option.label}</span>
         </label>
       ))}
+      {question.allowOther ? (
+        <div className="space-y-2">
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type={question.mode === "single" ? "radio" : "checkbox"}
+              name={question.id}
+              checked={other}
+              onChange={(event) => {
+                setOther(event.target.checked);
+                if (question.mode === "single") setSelected([]);
+              }}
+            />
+            Other answer
+          </label>
+          {other ? (
+            <Textarea
+              aria-label="Your answer"
+              value={text}
+              maxLength={10_000}
+              required
+              onChange={(event) => setText(event.target.value)}
+            />
+          ) : null}
+        </div>
+      ) : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
           Answered by {question.answeredBy}
@@ -64,11 +94,11 @@ function QuestionAnswer({
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={unchanged || saving}
+          disabled={unchanged || saving || (other && !answerText)}
           onClick={async () => {
             setSaving(true);
             try {
-              await onSave(selected);
+              await onSave(selected, answerText);
             } catch (error) {
               onError(errorMessage(error));
             } finally {
@@ -81,8 +111,12 @@ function QuestionAnswer({
         <Button
           size="sm"
           variant="ghost"
-          disabled={selected.length === 0 || saving}
-          onClick={() => setSelected([])}
+          disabled={(selected.length === 0 && !other) || saving}
+          onClick={() => {
+            setSelected([]);
+            setOther(false);
+            setText("");
+          }}
         >
           Clear selection
         </Button>
@@ -112,6 +146,7 @@ export function QuestionsSection({
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState(["", ""]);
   const [multiple, setMultiple] = useState(false);
+  const [allowOther, setAllowOther] = useState(false);
   const [saving, setSaving] = useState(false);
   if (!adding && !query.error && !query.data?.length) return null;
   return (
@@ -142,11 +177,12 @@ export function QuestionsSection({
           key={`${question.id}:${question.revision}`}
           question={question}
           onError={onError}
-          onSave={async (selectedOptionIds) => {
+          onSave={async (selectedOptionIds, answerText) => {
             const result = await rpc.call("answerQuestion", {
               questionId: question.id,
               revision: question.revision,
               selectedOptionIds,
+              answerText,
               authorName: "You",
             });
             query.refresh();
@@ -169,11 +205,13 @@ export function QuestionsSection({
                 prompt,
                 mode: multiple ? "multiple" : "single",
                 options,
+                allowOther,
               });
               onAddingChange(false);
               setPrompt("");
               setOptions(["", ""]);
               setMultiple(false);
+              setAllowOther(false);
               query.refresh();
             } catch (error) {
               onError(errorMessage(error));
@@ -245,6 +283,15 @@ export function QuestionsSection({
                 onChange={(event) => setMultiple(event.target.checked)}
               />
               Allow multiple answers
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={allowOther}
+                disabled={saving}
+                onChange={(event) => setAllowOther(event.target.checked)}
+              />
+              Allow other answer
             </label>
             <Button
               type="submit"

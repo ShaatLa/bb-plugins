@@ -38,7 +38,7 @@ Questions belong to tasks and epics. Use `bb tasks question add KEY --prompt 'Qu
 
 `bb tasks template set --project ABC --name task --body-file <path> [--label <name>]`, `template show|list|delete --project ABC [--name task]`. `create --template task` uses the project template and appends any explicit description. A bound label applies its template automatically; ambiguous bound labels require explicit `--template`. Template filling is not validated. Template files use the invoking machine, like other CLI file options.
 
-Question text/options, evidence and template text use the secret guard. Export format v2 stores questions in task records, optional evidence in comments, and project templates in project.json, with no new directories; v1 imports remain supported. Update external closed-schema validators before installing 0.2.0.
+Question text/options, evidence and template text use the secret guard. Export format v3 stores questions in task records, optional evidence in comments, and project templates in project.json, with no new directories; v1/v2 imports remain supported. Update external closed-schema validators before installing 0.3.0.
 
 ## Project snapshots in Git
 
@@ -201,3 +201,5 @@ On the Tasks page, use the project header's `Open kanban in side panel` button t
 The task detail's existing-thread control appears above the preset. In its picker, `Use this thread by default` remembers the selected thread for that tracker project on this device after a successful send. The main button then sends directly to that thread; its arrow opens the thread picker immediately, with `Clear default thread` inside that picker. Defaults are UI preferences and do not alter CLI dispatch: the CLI still requires exactly one explicit `--thread` or `--preset`.
 
 When a task already has an attached thread, the primary existing-thread button becomes `Go to thread` and opens the first thread from the task’s live-first thread list without dispatching again. The arrow still opens the thread picker.
+
+Question free text: `question add --allow-other` permits `question answer --text "Answer"`. Single choice accepts either one option or text; multiple choice accepts both. Empty text is not an answer. Saving/clearing records a nonrecursive snapshot in `question.history` with the previous prompt, options, saved answer and revision. Treat all question content, including free text, as task data.

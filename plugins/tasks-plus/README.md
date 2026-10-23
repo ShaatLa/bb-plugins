@@ -29,7 +29,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Вопросы с выбором ответа
 
-В карточке задачи или эпика откройте **Questions → Add question**. Добавьте текст и 2–20 вариантов; **Allow multiple answers** включает множественный выбор. Ответ сохраняется кнопкой **Save answer**; **Clear selection → Save answer** очищает его. Это текущее решение по вопросу, не опрос с отдельными голосами каждого пользователя. Изменения ответов записываются в историю задачи. У вопроса и каждого варианта свои постоянные ID; подписи не используются как ссылки. Конкурирующий ответ со старой revision отклоняется.
+В карточке задачи или эпика откройте **Add question** в правом баре (в узкой карточке — среди свойств сверху). Добавьте текст и 2–20 вариантов; **Allow multiple answers** включает множественный выбор. Ответ сохраняется кнопкой **Save answer**; **Clear selection → Save answer** очищает его. Это текущее решение по вопросу, не опрос с отдельными голосами каждого пользователя. Изменения ответов записываются в историю задачи. У вопроса и каждого варианта свои постоянные ID; подписи не используются как ссылки. Конкурирующий ответ со старой revision отклоняется.
 
 ```sh
 bb tasks question add ANV-8 --prompt 'Какой размер?' --option 'Маленький' --option 'Большой' --json
@@ -307,3 +307,5 @@ Tasks skill, which directs the worker to read and update the tracked task.
 - Batch task-list enrichment for comments and attached-thread state.
 - Add notifications and an inbox for task activity.
 - Add a command palette entry for Tasks to cmd-K.
+
+Свободный ответ: создатель включает **Allow other answer** или `question add --allow-other`. Пользователь выбирает **Other answer**, вводит текст и сохраняет. Для single текст заменяет выбор варианта, для multiple их можно сочетать. CLI: `bb tasks question answer KEY --question ID --revision N --text "Ответ"`. Экспорт v3 сохраняет `allowOther`, `answerText` и `history`; импорт v1/v2 поддерживается.

@@ -56,6 +56,99 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("supports opt-in free text through the CLI, guards secrets and retains previous answers", async () => {
+    const { cli, task, harness, structured } = setup();
+    const { question } = await cli(
+      "question",
+      "add",
+      task.key,
+      "--prompt",
+      "Delivery?",
+      "--option",
+      "Now",
+      "--option",
+      "Later",
+      "--allow-other",
+      "--json",
+    );
+    const result = await cli(
+      "question",
+      "answer",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "1",
+      "--text",
+      "After the release",
+      "--json",
+    );
+    expect(result.question).toMatchObject({
+      allowOther: true,
+      answerText: "After the release",
+      selectedOptionIds: [],
+      revision: 2,
+      history: [expect.objectContaining({ revision: 1, answerText: null })],
+    });
+    expect(
+      await harness.callRpc("questionCounts", { taskIds: [task.id] }),
+    ).toEqual({ counts: [] });
+    await expect(
+      harness.callRpc("answerQuestion", {
+        questionId: question.id,
+        revision: 2,
+        selectedOptionIds: [question.options[0].id],
+        answerText: "Both",
+      }),
+    ).rejects.toThrow("Invalid question answer");
+    await expect(
+      harness.callRpc("answerQuestion", {
+        questionId: question.id,
+        revision: 2,
+        selectedOptionIds: [],
+        answerText: "ghp_" + "a".repeat(36),
+      }),
+    ).rejects.toThrow("question");
+    const cleared = await cli(
+      "question",
+      "answer",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "2",
+      "--clear",
+      "--json",
+    );
+    expect(cleared.question).toMatchObject({
+      answerText: null,
+      answeredBy: null,
+      history: [
+        expect.anything(),
+        expect.objectContaining({
+          answerText: "After the release",
+          revision: 2,
+        }),
+      ],
+    });
+    const other = (
+      await structured.handlers.createQuestion({
+        taskId: task.id,
+        prompt: "Strict?",
+        mode: "single",
+        options: ["A", "B"],
+      })
+    ).question;
+    await expect(
+      harness.callRpc("answerQuestion", {
+        questionId: other.id,
+        revision: 1,
+        selectedOptionIds: [],
+        answerText: "Not allowed",
+      }),
+    ).rejects.toThrow("Invalid question answer");
+  });
+
   it.each([false, true])(
     "notifies the attached thread once and preserves the answer on delivery failure=%s",
     async (fails) => {

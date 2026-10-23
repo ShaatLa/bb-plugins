@@ -55,6 +55,46 @@ function setup() {
 }
 
 describe("question and evidence UI", () => {
+  it("saves an allowed custom answer and restores it in the card", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Delivery?",
+      mode: "single",
+      options: ["Now", "Later"],
+      allowOther: true,
+    });
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    const group = await slot.findByRole("group", { name: "Delivery?" });
+    fireEvent.click(within(group).getByLabelText("Other answer"));
+    expect(
+      within(group).getByRole("button", { name: "Save answer" }),
+    ).toHaveProperty("disabled", true);
+    fireEvent.change(
+      within(group).getByRole("textbox", { name: "Your answer" }),
+      { target: { value: "After review" } },
+    );
+    fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+    await waitFor(() =>
+      expect(structured.listQuestions(task.id)[0]?.answerText).toBe(
+        "After review",
+      ),
+    );
+    slot.lifecycle.unmount();
+    const restored = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    expect(
+      await restored.findByRole("textbox", { name: "Your answer" }),
+    ).toHaveProperty("value", "After review");
+  });
+
   it.each(["board", "list", "side"])(
     "filters unanswered questions on the %s surface and retains the preference",
     async (surface) => {
