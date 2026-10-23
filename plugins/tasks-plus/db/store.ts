@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import {
+  assertNoSecrets,
+  assertNoSecretsInValue,
+} from "../shared/secret-guard.js";
+import { evidenceSchema } from "../shared/contract.js";
 import { initializeTasksSchema } from "./schema";
 import {
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -84,6 +89,8 @@ interface TaskRow {
   priority: Task["priority"];
   due_date: string | null;
   parent_task_id: string | null;
+  type: Task["type"];
+  epic_id: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -116,6 +123,7 @@ interface TaskLabelRow {
 }
 
 interface CommentRow {
+  evidence: string | null;
   id: string;
   task_id: string;
   kind: Comment["kind"];
@@ -188,6 +196,8 @@ const taskCursorSchema = z
 
 type TaskCursor = z.infer<typeof taskCursorSchema>;
 
+export class TaskEpicError extends Error {}
+
 export class TasksPageCursorError extends Error {
   constructor(
     readonly code: "invalid_cursor" | "cursor_query_mismatch" | "stale_cursor",
@@ -216,6 +226,11 @@ function taskQueryFingerprint(
       filters.parentTaskId === undefined
         ? { specified: false, value: null }
         : { specified: true, value: filters.parentTaskId },
+    type: filters.type ?? null,
+    epicId:
+      filters.epicId === undefined
+        ? { specified: false }
+        : { value: filters.epicId },
     search: filters.search?.trim() || null,
     sort,
   });
@@ -242,7 +257,7 @@ function encodeTaskCursor(cursor: TaskCursor): string {
 let lastUlidMs = -1;
 let lastUlidRandom = 0n;
 
-function createUlid(now = Date.now()): string {
+export function createUlid(now = Date.now()): string {
   let random: bigint;
   if (now === lastUlidMs) {
     random = lastUlidRandom + 1n;
@@ -363,6 +378,8 @@ function taskFromRow(row: TaskRow): Task {
     priority: row.priority,
     dueDate: row.due_date,
     parentTaskId: row.parent_task_id,
+    type: row.type,
+    epicId: row.epic_id,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -391,6 +408,9 @@ function commentFromRow(row: CommentRow): Comment {
     presetName: row.preset_name,
     threadId: row.thread_id,
     body: row.body,
+    ...(row.evidence
+      ? { evidence: evidenceSchema.parse(JSON.parse(row.evidence)) }
+      : {}),
     notifiedCount: row.notified_count,
     createdAt: row.created_at,
   };
@@ -532,9 +552,10 @@ export function createTasksStore(db: PluginDatabase) {
     }
     if (ownId) {
       const hasChildren = db
-        .prepare<[string], { found: number }>(
-          "SELECT 1 AS found FROM folders WHERE parent_folder_id = ? LIMIT 1",
-        )
+        .prepare<
+          [string],
+          { found: number }
+        >("SELECT 1 AS found FROM folders WHERE parent_folder_id = ? LIMIT 1")
         .get(ownId);
       if (hasChildren) {
         throw new Error("A folder with children cannot be nested");
@@ -559,9 +580,10 @@ export function createTasksStore(db: PluginDatabase) {
 
   function listFolders(): Folder[] {
     return db
-      .prepare<[], FolderRow>(
-        "SELECT * FROM folders ORDER BY parent_folder_id IS NOT NULL, name COLLATE NOCASE, id",
-      )
+      .prepare<
+        [],
+        FolderRow
+      >("SELECT * FROM folders ORDER BY parent_folder_id IS NOT NULL, name COLLATE NOCASE, id")
       .all()
       .map(folderFromRow);
   }
@@ -650,23 +672,26 @@ export function createTasksStore(db: PluginDatabase) {
   function listProjects(folderId?: string | null): Project[] {
     if (folderId === undefined) {
       return db
-        .prepare<[], ProjectRow>(
-          "SELECT * FROM projects ORDER BY name COLLATE NOCASE, id",
-        )
+        .prepare<
+          [],
+          ProjectRow
+        >("SELECT * FROM projects ORDER BY name COLLATE NOCASE, id")
         .all()
         .map(projectFromRow);
     }
     const rows =
       folderId === null
         ? db
-            .prepare<[], ProjectRow>(
-              "SELECT * FROM projects WHERE folder_id IS NULL ORDER BY name COLLATE NOCASE, id",
-            )
+            .prepare<
+              [],
+              ProjectRow
+            >("SELECT * FROM projects WHERE folder_id IS NULL ORDER BY name COLLATE NOCASE, id")
             .all()
         : db
-            .prepare<[string], ProjectRow>(
-              "SELECT * FROM projects WHERE folder_id = ? ORDER BY name COLLATE NOCASE, id",
-            )
+            .prepare<
+              [string],
+              ProjectRow
+            >("SELECT * FROM projects WHERE folder_id = ? ORDER BY name COLLATE NOCASE, id")
             .all(folderId);
     return rows.map(projectFromRow);
   }
@@ -754,14 +779,18 @@ export function createTasksStore(db: PluginDatabase) {
         "A sub-task must belong to the same project as its parent",
       );
     }
+    if (parent.type === "epic") {
+      throw new TaskEpicError("Use the epic field to add a task to an epic");
+    }
     if (parent.parentTaskId !== null) {
       throw new Error("Tasks support at most one level of sub-tasks");
     }
     if (ownId) {
       const hasChildren = db
-        .prepare<[string], { found: number }>(
-          "SELECT 1 AS found FROM tasks WHERE parent_task_id = ? LIMIT 1",
-        )
+        .prepare<
+          [string],
+          { found: number }
+        >("SELECT 1 AS found FROM tasks WHERE parent_task_id = ? LIMIT 1")
         .get(ownId);
       if (hasChildren) {
         throw new Error(
@@ -771,12 +800,60 @@ export function createTasksStore(db: PluginDatabase) {
     }
   }
 
+  function validateTaskEpic(
+    projectId: string,
+    type: Task["type"],
+    epicId: string | null,
+    parentTaskId: string | null,
+    ownId?: string,
+  ): void {
+    if (type === "epic" && (parentTaskId !== null || epicId !== null)) {
+      throw new TaskEpicError(
+        "An epic cannot have a parent or belong to another epic",
+      );
+    }
+    if (epicId !== null) {
+      const epic = getTask(epicId);
+      if (
+        !epic ||
+        epic.type !== "epic" ||
+        epic.projectId !== projectId ||
+        epicId === ownId
+      ) {
+        throw new TaskEpicError("Choose an epic from the same project");
+      }
+      if (parentTaskId !== null) {
+        throw new TaskEpicError(
+          "Sub-tasks inherit their epic from their parent task",
+        );
+      }
+    }
+    if (ownId && type === "epic" && listSubtasks(ownId).length > 0) {
+      throw new TaskEpicError(
+        "Remove sub-tasks before converting a task to an epic",
+      );
+    }
+    if (
+      ownId &&
+      type === "task" &&
+      getTask(ownId)?.type === "epic" &&
+      listTasks({ epicId: ownId }).length > 0
+    ) {
+      throw new TaskEpicError(
+        "Remove the epic's tasks before converting it to a task",
+      );
+    }
+  }
+
   const createTaskTransaction = db.transaction(
     (input: CreateTaskInput): Task => {
       const project = requireProject(input.projectId);
       const id = createUlid();
       const status = input.status ?? "backlog";
       const parentTaskId = input.parentTaskId ?? null;
+      const type = input.type ?? "task";
+      const epicId = input.epicId ?? null;
+      validateTaskEpic(project.id, type, epicId, parentTaskId);
       validateTaskParent(project.id, parentTaskId, id);
       const position =
         db
@@ -815,6 +892,8 @@ export function createTasksStore(db: PluginDatabase) {
           Task["priority"],
           string | null,
           string | null,
+          Task["type"],
+          string | null,
           number,
           string,
           string,
@@ -823,8 +902,8 @@ export function createTasksStore(db: PluginDatabase) {
         `
       INSERT INTO tasks (
         id, project_id, number, title, description, status, priority, due_date,
-        parent_task_id, position, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_task_id, type, epic_id, position, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       ).run(
         id,
@@ -836,6 +915,8 @@ export function createTasksStore(db: PluginDatabase) {
         input.priority ?? "none",
         validateDueDate(input.dueDate ?? null),
         parentTaskId,
+        type,
+        epicId,
         position,
         createdAt,
         createdAt,
@@ -845,6 +926,8 @@ export function createTasksStore(db: PluginDatabase) {
   );
 
   function createTask(input: CreateTaskInput): Task {
+    assertNoSecrets(input.title, "title");
+    assertNoSecrets(input.description, "description");
     return createTaskTransaction(input);
   }
 
@@ -907,6 +990,17 @@ export function createTasksStore(db: PluginDatabase) {
       } else {
         clauses.push("t.parent_task_id = @parentTaskId");
         parameters.parentTaskId = filters.parentTaskId;
+      }
+    }
+    if (filters.type !== undefined) {
+      clauses.push("t.type = @type");
+      parameters.type = filters.type;
+    }
+    if (filters.epicId !== undefined) {
+      if (filters.epicId === null) clauses.push("t.epic_id IS NULL");
+      else {
+        clauses.push("t.epic_id = @epicId");
+        parameters.epicId = filters.epicId;
       }
     }
     const search = filters.search?.trim();
@@ -979,9 +1073,10 @@ export function createTasksStore(db: PluginDatabase) {
 
     const readPage = db.transaction((): ListTasksPage => {
       const revision = db
-        .prepare<[], TaskListRevisionRow>(
-          "SELECT revision FROM task_list_revision WHERE id = 1",
-        )
+        .prepare<
+          [],
+          TaskListRevisionRow
+        >("SELECT revision FROM task_list_revision WHERE id = 1")
         .get()?.revision;
       if (revision === undefined) {
         throw new Error("Task-list revision state is unavailable");
@@ -1095,6 +1190,9 @@ export function createTasksStore(db: PluginDatabase) {
         input.parentTaskId === undefined
           ? current.parentTaskId
           : input.parentTaskId;
+      const type = input.type ?? current.type;
+      const epicId = input.epicId === undefined ? current.epicId : input.epicId;
+      validateTaskEpic(current.projectId, type, epicId, parentTaskId, id);
       validateTaskParent(current.projectId, parentTaskId, id);
 
       let position = current.position;
@@ -1118,6 +1216,8 @@ export function createTasksStore(db: PluginDatabase) {
           Task["priority"],
           string | null,
           string | null,
+          Task["type"],
+          string | null,
           number,
           string,
           string,
@@ -1126,7 +1226,7 @@ export function createTasksStore(db: PluginDatabase) {
         `
         UPDATE tasks SET
           title = ?, description = ?, status = ?, priority = ?, due_date = ?,
-          parent_task_id = ?, position = ?, updated_at = ?
+          parent_task_id = ?, type = ?, epic_id = ?, position = ?, updated_at = ?
         WHERE id = ?
       `,
       ).run(
@@ -1140,6 +1240,8 @@ export function createTasksStore(db: PluginDatabase) {
           ? current.dueDate
           : validateDueDate(input.dueDate),
         parentTaskId,
+        type,
+        epicId,
         position,
         nowIso(),
         id,
@@ -1149,6 +1251,8 @@ export function createTasksStore(db: PluginDatabase) {
   );
 
   function updateTask(id: string, input: UpdateTaskInput): Task {
+    assertNoSecrets(input.title, "title");
+    assertNoSecrets(input.description, "description");
     return updateTaskTransaction(id, input);
   }
 
@@ -1158,7 +1262,14 @@ export function createTasksStore(db: PluginDatabase) {
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
       const source = requireProject(root.projectId);
-      const moving = [root, ...listSubtasks(root.id)];
+      const members =
+        root.type === "epic" ? listTasks({ epicId: root.id }) : [];
+      const moving = [
+        root,
+        ...members,
+        ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
+      ];
+      const movingIds = new Set(moving.map((task) => task.id));
 
       const allocated = db
         .prepare<[number, string, number]>(
@@ -1192,11 +1303,11 @@ export function createTasksStore(db: PluginDatabase) {
         "DELETE FROM task_key_aliases WHERE prefix = ? AND number = ?",
       );
       const moveRow = db.prepare<
-        [string, number, number, string | null, string, string]
+        [string, number, number, string | null, string | null, string, string]
       >(
         `
         UPDATE tasks
-        SET project_id = ?, number = ?, position = ?, parent_task_id = ?,
+        SET project_id = ?, number = ?, position = ?, parent_task_id = ?, epic_id = ?,
           updated_at = ?
         WHERE id = ?
       `,
@@ -1224,7 +1335,10 @@ export function createTasksStore(db: PluginDatabase) {
           target.id,
           number,
           nextPosition.get(target.id, task.status)?.position ?? POSITION_STEP,
-          task.id === root.id ? null : root.id,
+          task.parentTaskId && movingIds.has(task.parentTaskId)
+            ? task.parentTaskId
+            : null,
+          task.epicId && movingIds.has(task.epicId) ? task.epicId : null,
           updatedAt,
           task.id,
         );
@@ -1382,9 +1496,10 @@ export function createTasksStore(db: PluginDatabase) {
 
   function listLabels(projectId: string): Label[] {
     return db
-      .prepare<[string], LabelRow>(
-        "SELECT * FROM labels WHERE project_id = ? ORDER BY name COLLATE NOCASE, id",
-      )
+      .prepare<
+        [string],
+        LabelRow
+      >("SELECT * FROM labels WHERE project_id = ? ORDER BY name COLLATE NOCASE, id")
       .all(projectId)
       .map(labelFromRow);
   }
@@ -1430,18 +1545,19 @@ export function createTasksStore(db: PluginDatabase) {
   function removeTaskLabel(taskId: string, labelId: string): boolean {
     return (
       db
-        .prepare<[string, string]>(
-          "DELETE FROM task_labels WHERE task_id = ? AND label_id = ?",
-        )
+        .prepare<
+          [string, string]
+        >("DELETE FROM task_labels WHERE task_id = ? AND label_id = ?")
         .run(taskId, labelId).changes > 0
     );
   }
 
   function listTaskLabels(taskId: string): TaskLabel[] {
     return db
-      .prepare<[string], TaskLabelRow>(
-        "SELECT task_id, label_id FROM task_labels WHERE task_id = ? ORDER BY label_id",
-      )
+      .prepare<
+        [string],
+        TaskLabelRow
+      >("SELECT task_id, label_id FROM task_labels WHERE task_id = ? ORDER BY label_id")
       .all(taskId)
       .map(taskLabelFromRow);
   }
@@ -1472,6 +1588,12 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function createComment(input: CreateCommentInput): Comment {
+    assertNoSecrets(input.body, "comment body");
+    const evidence =
+      input.evidence === undefined
+        ? undefined
+        : evidenceSchema.parse(input.evidence);
+    if (evidence) assertNoSecretsInValue(evidence, "evidence");
     const id = createUlid();
     requireTask(input.taskId);
     db.prepare<
@@ -1484,13 +1606,14 @@ export function createTasksStore(db: PluginDatabase) {
         string | null,
         string,
         string,
+        string | null,
       ]
     >(
       `
       INSERT INTO comments (
         id, task_id, kind, author_name, preset_name, thread_id, body,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, evidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     ).run(
       id,
@@ -1501,6 +1624,7 @@ export function createTasksStore(db: PluginDatabase) {
       validateThreadId(input.threadId ?? null),
       input.body,
       nowIso(),
+      evidence ? JSON.stringify(evidence) : null,
     );
     return requireComment(id);
   }
@@ -1824,9 +1948,10 @@ export function createTasksStore(db: PluginDatabase) {
 
   function listPresets(): Preset[] {
     return db
-      .prepare<[], PresetRow>(
-        "SELECT * FROM presets ORDER BY builtin DESC, name COLLATE NOCASE, id",
-      )
+      .prepare<
+        [],
+        PresetRow
+      >("SELECT * FROM presets ORDER BY builtin DESC, name COLLATE NOCASE, id")
       .all()
       .map(presetFromRow);
   }

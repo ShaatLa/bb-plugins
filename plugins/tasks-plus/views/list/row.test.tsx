@@ -80,6 +80,7 @@ function renderList(tasks: Task[], options: Options = {}) {
         listLabels: () => ({ labels: [label] }),
         listTasks: () => ({ tasks }),
         listTaskThreads: () => ({ taskThreads: [] }),
+        listQuestions: () => ({ questions: [] }),
         listComments: () => ({ comments: [] }),
         listAttachments: () => ({ attachments: [] }),
         moveTaskToProject: (raw) => {

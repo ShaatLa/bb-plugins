@@ -1,4 +1,5 @@
 import type { TaskSort } from "../shared/pagination.js";
+import type { Evidence } from "../shared/contract.js";
 import type {
   PRESET_ENVIRONMENT_KINDS,
   PresetPermissionMode,
@@ -7,6 +8,7 @@ import type {
   TASK_THREAD_LIVE_STATUSES,
   TaskPriority,
   TaskStatus,
+  TaskType,
 } from "../shared/contract.js";
 
 export type { TaskPriority, TaskStatus };
@@ -46,6 +48,8 @@ export interface Task {
   priority: TaskPriority;
   dueDate: string | null;
   parentTaskId: string | null;
+  type: TaskType;
+  epicId: string | null;
   position: number;
   createdAt: string;
   updatedAt: string;
@@ -64,6 +68,7 @@ export interface TaskLabel {
 }
 
 export interface Comment {
+  evidence?: Evidence;
   id: string;
   taskId: string;
   kind: CommentKind;
@@ -154,6 +159,8 @@ export interface CreateTaskInput {
   priority?: TaskPriority;
   dueDate?: string | null;
   parentTaskId?: string | null;
+  type?: TaskType;
+  epicId?: string | null;
 }
 
 export interface UpdateTaskInput {
@@ -163,6 +170,8 @@ export interface UpdateTaskInput {
   priority?: TaskPriority;
   dueDate?: string | null;
   parentTaskId?: string | null;
+  type?: TaskType;
+  epicId?: string | null;
 }
 
 export interface MoveTaskToProjectResult {
@@ -177,6 +186,8 @@ export interface ListTasksFilters {
   labelIds?: readonly string[];
   activeOnly?: boolean;
   parentTaskId?: string | null;
+  type?: TaskType;
+  epicId?: string | null;
   search?: string;
   sort?: TaskSort;
   limit?: number;
@@ -206,6 +217,7 @@ export interface UpdateLabelInput {
 }
 
 export interface CreateCommentInput {
+  evidence?: Evidence;
   taskId: string;
   kind: CommentKind;
   authorName: string;

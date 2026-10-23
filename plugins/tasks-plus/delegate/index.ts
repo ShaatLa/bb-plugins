@@ -1,5 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { createStructuredStore } from "../structured/store";
+import type { TaskQuestion } from "../shared/contract";
 import type {
   Attachment,
   Comment,
@@ -51,9 +53,11 @@ class DelegationError extends Error {
 }
 
 interface SeedPromptInput {
+  questions?: readonly TaskQuestion[];
   task: Task;
   project: Project;
   subtasks: readonly Task[];
+  epic?: Task | null;
   attachments: readonly Pick<Attachment, "id" | "fileName">[];
   recentComments: readonly Comment[];
   presetInstructions: string;
@@ -105,9 +109,23 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
       "Project context",
       `- Name: ${input.project.name}\n- Linked bb project: ${input.project.linkedBbProjectId ?? "Not linked"}`,
     ),
-    markdownSection("Sub-tasks", formatSubtasks(input.subtasks)),
+    ...(input.epic
+      ? [
+          markdownSection(
+            "Epic context",
+            `${input.epic.key} · ${input.epic.title}\n\n${input.epic.description}`,
+          ),
+        ]
+      : []),
+    markdownSection(
+      input.task.type === "epic" ? "Tasks in epic" : "Sub-tasks",
+      formatSubtasks(input.subtasks),
+    ),
     markdownSection("Attachments", formatAttachments(input.attachments)),
     markdownSection("Recent comments", formatComments(input.recentComments)),
+    ...(input.questions?.length
+      ? [markdownSection("Questions", JSON.stringify(input.questions, null, 2))]
+      : []),
     markdownSection(
       "Report-back contract",
       `You are working on task ${input.task.key}. Use the bb tasks CLI: comment substantive updates (bb tasks comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb tasks update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
@@ -129,6 +147,13 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
   }
 
   return `${sections.join("\n\n")}\n`;
+}
+
+function taskEpic(store: TasksStore, task: Task): Task | null {
+  const epicId =
+    task.epicId ??
+    (task.parentTaskId ? store.getTask(task.parentTaskId)?.epicId : null);
+  return epicId ? (store.getTask(epicId) ?? null) : null;
 }
 
 function delegatedThreadTitle(task: Task): string {
@@ -304,14 +329,25 @@ export function handlers(
       const task = requireTask(store.tasks, input.taskId);
       const project = requireProject(store.tasks, task.projectId);
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
-      if (thread.deletedAt != null || thread.archivedAt != null || thread.status === "stopping") {
-        throw new Error("Choose a thread that is not archived, deleted, or stopping");
+      if (
+        thread.deletedAt != null ||
+        thread.archivedAt != null ||
+        thread.status === "stopping"
+      ) {
+        throw new Error(
+          "Choose a thread that is not archived, deleted, or stopping",
+        );
       }
       const comments = store.tasks.listComments(task.id);
       const prompt = buildSeedPrompt({
+        questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,
-        subtasks: store.tasks.listSubtasks(task.id),
+        subtasks:
+          task.type === "epic"
+            ? store.tasks.listTasks({ epicId: task.id })
+            : store.tasks.listSubtasks(task.id),
+        epic: taskEpic(store.tasks, task),
         attachments: collectAttachments(store.tasks, task.id, comments),
         recentComments: comments.slice(-5),
         presetInstructions: "",
@@ -327,7 +363,10 @@ export function handlers(
           taskId: task.id,
           threadId: thread.id,
           presetName: "Existing thread",
-          title: truncateToWidth(thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task), MAX_DELEGATED_THREAD_TITLE_WIDTH),
+          title: truncateToWidth(
+            thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task),
+            MAX_DELEGATED_THREAD_TITLE_WIDTH,
+          ),
           liveStatus: taskThreadLiveStatus(thread),
         });
         if (task.status === "backlog" || task.status === "todo") {
@@ -361,9 +400,14 @@ export function handlers(
         permissionMode: preset.permissionMode,
       });
       const prompt = buildSeedPrompt({
+        questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,
-        subtasks: store.tasks.listSubtasks(task.id),
+        subtasks:
+          task.type === "epic"
+            ? store.tasks.listTasks({ epicId: task.id })
+            : store.tasks.listSubtasks(task.id),
+        epic: taskEpic(store.tasks, task),
         attachments: collectAttachments(store.tasks, task.id, comments),
         recentComments,
         presetInstructions: preset.instructions,

@@ -1,0 +1,502 @@
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  createFakePluginHost,
+  type FakePluginHarness,
+} from "@get-bb/plugin-sdk/testing";
+import { createStore, registerTasksApi } from "../api";
+import { registerTasksCli } from "../cli";
+import {
+  tasksRpcContract,
+  evidenceSchema,
+  type Evidence,
+  type Comment,
+} from "../shared/contract";
+import { createStructuredStore } from "./store";
+import { evidenceIndex } from "./evidence";
+
+const harnesses: FakePluginHarness[] = [];
+afterEach(async () => {
+  await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()));
+});
+function setup() {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "tasks-plus",
+    sdk: {
+      files: {
+        read: async ({ path }) => ({
+          path,
+          content: "**Goal:** template body",
+          contentEncoding: "utf8",
+          sizeBytes: 23,
+        }),
+      },
+    },
+  });
+  harnesses.push(harness);
+  const store = createStore(bb);
+  registerTasksApi(bb, store);
+  registerTasksCli(bb, store, { name: "Tasks Plus", version: "test" });
+  const project = store.tasks.createProject({
+    name: "Structured work",
+    prefix: "STR",
+    color: "purple",
+  });
+  const task = store.tasks.createTask({
+    projectId: project.id,
+    title: "Decisions",
+  });
+  const structured = createStructuredStore(bb, store);
+  const cli = async (...args: string[]) => {
+    const result = await harness.runCli(args);
+    expect(result, result.stderr).toMatchObject({ exitCode: 0, stderr: "" });
+    return JSON.parse(result.stdout);
+  };
+  return { bb, harness, store, project, task, structured, cli };
+}
+
+describe("task questions", () => {
+  it("validates options, prevents stale answers and records changes atomically", async () => {
+    const { harness, store, task } = setup();
+    const { question } = tasksRpcContract.createQuestion.output.parse(
+      await harness.callRpc("createQuestion", {
+        taskId: task.id,
+        prompt: "Which size?",
+        options: ["Small", "Large"],
+      }),
+    );
+    expect(question.mode).toBe("single");
+    const answer = {
+      questionId: question.id,
+      revision: question.revision,
+      selectedOptionIds: [question.options[0]!.id],
+    };
+    await expect(
+      harness.callRpc("createQuestion", {
+        taskId: task.id,
+        prompt: "Duplicate",
+        options: ["A", "A"],
+      }),
+    ).rejects.toThrow("unique");
+    await expect(
+      harness.callRpc("answerQuestion", {
+        ...answer,
+        selectedOptionIds: question.options.map((option) => option.id),
+      }),
+    ).rejects.toThrow("Invalid question answer");
+    await expect(
+      harness.callRpc("answerQuestion", {
+        ...answer,
+        selectedOptionIds: [task.id],
+      }),
+    ).rejects.toThrow("Invalid question answer");
+    expect(store.tasks.listComments(task.id)).toHaveLength(0);
+    const saved = tasksRpcContract.answerQuestion.output.parse(
+      await harness.callRpc("answerQuestion", answer),
+    ).question;
+    expect(saved).toMatchObject({
+      id: question.id,
+      revision: 2,
+      selectedOptionIds: answer.selectedOptionIds,
+      answeredBy: "You",
+    });
+    await expect(
+      harness.callRpc("answerQuestion", { ...answer, selectedOptionIds: [] }),
+    ).rejects.toThrow("Question changed");
+    expect(store.tasks.listComments(task.id)).toHaveLength(1);
+    const cleared = tasksRpcContract.answerQuestion.output.parse(
+      await harness.callRpc("answerQuestion", {
+        ...answer,
+        revision: saved.revision,
+        selectedOptionIds: [],
+      }),
+    ).question;
+    expect(cleared).toMatchObject({
+      id: question.id,
+      revision: 3,
+      selectedOptionIds: [],
+      answeredBy: null,
+    });
+    expect(store.tasks.listComments(task.id)).toHaveLength(2);
+  });
+
+  it("supports CLI multi-choice, task ownership, clearing, deletion and task cascade", async () => {
+    const { cli, harness, structured, store, project, task, bb } = setup();
+    const { question } = await cli(
+      "question",
+      "add",
+      task.key,
+      "--prompt",
+      "Platforms?",
+      "--option",
+      "macOS",
+      "--option",
+      "Linux",
+      "--multiple",
+      "--json",
+    );
+    const ids = question.options.map((option: { id: string }) => option.id);
+    const result = await cli(
+      "question",
+      "answer",
+      task.key,
+      "--question",
+      question.id,
+      "--answer",
+      ids[0],
+      "--answer",
+      ids[1],
+      "--revision",
+      "1",
+      "--json",
+    );
+    expect(result.question.selectedOptionIds).toEqual(ids);
+    expect((await cli("show", task.key, "--json")).questions[0]).toMatchObject({
+      id: question.id,
+      mode: "multiple",
+      selectedOptionIds: ids,
+    });
+    const other = store.tasks.createTask({
+      projectId: project.id,
+      title: "Other",
+    });
+    const foreign = await harness.runCli([
+      "question",
+      "answer",
+      other.key,
+      "--question",
+      question.id,
+      "--answer",
+      ids[0],
+      "--revision",
+      "2",
+    ]);
+    expect(foreign).toMatchObject({ exitCode: 1 });
+    expect(foreign.stderr).toContain("does not belong");
+    await cli(
+      "question",
+      "answer",
+      task.key,
+      "--question",
+      question.id,
+      "--clear",
+      "--revision",
+      "2",
+      "--json",
+    );
+    await cli(
+      "question",
+      "delete",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "3",
+      "--json",
+    );
+    expect(structured.listQuestions(task.id)).toEqual([]);
+    await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Will cascade?",
+      mode: "single",
+      options: ["Yes", "No"],
+    });
+    store.tasks.deleteTask(task.id);
+    expect(
+      bb.storage.database().prepare("SELECT * FROM task_questions").all(),
+    ).toEqual([]);
+  });
+
+  it("guards prompts and choice labels against secrets, including quoted text", async () => {
+    const { harness, task, structured } = setup();
+    const secret = "ghp_" + "a".repeat(36);
+    for (const input of [
+      { prompt: secret, options: ["A", "B"] },
+      { prompt: "Safe", options: [secret, "B"] },
+      {
+        prompt: 'aws_secret_access_key = "' + "aB/1".repeat(10) + '"',
+        options: ["A", "B"],
+      },
+    ]) {
+      await expect(
+        harness.callRpc("createQuestion", { taskId: task.id, ...input }),
+      ).rejects.toThrow("detected");
+    }
+    expect(structured.listQuestions(task.id)).toEqual([]);
+  });
+});
+
+describe("description templates", () => {
+  it("sets, lists, applies, appends, shows and deletes a template through CLI", async () => {
+    const { cli, harness, project } = setup();
+    const { template } = await cli(
+      "template",
+      "set",
+      "--project",
+      project.prefix,
+      "--name",
+      "task",
+      "--body-file",
+      "/tmp/synthetic-template.md",
+      "--json",
+    );
+    expect(template.body).toBe("**Goal:** template body");
+    expect(
+      (await cli("template", "list", "--project", project.prefix, "--json"))
+        .templates,
+    ).toEqual([template]);
+    expect(
+      (
+        await cli(
+          "template",
+          "show",
+          "--project",
+          project.prefix,
+          "--name",
+          "task",
+          "--json",
+        )
+      ).template.id,
+    ).toBe(template.id);
+    const created = await cli(
+      "create",
+      "--project",
+      project.prefix,
+      "--title",
+      "From template",
+      "--template",
+      "task",
+      "--description",
+      "Extra acceptance criteria",
+      "--json",
+    );
+    expect(created.task.description).toBe(
+      "**Goal:** template body\n\nExtra acceptance criteria",
+    );
+    const missing = await harness.runCli([
+      "create",
+      "--project",
+      project.prefix,
+      "--title",
+      "Missing",
+      "--template",
+      "unknown",
+    ]);
+    expect(missing.exitCode).not.toBe(0);
+    await cli(
+      "template",
+      "delete",
+      "--project",
+      project.prefix,
+      "--name",
+      "task",
+      "--json",
+    );
+    expect(
+      (await cli("template", "list", "--project", project.prefix, "--json"))
+        .templates,
+    ).toEqual([]);
+  });
+
+  it("binds by label ID, refuses ambiguous labels, respects explicit selection and preserves stable IDs", async () => {
+    const { structured, store, harness, project } = setup();
+    const labels = ["Design", "QA"].map((name) =>
+      store.tasks.createLabel({ projectId: project.id, name, color: "blue" }),
+    );
+    const first = await structured.handlers.setTemplate({
+      projectId: project.id,
+      name: "design",
+      body: "Design template",
+      labelId: labels[0]!.id,
+    });
+    await structured.handlers.setTemplate({
+      projectId: project.id,
+      name: "qa",
+      body: "QA template",
+      labelId: labels[1]!.id,
+    });
+    const input = {
+      projectId: project.id,
+      title: "By label",
+      labelIds: [labels[0]!.id],
+    };
+    const automatic = tasksRpcContract.createTask.output.parse(
+      await harness.callRpc("createTask", input),
+    );
+    expect(automatic).toMatchObject({
+      ok: true,
+      task: { description: "Design template" },
+    });
+    await expect(
+      harness.callRpc("createTask", {
+        ...input,
+        labelIds: labels.map((label) => label.id),
+      }),
+    ).rejects.toThrow("--template");
+    const explicit = tasksRpcContract.createTask.output.parse(
+      await harness.callRpc("createTask", {
+        ...input,
+        labelIds: labels.map((label) => label.id),
+        template: "qa",
+      }),
+    );
+    expect(explicit).toMatchObject({
+      ok: true,
+      task: { description: "QA template" },
+    });
+    const updated = await structured.handlers.setTemplate({
+      projectId: project.id,
+      name: "DESIGN",
+      body: "Updated template",
+      labelId: labels[0]!.id,
+    });
+    expect(updated.template.id).toBe(first.template.id);
+    expect(updated.template.name).toBe(first.template.name);
+    await expect(
+      harness.callRpc("setTemplate", {
+        projectId: project.id,
+        name: "unsafe",
+        body: "sk-proj-" + "x".repeat(80),
+      }),
+    ).rejects.toThrow("detected");
+  });
+});
+
+describe("evidence index", () => {
+  it.each([
+    {
+      kind: "review",
+      pr: 12,
+      head: "a".repeat(40),
+      verdict: "approve",
+      thread: "thr_review",
+      lens: "security",
+    },
+    {
+      kind: "qa",
+      head: "a".repeat(40),
+      verdict: "partial",
+      thread: "thr_qa",
+      target: "localenv",
+      note: "docs/findings.md",
+    },
+    {
+      kind: "merge",
+      pr: 12,
+      head: "a".repeat(40),
+      merge: "b".repeat(40),
+      part: "1/2",
+    },
+    { kind: "deploy", merge: "b".repeat(40), run: "123", env: "production" },
+    {
+      kind: "exemption",
+      row: "qa",
+      reason: "Documentation only",
+      ownerQuote: "Waived",
+      date: "2026-10-23",
+    },
+  ])(
+    "stores $kind through CLI and exposes every field in show/evidence JSON",
+    async (entry) => {
+      const { cli, task, store } = setup();
+      const flags = Object.entries(entry).flatMap(([key, value]) => [
+        `--${key === "ownerQuote" ? "owner-quote" : key}`,
+        String(value),
+      ]);
+      const result = await cli(
+        "comment",
+        task.key,
+        "--body",
+        "Evidence remark",
+        ...flags,
+        "--json",
+      );
+      expect(result.comment.evidence).toEqual(entry);
+      const index = await cli(
+        "evidence",
+        task.key,
+        "--kind",
+        entry.kind,
+        "--json",
+      );
+      expect(index.records[0]).toMatchObject({
+        ...entry,
+        body: "Evidence remark",
+      });
+      const shown = await cli("show", task.key, "--json");
+      expect(shown.evidence[0]).toMatchObject(entry);
+      expect(store.tasks.getTask(task.id)?.status).toBe("backlog");
+    },
+  );
+
+  it("rejects malformed or incomplete evidence and secrets without persisting comments", async () => {
+    const { harness, task, store } = setup();
+    for (const evidence of [
+      {
+        kind: "review",
+        pr: 1,
+        head: "abc",
+        verdict: "approve",
+        thread: "thr_review",
+      },
+      { kind: "qa", head: "a".repeat(40), verdict: "pass", thread: "invalid" },
+      { kind: "exemption", row: "qa", reason: "waived", ownerQuote: "yes" },
+      {
+        kind: "merge",
+        pr: 1,
+        head: "a".repeat(40),
+        merge: "b".repeat(40),
+        part: "3/2",
+      },
+    ])
+      expect(evidenceSchema.safeParse(evidence).success).toBe(false);
+    await expect(
+      harness.callRpc("createComment", {
+        taskId: task.id,
+        body: "Safe",
+        notify: false,
+        evidence: {
+          kind: "exemption",
+          row: "qa",
+          reason: "ghp_" + "a".repeat(36),
+        },
+      }),
+    ).rejects.toThrow("detected");
+    expect(store.tasks.listComments(task.id)).toEqual([]);
+  });
+
+  it("groups PRs and heads, marks older heads and never treats late carry-over QA as a new head", () => {
+    const a = "a".repeat(40),
+      b = "b".repeat(40),
+      merge = "c".repeat(40);
+    const entries: Evidence[] = [
+      { kind: "review", pr: 1, head: a, verdict: "approve", thread: "thr_old" },
+      { kind: "review", pr: 1, head: b, verdict: "approve", thread: "thr_new" },
+      { kind: "qa", pr: 1, head: a, verdict: "pass", thread: "thr_late" },
+      { kind: "merge", pr: 1, head: b, merge },
+      { kind: "deploy", merge, run: "1", env: "development" },
+    ];
+    const comments = entries.map(
+      (evidence, index) =>
+        ({
+          id: String(index),
+          taskId: "task",
+          kind: "agent",
+          authorName: "Agent",
+          presetName: null,
+          threadId: null,
+          body: "Remark",
+          notifiedCount: 0,
+          createdAt: `2026-10-23T00:00:0${index}.000Z`,
+          evidence,
+        }) satisfies Comment,
+    );
+    const index = evidenceIndex(comments);
+    expect(index.summary).toEqual([
+      { pr: 1, newestHead: b, kinds: ["deploy", "merge", "review"] },
+    ]);
+    expect(index.records.filter((entry) => entry.superseded)).toHaveLength(2);
+    expect(
+      index.records.find((entry) => entry.kind === "deploy"),
+    ).toMatchObject({ indexedPr: 1, indexedHead: b });
+  });
+});

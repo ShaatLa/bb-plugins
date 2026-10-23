@@ -160,6 +160,7 @@ function detailRpc(overrides: Record<string, unknown> = {}) {
       pullRequests: [],
       unavailableThreadIds: [],
     }),
+    listQuestions: () => ({ questions: [] }),
     listComments: () => ({ comments: [] }),
     listBbProjects: () => ({ bbProjects: [] }),
     ...overrides,
@@ -303,4 +304,35 @@ describe("task detail pull request pills", () => {
       ).toBeTruthy();
     });
   });
+});
+
+it("shows an epic's tasks and progress and creates a member without turning it into a sub-task", async () => {
+  const epic = { ...task, type: "epic" as const };
+  const member = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT6", key: "TSK-6", title: "First epic task", epicId: task.id, status: "done" });
+  const remaining = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT7", key: "TSK-7", title: "Second epic task", epicId: task.id });
+  const creates: Record<string, unknown>[] = [];
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+    rpc: detailRpc({
+      getTaskByKey: () => ({ task: epic }),
+      listTasks: (raw: unknown) => ({ tasks: rpcInput(raw).epicId === epic.id ? [member, remaining] : [], nextCursor: null }),
+      createTask: (raw: unknown) => {
+        const input = rpcInput(raw);
+        creates.push(input);
+        return { ok: true, task: makeTask({ ...input, id: "01HZZZZZZZZZZZZZZZZZZZZZT8" }) };
+      },
+    }),
+  });
+  await slot.findByRole("heading", { name: "Tasks in this epic" });
+  expect(await slot.findByRole("button", { name: "1/2 tasks" })).toBeTruthy();
+  expect(await slot.findByRole("button", { name: /First epic task/ })).toBeTruthy();
+  fireEvent.click(slot.getByRole("button", { name: "Add task" }));
+  const input = slot.getByPlaceholderText("Task in TSK-5…");
+  fireEvent.change(input, { target: { value: "New member" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(creates).toHaveLength(1));
+  expect(creates[0]).toMatchObject({ projectId: PROJECT_ID, title: "New member", epicId: epic.id });
+  expect(creates[0]!.parentTaskId).toBeUndefined();
+  remaining.status = "done";
+  await slot.behavior.emitRealtime("tasks:changed", { taskId: remaining.id, projectId: PROJECT_ID });
+  await slot.findByRole("button", { name: "2/2 tasks" });
 });

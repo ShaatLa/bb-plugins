@@ -182,3 +182,23 @@ describe("dispatch target rail control", () => {
     });
   });
 });
+
+it("assigns and clears an epic using the existing property controls", async () => {
+  const epic = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT6", number: 6, key: "TSK-6", title: "Big initiative", type: "epic" });
+  const updates: unknown[] = [];
+  const slot = renderSlot({ component: RailHarness }, { ...railProps(null), onUpdate: (input) => updates.push(input) }, {
+    rpc: {
+      listBbProjects: () => ({ bbProjects: [] }),
+      listTasks: () => ({ tasks: [epic], nextCursor: null }),
+    },
+  });
+  fireEvent.click(slot.getByRole("button", { name: "Epic" }));
+  fireEvent.click(await slot.findByRole("option", { name: /TSK-6 · Big initiative/ }));
+  expect(updates).toEqual([{ epicId: epic.id }]);
+  fireEvent.click(slot.getByRole("button", { name: "Epic" }));
+  fireEvent.click(await slot.findByRole("option", { name: "No epic" }));
+  expect(updates.at(-1)).toEqual({ epicId: null });
+  fireEvent.keyDown(slot.getByRole("button", { name: "Task type" }), { key: "ArrowDown" });
+  fireEvent.click(await slot.findByRole("menuitem", { name: "Epic" }));
+  expect(updates.at(-1)).toEqual({ type: "epic" });
+});

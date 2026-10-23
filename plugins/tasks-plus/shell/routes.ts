@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { storeLastProjectId } from "./view-preference.js";
 
@@ -69,10 +69,13 @@ export interface TasksNavigation {
   go: (route: TasksRoute, options?: { replace?: boolean }) => void;
 }
 
+export const TasksNavigationContext = createContext<TasksNavigation | null>(null);
+
 export function useTasksNavigation(): TasksNavigation {
   const navigate = useBbNavigate();
+  const localNavigation = useContext(TasksNavigationContext);
   return useMemo(
-    () => ({
+    () => localNavigation ?? ({
       go: (route, options) => {
         if (route.kind === "project") storeLastProjectId(route.projectId);
         navigate.toPluginPanel(PANEL_PATH, {
@@ -81,6 +84,6 @@ export function useTasksNavigation(): TasksNavigation {
         });
       },
     }),
-    [navigate],
+    [navigate, localNavigation],
   );
 }

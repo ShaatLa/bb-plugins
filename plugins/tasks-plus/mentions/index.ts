@@ -1,4 +1,5 @@
 import type { BbPluginApi, PluginMentionItem } from "@get-bb/plugin-sdk";
+import { questionSchema } from "../shared/contract";
 
 import type { TasksApiStore } from "../api";
 import {
@@ -181,6 +182,19 @@ ${formatComments(comments)}
 ## Attached threads
 
 ${formatThreads(store.tasks.listTaskThreads(task.id))}
+
+## Questions
+
+${JSON.stringify(
+  database
+    .prepare<[string], { payload: string }>(
+      "SELECT payload FROM task_questions WHERE task_id = ? ORDER BY id",
+    )
+    .all(task.id)
+    .map((row) => questionSchema.parse(JSON.parse(row.payload))),
+  null,
+  2,
+)}
 
 ## Action contract
 

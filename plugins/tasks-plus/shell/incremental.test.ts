@@ -220,3 +220,19 @@ describe("listTasksQuery", () => {
     expect(tasks.map((entry) => entry.title)).toEqual(["Currently working"]);
   });
 });
+
+it("counts epic tasks separately from their sub-tasks and updates progress incrementally", async () => {
+  const { store, project, rpc } = setup();
+  const epic = store.tasks.createTask({ projectId: project.id, title: "Epic", type: "epic" });
+  const member = store.tasks.createTask({ projectId: project.id, title: "Member", epicId: epic.id });
+  store.tasks.createTask({ projectId: project.id, title: "Sub-task", parentTaskId: member.id, status: "done" });
+  const board = await fetchBoard(rpc, project.id);
+  expect(board.metaByTaskId.get(epic.id)).toMatchObject({ subDone: 0, subTotal: 1 });
+  expect(board.metaByTaskId.get(member.id)).toMatchObject({ subDone: 1, subTotal: 1 });
+  store.tasks.updateTask(member.id, { status: "done" });
+  const updated = await patchBoard(rpc, project.id, board, [{ channel: "tasks:changed", taskId: member.id }]);
+  expect(updated?.metaByTaskId.get(epic.id)).toMatchObject({ subDone: 1, subTotal: 1 });
+  store.tasks.updateTask(member.id, { epicId: null });
+  const removed = await patchBoard(rpc, project.id, updated!, [{ channel: "tasks:changed", taskId: member.id }]);
+  expect(removed?.metaByTaskId.get(epic.id)).toMatchObject({ subDone: 0, subTotal: 0 });
+});

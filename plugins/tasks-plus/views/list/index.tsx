@@ -122,6 +122,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
   }, [filters.labelNames, labelOptions, labels.data]);
 
   const tasksQuery = useListTasks(projectId, activeOnly, {
+    type: filters.type,
     statuses: filters.statuses,
     priorities: filters.priorities,
     labelIds,
@@ -325,6 +326,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ListFilterBar
+        projectId={projectId}
         filters={filters}
         onChange={setFilters}
         sort={sort}

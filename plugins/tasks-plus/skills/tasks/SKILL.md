@@ -11,6 +11,44 @@ and report the outcome where the work is tracked.
 For task dispatch and execution presets, read
 [references/delegation.md](references/delegation.md).
 
+## Epics
+
+Create a large initiative with `bb tasks create --project ABC --title "Initiative" --type epic`.
+Assign an existing task with `bb tasks update ABC-2 --epic ABC-1`, or pass `--epic ABC-1` when creating it.
+Use `bb tasks list --type epic` to discover epics and `bb tasks list --epic ABC-1` or `bb tasks show ABC-1` for their member tasks.
+Use `--no-epic` on update to remove membership. Tasks and epics share project keys and workflow statuses.
+
+An epic groups regular tasks in the same project; those tasks can still have one level of sub-tasks.
+Sub-tasks inherit epic context from their parent. Epics cannot nest. Progress counts completed member tasks; epic status is manual.
+Moving an epic moves its members and their sub-tasks; moving a member alone clears its epic link.
+Deleting an epic preserves its tasks. Type conversion requires clearing incompatible links and children first.
+Read the epic description when working on a member task; `task.epicId` identifies it in JSON.
+
+## Secret guard
+
+Task/epic titles, descriptions and comment bodies are checked at write time for common GitHub, AWS, Slack, Google, Anthropic, OpenAI, JWT and private-key formats. Remove detected credentials and retry; never repeat the value in an error report. There is no bypass flag, including for imports with `--overwrite`. Attachments and existing records are not scanned; retain the Git-side secret check.
+
+## Structured questions, evidence and templates
+
+Questions belong to tasks and epics. Use `bb tasks question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
+
+`bb tasks comment KEY --body 'remark' --kind review --pr 123 --head <40hex> --verdict approve --thread thr_x [--lens security]` creates an append-only evidence comment. Other kinds: `qa` requires head/verdict(pass|fail|partial)/thread and permits pr/target(local|development|localenv)/note(repo-relative path); `merge` requires pr/head/merge and permits part(k/m); `deploy` requires merge/run/env(development|production); `exemption` requires row/reason, with owner-quote/date only as a pair. Do not invent owner quotes or waivers. `bb tasks evidence KEY [--pr N] [--head SHA] [--kind review --kind qa] --json` lists evidence and the newest head/kinds summary. Older heads remain visible as superseded. The index makes no completeness judgement and never changes workflow status. Evidence and all optional fields are also in `show --json`. Add a newer record to supersede one; import cannot edit existing evidence even with `--overwrite`.
+
+`bb tasks template set --project ABC --name task --body-file <path> [--label <name>]`, `template show|list|delete --project ABC [--name task]`. `create --template task` uses the project template and appends any explicit description. A bound label applies its template automatically; ambiguous bound labels require explicit `--template`. Template filling is not validated. Template files use the invoking machine, like other CLI file options.
+
+Question text/options, evidence and template text use the secret guard. Export format v2 stores questions in task records, optional evidence in comments, and project templates in project.json, with no new directories; v1 imports remain supported. Update external closed-schema validators before installing 0.2.0.
+
+## Project snapshots in Git
+
+Export with `bb tasks export --project ABC --out .bb/tasks/<project-id>` and restore with `bb tasks import --from .bb/tasks/<project-id>`.
+All task and attachment filenames use immutable IDs. The directory contains versioned `project.json`, `tasks/<id>.json`, and binary `attachments/<id>` files.
+Export includes project/folder/label metadata, task and epic fields, Markdown descriptions, comments, thread links, key aliases, and attachments owned by tasks or comments.
+
+Use a dedicated output directory: export replaces its previous snapshot and refuses unrelated files. Import validates the snapshot and attachment hashes and commits database changes atomically.
+New records merge by ID; conflicting existing values require explicit `--overwrite`. Missing records never imply deletion. Imported task label assignments are replaced only after conflict checks.
+Pull and import repository changes before exporting BB changes. Neither command commits or pushes Git changes, runs agents, nor restores full BB chats, external PR contents, global presets or account settings.
+Paths target the invoking thread's machine, otherwise the server; `--machine <id-or-name>` selects another enrolled host. Add `--json` for a bounded machine-readable result.
+
 ## Work a task
 
 1. Find and read the task before acting:

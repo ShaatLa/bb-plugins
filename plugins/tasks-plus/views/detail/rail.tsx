@@ -23,6 +23,7 @@ import {
   PRIORITY_LABELS,
   STATUS_LABELS,
 } from "../list/lib.js";
+import { EpicPicker } from "../../components/epic-picker.js";
 import { DispatchControl } from "./threads.js";
 import { DEFAULT_COLOR } from "../manage/shared.js";
 import { BbProjectLinkPicker } from "../manage/bb-project-link.js";
@@ -52,6 +53,8 @@ import { cn } from "@/lib/utils";
 
 export interface TaskPropertyUpdate {
   status?: TaskStatus;
+  type?: Task["type"];
+  epicId?: string | null;
   priority?: TaskPriority;
   dueDate?: string | null;
   labelIds?: string[];
@@ -105,6 +108,30 @@ function StatusMenu({
             {status === task.status ? (
               <Icon name="Check" className="ml-auto size-3.5" />
             ) : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function TypeMenu({ task, onUpdate, triggerClassName }: {
+  task: Task;
+  onUpdate: (update: TaskPropertyUpdate) => void;
+  triggerClassName: string;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label="Task type" className={triggerClassName}>
+          <Icon name={task.type === "epic" ? "Zap" : "ListTodo"} className="size-3.5" />
+          {task.type === "epic" ? "Epic" : "Task"}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {(["task", "epic"] as const).map((type) => (
+          <DropdownMenuItem key={type} onSelect={() => onUpdate({ type })}>
+            {type === "epic" ? "Epic" : "Task"}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -520,6 +547,15 @@ export function PropertiesRail({
       <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
         Properties
       </h2>
+      <TypeMenu task={task} onUpdate={onUpdate} triggerClassName={RAIL_ROW_CLASS} />
+      {task.type !== "epic" && task.parentTaskId === null ? (
+        <EpicPicker
+          projectId={task.projectId}
+          value={task.epicId}
+          onChange={(epicId) => onUpdate({ epicId })}
+          className={RAIL_ROW_CLASS}
+        />
+      ) : null}
       <StatusMenu
         task={task}
         onUpdate={onUpdate}
@@ -650,6 +686,15 @@ export function InlineProperties({
         onMoveToProject={onMoveToProject}
         triggerClassName={CHIP_CLASS}
       />
+      <TypeMenu task={task} onUpdate={onUpdate} triggerClassName={CHIP_CLASS} />
+      {task.type !== "epic" && task.parentTaskId === null ? (
+        <EpicPicker
+          projectId={task.projectId}
+          value={task.epicId}
+          onChange={(epicId) => onUpdate({ epicId })}
+          className={CHIP_CLASS}
+        />
+      ) : null}
       <StatusMenu
         task={task}
         onUpdate={onUpdate}

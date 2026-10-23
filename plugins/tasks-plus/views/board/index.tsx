@@ -29,7 +29,10 @@ import {
   type BoardCardMeta,
   type BoardData,
 } from "./board-data.js";
-import { STATUS_LABELS } from "../list/lib.js";
+import { labelFilterOptions, selectedLabelIds, STATUS_LABELS } from "../list/lib.js";
+import { ListFilterBar, type ListFilterState } from "../list/filter-bar.js";
+import { listPreferenceScope, loadListPreference, storeListPreference } from "../list/list-preference.js";
+import { matchesFilters } from "../list/optimistic.js";
 import { Button } from "@/components/ui/button";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
@@ -109,6 +112,7 @@ function TaskCard({
     <div
       ref={cardRef}
       data-task-key={task.key}
+      title={task.title}
       onPointerDown={onPointerDown}
       onClick={onClick}
       className={cn(
@@ -121,9 +125,10 @@ function TaskCard({
     >
       <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
         <span className="tabular-nums">{task.key}</span>
+        {task.type === "epic" ? <span className="inline-flex items-center gap-1"><Icon name="Zap" className="size-3" />Epic</span> : null}
         <WorkingAgentsChip threads={meta.workingThreads} />
       </div>
-      <div className="mt-1 line-clamp-2 text-sm leading-snug font-medium">
+      <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
         {task.title}
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -186,6 +191,15 @@ interface BoardViewProps {
 export function BoardView({ projectId }: BoardViewProps) {
   const rpc = useTasksRpc();
   const navigation = useTasksNavigation();
+  const preferenceScope = listPreferenceScope(projectId, false);
+  const [filters, setFilters] = useState(() => loadListPreference(preferenceScope).filters);
+  useEffect(() => {
+    setFilters(loadListPreference(preferenceScope).filters);
+  }, [preferenceScope]);
+  const changeFilters = (next: ListFilterState) => {
+    storeListPreference(preferenceScope, { ...loadListPreference(preferenceScope), filters: next });
+    setFilters(next);
+  };
   const board = useTasksQuery<BoardData>(
     (queryRpc) => fetchBoard(queryRpc, projectId),
     ["tasks:changed", "projects:changed", "threads:changed"],
@@ -205,6 +219,15 @@ export function BoardView({ projectId }: BoardViewProps) {
   }, [board.data]);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
+  const labelOptions = labelFilterOptions([...(board.data?.labelsById.values() ?? [])]);
+  const labelIds = selectedLabelIds(labelOptions, filters.labelNames);
+  const visibleColumns = columns && groupColumns(Object.values(columns).flat().filter((task) =>
+    (filters.type === undefined || task.type === filters.type) &&
+    (filters.labelNames.length === 0 || labelIds.length > 0) &&
+    matchesFilters(task, filters.statuses, filters.priorities, labelIds),
+  ));
+  const visibleColumnsRef = useRef(visibleColumns);
+  visibleColumnsRef.current = visibleColumns;
 
   const [drag, setDrag] = useState<DragState | null>(null);
   const [quickAddStatus, setQuickAddStatus] = useState<TaskStatus | null>(null);
@@ -220,7 +243,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     y: number,
     draggedTaskId: string,
   ): { status: TaskStatus; index: number } | null => {
-    const current = columnsRef.current;
+    const current = visibleColumnsRef.current;
     if (!current) return null;
     const boardRect = boardRef.current?.getBoundingClientRect();
     if (
@@ -256,13 +279,21 @@ export function BoardView({ projectId }: BoardViewProps) {
     dropIndex: number,
   ) => {
     const current = columnsRef.current;
-    if (!current) return;
+    const visible = visibleColumnsRef.current;
+    if (!current || !visible) return;
     const neighbors = dropNeighborsForIndex(
-      current[toStatus].map((task) => task.id),
+      visible[toStatus].map((task) => task.id),
       taskId,
       dropIndex,
     );
-    setColumns(applyBoardMove(current, taskId, toStatus, dropIndex));
+    // Keep hidden cards in place when translating a filtered drop to the full column.
+    const remaining = current[toStatus].filter((task) => task.id !== taskId);
+    const fullIndex = neighbors.afterTaskId !== null
+      ? remaining.findIndex((task) => task.id === neighbors.afterTaskId)
+      : neighbors.beforeTaskId !== null
+        ? remaining.findIndex((task) => task.id === neighbors.beforeTaskId) + 1
+        : remaining.length;
+    setColumns(applyBoardMove(current, taskId, toStatus, fullIndex));
     void rpc
       .call("boardMove", {
         taskId,
@@ -360,7 +391,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     navigation.go({ kind: "task", taskKey: task.key });
   };
 
-  if (columns === undefined) {
+  if (columns === undefined || visibleColumns === undefined) {
     if (board.error) {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
@@ -384,7 +415,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     : undefined;
 
   const renderColumn = (status: TaskStatus) => {
-    const cards = columns[status];
+    const cards = visibleColumns[status];
     const isDragOver = drag !== null && drag.overStatus === status;
     const remaining = drag
       ? cards.filter((task) => task.id !== drag.taskId)
@@ -420,7 +451,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     if (indicatorBeforeTaskId === null) children.push(indicator);
 
     return (
-      <div key={status} className="flex max-h-full w-[230px] shrink-0 flex-col">
+      <div key={status} className="flex max-h-full min-w-[230px] flex-1 basis-[230px] flex-col">
         <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold">
           <StatusIcon status={status} />
           <span>{STATUS_LABELS[status]}</span>
@@ -456,14 +487,22 @@ export function BoardView({ projectId }: BoardViewProps) {
   };
 
   return (
+    <div className="flex h-full min-h-0 flex-col">
+      <ListFilterBar
+        projectId={projectId}
+        filters={filters}
+        onChange={changeFilters}
+        labelOptions={labelOptions}
+        taskCount={Object.values(visibleColumns).reduce((count, tasks) => count + tasks.length, 0)}
+      />
     <div
       ref={boardRef}
       className={cn(
-        "flex h-full items-start gap-3 overflow-x-auto p-4",
+        "flex min-h-0 flex-1 items-start gap-3 overflow-x-auto p-4",
         drag !== null && "cursor-grabbing",
       )}
     >
-      {visibleBoardStatuses(columns).map(renderColumn)}
+      {visibleBoardStatuses(visibleColumns).map(renderColumn)}
       {drag && ghostTask ? (
         <div
           className="pointer-events-none fixed z-50"
@@ -489,6 +528,7 @@ export function BoardView({ projectId }: BoardViewProps) {
         projectId={projectId}
         defaultStatus={quickAddStatus ?? undefined}
       />
+    </div>
     </div>
   );
 }

@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
+import { TaskSearch } from "../../components/task-search.js";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
+  TASK_TYPES,
+  type TaskType,
   type TaskPriority,
   type TaskStatus,
 } from "../../shared/contract.js";
@@ -109,6 +112,7 @@ function SortChip({
 }
 
 export interface ListFilterState {
+  type?: TaskType;
   statuses: TaskStatus[];
   priorities: TaskPriority[];
   labelNames: string[];
@@ -122,6 +126,7 @@ export const EMPTY_FILTERS: ListFilterState = {
 
 export function hasActiveFilters(filters: ListFilterState): boolean {
   return (
+    filters.type !== undefined ||
     filters.statuses.length > 0 ||
     filters.priorities.length > 0 ||
     filters.labelNames.length > 0
@@ -129,6 +134,7 @@ export function hasActiveFilters(filters: ListFilterState): boolean {
 }
 
 export function ListFilterBar({
+  projectId,
   filters,
   onChange,
   sort,
@@ -136,10 +142,11 @@ export function ListFilterBar({
   labelOptions,
   taskCount,
 }: {
+  projectId: string | null;
   filters: ListFilterState;
   onChange: (filters: ListFilterState) => void;
-  sort: TaskSort;
-  onSortChange: (sort: TaskSort) => void;
+  sort?: TaskSort;
+  onSortChange?: (sort: TaskSort) => void;
   labelOptions: readonly LabelFilterOption[];
   taskCount: number | undefined;
 }) {
@@ -149,6 +156,30 @@ export function ListFilterBar({
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
+        <TaskSearch key={projectId ?? "all"} projectId={projectId} />
+        <FilterChip
+          icon="Zap"
+          label="Type"
+          selectedNames={filters.type ? [filters.type === "epic" ? "Epic" : "Task"] : []}
+        >
+          <DropdownMenuCheckboxItem
+            checked={filters.type === undefined}
+            onCheckedChange={() => onChange({ ...filters, type: undefined })}
+          >
+            All
+          </DropdownMenuCheckboxItem>
+          {TASK_TYPES.map((type) => (
+            <DropdownMenuCheckboxItem
+              key={type}
+              checked={filters.type === type}
+              onCheckedChange={(checked) =>
+                onChange({ ...filters, type: checked ? type : undefined })
+              }
+            >
+              {type === "epic" ? "Epic" : "Task"}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </FilterChip>
         <FilterChip
           icon="Circle"
           label="Status"
@@ -280,7 +311,9 @@ export function ListFilterBar({
           </button>
         ) : null}
       </div>
-      <SortChip sort={sort} onChange={onSortChange} />
+      {sort !== undefined && onSortChange ? (
+        <SortChip sort={sort} onChange={onSortChange} />
+      ) : null}
       <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-subtle-foreground">
         {taskCount === undefined
           ? ""
