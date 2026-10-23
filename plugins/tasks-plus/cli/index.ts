@@ -828,6 +828,10 @@ export function registerTasksCli(
             ["add", "Add a single or multiple choice question"],
             ["list", "List questions and answer IDs"],
             ["answer", "Save or clear an answer"],
+            [
+              "update",
+              "Edit a question; answered questions require explicit reopen",
+            ],
             ["delete", "Delete a question"],
           ],
         ),
@@ -849,7 +853,10 @@ export function registerTasksCli(
               type: "boolean",
               description: "Allow multiple answers",
             },
-            "allow-other": { type: "boolean", description: "Allow a free-text answer" },
+            "allow-other": {
+              type: "boolean",
+              description: "Allow a free-text answer",
+            },
             json: JSON_OPTION,
           },
           run(input) {
@@ -907,7 +914,10 @@ export function registerTasksCli(
               description: "Selected option ID; repeat for multiple choice",
             },
             clear: { type: "boolean", description: "Clear the answer" },
-            text: { type: "string", description: "Free-text answer when the creator allows it" },
+            text: {
+              type: "string",
+              description: "Free-text answer when the creator allows it",
+            },
             revision: {
               type: "integer",
               min: 1,
@@ -933,9 +943,12 @@ export function registerTasksCli(
                 throw new CliError("Question does not belong to this task");
               if (
                 Boolean(input.options.clear) ===
-                (input.options.answer.length > 0 || Boolean(input.options.text?.trim()))
+                (input.options.answer.length > 0 ||
+                  Boolean(input.options.text?.trim()))
               )
-                throw new CliError("Use --answer/--text or --clear, exclusively");
+                throw new CliError(
+                  "Use --answer/--text or --clear, exclusively",
+                );
               const result = await domain.answerQuestion(
                 tasksRpcContract.answerQuestion.input.parse({
                   questionId: input.options.question,
@@ -950,6 +963,114 @@ export function registerTasksCli(
               return input.options.json
                 ? JSON.stringify(result)
                 : `Saved answer to ${result.question.id}`;
+            });
+          },
+        }),
+        "question update": cliCommand({
+          summary: "Edit question content at its current revision",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            question: {
+              type: "string",
+              required: true,
+              description: "Question ID",
+            },
+            revision: {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              required: true,
+              description: "Current question revision",
+            },
+            prompt: {
+              type: "string",
+              description: "Replacement question text",
+            },
+            mode: {
+              type: "enum",
+              values: ["single", "multiple"],
+              description: "Answer selection mode",
+            },
+            "options-file": {
+              type: "string",
+              description:
+                "JSON array of {id?, label}; retain existing IDs, omit IDs for new choices",
+            },
+            "allow-other": {
+              type: "boolean",
+              description: "Allow a free-text answer",
+            },
+            "no-other": {
+              type: "boolean",
+              description: "Disallow a free-text answer",
+            },
+            reopen: {
+              type: "boolean",
+              description:
+                "Clear the existing answer and require a new decision",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              const current = (
+                await domain.listQuestions({ taskId: task.id })
+              ).questions.find(
+                (question) => question.id === input.options.question,
+              );
+              if (!current)
+                throw new CliError("Question does not belong to this task");
+              if (input.options["allow-other"] && input.options["no-other"])
+                throw new CliError(
+                  "Use --allow-other or --no-other, exclusively",
+                );
+              let options: unknown = current.options;
+              if (input.options["options-file"]) {
+                const hostId = await resolveClientHostId(
+                  bb,
+                  domain,
+                  input.options.machine,
+                  ctx,
+                );
+                const text = await readTextOption(
+                  bb,
+                  ctx,
+                  hostId,
+                  undefined,
+                  input.options["options-file"],
+                );
+                try {
+                  options = JSON.parse(text!);
+                } catch {
+                  throw new CliError(
+                    "Options file must contain a JSON array of {id?, label}",
+                  );
+                }
+              }
+              const result = await domain.updateQuestion(
+                tasksRpcContract.updateQuestion.input.parse({
+                  questionId: current.id,
+                  revision: input.options.revision,
+                  prompt: input.options.prompt ?? current.prompt,
+                  mode: input.options.mode ?? current.mode,
+                  options,
+                  allowOther: input.options["no-other"]
+                    ? false
+                    : input.options["allow-other"]
+                      ? true
+                      : current.allowOther,
+                  reopen: input.options.reopen,
+                  authorName: taskAuthor(ctx),
+                }),
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Saved question ${result.question.id} (revision ${result.question.revision})`;
             });
           },
         }),

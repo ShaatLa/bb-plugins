@@ -96,6 +96,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     | "questionCounts"
     | "createQuestion"
     | "answerQuestion"
+    | "updateQuestion"
     | "deleteQuestion"
     | "listTemplates"
     | "setTemplate"
@@ -202,6 +203,66 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         question,
         notification: notifiedCount ? ("sent" as const) : ("failed" as const),
       };
+    },
+    updateQuestion(input) {
+      const question = store.transaction(() => {
+        const current = getQuestion(input.questionId);
+        if (current.revision !== input.revision)
+          throw new Error("Question changed; reload it before editing");
+        if (
+          input.options.some(
+            (option) =>
+              option.id &&
+              !current.options.some((existing) => existing.id === option.id),
+          )
+        )
+          throw new Error("Option ID does not belong to this question");
+        const options = input.options.map((option) => ({
+          id: option.id ?? createUlid(),
+          label: option.label.trim(),
+        }));
+        const content = {
+          prompt: input.prompt.trim(),
+          mode: input.mode,
+          options,
+          allowOther: input.allowOther ?? current.allowOther,
+        };
+        const unchanged = Object.entries(content).every(
+          ([key, value]) =>
+            JSON.stringify(value) ===
+            JSON.stringify(current[key as keyof typeof content]),
+        );
+        if (unchanged && !input.reopen) return current;
+        if (current.answeredBy && !input.reopen)
+          throw new Error(
+            "Question has an answer; confirm reopen to clear it and request a new decision",
+          );
+        const { id, taskId, createdAt, history, ...snapshot } = current;
+        const next = questionSchema.parse({
+          ...current,
+          ...content,
+          selectedOptionIds: [],
+          answerText: null,
+          answeredBy: null,
+          revision: current.revision + 1,
+          updatedAt: new Date().toISOString(),
+          history: [...history, snapshot],
+        });
+        assertNoSecretsInValue(next, "question");
+        db.prepare<[string, string]>(
+          "UPDATE task_questions SET payload = ? WHERE id = ?",
+        ).run(JSON.stringify(next), next.id);
+        store.tasks.createComment({
+          taskId: next.taskId,
+          kind: "system",
+          authorName: input.authorName,
+          body: `Question revised (revision ${next.revision}): ${next.prompt}${current.answeredBy ? "\nA new decision is required; the previous answer is retained in question history." : ""}`,
+        });
+        return next;
+      });
+      changed(question.taskId);
+      bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      return { question };
     },
     deleteQuestion(input) {
       const question = getQuestion(input.questionId);

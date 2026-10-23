@@ -56,6 +56,169 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("reads replacement options on the CLI host and keeps existing option IDs", async () => {
+    const { cli, harness, task, structured } = setup();
+    const { question } = await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Choices?",
+      mode: "single",
+      options: ["A", "B"],
+    });
+    const content = JSON.stringify([
+      { id: question.options[0]!.id, label: "Renamed" },
+      { label: "New" },
+    ]);
+    harness.sdk.stub("files.read", async ({ path }) => ({
+      path,
+      content,
+      contentEncoding: "utf8",
+      sizeBytes: content.length,
+    }));
+    const result = await cli(
+      "question",
+      "update",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "1",
+      "--options-file",
+      "/tmp/choices.json",
+      "--json",
+    );
+    expect(result.question.options).toEqual([
+      { id: question.options[0]!.id, label: "Renamed" },
+      { id: expect.any(String), label: "New" },
+    ]);
+    expect(result.question.history[0].options).toEqual(question.options);
+  });
+
+  it("edits by stable option ID, rejects stale or unconfirmed changes and preserves the previous decision", async () => {
+    const { task, harness, structured, cli, store } = setup();
+    const { question } = await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Size?",
+      mode: "single",
+      options: ["Small", "Large"],
+    });
+    const edited = await cli(
+      "question",
+      "update",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "1",
+      "--prompt",
+      "Canvas size?",
+      "--json",
+    );
+    expect(edited.question).toMatchObject({
+      options: question.options,
+      prompt: "Canvas size?",
+      revision: 2,
+    });
+    const { question: answered } = await structured.handlers.answerQuestion({
+      questionId: question.id,
+      revision: 2,
+      selectedOptionIds: [question.options[0]!.id],
+      authorName: "Owner",
+    });
+    const input = {
+      questionId: question.id,
+      revision: answered.revision,
+      prompt: "Final size?",
+      mode: "single" as const,
+      options: [
+        { ...question.options[0]!, label: "Compact" },
+        { label: "Extra large" },
+      ],
+      authorName: "Editor",
+    };
+    const beforeComments = store.tasks.listComments(task.id);
+    await expect(harness.callRpc("updateQuestion", input)).rejects.toThrow(
+      "confirm reopen",
+    );
+    await expect(
+      harness.callRpc("updateQuestion", {
+        ...input,
+        reopen: true,
+        revision: 1,
+      }),
+    ).rejects.toThrow("Question changed");
+    await expect(
+      harness.callRpc("updateQuestion", {
+        ...input,
+        reopen: true,
+        options: [{ id: task.id, label: "Foreign" }, { label: "Other" }],
+      }),
+    ).rejects.toThrow("does not belong");
+    await expect(
+      harness.callRpc("updateQuestion", {
+        ...input,
+        reopen: true,
+        prompt: "ghp_" + "a".repeat(36),
+      }),
+    ).rejects.toThrow("question");
+    expect(structured.listQuestions(task.id)[0]).toEqual(answered);
+    expect(store.tasks.listComments(task.id)).toEqual(beforeComments);
+    const { question: reopened } = tasksRpcContract.updateQuestion.output.parse(
+      await harness.callRpc("updateQuestion", { ...input, reopen: true }),
+    );
+    expect(reopened).toMatchObject({
+      id: question.id,
+      revision: 4,
+      selectedOptionIds: [],
+      answerText: null,
+      answeredBy: null,
+      options: [
+        { id: question.options[0]!.id, label: "Compact" },
+        { label: "Extra large" },
+      ],
+    });
+    expect(reopened.options[1]!.id).not.toBe(question.options[1]!.id);
+    expect(reopened.history.at(-1)).toMatchObject({
+      prompt: "Canvas size?",
+      options: question.options,
+      selectedOptionIds: answered.selectedOptionIds,
+      answeredBy: "Owner",
+      revision: 3,
+    });
+    expect(
+      await harness.callRpc("questionCounts", { taskIds: [task.id] }),
+    ).toEqual({ counts: [{ taskId: task.id, unanswered: 1 }] });
+    const noop = await cli(
+      "question",
+      "update",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "4",
+      "--json",
+    );
+    expect(noop.question).toEqual(reopened);
+    const other = store.tasks.createTask({
+      projectId: task.projectId,
+      title: "Other",
+    });
+    expect(
+      (
+        await harness.runCli([
+          "question",
+          "update",
+          other.key,
+          "--question",
+          question.id,
+          "--revision",
+          "4",
+          "--prompt",
+          "Wrong owner",
+        ])
+      ).exitCode,
+    ).not.toBe(0);
+  });
+
   it("supports opt-in free text through the CLI, guards secrets and retains previous answers", async () => {
     const { cli, task, harness, structured } = setup();
     const { question } = await cli(

@@ -55,6 +55,59 @@ function setup() {
 }
 
 describe("question and evidence UI", () => {
+  it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
+    const { task, rpc, structured } = setup();
+    const { question } = await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Original question",
+      mode: "single",
+      options: ["Small", "Large"],
+    });
+    await structured.handlers.answerQuestion({
+      questionId: question.id,
+      revision: 1,
+      selectedOptionIds: [question.options[0]!.id],
+      authorName: "Owner",
+    });
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Edit question" }));
+    fireEvent.change(slot.getByRole("textbox", { name: "Question" }), {
+      target: { value: "New question" },
+    });
+    fireEvent.change(slot.getByRole("textbox", { name: "Option 1" }), {
+      target: { value: "Compact" },
+    });
+    const save = slot.getByRole("button", { name: "Save question" });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.click(
+      slot.getByRole("checkbox", {
+        name: "Clear the saved answer and request a new decision",
+      }),
+    );
+    fireEvent.click(save);
+    const group = await slot.findByRole("group", { name: "New question" });
+    await waitFor(() =>
+      expect(slot.queryByRole("textbox", { name: "Question" })).toBeNull(),
+    );
+    expect(within(group).getByLabelText("Compact")).toHaveProperty(
+      "checked",
+      false,
+    );
+    expect(
+      within(group).getByText(
+        "A new answer is required. Previous decisions are retained in history.",
+      ),
+    ).toBeTruthy();
+    expect(within(group).getByText("Answer: Small · Owner")).toBeTruthy();
+    const current = structured.listQuestions(task.id)[0]!;
+    expect(current.history.at(-1)?.options).toEqual(question.options);
+    expect(current.options[0]!.id).toBe(question.options[0]!.id);
+  });
+
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
     await structured.handlers.createQuestion({
