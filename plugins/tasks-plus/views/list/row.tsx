@@ -173,6 +173,7 @@ export const TaskRow = memo(function TaskRow({
           {task.title}
         </span>
         <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
+          {task.type === "epic" ? <span className={RAIL_CHIP_CLASS}><Icon name="Zap" className="size-3" />Epic</span> : null}
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
           <LabelChips task={task} labelsById={labelsById} />
           {task.dueDate !== null ? (

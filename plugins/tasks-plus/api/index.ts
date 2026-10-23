@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
   createTasksStore,
+  TaskEpicError,
   type Attachment as StoredAttachment,
   type Comment as StoredComment,
   type Task as StoredTask,
@@ -14,6 +15,9 @@ import {
 import { deliverCommentToLatestAgent } from "../steer";
 import { displayName } from "../shared/display-name";
 import { errorMessage } from "../shared/errors";
+import { SecretDetectedError } from "../shared/secret-guard.js";
+import { createStructuredStore } from "../structured/store";
+import type { Evidence } from "../shared/contract";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import {
   tasksRpcContract,
@@ -94,9 +98,10 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
     projectTaskCount(projectId: string): number {
       return (
         database
-          .prepare<[string], CountRow>(
-            "SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?",
-          )
+          .prepare<
+            [string],
+            CountRow
+          >("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?")
           .get(projectId)?.count ?? 0
       );
     },
@@ -225,6 +230,9 @@ function validateTaskParent(
       "subtask_project_mismatch",
       "A sub-task must belong to the same project as its parent",
     );
+  }
+  if (parent.type === "epic") {
+    fail("task_epic_invalid", "Use the epic field to add a task to an epic");
   }
   if (parent.parentTaskId !== null) {
     fail(
@@ -403,6 +411,7 @@ async function resolveProviderBadges(
 }
 
 interface CreateCommentInput {
+  evidence?: Evidence;
   taskId: string;
   kind: StoredComment["kind"];
   authorName: string;
@@ -426,6 +435,7 @@ export async function createComment(
       presetName: input.presetName,
       threadId: input.threadId,
       body: input.body,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
     }),
   );
 
@@ -582,7 +592,9 @@ export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): PluginRpcHandlers<typeof tasksRpcContract> {
+  const structured = createStructuredStore(bb, store);
   return {
+    ...structured.handlers,
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
       publishProjectsChanged(bb, null);
@@ -673,11 +685,18 @@ export function registerHandlers(
           const created = store.tasks.createTask({
             projectId: input.projectId,
             title: input.title,
-            description: input.description,
+            description: structured.applyTemplate(
+              input.projectId,
+              input.template,
+              input.labelIds,
+              input.description,
+            ),
             status: input.status,
             priority: input.priority,
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
+            type: input.type,
+            epicId: input.epicId,
           });
           replaceTaskLabels(store, created.id, input.labelIds);
           return apiTask(store, created);
@@ -685,6 +704,18 @@ export function registerHandlers(
         publishTasksChanged(bb, task.id, task.projectId);
         return { ok: true, task };
       } catch (error) {
+        if (error instanceof SecretDetectedError) {
+          return {
+            ok: false,
+            error: { code: "secret_detected", message: error.message },
+          };
+        }
+        if (error instanceof TaskEpicError) {
+          return {
+            ok: false,
+            error: { code: "task_epic_invalid", message: error.message },
+          };
+        }
         if (error instanceof TasksDomainFailure) return taskFailure(error);
         throw error;
       }
@@ -721,12 +752,29 @@ export function registerHandlers(
             priority: input.priority,
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
+            type: input.type,
+            epicId: input.epicId,
           });
           if (input.labelIds) {
             replaceTaskLabels(store, current.id, input.labelIds);
           }
 
           const bodies: string[] = [];
+          if (updated.type !== current.type) {
+            bodies.push(
+              `Type changed to ${displayName(updated.type)} by ${input.authorName}`,
+            );
+          }
+          if (updated.epicId !== current.epicId) {
+            const epic = updated.epicId
+              ? store.tasks.getTask(updated.epicId)
+              : null;
+            bodies.push(
+              epic
+                ? `Added to epic ${epic.key} by ${input.authorName}`
+                : `Removed from epic by ${input.authorName}`,
+            );
+          }
           if (updated.status !== current.status) {
             bodies.push(
               `Status changed to ${displayName(updated.status)} by ${input.authorName}`,
@@ -760,20 +808,37 @@ export function registerHandlers(
         }
         return { ok: true, task: result.task };
       } catch (error) {
+        if (error instanceof SecretDetectedError) {
+          return {
+            ok: false,
+            error: { code: "secret_detected", message: error.message },
+          };
+        }
+        if (error instanceof TaskEpicError) {
+          return {
+            ok: false,
+            error: { code: "task_epic_invalid", message: error.message },
+          };
+        }
         if (error instanceof TasksDomainFailure) return taskFailure(error);
         throw error;
       }
     },
     async deleteTask(input) {
       const task = store.tasks.getTask(input.taskId);
-      const subtasks = task ? store.tasks.listSubtasks(task.id) : [];
+      const dependents = task
+        ? [
+            ...store.tasks.listSubtasks(task.id),
+            ...store.tasks.listTasks({ epicId: task.id }),
+          ]
+        : [];
       const attachments = attachmentsForTasks(store.tasks, [input.taskId]);
       const deleted = store.tasks.deleteTask(input.taskId);
       if (deleted && task) {
         await removeAttachmentBlobs(bb, store.tasks, attachments);
         publishTasksChanged(bb, task.id, task.projectId);
-        for (const subtask of subtasks) {
-          publishTasksChanged(bb, subtask.id, subtask.projectId);
+        for (const dependent of dependents) {
+          publishTasksChanged(bb, dependent.id, dependent.projectId);
         }
       }
       return { deleted };
@@ -786,6 +851,8 @@ export function registerHandlers(
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
         parentTaskId: input.parentTaskId,
+        type: input.type,
+        epicId: input.epicId,
         search: input.search,
         sort: input.sort,
         limit: input.limit,
@@ -833,8 +900,10 @@ export function registerHandlers(
         return { task: apiTask(store, outcome.task), moved: outcome.moved };
       });
       if (result.moved.length > 0) {
-        publishTasksChanged(bb, current.id, current.projectId);
-        publishTasksChanged(bb, result.task.id, result.task.projectId);
+        for (const { task } of result.moved) {
+          publishTasksChanged(bb, task.id, current.projectId);
+          publishTasksChanged(bb, task.id, task.projectId);
+        }
         publishProjectsChanged(bb, result.task.projectId);
         for (const { task } of result.moved) {
           publishCommentsChanged(bb, task.id);
@@ -872,6 +941,7 @@ export function registerHandlers(
         presetName: null,
         threadId: null,
         body: input.body,
+        ...(input.evidence ? { evidence: input.evidence } : {}),
         notify: input.notify,
         awaitDelivery: false,
       });

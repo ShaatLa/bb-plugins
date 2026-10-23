@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
+  TASK_TYPES,
+  type TaskType,
   type TaskPriority,
   type TaskStatus,
 } from "../../shared/contract.js";
@@ -17,6 +19,8 @@ export interface NewTaskDraft {
   priority: TaskPriority;
   labelIds: string[];
   dueDate: string;
+  type: TaskType;
+  epicId: string | null;
 }
 
 const storedDraftSchema = z.object({
@@ -28,6 +32,8 @@ const storedDraftSchema = z.object({
   priority: z.enum(TASK_PRIORITIES),
   labelIds: z.array(z.string()),
   dueDate: z.string(),
+  type: z.enum(TASK_TYPES).default("task"),
+  epicId: z.string().nullable().default(null),
 });
 
 export function hasDraftContent(draft: NewTaskDraft): boolean {

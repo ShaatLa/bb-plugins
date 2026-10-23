@@ -28,7 +28,10 @@ import {
   PRESET_PERMISSION_MODES,
   TASK_PRIORITIES,
   TASK_STATUSES,
+  TASK_TYPES,
   ULID_PATTERN,
+  EVIDENCE_KINDS,
+  evidenceSchema,
   type Attachment,
   type Folder,
   type Label,
@@ -47,6 +50,8 @@ import {
 import { bytes, detail, oneLine, table } from "./format";
 import { allocatePrefix } from "./prefix";
 import { seedDemo } from "./seed";
+import { exportProject, importProject } from "../archive";
+import { evidenceIndex, evidenceText } from "../structured/evidence";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -672,6 +677,62 @@ export function registerTasksCli(
   status: PluginStatus,
 ): void {
   const domain = registerHandlers(bb, store);
+  const templateReadCommands = Object.fromEntries(
+    (["list", "show", "delete"] as const).map((action) => [
+      `template ${action}`,
+      cliCommand({
+        summary: `${action} project description templates`,
+        options: {
+          project: REQUIRED_PROJECT_OPTION,
+          name: {
+            type: "string",
+            required: action !== "list",
+            description: "Template name",
+          },
+          json: JSON_OPTION,
+        },
+        run(input, ctx) {
+          return guard(async () => {
+            const project = await requiredProject(
+              domain,
+              ctx,
+              input.options.project,
+            );
+            const { templates } = await domain.listTemplates({
+              projectId: project.id,
+            });
+            if (action === "list")
+              return input.options.json
+                ? JSON.stringify({ templates })
+                : table(
+                    ["ID", "NAME", "LABEL"],
+                    templates.map((template) => [
+                      template.id,
+                      template.name,
+                      template.labelId ?? "-",
+                    ]),
+                    "(none)",
+                  );
+            const template = templates.find(
+              (item) =>
+                item.name.toLowerCase() === input.options.name?.toLowerCase(),
+            );
+            if (!template) throw new CliError("Template not found");
+            if (action === "show")
+              return input.options.json
+                ? JSON.stringify({ template })
+                : template.body;
+            const result = await domain.deleteTemplate({
+              templateId: template.id,
+            });
+            return input.options.json
+              ? JSON.stringify(result)
+              : `Deleted template ${template.name}`;
+          });
+        },
+      }),
+    ]),
+  );
   bb.cli.register(
     defineCli({
       name: "tasks",
@@ -680,6 +741,393 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        ...templateReadCommands,
+        template: groupCommand(
+          "template",
+          "Manage project description templates",
+          [
+            ["set", "Save a Markdown template"],
+            ["show", "Show a template"],
+            ["list", "List templates"],
+            ["delete", "Delete a template"],
+          ],
+        ),
+        "template set": cliCommand({
+          summary: "Save a project description template from a Markdown file",
+          options: {
+            project: REQUIRED_PROJECT_OPTION,
+            name: {
+              type: "string",
+              required: true,
+              description: "Template name",
+            },
+            "body-file": {
+              type: "string",
+              required: true,
+              description: "Markdown file on the invoking machine",
+            },
+            label: {
+              type: "string",
+              description: "Bind to this project label",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(
+                domain,
+                ctx,
+                input.options.project,
+              );
+              const hostId = await resolveClientHostId(
+                bb,
+                domain,
+                input.options.machine,
+                ctx,
+              );
+              const body = await readTextOption(
+                bb,
+                ctx,
+                hostId,
+                undefined,
+                input.options["body-file"],
+              );
+              const templates = (
+                await domain.listTemplates({ projectId: project.id })
+              ).templates;
+              const current = templates.find(
+                (template) =>
+                  template.name.toLowerCase() ===
+                  input.options.name.toLowerCase(),
+              );
+              const labelId = input.options.label
+                ? resolveLabel(
+                    await projectLabels(domain, project.id),
+                    input.options.label,
+                  ).id
+                : (current?.labelId ?? null);
+              const result = await domain.setTemplate(
+                tasksRpcContract.setTemplate.input.parse({
+                  projectId: project.id,
+                  name: input.options.name,
+                  body,
+                  labelId,
+                }),
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Saved template ${result.template.name}  ${result.template.id}`;
+            });
+          },
+        }),
+        question: groupCommand(
+          "question",
+          "Ask and answer questions on a task",
+          [
+            ["add", "Add a single or multiple choice question"],
+            ["list", "List questions and answer IDs"],
+            ["answer", "Save or clear an answer"],
+            ["delete", "Delete a question"],
+          ],
+        ),
+        "question add": cliCommand({
+          summary: "Add a question with stable option IDs",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            prompt: {
+              type: "string",
+              required: true,
+              description: "Question text",
+            },
+            option: {
+              type: "string",
+              repeatable: true,
+              description: "Option text; repeat at least twice",
+            },
+            multiple: {
+              type: "boolean",
+              description: "Allow multiple answers",
+            },
+            json: JSON_OPTION,
+          },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              const result = await domain.createQuestion(
+                tasksRpcContract.createQuestion.input.parse({
+                  taskId: task.id,
+                  prompt: input.options.prompt,
+                  options: input.options.option,
+                  mode: input.options.multiple ? "multiple" : "single",
+                }),
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : JSON.stringify(result.question, null, 2);
+            });
+          },
+        }),
+        "question list": cliCommand({
+          summary: "List a task's questions, option IDs and saved answers",
+          positionals: [KEY_POSITIONAL],
+          options: { json: JSON_OPTION },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              const result = await domain.listQuestions({ taskId: task.id });
+              return JSON.stringify(
+                result,
+                null,
+                input.options.json ? undefined : 2,
+              );
+            });
+          },
+        }),
+        "question answer": cliCommand({
+          summary: "Save a question answer; revision protects concurrent edits",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            question: {
+              type: "string",
+              required: true,
+              description: "Question ID",
+            },
+            answer: {
+              type: "string",
+              repeatable: true,
+              description: "Selected option ID; repeat for multiple choice",
+            },
+            clear: { type: "boolean", description: "Clear the answer" },
+            revision: {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              required: true,
+              description: "Question revision returned by list",
+            },
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              if (
+                !(
+                  await domain.listQuestions({ taskId: task.id })
+                ).questions.some(
+                  (question) => question.id === input.options.question,
+                )
+              )
+                throw new CliError("Question does not belong to this task");
+              if (
+                Boolean(input.options.clear) ===
+                input.options.answer.length > 0
+              )
+                throw new CliError("Use --answer or --clear, exclusively");
+              const result = await domain.answerQuestion(
+                tasksRpcContract.answerQuestion.input.parse({
+                  questionId: input.options.question,
+                  selectedOptionIds: input.options.clear
+                    ? []
+                    : input.options.answer,
+                  revision: input.options.revision,
+                  authorName: taskAuthor(ctx),
+                }),
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Saved answer to ${result.question.id}`;
+            });
+          },
+        }),
+        "question delete": cliCommand({
+          summary: "Delete a question at its current revision",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            question: {
+              type: "string",
+              required: true,
+              description: "Question ID",
+            },
+            revision: {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              required: true,
+              description: "Current question revision",
+            },
+            json: JSON_OPTION,
+          },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              if (
+                !(
+                  await domain.listQuestions({ taskId: task.id })
+                ).questions.some(
+                  (question) => question.id === input.options.question,
+                )
+              )
+                throw new CliError("Question does not belong to this task");
+              const result = await domain.deleteQuestion({
+                questionId: input.options.question,
+                revision: input.options.revision,
+              });
+              return input.options.json
+                ? JSON.stringify(result)
+                : "Deleted question";
+            });
+          },
+        }),
+        evidence: cliCommand({
+          summary: "List structured evidence without deciding completeness",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            pr: {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              description: "PR number",
+            },
+            head: { type: "string", description: "Full git head SHA" },
+            kind: {
+              type: "enum",
+              values: EVIDENCE_KINDS,
+              repeatable: true,
+              description: "Evidence kind; repeat to include several",
+            },
+            json: JSON_OPTION,
+          },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(
+                domain,
+                input.positionals["key-or-id"],
+              );
+              const { comments } = await domain.listComments({
+                taskId: task.id,
+              });
+              if (
+                input.options.head &&
+                !/^[a-fA-F0-9]{40}$/.test(input.options.head)
+              )
+                throw new CliError("head must be a full 40-character git SHA");
+              const index = evidenceIndex(comments);
+              const records = index.records.filter(
+                (record) =>
+                  (input.options.pr === undefined ||
+                    record.indexedPr === input.options.pr) &&
+                  (input.options.head === undefined ||
+                    record.indexedHead === input.options.head.toLowerCase()) &&
+                  (input.options.kind.length === 0 ||
+                    input.options.kind.includes(record.kind)),
+              );
+              const filtered = {
+                records,
+                summary: index.summary.filter(
+                  (entry) =>
+                    input.options.pr === undefined ||
+                    entry.pr === input.options.pr,
+                ),
+              };
+              return input.options.json
+                ? JSON.stringify(filtered)
+                : evidenceText(filtered);
+            });
+          },
+        }),
+        export: cliCommand({
+          summary:
+            "Export a project, task records and attachment files by immutable ID",
+          options: {
+            project: REQUIRED_PROJECT_OPTION,
+            out: {
+              type: "string",
+              required: true,
+              description: "Dedicated export directory on the invoking machine",
+              placeholder: "directory",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await selectedProject(
+                domain,
+                ctx,
+                input.options.project,
+                true,
+              );
+              if (!project) throw new CliError("project is required");
+              const hostId = await resolveClientHostId(
+                bb,
+                domain,
+                input.options.machine,
+                ctx,
+              );
+              const result = await exportProject(
+                bb,
+                store,
+                project.id,
+                resolve(ctx.cwd ?? process.cwd(), input.options.out),
+                hostId,
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Exported ${result.tasks} tasks and ${result.attachments} attachments to ${result.out}`;
+            });
+          },
+        }),
+        import: cliCommand({
+          summary: "Import a project snapshot without deleting omitted records",
+          options: {
+            from: {
+              type: "string",
+              required: true,
+              description: "Project export directory on the invoking machine",
+              placeholder: "directory",
+            },
+            overwrite: {
+              type: "boolean",
+              description:
+                "Replace conflicting records with imported values; omitted records are retained",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const hostId = await resolveClientHostId(
+                bb,
+                domain,
+                input.options.machine,
+                ctx,
+              );
+              const result = await importProject(
+                bb,
+                store,
+                resolve(ctx.cwd ?? process.cwd(), input.options.from),
+                input.options.overwrite,
+                hostId,
+              );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Imported ${result.tasks} tasks and ${result.attachments} attachments into project ${result.projectId}`;
+            });
+          },
+        }),
         status: cliCommand({
           summary: "Show the Tasks plugin name and version",
           description:
@@ -1140,7 +1588,23 @@ export function registerTasksCli(
           unexpectedPositionalHint:
             "the task title belongs in --title <title>.",
           options: {
+            type: {
+              type: "enum",
+              values: TASK_TYPES,
+              default: "task",
+              description: "Task or epic",
+            },
+            epic: {
+              type: "string",
+              placeholder: "key-or-id",
+              description: "Epic from the same project",
+            },
             project: PROJECT_OPTION,
+            template: {
+              type: "string",
+              description:
+                "Project description template; --description is appended",
+            },
             title: {
               type: "string",
               required: true,
@@ -1250,6 +1714,11 @@ export function registerTasksCli(
               const created = tasksRpcContract.createTask.input.parse({
                 projectId: project.id,
                 title: input.options.title,
+                template: input.options.template,
+                type: input.options.type,
+                epicId: input.options.epic
+                  ? (await resolveTask(domain, input.options.epic)).id
+                  : null,
                 description:
                   (await readTextOption(
                     bb,
@@ -1320,6 +1789,16 @@ export function registerTasksCli(
         list: cliCommand({
           summary: "List and filter tasks",
           options: {
+            type: {
+              type: "enum",
+              values: TASK_TYPES,
+              description: "Task or epic",
+            },
+            epic: {
+              type: "string",
+              placeholder: "key-or-id",
+              description: "Epic from the same project",
+            },
             project: PROJECT_OPTION,
             status: {
               type: "enum",
@@ -1412,6 +1891,10 @@ export function registerTasksCli(
                 await domain.listTasks(
                   tasksRpcContract.listTasks.input.parse({
                     projectId: project?.id,
+                    type: input.options.type,
+                    epicId: input.options.epic
+                      ? (await resolveTask(domain, input.options.epic)).id
+                      : undefined,
                     statuses:
                       input.options.status.length > 0
                         ? input.options.status
@@ -1507,7 +1990,9 @@ export function registerTasksCli(
               const subtasks = await listAllTasks(
                 domain,
                 tasksRpcContract.listTasks.input.parse({
-                  parentTaskId: task.id,
+                  ...(task.type === "epic"
+                    ? { epicId: task.id }
+                    : { parentTaskId: task.id }),
                 }),
               );
               const comments = tasksRpcContract.listComments.output.parse(
@@ -1517,6 +2002,10 @@ export function registerTasksCli(
                   }),
                 ),
               ).comments;
+              const { questions } = await domain.listQuestions({
+                taskId: task.id,
+              });
+              const evidence = evidenceIndex(comments);
               const attachments = await listTaskAttachments(
                 domain,
                 task.id,
@@ -1542,17 +2031,28 @@ export function registerTasksCli(
                   task,
                   project,
                   labels,
-                  subtasks,
+                  subtasks: task.type === "epic" ? [] : subtasks,
+                  ...(task.type === "epic" ? { epicTasks: subtasks } : {}),
                   attachments,
                   taskThreads,
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   comments,
+                  questions,
+                  evidence: evidence.records,
+                  evidenceSummary: evidence.summary,
                 });
               }
               return [
                 detail([
                   ["Task", `${task.key} — ${task.title}`],
+                  ["Type", task.type],
+                  [
+                    "Epic",
+                    task.epicId
+                      ? (await resolveTask(domain, task.epicId)).key
+                      : "-",
+                  ],
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
@@ -1567,7 +2067,7 @@ export function registerTasksCli(
                   ["Updated", task.updatedAt],
                 ]),
                 `Description\n${task.description || "(none)"}`,
-                `Sub-tasks\n${table(
+                `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],
                   subtasks.map((subtask) => [
                     subtask.key,
@@ -1610,6 +2110,8 @@ export function registerTasksCli(
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
+                `Questions\n${JSON.stringify(questions, null, 2)}`,
+                `Evidence\n${evidenceText(evidence)}`,
                 `Comments\n${table(
                   ["TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
                   comments.map((comment) => [
@@ -1630,6 +2132,16 @@ export function registerTasksCli(
           summary: "Update task fields and labels",
           positionals: [KEY_POSITIONAL],
           options: {
+            type: {
+              type: "enum",
+              values: TASK_TYPES,
+              description: "Task or epic",
+            },
+            epic: {
+              type: "string",
+              placeholder: "key-or-id",
+              description: "Epic from the same project",
+            },
             status: {
               type: "enum",
               values: TASK_STATUSES,
@@ -1673,6 +2185,10 @@ export function registerTasksCli(
               description:
                 "New parent task key or id; tasks support at most one level of sub-tasks",
             },
+            "no-epic": {
+              type: "boolean",
+              description: "Remove the task from its epic",
+            },
             "no-parent": {
               type: "boolean",
               description: "Promote the task to the top level",
@@ -1702,6 +2218,7 @@ export function registerTasksCli(
             },
             { kind: "at-most-one", options: ["due", "no-due"] },
             { kind: "at-most-one", options: ["parent", "no-parent"] },
+            { kind: "at-most-one", options: ["epic", "no-epic"] },
             {
               kind: "requires",
               option: "machine",
@@ -1759,7 +2276,10 @@ export function registerTasksCli(
                 !noDue &&
                 parentAddress === undefined &&
                 !noParent &&
-                !labelsChanged
+                !labelsChanged &&
+                input.options.type === undefined &&
+                input.options.epic === undefined &&
+                !input.options["no-epic"]
               ) {
                 throw new CliError("no task changes were provided", {
                   code: "no_changes",
@@ -1769,6 +2289,12 @@ export function registerTasksCli(
                 await domain.updateTask(
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
+                    type: input.options.type,
+                    epicId: input.options["no-epic"]
+                      ? null
+                      : input.options.epic
+                        ? (await resolveTask(domain, input.options.epic)).id
+                        : undefined,
                     status: input.options.status,
                     priority: input.options.priority,
                     title: input.options.title,
@@ -1835,6 +2361,47 @@ export function registerTasksCli(
           summary: "Add a markdown comment to a task",
           positionals: [KEY_POSITIONAL],
           options: {
+            kind: {
+              type: "enum",
+              values: EVIDENCE_KINDS,
+              description:
+                "Structured evidence kind; omitted for an ordinary comment",
+            },
+            pr: {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              description: "Pull request number",
+            },
+            head: { type: "string", description: "Full git head SHA" },
+            merge: { type: "string", description: "Full trunk merge SHA" },
+            verdict: { type: "string", description: "Review or QA verdict" },
+            thread: {
+              type: "string",
+              description: "bb thread id for review or QA",
+            },
+            lens: { type: "string", description: "Review lens" },
+            target: {
+              type: "string",
+              description: "QA target: local, development or localenv",
+            },
+            note: {
+              type: "string",
+              description: "Repository-relative findings note",
+            },
+            part: { type: "string", description: "Delivery part k/m" },
+            run: { type: "string", description: "CI run id or URL" },
+            env: { type: "string", description: "Deploy environment" },
+            row: { type: "string", description: "Exempt obligation" },
+            reason: { type: "string", description: "Exemption reason" },
+            "owner-quote": {
+              type: "string",
+              description: "Owner waiver quote; requires --date",
+            },
+            date: {
+              type: "string",
+              description: "Owner waiver date YYYY-MM-DD",
+            },
             body: {
               type: "string",
               placeholder: "markdown",
@@ -1897,6 +2464,38 @@ export function registerTasksCli(
               if (!body.trim()) {
                 throw new CliError("comment body must not be blank");
               }
+              const evidenceFields = Object.fromEntries(
+                [
+                  "pr",
+                  "head",
+                  "merge",
+                  "verdict",
+                  "thread",
+                  "lens",
+                  "target",
+                  "note",
+                  "part",
+                  "run",
+                  "env",
+                  "row",
+                  "reason",
+                  "date",
+                ].flatMap((key) => {
+                  const value =
+                    input.options[key as keyof typeof input.options];
+                  return value === undefined ? [] : [[key, value]];
+                }),
+              );
+              if (input.options["owner-quote"] !== undefined)
+                evidenceFields.ownerQuote = input.options["owner-quote"];
+              if (!input.options.kind && Object.keys(evidenceFields).length > 0)
+                throw new CliError("Evidence fields require --kind");
+              const evidence = input.options.kind
+                ? evidenceSchema.parse({
+                    kind: input.options.kind,
+                    ...evidenceFields,
+                  })
+                : undefined;
               const comment = await createComment(bb, store, {
                 taskId: task.id,
                 kind: ctx.threadId ? "agent" : "user",
@@ -1904,6 +2503,7 @@ export function registerTasksCli(
                 presetName: null,
                 threadId: ctx.threadId ?? null,
                 body,
+                ...(evidence ? { evidence } : {}),
                 notify: input.options.notify,
                 awaitDelivery: true,
               });
@@ -2585,7 +3185,8 @@ export function registerTasksCli(
             thread: {
               type: "string",
               placeholder: "thread-id",
-              description: "Existing thread to receive the task; use instead of --preset",
+              description:
+                "Existing thread to receive the task; use instead of --preset",
             },
             instructions: {
               type: "string",
@@ -2601,18 +3202,27 @@ export function registerTasksCli(
                 domain,
                 input.positionals["key-or-id"],
               );
-              if (Boolean(input.options.thread) === Boolean(input.options.preset)) {
-                throw new CliError("Specify exactly one of --preset or --thread");
+              if (
+                Boolean(input.options.thread) === Boolean(input.options.preset)
+              ) {
+                throw new CliError(
+                  "Specify exactly one of --preset or --thread",
+                );
               }
               if (input.options.thread) {
-                const result = await delegationHandlers(bb, store).delegateToThread(
+                const result = await delegationHandlers(
+                  bb,
+                  store,
+                ).delegateToThread(
                   delegationRpcContract.delegateToThread.input.parse({
                     taskId: task.id,
                     threadId: input.options.thread,
                     extraInstructions: input.options.instructions,
                   }),
                 );
-                return input.options.json ? JSON.stringify({ task, ...result }) : result.threadId;
+                return input.options.json
+                  ? JSON.stringify({ task, ...result })
+                  : result.threadId;
               }
               const preset = resolvePreset(
                 await listPresets(domain),

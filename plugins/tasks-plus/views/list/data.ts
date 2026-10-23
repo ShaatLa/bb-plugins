@@ -19,6 +19,7 @@ import type {
 import { isActiveThread } from "../detail/meta.js";
 
 interface ListTaskFilters {
+  type?: Task["type"];
   statuses: readonly TaskStatus[];
   priorities: readonly TaskPriority[];
   labelIds: readonly string[] | null;
@@ -30,6 +31,7 @@ function belongsToList(
   filters: ListTaskFilters,
 ): boolean {
   if (task.parentTaskId !== null) return false;
+  if (filters.type !== undefined && task.type !== filters.type) return false;
   if (projectId !== null && task.projectId !== projectId) return false;
   if (filters.statuses.length > 0 && !filters.statuses.includes(task.status)) {
     return false;
@@ -60,6 +62,7 @@ export function listTasksQuery(
       : {}),
     ...(filters.labelIds !== null ? { labelIds: [...filters.labelIds] } : {}),
     activeOnly,
+    ...(filters.type === undefined ? {} : { type: filters.type }),
     parentTaskId: null,
   };
 }
@@ -79,6 +82,7 @@ export function useListTasks(
     [
       projectId,
       activeOnly,
+      filters.type,
       filters.statuses.join(),
       filters.priorities.join(),
       filters.labelIds === null ? "" : `active:${filters.labelIds.join()}`,

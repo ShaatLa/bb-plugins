@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createStore, registerTasksApi } from "../../api";
 import type { Task } from "../../shared/contract.js";
 import { makeTask, rpcInput } from "../../test-fixtures.js";
 
@@ -67,6 +69,8 @@ function createdTask(input: Record<string, unknown>): Task {
     priority: (input.priority as Task["priority"]) ?? "none",
     dueDate: (input.dueDate as string | null) ?? null,
     parentTaskId: (input.parentTaskId as string | null) ?? null,
+    type: (input.type as Task["type"]) ?? "task",
+    epicId: (input.epicId as string | null) ?? null,
     position: 1,
     labelIds: (input.labelIds as string[]) ?? [],
   });
@@ -84,6 +88,53 @@ describe("derivePrefix", () => {
 });
 
 describe("NewTaskDialog", () => {
+  it("persists the epic selected in the creation dialog through the real RPC and database", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
+    try {
+      const store = createStore(bb);
+      registerTasksApi(bb, store);
+      const project = store.tasks.createProject({ name: "Epic verification", prefix: "CHECK", color: "purple" });
+      const otherProject = store.tasks.createProject({ name: "Other project", prefix: "OTHER", color: "blue" });
+      const epic = store.tasks.createTask({ projectId: project.id, title: "Selected initiative", type: "epic" });
+      store.tasks.createTask({ projectId: otherProject.id, title: "Foreign initiative", type: "epic" });
+      const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, {
+        rpc: {
+          listProjects: (input) => harness.callRpc("listProjects", input),
+          listFolders: () => harness.callRpc("listFolders"),
+          listPresets: () => harness.callRpc("listPresets"),
+          sidebarSummary: () => harness.callRpc("sidebarSummary"),
+          listTasks: (input) => harness.callRpc("listTasks", input),
+          listLabels: (input) => harness.callRpc("listLabels", input),
+          createTask: (input) => harness.callRpc("createTask", input),
+        },
+      });
+      fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+      fireEvent.change(await slot.findByLabelText("Task title"), { target: { value: "Task assigned from the dialog" } });
+      fireEvent.click(slot.getByRole("button", { name: "Epic" }));
+      const option = await slot.findByRole("option", { name: /Selected initiative/ });
+      expect(slot.queryByRole("option", { name: /Foreign initiative/ })).toBeNull();
+      fireEvent.click(option);
+      expect(slot.getByRole("button", { name: "Epic" }).textContent).toContain(epic.key);
+      const submit = slot.getByRole("button", { name: "Create task" });
+      await waitFor(() => expect(submit).toHaveProperty("disabled", false));
+      fireEvent.click(submit);
+      await waitFor(() => expect(store.tasks.listTasks({ epicId: epic.id })).toHaveLength(1));
+      const member = store.tasks.listTasks({ epicId: epic.id })[0]!;
+      expect(member).toMatchObject({
+        title: "Task assigned from the dialog",
+        type: "task",
+        projectId: project.id,
+        epicId: epic.id,
+        parentTaskId: null,
+      });
+      expect(await harness.callRpc("getTask", { taskId: member.id })).toMatchObject({ task: { epicId: epic.id } });
+      slot.lifecycle.unmount();
+    } finally {
+      cleanup();
+      await harness.dispose();
+    }
+  });
+
   it.each([
     {
       field: "Project",
@@ -96,6 +147,7 @@ describe("NewTaskDialog", () => {
       expected: { status: "in_progress" },
     },
     { field: "Priority", option: "High", expected: { priority: "high" } },
+    { field: "Type", option: "Epic", expected: { type: "epic", epicId: null } },
   ])(
     "keeps the compact task form accessible while choosing $field",
     async ({ field, option: optionName, expected }) => {
@@ -152,7 +204,7 @@ describe("NewTaskDialog", () => {
               .getAttribute("value"),
           ).toBe("Keep this draft open"),
         );
-        const createButton = slot.getByRole("button", { name: "Create task" });
+        const createButton = slot.getByRole("button", { name: field === "Type" ? "Create epic" : "Create task" });
         await waitFor(() =>
           expect(createButton).toHaveProperty("disabled", false),
         );

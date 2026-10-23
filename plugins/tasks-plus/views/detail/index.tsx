@@ -14,6 +14,7 @@ import {
 import { useTasksNavigation } from "../../shell/routes.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { TaskActivity } from "../activity/task-activity.js";
+import { QuestionsSection } from "./questions";
 import { AttachmentsGrid, uploadAttachment } from "./attachments.js";
 import {
   createDescriptionSaver,
@@ -43,7 +44,9 @@ const ACTIVE_PULL_REQUEST_REFRESH_MS = 60_000;
 function SubTaskDonut({
   subtasks,
   onClick,
+  epic,
 }: {
+  epic: boolean;
   subtasks: Task[];
   onClick: () => void;
 }) {
@@ -53,7 +56,7 @@ function SubTaskDonut({
   return (
     <button
       type="button"
-      title="Sub-tasks completed"
+      title={epic ? "Tasks completed" : "Sub-tasks completed"}
       onClick={onClick}
       className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input hover:text-foreground"
     >
@@ -64,7 +67,7 @@ function SubTaskDonut({
           background: `conic-gradient(var(--primary) ${degrees}deg, var(--muted) 0)`,
         }}
       />
-      {done}/{subtasks.length} sub-tasks
+      {done}/{subtasks.length} {epic ? "tasks" : "sub-tasks"}
     </button>
   );
 }
@@ -131,6 +134,7 @@ function SubTasksSection({
 
   return (
     <section ref={ref} className="mt-5">
+      {task.type === "epic" ? <h2 className="mb-2 text-sm font-semibold">Tasks in this epic</h2> : null}
       {subtasks.map((subtask) => (
         <button
           key={subtask.id}
@@ -152,7 +156,7 @@ function SubTasksSection({
           <input
             autoFocus
             value={title}
-            placeholder={`Sub-task of ${task.key}…`}
+            placeholder={`${task.type === "epic" ? "Task in" : "Sub-task of"} ${task.key}…`}
             className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             onChange={(event) => setTitle(event.target.value)}
             onKeyDown={(event) => {
@@ -174,7 +178,7 @@ function SubTasksSection({
         onClick={() => setAdding(true)}
       >
         <Icon name="Plus" className="size-3" />
-        Add sub-task
+        {task.type === "epic" ? "Add task" : "Add sub-task"}
       </button>
     </section>
   );
@@ -236,10 +240,16 @@ function TaskDetail({ task }: { task: Task }) {
     [task.parentTaskId],
     { relevantTaskIds: task.parentTaskId ? [task.parentTaskId] : [] },
   );
-  const subtasks = useTasksQuery(
-    async (query) => listAllTasks(query, { parentTaskId: task.id }),
+  const epicId = task.epicId ?? parent.data?.epicId ?? null;
+  const epic = useTasksQuery(
+    async (query) => epicId ? (await query.call("getTask", { taskId: epicId })).task : null,
     ["tasks:changed"],
-    [task.id],
+    [epicId],
+  );
+  const subtasks = useTasksQuery(
+    async (query) => listAllTasks(query, task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id }),
+    ["tasks:changed"],
+    [task.id, task.type],
   );
   const labels = useTasksQuery(
     async (query) =>
@@ -353,7 +363,7 @@ function TaskDetail({ task }: { task: Task }) {
       const result = await rpc.call("createTask", {
         projectId: task.projectId,
         title,
-        parentTaskId: task.id,
+        ...(task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id }),
         status: "todo",
       });
       if (!result.ok) {
@@ -379,8 +389,15 @@ function TaskDetail({ task }: { task: Task }) {
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
-          {parentTask || subtasks.data?.length ? (
+          {task.type === "epic" || epic.data || parentTask || subtasks.data?.length ? (
             <div className="mb-4 flex flex-wrap items-center gap-2">
+              {task.type === "epic" ? <span className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">Epic</span> : null}
+              {epic.data ? (
+                <button type="button" className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input" onClick={() => navigation.go({ kind: "task", taskKey: epic.data!.key })}>
+                  <Icon name="Zap" className="size-3" />
+                  <span className="truncate">{epic.data.key} · {epic.data.title}</span>
+                </button>
+              ) : null}
               {parentTask ? (
                 <button
                   type="button"
@@ -398,6 +415,7 @@ function TaskDetail({ task }: { task: Task }) {
                 </button>
               ) : null}
               <SubTaskDonut
+                epic={task.type === "epic"}
                 subtasks={subtasks.data ?? []}
                 onClick={() =>
                   subtasksRef.current?.scrollIntoView({
@@ -482,12 +500,14 @@ function TaskDetail({ task }: { task: Task }) {
             onError={(message) => push(message)}
           />
 
-          <SubTasksSection
-            ref={subtasksRef}
-            task={task}
-            subtasks={subtasks.data ?? []}
-            onCreate={createSubtask}
-          />
+          {task.parentTaskId === null ? (
+            <SubTasksSection
+              ref={subtasksRef}
+              task={task}
+              subtasks={subtasks.data ?? []}
+              onCreate={createSubtask}
+            />
+          ) : null}
 
           {(threads.data ?? []).length > 0 ? (
             <div className="mt-6">
@@ -511,7 +531,8 @@ function TaskDetail({ task }: { task: Task }) {
           ) : null}
 
           <div className="mt-1">
-            <TaskActivity taskId={task.id} />
+            <QuestionsSection taskId={task.id} onError={push} />
+            <TaskActivity taskId={task.id} pullRequests={pullRequests.data?.pullRequests} />
           </div>
         </div>
 

@@ -169,6 +169,7 @@ function baseRpc(
       return { tasks: next };
     },
     listTaskThreads: () => ({ taskThreads: [] }),
+    listQuestions: () => ({ questions: [] }),
     listComments: () => ({ comments: [] }),
     listAttachments: () => ({ attachments: [] }),
     ...overrides,
