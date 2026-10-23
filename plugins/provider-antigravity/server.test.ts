@@ -9,7 +9,7 @@ test('registers native maintenance, discoverable quota sources and agent quota a
   let collections=0;
   const host={id:'machine-1',name:'Local',status:'connected'};
   const usage={status:'ok',accountEmail:null,planLabel:null,windows:[{label:'7d',kind:'weekly',model:'Gemini Models',usedPercent:27.5,resetsAt:null}]};
-  const bb={pluginId:'antigravity',settings:{define:()=>({get:async()=>({agyCommand:"/configured/agy"})})},hosts:{experimental_client:()=>({call:async(method:any,input:any,options:any)=>{hostCalls.push({method,input,options});return method==="diagnostics"?diagnosticsFixture:diagnosticsFixture.nativeSettings;}})},providers:{register:(value:any)=>{declaration=value;}},agents:{registerTool:(value:any)=>{tool=value;},configure:(value:any)=>{configure=value;}},rpc:{register:(c:any,h:any,o:any)=>{Object.assign(contracts,c);Object.assign(handlers,h);if(c["provider-usage.v1.listResources"])assert.equal(o.experimental_discoverable,true);}},cli:{register:(value:any)=>{cli=value;}},sdk:{hosts:{list:async()=>[host],get:async()=>host},providers:{list:async()=>[{id:'antigravity',displayName:'Antigravity',pluginId:'antigravity'},{id:'foreign',displayName:'Foreign',pluginId:'other'}]},system:{usageLimits:async()=>{collections++;return {antigravity:usage};}}}} as unknown as BbPluginApi;
+  const bb={pluginId:'antigravity',settings:{define:()=>({get:async()=>({agyCommand:"/configured/agy"})})},hosts:{experimental_client:()=>({call:async(method:any,input:any,options:any)=>{hostCalls.push({method,input,options});return method==="diagnostics"?diagnosticsFixture:diagnosticsFixture.nativeSettings;}})},providers:{register:(value:any)=>{declaration=value;}},agents:{registerTool:(value:any)=>{tool=value;},configure:(value:any)=>{configure=value;}},rpc:{register:(c:any,h:any,o:any)=>{Object.assign(contracts,c);Object.assign(handlers,h);if(c["provider-usage.v1.listResources"])assert.equal(o.experimental_discoverable,true);}},cli:{register:(value:any)=>{cli=value;}},sdk:{hosts:{list:async()=>[host],get:async()=>host},providers:{list:async()=>[{id:'antigravity',displayName:'Antigravity provider',pluginId:'antigravity'},{id:'foreign',displayName:'Foreign',pluginId:'other'}]},system:{usageLimits:async()=>{collections++;return {antigravity:usage};}}}} as unknown as BbPluginApi;
   plugin(bb);
   assert.deepEqual(declaration.maintenance,{health:true,usage:true,installation:true});
   assert.deepEqual(declaration.capabilities.permissionModes,['accept-edits','full']);
@@ -17,6 +17,8 @@ test('registers native maintenance, discoverable quota sources and agent quota a
   assert.ok(configure({host}).instructions.includes(host.id));
   const list='provider-usage.v1.listResources',fetch='provider-usage.v1.getResource';
   const inventory=contracts[list].output.parse(await handlers[list]({}));
+  assert.equal(inventory.resources[0].label,'Antigravity');
+  assert.equal(declaration.displayName,'Antigravity provider');
   assert.equal(collections,0);assert.equal(inventory.resources.length,1);assert.equal(inventory.resources[0].providerId,'antigravity');
   const input={resourceId:inventory.resources[0].id,refresh:false};
   const value=contracts[fetch].output.parse(await handlers[fetch](input));
