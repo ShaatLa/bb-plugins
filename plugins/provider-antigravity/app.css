@@ -1,0 +1,24 @@
+.agy-settings { display: grid; gap: 12px; font-size: var(--text-xs, 12px); line-height: 1.5; }
+.agy-settings .agy-toolbar, .agy-settings .agy-actions, .agy-settings .agy-credit-row, .agy-settings .agy-model { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agy-settings .agy-toolbar { flex-wrap: wrap; }
+.agy-settings .agy-toolbar label { display: flex; align-items: center; gap: 10px; }
+.agy-settings .agy-machine-picker { position: relative; display: inline-flex; max-width: 100%; }
+.agy-settings .agy-machine-picker select { appearance: none; padding-inline: 12px 36px; }
+.agy-settings .agy-machine-chevron { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; pointer-events: none; opacity: .5; }
+.agy-settings .agy-card { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); border-radius: 12px; padding: 16px; display: grid; gap: 10px; }
+.agy-settings h3, .agy-settings p, .agy-settings dl { margin: 0; }
+.agy-settings h3 { font-size: inherit; font-weight: 600; }
+.agy-settings strong, .agy-settings th { font-weight: 500; }
+.agy-settings .agy-muted, .agy-settings dt, .agy-settings th { color: var(--muted-foreground); font-size: inherit; }
+.agy-settings .agy-facts { display: grid; grid-template-columns: 115px minmax(0, 1fr); gap: 6px 12px; }
+.agy-settings dd { margin: 0; min-width: 0; }
+.agy-settings .agy-path { overflow-wrap: anywhere; }
+.agy-settings table { width: 100%; text-align: left; border-collapse: collapse; }
+.agy-settings th, .agy-settings td { padding: 4px 0; font-variant-numeric: tabular-nums; }
+.agy-settings .agy-message { border-left: 2px solid currentColor; padding-left: 12px; }
+@media (max-width: 500px) { .agy-settings .agy-model { align-items: flex-start; flex-direction: column; gap: 4px; } .agy-settings .agy-facts { grid-template-columns: 85px minmax(0, 1fr); } }
+
+.agy-settings .agy-loading { display: flex; align-items: center; gap: 8px; }
+.agy-settings .agy-spinner { width: 14px; height: 14px; flex-shrink: 0; border: 2px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-radius: 50%; animation: agy-spin .8s linear infinite; }
+@keyframes agy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .agy-settings .agy-spinner { animation: none; } }

@@ -1,0 +1,55 @@
+{
+  "name": "bb-plugin-antigravity",
+  "version": "0.3.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.46.1",
+    "bbPluginSdk": ">=0.6.49"
+  },
+  "bb": {
+    "name": "Antigravity provider",
+    "description": "Run Antigravity threads with your installed agy, live quotas, BB tools, and native CLI updates.",
+    "branding": {
+      "icon": "./icons/antigravity.svg"
+    },
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "app": "./app.tsx"
+  },
+  "scripts": {
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types *.test.ts && vitest run"
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.49",
+    "@radix-ui/react-slot": "^1.5.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "jsdom": "^26.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.12"
+  },
+  "description": "Native BB provider for the installed Antigravity CLI",
+  "keywords": [
+    "bb-plugin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShaatLa/bb-plugins.git",
+    "directory": "plugins/provider-antigravity"
+  },
+  "homepage": "https://github.com/ShaatLa/bb-plugins"
+}
