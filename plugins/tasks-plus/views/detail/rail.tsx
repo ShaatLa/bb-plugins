@@ -68,6 +68,7 @@ interface TaskPropertiesProps {
   threads: TaskThread[];
   onUpdate: (update: TaskPropertyUpdate) => void;
   onMoveToProject: (projectId: string) => void;
+  onAddQuestion?: () => void;
 }
 
 function LabelChip({ label }: { label: Label }) {
@@ -528,6 +529,7 @@ export function PropertiesRail({
   onUpdate,
   onMoveToProject,
   onError,
+  onAddQuestion,
   className,
 }: TaskPropertiesProps & {
   presets: Preset[] | undefined;
@@ -571,6 +573,12 @@ export function PropertiesRail({
         onUpdate={onUpdate}
         triggerClassName={RAIL_ROW_CLASS}
       />
+      {onAddQuestion ? (
+        <button type="button" className={RAIL_ROW_CLASS} onClick={onAddQuestion}>
+          <Icon name="FileQuestion" className="size-3.5" />
+          Add question
+        </button>
+      ) : null}
 
       <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
         Labels
@@ -668,6 +676,7 @@ export function InlineProperties({
   onUpdate,
   onMoveToProject,
   onError,
+  onAddQuestion,
   className,
 }: TaskPropertiesProps & {
   presets: Preset[] | undefined;
@@ -710,6 +719,12 @@ export function InlineProperties({
         onUpdate={onUpdate}
         triggerClassName={CHIP_CLASS}
       />
+      {onAddQuestion ? (
+        <button type="button" className={CHIP_CLASS} onClick={onAddQuestion}>
+          <Icon name="FileQuestion" className="size-3.5" />
+          Add question
+        </button>
+      ) : null}
       {taskLabels.map((label) => (
         <LabelChip key={label.id} label={label} />
       ))}
