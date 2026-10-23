@@ -1,0 +1,36 @@
+import type { Task } from "../shared/contract";
+import { useTasksQuery } from "../shell/data";
+import { Icon } from "@/components/ui/icon";
+
+export function useQuestionCounts(tasks: readonly Task[]) {
+  const taskIds = tasks.map((task) => task.id);
+  return useTasksQuery(
+    async (rpc) => {
+      const counts = new Map<string, number>();
+      for (let offset = 0; offset < taskIds.length; offset += 500) {
+        const result = await rpc.call("questionCounts", {
+          taskIds: taskIds.slice(offset, offset + 500),
+        });
+        for (const entry of result.counts)
+          counts.set(entry.taskId, entry.unanswered);
+      }
+      return counts;
+    },
+    ["tasks:changed"],
+    [taskIds.join()],
+    { relevantTaskIds: taskIds },
+  );
+}
+
+export function QuestionCount({ count = 0 }: { count?: number }) {
+  if (!count) return null;
+  return (
+    <span
+      title={`${count} unanswered questions`}
+      className="inline-flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-px text-xs text-warning"
+    >
+      <Icon name="FileQuestion" className="size-3" />
+      Needs answer · {count}
+    </span>
+  );
+}

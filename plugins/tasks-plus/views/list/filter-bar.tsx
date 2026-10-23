@@ -112,6 +112,7 @@ function SortChip({
 }
 
 export interface ListFilterState {
+  unansweredOnly?: boolean;
   type?: TaskType;
   statuses: TaskStatus[];
   priorities: TaskPriority[];
@@ -126,6 +127,7 @@ export const EMPTY_FILTERS: ListFilterState = {
 
 export function hasActiveFilters(filters: ListFilterState): boolean {
   return (
+    filters.unansweredOnly === true ||
     filters.type !== undefined ||
     filters.statuses.length > 0 ||
     filters.priorities.length > 0 ||
@@ -157,6 +159,9 @@ export function ListFilterBar({
     <div className="flex shrink-0 items-center gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         <TaskSearch key={projectId ?? "all"} projectId={projectId} />
+        <button type="button" aria-pressed={filters.unansweredOnly === true} className={chipTriggerClass(filters.unansweredOnly === true)} onClick={() => onChange({ ...filters, unansweredOnly: !filters.unansweredOnly })}>
+          <Icon name="FileQuestion" className="size-3" />Needs answer
+        </button>
         <FilterChip
           icon="Zap"
           label="Type"

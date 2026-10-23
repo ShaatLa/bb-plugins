@@ -44,10 +44,82 @@ function setup() {
         (input: unknown) => harness.callRpc(method, input),
       ]),
     );
-  return { bb, store, task, rpc, structured: createStructuredStore(bb, store) };
+  return {
+    bb,
+    store,
+    project,
+    task,
+    rpc,
+    structured: createStructuredStore(bb, store),
+  };
 }
 
 describe("question and evidence UI", () => {
+  it.each(["board", "list", "side"])(
+    "filters unanswered questions on the %s surface and retains the preference",
+    async (surface) => {
+      window.localStorage.clear();
+      const { store, project, task, rpc, structured } = setup();
+      store.tasks.createTask({
+        projectId: project.id,
+        title: "No decision needed",
+      });
+      const { question } = await structured.handlers.createQuestion({
+        taskId: task.id,
+        prompt: "Proceed?",
+        mode: "single",
+        options: ["Yes", "No"],
+      });
+      const mount = () =>
+        surface === "side"
+          ? renderSlot(
+              app.threadPanelActions[0]!,
+              { threadId: "thr_questions", params: null },
+              {
+                rpc,
+                sdk: {
+                  threads: {
+                    get: async () =>
+                      makeThreadResponse({
+                        id: "thr_questions",
+                        projectId: "proj_questions",
+                      }),
+                  },
+                },
+              },
+            )
+          : renderSlot(
+              app.navPanels[0]!,
+              { subPath: `${project.id}?view=${surface}` },
+              { rpc },
+            );
+      const slot = mount();
+      await slot.findByText("Needs answer · 1");
+      await slot.findByText("No decision needed");
+      fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
+      await waitFor(() =>
+        expect(slot.queryByText("No decision needed")).toBeNull(),
+      );
+      expect(slot.getByText(task.title)).toBeTruthy();
+      await structured.handlers.answerQuestion({
+        questionId: question.id,
+        revision: question.revision,
+        selectedOptionIds: [question.options[0]!.id],
+        authorName: "Owner",
+      });
+      slot.lifecycle.unmount();
+      const restored = mount();
+      const filter = await restored.findByRole("button", {
+        name: "Needs answer",
+      });
+      expect(filter.getAttribute("aria-pressed")).toBe("true");
+      await waitFor(() => expect(restored.queryByText(task.title)).toBeNull());
+      fireEvent.click(filter);
+      await restored.findByText(task.title);
+      expect(restored.queryByText("Needs answer · 1")).toBeNull();
+    },
+  );
+
   it.each(["single", "multiple"] as const)(
     "creates a %s question centrally, saves the selection and restores it in the side panel",
     async (mode) => {

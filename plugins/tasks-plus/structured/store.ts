@@ -93,6 +93,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const handlers: Pick<
     PluginRpcHandlers<typeof tasksRpcContract>,
     | "listQuestions"
+    | "questionCounts"
     | "createQuestion"
     | "answerQuestion"
     | "deleteQuestion"
@@ -101,6 +102,19 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     | "deleteTemplate"
   > = {
     listQuestions: ({ taskId }) => ({ questions: listQuestions(taskId) }),
+    questionCounts: ({ taskIds }) => ({
+      counts: taskIds.length
+        ? db
+            .prepare<string[], { taskId: string; unanswered: number }>(
+              `SELECT task_id AS taskId, COUNT(*) AS unanswered FROM task_questions
+         WHERE task_id IN (${taskIds.map(() => "?").join(",")})
+           AND json_array_length(payload, '$.selectedOptionIds') = 0
+           AND COALESCE(json_extract(payload, '$.answerText'), '') = ''
+         GROUP BY task_id`,
+            )
+            .all(...taskIds)
+        : [],
+    }),
     createQuestion(input) {
       requireTask(input.taskId);
       const now = new Date().toISOString();

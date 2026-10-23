@@ -632,6 +632,21 @@ export const tasksRpcContract = defineRpcContract({
     input: z.object({ taskId: idSchema }).strict(),
     output: z.object({ questions: z.array(questionSchema) }).strict(),
   },
+  questionCounts: {
+    input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
+    output: z
+      .object({
+        counts: z.array(
+          z
+            .object({
+              taskId: idSchema,
+              unanswered: z.number().int().nonnegative(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
   createQuestion: {
     input: z
       .object({

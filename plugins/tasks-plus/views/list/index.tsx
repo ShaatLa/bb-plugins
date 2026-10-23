@@ -39,6 +39,7 @@ import {
 import { editedTasks, matchesFilters } from "./optimistic.js";
 import { useListTaskEdits } from "./use-task-edits.js";
 import { TaskRow } from "./row.js";
+import { useQuestionCounts } from "../../components/question-count";
 import { rowWindows, useRowWindowViewport } from "./row-window.js";
 
 const NO_LABELS: readonly Label[] = [];
@@ -128,6 +129,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     labelIds,
   });
   const meta = useTaskListMeta(projectId);
+  const questionCounts = useQuestionCounts(tasksQuery.data ?? []);
   const edits = useListTaskEdits(tasksQuery.data, (message) => push(message));
 
   const labelsById = useMemo(
@@ -168,6 +170,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
   const displayTasks = useMemo(() => {
     if (tasksQuery.data === undefined) return undefined;
     return editedTasks(tasksQuery.data, edits.entries).filter((task) =>
+      (!filters.unansweredOnly || (questionCounts.data?.get(task.id) ?? 0) > 0) &&
       matchesFilters(
         task,
         filters.statuses,
@@ -181,6 +184,8 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     filters.statuses,
     filters.priorities,
     labelIds,
+    filters.unansweredOnly,
+    questionCounts.data,
   ]);
   const groups = useMemo(
     () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort)),
@@ -304,6 +309,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               key={task.id}
               task={task}
               meta={meta.data?.get(task.id)}
+              unansweredQuestions={questionCounts.data?.get(task.id)}
               project={projectsById.get(task.projectId)}
               showProject={showProject}
               labelsById={labelsById}
@@ -334,6 +340,9 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
         labelOptions={labelOptions}
         taskCount={displayTasks?.length}
       />
+      {filters.unansweredOnly && questionCounts.error ? (
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">Couldn't load question counts. <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>Retry questions</Button></p>
+      ) : null}
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto @container"
