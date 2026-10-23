@@ -141,7 +141,7 @@ export function registerUsageSource(bb: BbPluginApi) {
                     id,
                     accountKey: cache.get(id)?.accountKey ?? null,
                     providerId: provider.id,
-                    label: provider.displayName,
+                    label: "Antigravity",
                     scope: {
                       kind: "host" as const,
                       hostId: host.id,
