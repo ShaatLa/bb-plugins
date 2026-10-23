@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
+import { deliverCommentToLatestAgent } from "../steer";
 import {
   questionSchema,
   templateSchema,
@@ -122,7 +123,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       return { question };
     },
-    answerQuestion(input) {
+    async answerQuestion(input) {
+      let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
         if (input.revision !== current.revision)
@@ -146,7 +148,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         const selected = next.options.filter((option) =>
           next.selectedOptionIds.includes(option.id),
         );
-        store.tasks.createComment({
+        comment = store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
           authorName: input.authorName,
@@ -155,7 +157,29 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         return next;
       });
       changed(question.taskId);
-      return { question };
+      if (!comment) return { question, notification: "unchanged" as const };
+      bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      const threadId =
+        store.tasks.listTaskThreads(question.taskId)[0]?.threadId ??
+        store.tasks.getLatestAgentComment(question.taskId, comment.id)
+          ?.threadId;
+      if (!threadId) return { question, notification: "none" as const };
+      const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
+        taskId: question.taskId,
+        commentId: comment.id,
+        body: `${comment.body}\nQuestion ID: ${question.id}; revision: ${question.revision}. Read the current saved decision with bb tasks question list ${store.tasks.getTask(question.taskId)!.key} --json before continuing.`,
+        authorName: input.authorName,
+        threadId,
+        mode: "queue-if-active",
+      });
+      store.transaction(() =>
+        store.tasks.updateComment(comment!.id, { notifiedCount }),
+      );
+      bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      return {
+        question,
+        notification: notifiedCount ? ("sent" as const) : ("failed" as const),
+      };
     },
     deleteQuestion(input) {
       const question = getQuestion(input.questionId);

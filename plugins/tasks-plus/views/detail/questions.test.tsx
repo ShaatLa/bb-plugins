@@ -57,9 +57,20 @@ describe("question and evidence UI", () => {
         { subPath: `task/${task.key}` },
         { rpc },
       );
-      fireEvent.click(
-        await slot.findByRole("button", { name: "Add question" }),
-      );
+      await slot.findByRole("textbox", { name: "Task title" });
+      expect(slot.queryByRole("region", { name: "Questions" })).toBeNull();
+      const addQuestion =
+        mode === "single"
+          ? within(slot.getByRole("complementary")).getByRole("button", {
+              name: "Add question",
+            })
+          : slot
+              .getAllByRole("button", { name: "Add question" })
+              .find((button) => !button.closest("aside"))!;
+      fireEvent.click(addQuestion);
+      fireEvent.click(slot.getByRole("button", { name: "Cancel question" }));
+      expect(slot.queryByRole("region", { name: "Questions" })).toBeNull();
+      fireEvent.click(addQuestion);
       fireEvent.change(slot.getByRole("textbox", { name: "Question" }), {
         target: { value: "Choose platforms" },
       });
@@ -77,6 +88,11 @@ describe("question and evidence UI", () => {
       const group = await slot.findByRole("group", {
         name: "Choose platforms",
       });
+      const section = slot.getByRole("region", { name: "Questions" });
+      expect(
+        within(section).queryByRole("button", { name: "Add question" }),
+      ).toBeNull();
+      expect(slot.queryByRole("textbox", { name: "Question" })).toBeNull();
       fireEvent.click(within(group).getByLabelText("macOS"));
       fireEvent.click(within(group).getByLabelText("Linux"));
       fireEvent.click(

@@ -93,9 +93,13 @@ function QuestionAnswer({
 
 export function QuestionsSection({
   taskId,
+  adding,
+  onAddingChange,
   onError,
 }: {
   taskId: string;
+  adding: boolean;
+  onAddingChange: (adding: boolean) => void;
   onError: (message: string) => void;
 }) {
   const rpc = useTasksRpc();
@@ -105,22 +109,25 @@ export function QuestionsSection({
     ["tasks:changed"],
     [taskId],
   );
-  const [adding, setAdding] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState(["", ""]);
   const [multiple, setMultiple] = useState(false);
   const [saving, setSaving] = useState(false);
+  if (!adding && !query.error && !query.data?.length) return null;
   return (
     <section aria-label="Questions" className="mt-5 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Questions</h2>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setAdding((value) => !value)}
-        >
-          {adding ? "Cancel question" : "Add question"}
-        </Button>
+        {adding ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={saving}
+            onClick={() => onAddingChange(false)}
+          >
+            Cancel question
+          </Button>
+        ) : null}
       </div>
       {query.error ? (
         <div className="text-sm text-muted-foreground">
@@ -136,13 +143,17 @@ export function QuestionsSection({
           question={question}
           onError={onError}
           onSave={async (selectedOptionIds) => {
-            await rpc.call("answerQuestion", {
+            const result = await rpc.call("answerQuestion", {
               questionId: question.id,
               revision: question.revision,
               selectedOptionIds,
               authorName: "You",
             });
             query.refresh();
+            if (result.notification === "failed")
+              onError(
+                "Answer saved, but the agent could not be notified. Notify its thread manually.",
+              );
           }}
         />
       ))}
@@ -159,7 +170,7 @@ export function QuestionsSection({
                 mode: multiple ? "multiple" : "single",
                 options,
               });
-              setAdding(false);
+              onAddingChange(false);
               setPrompt("");
               setOptions(["", ""]);
               setMultiple(false);
@@ -172,6 +183,7 @@ export function QuestionsSection({
           }}
         >
           <Textarea
+            autoFocus
             aria-label="Question"
             placeholder="What needs to be decided?"
             value={prompt}

@@ -8,6 +8,8 @@ interface DeliverCommentInput {
   commentId: string;
   body: string;
   authorName: string;
+  threadId?: string;
+  mode?: "steer-if-active" | "queue-if-active";
 }
 
 function steerPrompt(
@@ -30,21 +32,24 @@ export async function deliverCommentToLatestAgent(
   const task = store.getTask(input.taskId);
   if (!task) throw new Error(`Task not found: ${input.taskId}`);
 
-  const latestReply = store.getLatestAgentComment(
-    input.taskId,
-    input.commentId,
-  );
-  if (!latestReply || latestReply.threadId === null) return 0;
-
-  const threadId = latestReply.threadId;
+  const threadId =
+    input.threadId ??
+    store.getLatestAgentComment(input.taskId, input.commentId)?.threadId;
+  if (!threadId) return 0;
   const prompt = steerPrompt(task.key, input.authorName, input.body);
   try {
     const thread = await bb.sdk.threads.get({ threadId });
-    if (isSideChatShapedThread(thread)) return 0;
+    if (
+      isSideChatShapedThread(thread) ||
+      thread.archivedAt !== null ||
+      thread.deletedAt !== null ||
+      thread.status === "stopping"
+    )
+      return 0;
     await bb.sdk.threads.send({
       threadId,
       input: [{ type: "text", text: prompt, mentions: [] }],
-      mode: "steer-if-active",
+      mode: input.mode ?? "steer-if-active",
     });
     return 1;
   } catch (error) {

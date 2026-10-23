@@ -652,7 +652,14 @@ export const tasksRpcContract = defineRpcContract({
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),
-    output: z.object({ question: questionSchema }).strict(),
+    output: z
+      .object({
+        question: questionSchema,
+        notification: z
+          .enum(["sent", "failed", "none", "unchanged"])
+          .optional(),
+      })
+      .strict(),
   },
   deleteQuestion: {
     input: z

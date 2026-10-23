@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createFakePluginHost,
+  makeThreadResponse,
   type FakePluginHarness,
 } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
@@ -55,6 +56,68 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it.each([false, true])(
+    "notifies the attached thread once and preserves the answer on delivery failure=%s",
+    async (fails) => {
+      const { harness, store, task, structured } = setup();
+      harness.sdk.stub("threads.get", async ({ threadId }) =>
+        makeThreadResponse({ id: threadId, status: "idle" }),
+      );
+      harness.sdk.stub("threads.send", async () => {
+        if (fails) throw new Error("Unavailable");
+      });
+      store.tasks.upsertTaskThread({
+        taskId: task.id,
+        threadId: "thr_decision",
+        presetName: "Existing thread",
+        title: "Worker",
+        liveStatus: "idle",
+      });
+      const { question } = await structured.handlers.createQuestion({
+        taskId: task.id,
+        prompt: "Proceed?",
+        mode: "single",
+        options: ["Yes", "No"],
+      });
+      const input = {
+        questionId: question.id,
+        revision: question.revision,
+        selectedOptionIds: [question.options[0]!.id],
+        authorName: "Owner",
+      };
+      const result = await structured.handlers.answerQuestion(input);
+      expect(result.notification).toBe(fails ? "failed" : "sent");
+      expect(structured.listQuestions(task.id)[0]?.selectedOptionIds).toEqual(
+        input.selectedOptionIds,
+      );
+      expect(harness.sdk.callsTo("threads.send")).toEqual([
+        [
+          expect.objectContaining({
+            threadId: "thr_decision",
+            mode: "queue-if-active",
+            input: [
+              expect.objectContaining({
+                text: expect.stringContaining("Answer: Yes"),
+              }),
+            ],
+          }),
+        ],
+      ]);
+      expect(store.tasks.listComments(task.id)[0]?.notifiedCount).toBe(
+        fails ? 0 : 1,
+      );
+      expect(
+        (
+          await structured.handlers.answerQuestion({
+            ...input,
+            revision: result.question.revision,
+          })
+        ).notification,
+      ).toBe("unchanged");
+      expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
+    },
+  );
+
   it("validates options, prevents stale answers and records changes atomically", async () => {
     const { harness, store, task } = setup();
     const { question } = tasksRpcContract.createQuestion.output.parse(
