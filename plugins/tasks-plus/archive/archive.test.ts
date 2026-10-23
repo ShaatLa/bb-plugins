@@ -255,13 +255,31 @@ describe("project archives", () => {
       allowOther: true,
       options: ["macOS", "Linux"],
     });
-    const { question: answered } = await structured.handlers.answerQuestion({
+    let { question: answered } = await structured.handlers.answerQuestion({
       questionId: question.id,
       selectedOptionIds: question.options.map((option) => option.id),
       revision: question.revision,
       authorName: "Owner",
       answerText: "Windows later",
     });
+    const { question: reopened } = await structured.handlers.updateQuestion({
+      questionId: question.id,
+      revision: answered.revision,
+      prompt: "Which delivery platforms?",
+      mode: "multiple",
+      options: question.options,
+      reopen: true,
+      authorName: "Editor",
+    });
+    answered = (
+      await structured.handlers.answerQuestion({
+        questionId: question.id,
+        revision: reopened.revision,
+        selectedOptionIds: question.options.map((option) => option.id),
+        answerText: "Windows later",
+        authorName: "Owner",
+      })
+    ).question;
     const comment = source.store.tasks.createComment({
       taskId: source.task.id,
       kind: "agent",
@@ -282,7 +300,7 @@ describe("project archives", () => {
     await importProject(target.bb, target.store, out, false);
     const restored = createStructuredStore(target.bb, target.store);
     expect(restored.listQuestions(source.task.id)).toEqual([answered]);
-    expect(answered.history).toHaveLength(1);
+    expect(answered.history).toHaveLength(3);
     expect(answered.answerText).toBe("Windows later");
     expect(restored.listTemplates(source.project.id)).toEqual(
       structured.listTemplates(source.project.id),
@@ -347,6 +365,34 @@ describe("project archives", () => {
     const structured = createStructuredStore(target.bb, target.store);
     expect(structured.listQuestions(source.task.id)).toEqual([]);
     expect(structured.listTemplates(source.project.id)).toEqual([]);
+  });
+  it("imports v2 questions with defaults for custom answers and history", async () => {
+    const source = await seed();
+    const structured = createStructuredStore(source.bb, source.store);
+    const { question } = await structured.handlers.createQuestion({
+      taskId: source.task.id,
+      prompt: "Legacy question",
+      mode: "single",
+      options: ["A", "B"],
+    });
+    const out = join(await directory(), "legacy-v2");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.version = 2;
+    await writeFile(path, jsonText(manifest));
+    const taskPath = join(out, "tasks", `${source.task.id}.json`);
+    const record = JSON.parse(await readFile(taskPath, "utf8"));
+    for (const field of ["allowOther", "answerText", "history"])
+      delete record.questions[0][field];
+    await writeFile(taskPath, jsonText(record));
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    expect(
+      createStructuredStore(target.bb, target.store).listQuestions(
+        source.task.id,
+      ),
+    ).toEqual([question]);
   });
 
   it("rejects foreign or invalid answers on import, even with overwrite", async () => {

@@ -707,6 +707,31 @@ export const tasksRpcContract = defineRpcContract({
       })
       .strict(),
   },
+  updateQuestion: {
+    input: z
+      .object({
+        questionId: idSchema,
+        revision: z.number().int().positive(),
+        prompt: nonBlankStringSchema.max(10_000),
+        mode: z.enum(["single", "multiple"]),
+        options: z
+          .array(
+            z
+              .object({
+                id: idSchema.optional(),
+                label: nonBlankStringSchema.max(500),
+              })
+              .strict(),
+          )
+          .min(2)
+          .max(20),
+        allowOther: z.boolean().optional(),
+        reopen: z.boolean().optional(),
+        authorName: nonBlankStringSchema.default("You"),
+      })
+      .strict(),
+    output: z.object({ question: questionSchema }).strict(),
+  },
   deleteQuestion: {
     input: z
       .object({ questionId: idSchema, revision: z.number().int().positive() })

@@ -204,7 +204,7 @@ function TaskDetail({ task }: { task: Task }) {
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const subtasksRef = useRef<HTMLElement>(null);
-  const [addingQuestion, setAddingQuestion] = useState(false);
+  const [addingQuestion, setAddingQuestion] = useState<string | null>(null);
 
   const [draft, setDraft] = useState<{ taskId: string; markdown: string }>();
   const rpcRef = useRef(rpc);
@@ -443,7 +443,7 @@ function TaskDetail({ task }: { task: Task }) {
             onUpdate={(update) => void updateTask(update)}
             onMoveToProject={(projectId) => void moveToProject(projectId)}
             onError={(message) => push(message)}
-            onAddQuestion={() => setAddingQuestion(true)}
+            onAddQuestion={() => setAddingQuestion(task.id)}
             className="mb-4 @[45rem]:hidden"
           />
 
@@ -534,9 +534,10 @@ function TaskDetail({ task }: { task: Task }) {
 
           <div className="mt-1">
             <QuestionsSection
+              key={task.id}
               taskId={task.id}
-              adding={addingQuestion}
-              onAddingChange={setAddingQuestion}
+              adding={addingQuestion === task.id}
+              onAddingChange={(adding) => setAddingQuestion(adding ? task.id : null)}
               onError={push}
             />
             <TaskActivity taskId={task.id} pullRequests={pullRequests.data?.pullRequests} />
@@ -553,7 +554,7 @@ function TaskDetail({ task }: { task: Task }) {
           onUpdate={(update) => void updateTask(update)}
           onMoveToProject={(projectId) => void moveToProject(projectId)}
           onError={(message) => push(message)}
-          onAddQuestion={() => setAddingQuestion(true)}
+          onAddQuestion={() => setAddingQuestion(task.id)}
           className="hidden @[45rem]:block"
         />
       </div>

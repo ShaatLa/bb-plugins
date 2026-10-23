@@ -41,8 +41,8 @@ export async function deliverCommentToLatestAgent(
     const thread = await bb.sdk.threads.get({ threadId });
     if (
       isSideChatShapedThread(thread) ||
-      thread.archivedAt !== null ||
-      thread.deletedAt !== null ||
+      thread.archivedAt != null ||
+      thread.deletedAt != null ||
       thread.status === "stopping"
     )
       return 0;

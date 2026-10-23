@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,10 +9,12 @@ import { errorMessage } from "../../shared/errors";
 function QuestionAnswer({
   question,
   onSave,
+  onEdit,
   onError,
 }: {
   question: TaskQuestion;
   onSave: (ids: string[], answerText: string | null) => Promise<void>;
+  onEdit: () => void;
   onError: (message: string) => void;
 }) {
   const [selected, setSelected] = useState(question.selectedOptionIds);
@@ -91,7 +93,13 @@ function QuestionAnswer({
           Answered by {question.answeredBy}
         </p>
       ) : null}
-      <div className="flex gap-2">
+      {!question.answeredBy &&
+      question.history.some((entry) => entry.answeredBy) ? (
+        <p className="text-xs text-warning">
+          A new answer is required. Previous decisions are retained in history.
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
           disabled={unchanged || saving || (other && !answerText)}
@@ -121,6 +129,59 @@ function QuestionAnswer({
           Clear selection
         </Button>
       </div>
+      <Button size="sm" variant="ghost" onClick={onEdit}>
+        Edit question
+      </Button>
+      {question.history.length ? (
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">
+            History · {question.history.length}
+          </summary>
+          <ol className="mt-2 space-y-3">
+            {[...question.history].reverse().map((entry) => (
+              <li
+                key={entry.revision}
+                className="space-y-1 border-t border-border pt-2"
+              >
+                <p>
+                  Revision {entry.revision} · {entry.updatedAt}
+                </p>
+                <p className="whitespace-pre-wrap break-words">
+                  {entry.prompt}
+                </p>
+                <p>
+                  {entry.mode === "single"
+                    ? "Single choice"
+                    : "Multiple choice"}
+                  {entry.allowOther ? " · Other answer allowed" : ""}
+                </p>
+                <ul>
+                  {entry.options.map((option) => (
+                    <li key={option.id} className="break-words">
+                      {entry.selectedOptionIds.includes(option.id)
+                        ? "✓ "
+                        : "• "}
+                      {option.label}
+                    </li>
+                  ))}
+                </ul>
+                <p className="whitespace-pre-wrap break-words">
+                  Answer:{" "}
+                  {[
+                    ...entry.options
+                      .filter((option) =>
+                        entry.selectedOptionIds.includes(option.id),
+                      )
+                      .map((option) => option.label),
+                    ...(entry.answerText ? [entry.answerText] : []),
+                  ].join("; ") || "(unanswered)"}
+                  {entry.answeredBy ? ` · ${entry.answeredBy}` : ""}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
     </fieldset>
   );
 }
@@ -144,21 +205,39 @@ export function QuestionsSection({
     [taskId],
   );
   const [prompt, setPrompt] = useState("");
-  const [options, setOptions] = useState(["", ""]);
+  const [options, setOptions] = useState<{ id?: string; label: string }[]>([
+    { label: "" },
+    { label: "" },
+  ]);
   const [multiple, setMultiple] = useState(false);
   const [allowOther, setAllowOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  if (!adding && !query.error && !query.data?.length) return null;
+  const [editing, setEditing] = useState<TaskQuestion | null>(null);
+  const [reopen, setReopen] = useState(false);
+  useEffect(() => {
+    if (!adding) return;
+    setEditing(null);
+    setPrompt("");
+    setOptions([{ label: "" }, { label: "" }]);
+    setMultiple(false);
+    setAllowOther(false);
+    setReopen(false);
+  }, [adding]);
+  const closeForm = () => {
+    setEditing(null);
+    onAddingChange(false);
+  };
+  if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
     <section aria-label="Questions" className="mt-5 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Questions</h2>
-        {adding ? (
+        {adding || editing ? (
           <Button
             variant="ghost"
             size="sm"
             disabled={saving}
-            onClick={() => onAddingChange(false)}
+            onClick={closeForm}
           >
             Cancel question
           </Button>
@@ -177,6 +256,15 @@ export function QuestionsSection({
           key={`${question.id}:${question.revision}`}
           question={question}
           onError={onError}
+          onEdit={() => {
+            onAddingChange(false);
+            setEditing(question);
+            setPrompt(question.prompt);
+            setOptions(question.options);
+            setMultiple(question.mode === "multiple");
+            setAllowOther(question.allowOther);
+            setReopen(false);
+          }}
           onSave={async (selectedOptionIds, answerText) => {
             const result = await rpc.call("answerQuestion", {
               questionId: question.id,
@@ -193,25 +281,34 @@ export function QuestionsSection({
           }}
         />
       ))}
-      {adding ? (
+      {adding || editing ? (
         <form
           className="space-y-3 rounded-md border border-border p-3"
           onSubmit={async (event) => {
             event.preventDefault();
             setSaving(true);
             try {
-              await rpc.call("createQuestion", {
-                taskId,
-                prompt,
-                mode: multiple ? "multiple" : "single",
-                options,
-                allowOther,
-              });
-              onAddingChange(false);
-              setPrompt("");
-              setOptions(["", ""]);
-              setMultiple(false);
-              setAllowOther(false);
+              if (editing) {
+                await rpc.call("updateQuestion", {
+                  questionId: editing.id,
+                  revision: editing.revision,
+                  prompt,
+                  mode: multiple ? "multiple" : "single",
+                  options,
+                  allowOther,
+                  reopen,
+                  authorName: "You",
+                });
+              } else {
+                await rpc.call("createQuestion", {
+                  taskId,
+                  prompt,
+                  mode: multiple ? "multiple" : "single",
+                  options: options.map((option) => option.label),
+                  allowOther,
+                });
+              }
+              closeForm();
               query.refresh();
             } catch (error) {
               onError(errorMessage(error));
@@ -235,14 +332,16 @@ export function QuestionsSection({
               <Input
                 aria-label={`Option ${index + 1}`}
                 placeholder={`Option ${index + 1}`}
-                value={value}
+                value={value.label}
                 maxLength={500}
                 required
                 disabled={saving}
                 onChange={(event) =>
                   setOptions((current) =>
                     current.map((option, at) =>
-                      at === index ? event.target.value : option,
+                      at === index
+                        ? { ...option, label: event.target.value }
+                        : option,
                     ),
                   )
                 }
@@ -271,7 +370,9 @@ export function QuestionsSection({
               size="sm"
               variant="outline"
               disabled={saving || options.length >= 20}
-              onClick={() => setOptions((current) => [...current, ""])}
+              onClick={() =>
+                setOptions((current) => [...current, { label: "" }])
+              }
             >
               Add option
             </Button>
@@ -293,16 +394,28 @@ export function QuestionsSection({
               />
               Allow other answer
             </label>
+            {editing?.answeredBy ? (
+              <label className="flex items-start gap-2 text-sm text-warning">
+                <input
+                  type="checkbox"
+                  checked={reopen}
+                  disabled={saving}
+                  onChange={(event) => setReopen(event.target.checked)}
+                />
+                Clear the saved answer and request a new decision
+              </label>
+            ) : null}
             <Button
               type="submit"
               size="sm"
               disabled={
                 saving ||
                 !prompt.trim() ||
-                options.some((option) => !option.trim())
+                options.some((option) => !option.label.trim()) ||
+                Boolean(editing?.answeredBy && !reopen)
               }
             >
-              Create question
+              {editing ? "Save question" : "Create question"}
             </Button>
           </div>
         </form>
