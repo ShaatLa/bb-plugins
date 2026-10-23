@@ -17,7 +17,7 @@ import { MAX_ATTACHMENT_SIZE_BYTES } from "../shared/attachments";
 export const archiveProjectSchema = z
   .object({
     format: z.literal("bb-tasks-plus"),
-    version: z.union([z.literal(1), z.literal(2)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     project: projectSchema,
     folders: z.array(folderSchema),
     labels: z.array(labelSchema),

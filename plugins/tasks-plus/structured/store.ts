@@ -123,6 +123,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         taskId: input.taskId,
         prompt: input.prompt,
         mode: input.mode,
+        allowOther: input.allowOther ?? false,
         options: input.options.map((label) => ({ id: createUlid(), label })),
         selectedOptionIds: [],
         answeredBy: null,
@@ -146,16 +147,23 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         const next = questionSchema.parse({
           ...current,
           selectedOptionIds: input.selectedOptionIds,
-          answeredBy: input.selectedOptionIds.length ? input.authorName : null,
+          answerText: input.answerText?.trim() || null,
+          answeredBy:
+            input.selectedOptionIds.length || input.answerText?.trim()
+              ? input.authorName
+              : null,
           revision: current.revision + 1,
           updatedAt: new Date().toISOString(),
         });
         assertNoSecretsInValue(next, "question");
         if (
           JSON.stringify([...current.selectedOptionIds].sort()) ===
-          JSON.stringify([...next.selectedOptionIds].sort())
+            JSON.stringify([...next.selectedOptionIds].sort()) &&
+          current.answerText === next.answerText
         )
           return current;
+        const { id, taskId, createdAt, history, ...snapshot } = current;
+        next.history = [...history, snapshot];
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
@@ -166,7 +174,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           taskId: next.taskId,
           kind: "system",
           authorName: input.authorName,
-          body: `Question: ${next.prompt}\nAnswer: ${selected.map((option) => option.label).join("; ") || "(cleared)"}`,
+          body: `Question: ${next.prompt}\nAnswer: ${[...selected.map((option) => option.label), ...(next.answerText ? [next.answerText] : [])].join("; ") || "(cleared)"}`,
         });
         return next;
       });

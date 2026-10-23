@@ -849,6 +849,7 @@ export function registerTasksCli(
               type: "boolean",
               description: "Allow multiple answers",
             },
+            "allow-other": { type: "boolean", description: "Allow a free-text answer" },
             json: JSON_OPTION,
           },
           run(input) {
@@ -863,6 +864,7 @@ export function registerTasksCli(
                   prompt: input.options.prompt,
                   options: input.options.option,
                   mode: input.options.multiple ? "multiple" : "single",
+                  allowOther: input.options["allow-other"],
                 }),
               );
               return input.options.json
@@ -905,6 +907,7 @@ export function registerTasksCli(
               description: "Selected option ID; repeat for multiple choice",
             },
             clear: { type: "boolean", description: "Clear the answer" },
+            text: { type: "string", description: "Free-text answer when the creator allows it" },
             revision: {
               type: "integer",
               min: 1,
@@ -930,15 +933,16 @@ export function registerTasksCli(
                 throw new CliError("Question does not belong to this task");
               if (
                 Boolean(input.options.clear) ===
-                input.options.answer.length > 0
+                (input.options.answer.length > 0 || Boolean(input.options.text?.trim()))
               )
-                throw new CliError("Use --answer or --clear, exclusively");
+                throw new CliError("Use --answer/--text or --clear, exclusively");
               const result = await domain.answerQuestion(
                 tasksRpcContract.answerQuestion.input.parse({
                   questionId: input.options.question,
                   selectedOptionIds: input.options.clear
                     ? []
                     : input.options.answer,
+                  answerText: input.options.clear ? null : input.options.text,
                   revision: input.options.revision,
                   authorName: taskAuthor(ctx),
                 }),

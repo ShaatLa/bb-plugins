@@ -159,10 +159,8 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
 ]);
 export type Evidence = z.infer<typeof evidenceSchema>;
 
-export const questionSchema = z
+const questionStateSchema = z
   .object({
-    id: idSchema,
-    taskId: idSchema,
     prompt: nonBlankStringSchema.max(10_000),
     mode: z.enum(["single", "multiple"]),
     options: z
@@ -173,10 +171,11 @@ export const questionSchema = z
       )
       .min(2)
       .max(20),
+    allowOther: z.boolean().default(false),
     selectedOptionIds: z.array(idSchema),
+    answerText: nonBlankStringSchema.max(10_000).nullable().default(null),
     answeredBy: nonBlankStringSchema.nullable(),
     revision: z.number().int().positive(),
-    createdAt: z.string(),
     updatedAt: z.string(),
   })
   .strict()
@@ -194,9 +193,39 @@ export const questionSchema = z
       new Set(value.selectedOptionIds).size !==
         value.selectedOptionIds.length ||
       value.selectedOptionIds.some((id) => !ids.includes(id)) ||
-      (value.mode === "single" && value.selectedOptionIds.length > 1)
+      (!value.allowOther && value.answerText !== null) ||
+      (value.mode === "single" &&
+        value.selectedOptionIds.length + Number(value.answerText !== null) > 1)
     )
       ctx.addIssue({ code: "custom", message: "Invalid question answer" });
+    if (
+      Boolean(value.answeredBy) !==
+      (value.selectedOptionIds.length > 0 || value.answerText !== null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Answer author must match the saved answer",
+      });
+  });
+
+export const questionSchema = questionStateSchema
+  .safeExtend({
+    id: idSchema,
+    taskId: idSchema,
+    createdAt: z.string(),
+    history: z.array(questionStateSchema).default([]),
+  })
+  .superRefine((value, ctx) => {
+    let previous = 0;
+    for (const entry of value.history) {
+      if (entry.revision <= previous || entry.revision >= value.revision)
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "Question history revisions must increase before the current revision",
+        });
+      previous = entry.revision;
+    }
   });
 export type TaskQuestion = z.infer<typeof questionSchema>;
 export const templateSchema = z
@@ -653,6 +682,7 @@ export const tasksRpcContract = defineRpcContract({
         taskId: idSchema,
         prompt: nonBlankStringSchema.max(10_000),
         mode: z.enum(["single", "multiple"]).default("single"),
+        allowOther: z.boolean().optional(),
         options: z.array(nonBlankStringSchema.max(500)).min(2).max(20),
       })
       .strict(),
@@ -663,6 +693,7 @@ export const tasksRpcContract = defineRpcContract({
       .object({
         questionId: idSchema,
         selectedOptionIds: z.array(idSchema).max(20),
+        answerText: z.string().trim().max(10_000).nullable().optional(),
         revision: z.number().int().positive(),
         authorName: nonBlankStringSchema.default("You"),
       })
