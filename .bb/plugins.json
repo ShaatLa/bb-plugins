@@ -6,6 +6,10 @@
     {
       "name": "antigravity",
       "source": "./plugins/provider-antigravity"
+    },
+    {
+      "name": "tasks-plus",
+      "source": "./plugins/tasks-plus"
     }
   ]
 }
