@@ -158,7 +158,6 @@ export function ListFilterBar({
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
-        <TaskSearch key={projectId ?? "all"} projectId={projectId} />
         <button type="button" aria-pressed={filters.unansweredOnly === true} className={chipTriggerClass(filters.unansweredOnly === true)} onClick={() => onChange({ ...filters, unansweredOnly: !filters.unansweredOnly })}>
           <Icon name="FileQuestion" className="size-3" />Needs answer
         </button>
@@ -315,6 +314,9 @@ export function ListFilterBar({
             Clear
           </button>
         ) : null}
+        <div className="ml-3 shrink-0">
+          <TaskSearch key={projectId ?? "all"} projectId={projectId} />
+        </div>
       </div>
       {sort !== undefined && onSortChange ? (
         <SortChip sort={sort} onChange={onSortChange} />
