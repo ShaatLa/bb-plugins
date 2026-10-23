@@ -58,6 +58,7 @@ export default definePluginApp((app) => {
     title: "Task",
     icon: "ListTodo",
     component: TaskEmbedPanel,
+    layout: "flush",
   });
   app.slots.messageDirective({ id: "task", component: TaskDirectiveCard });
 });

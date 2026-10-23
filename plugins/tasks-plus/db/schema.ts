@@ -242,6 +242,32 @@ const MIGRATIONS = [
     ALTER TABLE presets DROP COLUMN service_tier;
     ALTER TABLE presets RENAME COLUMN service_tier_open TO service_tier;
   `,
+  `
+    ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'task'
+      CHECK (type IN ('task', 'epic'));
+    ALTER TABLE tasks ADD COLUMN epic_id TEXT REFERENCES tasks(id) ON DELETE SET NULL;
+    CREATE INDEX idx_tasks_epic ON tasks(epic_id, position);
+  `,
+  `
+    ALTER TABLE comments ADD COLUMN evidence TEXT;
+    CREATE TABLE task_questions (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX idx_task_questions_task ON task_questions(task_id, id);
+    CREATE TABLE description_templates (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL COLLATE NOCASE,
+      body TEXT NOT NULL,
+      label_id TEXT REFERENCES labels(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, name),
+      UNIQUE(label_id)
+    );
+  `,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

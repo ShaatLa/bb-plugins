@@ -1,19 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   PluginMessageDirectiveProps,
   PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk";
-import { useBbNavigate, useRealtime } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRealtime, useSdk } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Task } from "../../shared/contract.js";
-import { useTasksRpc } from "../../shell/data.js";
+import { useProjects, useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import { TasksRefreshProvider } from "../../shell/refresh.js";
-import { PANEL_PATH, tasksRouteToSubPath } from "../../shell/routes.js";
+import {
+  PANEL_PATH,
+  TasksNavigationContext,
+  tasksRouteToSubPath,
+  type TasksNavigation,
+  type TasksRoute,
+} from "../../shell/routes.js";
+import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
 import { PRIORITY_LABELS, STATUS_LABELS } from "../list/lib.js";
-import { PriorityIcon, StatusIcon } from "../list/icons.js";
+import { StatusIcon } from "../list/icons.js";
 
 const TASK_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
 
@@ -92,7 +99,7 @@ function OpenInTasksButton({
   const navigate = useBbNavigate();
   return (
     <Button
-      className="size-8 shrink-0"
+      className="size-6 shrink-0"
       size="icon"
       variant="ghost"
       aria-label={label}
@@ -119,8 +126,8 @@ function CardShell({
     <div
       className={
         dashed
-          ? "my-3 flex h-11 items-center gap-1 rounded-lg border border-dashed border-border bg-surface-recessed-solid px-2"
-          : "my-3 flex h-11 items-center gap-1 rounded-lg border border-border bg-card px-2 shadow-sm transition-colors hover:bg-state-hover"
+          ? "my-1 inline-flex h-7 max-w-full items-center gap-1 rounded-md border border-dashed border-border bg-surface-recessed-solid px-1 align-middle"
+          : "my-1 inline-flex h-7 max-w-full items-center gap-1 rounded-md border border-border bg-card px-1 align-middle transition-colors hover:bg-state-hover"
       }
     >
       {children}
@@ -237,7 +244,8 @@ export function TaskDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
     <CardShell>
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        title={`${task.key} · ${task.title}`}
         aria-label={embedAriaLabel(task)}
         onClick={openInSidePanel}
       >
@@ -252,15 +260,10 @@ export function TaskDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
         </span>
         <span
           aria-hidden
-          className="min-w-0 flex-1 truncate text-sm font-medium"
+          className="min-w-0 max-w-64 flex-1 truncate text-xs font-medium"
         >
           {task.title}
         </span>
-        {task.priority !== "none" ? (
-          <span aria-hidden className="shrink-0">
-            <PriorityIcon priority={task.priority} />
-          </span>
-        ) : null}
       </button>
       <OpenInTasksButton
         label={`Open ${task.key} in Tasks`}
@@ -270,40 +273,88 @@ export function TaskDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
   );
 }
 
-function TaskEmbedPanelContent({ params }: PluginThreadPanelProps) {
-  const taskKey =
-    isRecord(params) && typeof params.taskKey === "string"
-      ? params.taskKey
-      : null;
-  if (taskKey === null || !TASK_KEY_PATTERN.test(taskKey.trim())) {
-    return (
-      <div className="p-3 text-sm text-muted-foreground">
-        Open a task card from a message to view it here.
+function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
+  const sdk = useSdk();
+  const navigate = useBbNavigate();
+  const initialKey = isRecord(params) && typeof params.taskKey === "string"
+    ? params.taskKey.trim()
+    : "";
+  const [route, setRoute] = useState<TasksRoute>(() =>
+    TASK_KEY_PATTERN.test(initialKey) ? { kind: "task", taskKey: initialKey } : { kind: "all" },
+  );
+  const projects = useProjects();
+  const threadProject = useTasksQuery(
+    async () => (await sdk.threads.get({ threadId })).projectId,
+    [],
+    [threadId],
+  );
+  const project = projects.data?.find((candidate) =>
+    route.kind === "project"
+      ? candidate.id === route.projectId
+      : threadProject.data != null && candidate.linkedBbProjectId === threadProject.data,
+  );
+  const navigation = useMemo<TasksNavigation>(() => ({
+    go: (next, options) => {
+      if (next.kind === "task" || next.kind === "project") setRoute(next);
+      else navigate.toPluginPanel(PANEL_PATH, {
+        subPath: tasksRouteToSubPath(next),
+        ...(options?.replace ? { replace: true } : {}),
+      });
+    },
+  }), [navigate]);
+  const taskKey = route.kind === "task" ? route.taskKey : null;
+  const boardRoute: TasksRoute | null = project
+    ? { kind: "project", projectId: project.id, view: "board" }
+    : null;
+
+  let content;
+  if (taskKey !== null) {
+    content = <div className="min-h-0 flex-1 overflow-y-auto"><DetailView taskKey={taskKey} /></div>;
+  } else if (projects.error || threadProject.error) {
+    content = (
+      <div className="space-y-3 p-4 text-sm">
+        <p role="alert">{projects.error ?? threadProject.error}</p>
+        <Button variant="outline" onClick={() => { projects.refresh(); threadProject.refresh(); }}>Retry</Button>
+      </div>
+    );
+  } else if (projects.data === undefined || threadProject.data === undefined) {
+    content = <p role="status" className="p-4 text-sm text-muted-foreground">Loading project board…</p>;
+  } else if (project) {
+    content = <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>;
+  } else {
+    content = (
+      <div className="space-y-3 p-4 text-sm text-muted-foreground">
+        <p>No Tasks project is linked to this thread's bb project.</p>
+        <Button variant="outline" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: "manage" })}>Manage projects</Button>
       </div>
     );
   }
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border pb-2">
-        <div className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-          {taskKey.trim()}
-        </div>
-        <OpenInTasksButton
-          label={`Open ${taskKey.trim()} in Tasks`}
-          subPath={taskDetailSubPath(taskKey.trim())}
-        />
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <DetailView taskKey={taskKey.trim()} />
-      </div>
-    </div>
+    <TasksNavigationContext.Provider value={navigation}>
+      <section aria-label="Thread tasks" className="flex h-full min-h-0 flex-col">
+        <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+          {taskKey !== null ? (
+            <Button size="icon" variant="ghost" className="size-8 shrink-0" aria-label="Back to project board" onClick={() => setRoute({ kind: "all" })}>
+              <Icon name="ArrowLeft" className="size-4" />
+            </Button>
+          ) : null}
+          <div className="min-w-0 flex-1 truncate text-sm font-medium">{taskKey ?? project?.name ?? "Project board"}</div>
+          <OpenInTasksButton
+            label={taskKey ? `Open ${taskKey} in Tasks` : "Open board in Tasks"}
+            subPath={taskKey ? taskDetailSubPath(taskKey) : boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}
+          />
+        </header>
+        {content}
+      </section>
+    </TasksNavigationContext.Provider>
   );
 }
 
 export function TaskEmbedPanel(props: PluginThreadPanelProps) {
   return (
     <TasksRefreshProvider>
-      <TaskEmbedPanelContent {...props} />
+      <TaskEmbedPanelContent key={`${props.threadId}:${JSON.stringify(props.params)}`} {...props} />
     </TasksRefreshProvider>
   );
 }

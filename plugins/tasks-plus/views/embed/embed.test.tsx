@@ -2,11 +2,25 @@
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { makeTask } from "../../test-fixtures.js";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { makeTask, rpcInput } from "../../test-fixtures.js";
+import { loadListPreference, storeListPreference } from "../list/list-preference.js";
+
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+}
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+if (!window.matchMedia) {
+  window.matchMedia = (query: string) => ({
+    matches: false, media: query, onchange: null,
+    addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
+    dispatchEvent: () => false,
+  });
+}
 
 const app = await loadPluginApp(() => import("../../app"));
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); window.localStorage.clear(); });
 
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const TASK_ID = "01HZZZZZZZZZZZZZZZZZZZZZT1";
@@ -46,6 +60,7 @@ function taskDetailRpc(getTaskByKey: () => { task: typeof task }) {
     listAttachments: () => ({ attachments: [] }),
     listTaskThreads: () => ({ taskThreads: [] }),
     listPresets: () => ({ presets: [] }),
+    listQuestions: () => ({ questions: [] }),
     listComments: () => ({ comments: [] }),
     searchThreads: () => ({ threads: [] }),
   };
@@ -289,12 +304,222 @@ describe("Task embed panel", () => {
     await slot.findByText("Recovered embedded detail");
   });
 
-  it("shows a hint when opened without a task key", () => {
-    const slot = renderSlot(
-      app.threadPanelActions[0]!,
-      { threadId: "thr_1", params: null },
-      { rpc: {} },
-    );
-    slot.getByText("Open a task card from a message to view it here.");
+  it("shows the board linked to the panel's thread, regardless of the current route or last project", async () => {
+    const getThread = vi.fn(async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }));
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      context: { projectId: "proj_unrelated", threadId: "thr_unrelated" },
+      sdk: { threads: { get: getThread } },
+      rpc: boardRpc(),
+    });
+    await slot.findByText("Linked project board");
+    await slot.findByRole("button", { name: "New Todo task" });
+    expect(getThread).toHaveBeenCalledWith({ threadId: "thr_1" });
+    expect(slot.rpcCalls.filter((call) => call.method === "listTasks").every((call) => rpcInput(call.input).projectId === PROJECT_ID)).toBe(true);
+    expect(slot.navigateCalls).toEqual([]);
+    expect(app.threadPanelActions[0]!.layout).toBe("flush");
+  });
+
+  it("opens a board card in this panel and returns to its board", async () => {
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: boardRpc(),
+    });
+    fireEvent.click(await slot.findByText(task.title));
+    await slot.findByRole("textbox", { name: "Task title" });
+    expect(slot.navigateCalls).toEqual([]);
+    fireEvent.click(slot.getByRole("button", { name: "Back to project board" }));
+    await slot.findByRole("button", { name: "New Todo task" });
+    expect(slot.navigateCalls).toEqual([]);
+    fireEvent.click(slot.getByRole("button", { name: "Open board in Tasks" }));
+    expect(slot.navigateCalls).toEqual([{ method: "toPluginPanel", path: "tasks", options: { subPath: `${PROJECT_ID}?view=board` } }]);
+  });
+
+  it("filters the thread board by type, status, priority and label, preserving filters after opening a task", async () => {
+    const label = { id: "01HZZZZZZZZZZZZZZZZZZZZZL1", projectId: PROJECT_ID, name: "Bug", color: "red" };
+    const selected = { ...task, labelIds: [label.id] };
+    const epic = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT2", key: "TSK-2", projectId: PROJECT_ID, title: "Epic milestone", type: "epic", status: "todo", priority: "low" });
+    const other = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", key: "TSK-3", projectId: PROJECT_ID, title: "Other work", status: "todo", priority: "low" });
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: {
+        ...boardRpc(),
+        listLabels: () => ({ labels: [label] }),
+        listTasks: (raw: unknown) => ({ tasks: rpcInput(raw).activeOnly ? [] : [selected, epic, other], nextCursor: null }),
+      },
+    });
+    await slot.findByText(epic.title);
+    const choose = async (name: string, option: string) => {
+      fireEvent.keyDown(slot.getByRole("button", { name: new RegExp(`^${name}`) }), { key: "ArrowDown" });
+      fireEvent.click(await slot.findByRole("menuitemcheckbox", { name: option }));
+      fireEvent.keyDown(slot.container.ownerDocument, { key: "Escape" });
+    };
+    await choose("Type", "Epic");
+    expect(slot.queryByText(selected.title)).toBeNull();
+    expect(slot.queryByText(other.title)).toBeNull();
+    await choose("Type", "All");
+    expect(slot.getByText(selected.title)).toBeTruthy();
+    expect(slot.getByText(other.title)).toBeTruthy();
+    expect(slot.getByText(epic.title)).toBeTruthy();
+    expect(loadListPreference(`project:${PROJECT_ID}`).filters.type).toBeUndefined();
+    await choose("Status", "In Progress");
+    expect(slot.queryByText(other.title)).toBeNull();
+    await choose("Type", "Epic");
+    expect(slot.queryByText(selected.title)).toBeNull();
+    await choose("Type", "All");
+    expect(slot.getByText(selected.title)).toBeTruthy();
+    expect(slot.queryByText(other.title)).toBeNull();
+    expect(loadListPreference(`project:${PROJECT_ID}`).filters.statuses).toEqual(["in_progress"]);
+    fireEvent.click(slot.getByRole("button", { name: "Clear" }));
+    await choose("Priority", "High");
+    expect(slot.queryByText(epic.title)).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Clear" }));
+    await choose("Label", "Bug");
+    expect(slot.queryByText(other.title)).toBeNull();
+    expect(slot.queryByText(epic.title)).toBeNull();
+    expect(slot.getByText("1 task")).toBeTruthy();
+    fireEvent.click(slot.getByText(selected.title));
+    await slot.findByRole("textbox", { name: "Task title" });
+    fireEvent.click(slot.getByRole("button", { name: "Back to project board" }));
+    await slot.findByRole("button", { name: /^Label.*Bug/ });
+    await slot.findByText(selected.title);
+    expect(slot.queryByText(other.title)).toBeNull();
+    expect(loadListPreference(`project:${PROJECT_ID}`).filters.labelNames).toEqual(["Bug"]);
+    fireEvent.click(slot.getByRole("button", { name: "Clear" }));
+    await slot.findByText(other.title);
+    await slot.findByText(epic.title);
+    expect(slot.navigateCalls).toEqual([]);
+  });
+
+  it("hides every card for a saved label that is no longer available", async () => {
+    storeListPreference(`project:${PROJECT_ID}`, {
+      filters: { statuses: [], priorities: [], labelNames: ["Removed label"] }, sort: "manual",
+    });
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: boardRpc(),
+    });
+    await slot.findByRole("button", { name: /^Label.*Removed label/ });
+    expect(slot.queryByText(task.title)).toBeNull();
+    expect(slot.getByText("0 tasks")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Clear" }));
+    await slot.findByText(task.title);
+  });
+
+  it("uses visible neighbors for a filtered drag and retains hidden cards", async () => {
+    storeListPreference(`project:${PROJECT_ID}`, {
+      filters: { statuses: [], priorities: ["high"], labelNames: [] }, sort: "manual",
+    });
+    const hidden = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT2", projectId: PROJECT_ID, key: "TSK-2", title: "Hidden low priority", status: "todo", priority: "low", position: 100 });
+    const target = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", projectId: PROJECT_ID, key: "TSK-3", title: "Visible high priority", status: "todo", priority: "high", position: 200 });
+    const boardMove = vi.fn(() => ({ ok: true, task: { ...task, status: "todo" } }));
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: {
+        ...boardRpc(), boardMove,
+        listTasks: (raw: unknown) => ({ tasks: rpcInput(raw).activeOnly ? [] : [hidden, target, task], nextCursor: null }),
+      },
+    });
+    const dragged = (await slot.findByText(task.title)).closest<HTMLElement>("[data-task-key]")!;
+    const targetCard = slot.getByText(target.title).closest<HTMLElement>("[data-task-key]")!;
+    const column = slot.container.querySelector<HTMLElement>('[data-board-column="todo"]')!;
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 230, bottom: 300, width: 230, height: 300, toJSON() {} };
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute("data-board-column") && this !== column) return { ...rect, left: 300, right: 530 };
+      return this === targetCard ? { ...rect, top: 80, bottom: 120, height: 40 } : rect;
+    });
+    try {
+      fireEvent.pointerDown(dragged, { button: 0, clientX: 10, clientY: 150 });
+      fireEvent.pointerMove(window, { clientX: 10, clientY: 40 });
+      fireEvent.pointerUp(window, { clientX: 10, clientY: 40 });
+      await waitFor(() => expect(boardMove).toHaveBeenCalledTimes(1));
+      expect(boardMove.mock.calls[0]).toEqual([{
+        taskId: task.id, status: "todo", beforeTaskId: null, afterTaskId: target.id, authorName: "You",
+      }]);
+      expect(Array.from(column.querySelectorAll("[data-task-key]"), (card) => card.getAttribute("data-task-key"))).toEqual([task.key, target.key]);
+      fireEvent.click(slot.getByRole("button", { name: "Clear" }));
+      expect(Array.from(column.querySelectorAll("[data-task-key]"), (card) => card.getAttribute("data-task-key"))).toEqual([hidden.key, task.key, target.key]);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("keeps task links from messages working and offers a return to the thread's board", async () => {
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: { taskKey: task.key } }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: boardRpc(),
+    });
+    await slot.findByRole("textbox", { name: "Task title" });
+    fireEvent.click(slot.getByRole("button", { name: "Back to project board" }));
+    await slot.findByRole("button", { name: "New Todo task" });
+    expect(slot.navigateCalls).toEqual([]);
+  });
+
+  it("opens newly created tasks in this panel", async () => {
+    const creates: Record<string, unknown>[] = [];
+    const created = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT9", key: "TSK-9", title: "Created in the thread board" });
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: {
+        ...boardRpc(),
+        createTask: (raw: unknown) => { creates.push(rpcInput(raw)); return { ok: true, task: created }; },
+        getTaskByKey: () => ({ task: created }),
+      },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "New Todo task" }));
+    fireEvent.change(await slot.findByLabelText("Task title"), { target: { value: created.title } });
+    const submit = slot.getByRole("button", { name: "Create task" });
+    await waitFor(() => expect(submit).toHaveProperty("disabled", false));
+    fireEvent.click(submit);
+    await waitFor(() => expect(creates).toHaveLength(1));
+    expect(creates[0]).toMatchObject({ projectId: PROJECT_ID, title: created.title });
+    await slot.findByRole("button", { name: "Open TSK-9 in Tasks" });
+    expect(slot.navigateCalls).toEqual([]);
+  });
+
+  it("explains a missing project link instead of showing another project's board", async () => {
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_unlinked" }) } },
+      rpc: boardRpc(),
+    });
+    await slot.findByText("No Tasks project is linked to this thread's bb project.");
+    expect(slot.rpcCalls.filter((call) => call.method === "listTasks")).toHaveLength(0);
+    fireEvent.click(slot.getByRole("button", { name: "Manage projects" }));
+    expect(slot.navigateCalls).toEqual([{ method: "toPluginPanel", path: "tasks", options: { subPath: "manage" } }]);
+  });
+
+  it("retries a failed thread lookup without blocking task links", async () => {
+    let failed = true;
+    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+      sdk: { threads: { get: async () => {
+        if (failed) throw new Error("Thread temporarily unavailable");
+        return makeThreadResponse({ id: "thr_1", projectId: "proj_thread" });
+      } } },
+      rpc: boardRpc(),
+    });
+    expect((await slot.findByRole("alert")).textContent).toBe("Thread temporarily unavailable");
+    failed = false;
+    fireEvent.click(slot.getByRole("button", { name: "Retry" }));
+    await slot.findByRole("button", { name: "New Todo task" });
   });
 });
+
+
+function boardRpc() {
+  const project = {
+    id: PROJECT_ID, name: "Linked project board", prefix: "TSK", nextTaskNumber: 5,
+    color: "purple", folderId: null, linkedBbProjectId: "proj_thread", createdAt: task.createdAt,
+  };
+  return {
+    ...taskDetailRpc(() => ({ task })),
+    listProjects: () => ({ projects: [
+      { ...project, id: "01HZZZZZZZZZZZZZZZZZZZZZP2", name: "Unrelated project", prefix: "OTHER", linkedBbProjectId: "proj_other" },
+      project,
+    ] }),
+    listTasks: (raw: unknown) => {
+      const input = rpcInput(raw);
+      return { tasks: input.activeOnly || input.parentTaskId || input.type === "epic" ? [] : [task], nextCursor: null };
+    },
+    listTaskPullRequests: () => ({ pullRequests: [], unavailableThreadIds: [] }),
+    listBbProjects: () => ({ bbProjects: [] }),
+  };
+}

@@ -100,6 +100,7 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
         PRIORITY_SET,
       ),
       labelNames: uniqueLabelNames(filtersRaw.labelNames),
+      ...(filtersRaw.type === "task" || filtersRaw.type === "epic" ? { type: filtersRaw.type } : {}),
     },
     sort: sanitizeSort(record.sort),
   };

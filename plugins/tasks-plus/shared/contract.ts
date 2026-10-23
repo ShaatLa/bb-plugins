@@ -15,6 +15,9 @@ export const TASK_STATUSES = [
   "canceled",
 ] as const;
 
+export const TASK_TYPES = ["task", "epic"] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+
 export const TASK_PRIORITIES = [
   "urgent",
   "high",
@@ -72,6 +75,142 @@ const dueDateSchema = z
     );
   }, "must be a valid calendar date in YYYY-MM-DD format");
 const taskStatusSchema = z.enum(TASK_STATUSES);
+const shaSchema = z
+  .string()
+  .regex(/^[a-fA-F0-9]{40}$/, "must be a full 40-character git SHA")
+  .transform((value) => value.toLowerCase());
+const evidenceThreadSchema = z
+  .string()
+  .regex(/^thr_[A-Za-z0-9_-]+$/, "must be a bb thread id");
+export const EVIDENCE_KINDS = [
+  "review",
+  "qa",
+  "merge",
+  "deploy",
+  "exemption",
+] as const;
+export const evidenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("review"),
+      pr: z.number().int().positive(),
+      head: shaSchema,
+      verdict: z.enum(["approve", "changes"]),
+      thread: evidenceThreadSchema,
+      lens: nonBlankStringSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("qa"),
+      head: shaSchema,
+      verdict: z.enum(["pass", "fail", "partial"]),
+      thread: evidenceThreadSchema,
+      pr: z.number().int().positive().optional(),
+      target: z.enum(["local", "development", "localenv"]).optional(),
+      note: nonBlankStringSchema
+        .refine(
+          (value) =>
+            !value.startsWith("/") &&
+            !value.split(/[\\/]/).includes("..") &&
+            !value.includes("://"),
+          "must be a repository-relative path",
+        )
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("merge"),
+      pr: z.number().int().positive(),
+      head: shaSchema,
+      merge: shaSchema,
+      part: z
+        .string()
+        .regex(/^[1-9]\d*\/[1-9]\d*$/)
+        .refine((value) => {
+          const [part, total] = value.split("/").map(Number);
+          return part! <= total!;
+        }, "part must not exceed total")
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("deploy"),
+      merge: shaSchema,
+      run: nonBlankStringSchema,
+      env: z.enum(["development", "production"]),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("exemption"),
+      row: nonBlankStringSchema,
+      reason: nonBlankStringSchema,
+      ownerQuote: nonBlankStringSchema.optional(),
+      date: dueDateSchema.optional(),
+    })
+    .strict()
+    .refine(
+      (value) => Boolean(value.ownerQuote) === Boolean(value.date),
+      "owner quote and date must be supplied together",
+    ),
+]);
+export type Evidence = z.infer<typeof evidenceSchema>;
+
+export const questionSchema = z
+  .object({
+    id: idSchema,
+    taskId: idSchema,
+    prompt: nonBlankStringSchema.max(10_000),
+    mode: z.enum(["single", "multiple"]),
+    options: z
+      .array(
+        z
+          .object({ id: idSchema, label: nonBlankStringSchema.max(500) })
+          .strict(),
+      )
+      .min(2)
+      .max(20),
+    selectedOptionIds: z.array(idSchema),
+    answeredBy: nonBlankStringSchema.nullable(),
+    revision: z.number().int().positive(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const ids = value.options.map((option) => option.id);
+    if (
+      new Set(ids).size !== ids.length ||
+      new Set(value.options.map((option) => option.label)).size !== ids.length
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Question options must have unique IDs and labels",
+      });
+    if (
+      new Set(value.selectedOptionIds).size !==
+        value.selectedOptionIds.length ||
+      value.selectedOptionIds.some((id) => !ids.includes(id)) ||
+      (value.mode === "single" && value.selectedOptionIds.length > 1)
+    )
+      ctx.addIssue({ code: "custom", message: "Invalid question answer" });
+  });
+export type TaskQuestion = z.infer<typeof questionSchema>;
+export const templateSchema = z
+  .object({
+    id: idSchema,
+    projectId: idSchema,
+    name: nonBlankStringSchema.max(100),
+    body: z.string(),
+    labelId: idSchema.nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+export type DescriptionTemplate = z.infer<typeof templateSchema>;
 const taskPrioritySchema = z.enum(TASK_PRIORITIES);
 const taskSortSchema = z.enum(TASK_SORTS);
 const threadSearchStatusSchema = z.enum([
@@ -83,7 +222,7 @@ const threadSearchStatusSchema = z.enum([
   "error",
 ]);
 
-const folderSchema = z
+export const folderSchema = z
   .object({
     id: idSchema,
     name: z.string(),
@@ -92,7 +231,7 @@ const folderSchema = z
   })
   .strict();
 
-const projectSchema = z
+export const projectSchema = z
   .object({
     id: idSchema,
     name: z.string(),
@@ -105,7 +244,7 @@ const projectSchema = z
   })
   .strict();
 
-const taskSchema = z
+export const taskSchema = z
   .object({
     id: idSchema,
     projectId: idSchema,
@@ -117,6 +256,8 @@ const taskSchema = z
     priority: taskPrioritySchema,
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),
+    type: z.enum(TASK_TYPES).default("task"),
+    epicId: idSchema.nullable().default(null),
     position: z.number(),
     createdAt: z.string(),
     updatedAt: z.string(),
@@ -124,7 +265,7 @@ const taskSchema = z
   })
   .strict();
 
-const labelSchema = z
+export const labelSchema = z
   .object({
     id: idSchema,
     projectId: idSchema,
@@ -133,7 +274,7 @@ const labelSchema = z
   })
   .strict();
 
-const commentSchema = z
+export const commentSchema = z
   .object({
     id: idSchema,
     taskId: idSchema,
@@ -142,6 +283,7 @@ const commentSchema = z
     presetName: z.string().nullable(),
     threadId: z.string().startsWith("thr_").nullable(),
     body: z.string(),
+    evidence: evidenceSchema.optional(),
     notifiedCount: z.number().int().nonnegative(),
     createdAt: z.string(),
   })
@@ -171,7 +313,7 @@ const displayCommentSchema = commentSchema
   })
   .strict();
 
-const attachmentSchema = z
+export const attachmentSchema = z
   .object({
     id: idSchema,
     taskId: idSchema.nullable(),
@@ -184,7 +326,7 @@ const attachmentSchema = z
   })
   .strict();
 
-const taskThreadSchema = z
+export const taskThreadSchema = z
   .object({
     id: idSchema,
     taskId: idSchema,
@@ -230,6 +372,8 @@ const tasksDomainErrorSchema = z
   .object({
     code: z.enum([
       "task_parent_invalid",
+      "task_epic_invalid",
+      "secret_detected",
       "subtask_depth_exceeded",
       "subtask_project_mismatch",
       "label_project_mismatch",
@@ -291,6 +435,8 @@ const updateTaskInputSchema = z
     priority: taskPrioritySchema.optional(),
     dueDate: dueDateSchema.nullable().optional(),
     parentTaskId: idSchema.nullable().optional(),
+    type: z.enum(TASK_TYPES).optional(),
+    epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
@@ -303,6 +449,8 @@ const updateTaskInputSchema = z
       input.priority !== undefined ||
       input.dueDate !== undefined ||
       input.parentTaskId !== undefined ||
+      input.type !== undefined ||
+      input.epicId !== undefined ||
       input.labelIds !== undefined,
     { message: "at least one task field must be updated" },
   );
@@ -472,10 +620,64 @@ export const tasksRpcContract = defineRpcContract({
         priority: taskPrioritySchema.default("none"),
         dueDate: dueDateSchema.nullable().default(null),
         parentTaskId: idSchema.nullable().default(null),
+        type: z.enum(TASK_TYPES).default("task"),
+        epicId: idSchema.nullable().default(null),
         labelIds: taskLabelsSchema.default([]),
+        template: nonBlankStringSchema.optional(),
       })
       .strict(),
     output: taskMutationResultSchema,
+  },
+  listQuestions: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ questions: z.array(questionSchema) }).strict(),
+  },
+  createQuestion: {
+    input: z
+      .object({
+        taskId: idSchema,
+        prompt: nonBlankStringSchema.max(10_000),
+        mode: z.enum(["single", "multiple"]).default("single"),
+        options: z.array(nonBlankStringSchema.max(500)).min(2).max(20),
+      })
+      .strict(),
+    output: z.object({ question: questionSchema }).strict(),
+  },
+  answerQuestion: {
+    input: z
+      .object({
+        questionId: idSchema,
+        selectedOptionIds: z.array(idSchema).max(20),
+        revision: z.number().int().positive(),
+        authorName: nonBlankStringSchema.default("You"),
+      })
+      .strict(),
+    output: z.object({ question: questionSchema }).strict(),
+  },
+  deleteQuestion: {
+    input: z
+      .object({ questionId: idSchema, revision: z.number().int().positive() })
+      .strict(),
+    output: z.object({ deleted: z.boolean() }).strict(),
+  },
+  listTemplates: {
+    input: z.object({ projectId: idSchema }).strict(),
+    output: z.object({ templates: z.array(templateSchema) }).strict(),
+  },
+  setTemplate: {
+    input: z
+      .object({
+        projectId: idSchema,
+        name: nonBlankStringSchema.max(100),
+        body: z.string(),
+        labelId: idSchema.nullable().default(null),
+      })
+      .strict(),
+    output: z.object({ template: templateSchema }).strict(),
+  },
+  deleteTemplate: {
+    input: z.object({ templateId: idSchema }).strict(),
+    output: z.object({ deleted: z.boolean() }).strict(),
   },
   getTask: {
     input: z.object({ taskId: idSchema }).strict(),
@@ -502,6 +704,8 @@ export const tasksRpcContract = defineRpcContract({
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
+        type: z.enum(TASK_TYPES).optional(),
+        epicId: idSchema.nullable().optional(),
         search: z.string().optional(),
         sort: taskSortSchema.default("manual"),
         limit: z
@@ -569,6 +773,7 @@ export const tasksRpcContract = defineRpcContract({
       .object({
         taskId: idSchema,
         body: z.string(),
+        evidence: evidenceSchema.optional(),
         notify: z.boolean(),
         allowEmptyBody: z.boolean().default(false),
       })

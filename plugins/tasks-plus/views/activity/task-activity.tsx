@@ -34,6 +34,7 @@ import type {
   Attachment,
   Comment,
   DisplayComment,
+  TaskPullRequest,
 } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import {
@@ -44,6 +45,7 @@ import {
 } from "./time.js";
 import { CommentAuthor } from "./comment-author.js";
 import { CommentProviderAvatar } from "./provider-logo.js";
+import { EvidenceSection } from "../detail/evidence";
 
 interface FeedEntry {
   comment: DisplayComment;
@@ -483,9 +485,10 @@ export function AgentNotificationControl({
 
 interface TaskActivityProps {
   taskId: string;
+  pullRequests?: readonly TaskPullRequest[];
 }
 
-export function TaskActivity({ taskId }: TaskActivityProps) {
+export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
   const feed = useActivityFeed(taskId);
   const nowMs = useNowTick();
   const entries = useMemo(() => feed.data ?? [], [feed.data]);
@@ -496,6 +499,7 @@ export function TaskActivity({ taskId }: TaskActivityProps) {
 
   return (
     <section aria-label="Activity">
+      <EvidenceSection comments={entries.map((entry) => entry.comment)} pullRequests={pullRequests} />
       <div className="mt-6 border-t border-border-hairline" />
       <h2 className="pb-3 pt-4 text-sm font-semibold">Activity</h2>
       <div

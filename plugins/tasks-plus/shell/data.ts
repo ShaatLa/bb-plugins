@@ -35,6 +35,8 @@ interface TaskListQuery {
   labelIds?: string[];
   activeOnly?: boolean;
   parentTaskId?: string | null;
+  type?: Task["type"];
+  epicId?: string | null;
   search?: string;
   sort?: TaskSort;
 }

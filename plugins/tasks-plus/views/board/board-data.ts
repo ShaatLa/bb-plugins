@@ -40,11 +40,12 @@ export async function fetchBoard(
   );
   const subProgress = new Map<string, { done: number; total: number }>();
   for (const task of tasks) {
-    if (task.parentTaskId === null) continue;
-    const entry = subProgress.get(task.parentTaskId) ?? { done: 0, total: 0 };
+    const parentId = task.parentTaskId ?? task.epicId;
+    if (parentId === null) continue;
+    const entry = subProgress.get(parentId) ?? { done: 0, total: 0 };
     entry.total += 1;
     if (task.status === "done") entry.done += 1;
-    subProgress.set(task.parentTaskId, entry);
+    subProgress.set(parentId, entry);
   }
   const activeTaskIds = await listAllTasks(rpc, {
     projectId,
@@ -166,12 +167,13 @@ export async function patchBoard(
     }),
   ]);
   const progress = new Map<string, { done: number; total: number }>();
-  for (const task of subtasks) {
-    if (task.parentTaskId === null) continue;
-    const entry = progress.get(task.parentTaskId) ?? { done: 0, total: 0 };
+  for (const task of [...tasks, ...subtasks]) {
+    const parentId = task.parentTaskId ?? task.epicId;
+    if (parentId === null) continue;
+    const entry = progress.get(parentId) ?? { done: 0, total: 0 };
     entry.total += 1;
     if (task.status === "done") entry.done += 1;
-    progress.set(task.parentTaskId, entry);
+    progress.set(parentId, entry);
   }
   for (const task of tasks) {
     const meta = metaByTaskId.get(task.id) ?? EMPTY_META;

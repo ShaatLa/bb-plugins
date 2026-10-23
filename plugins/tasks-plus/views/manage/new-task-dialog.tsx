@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
+  TASK_TYPES,
+  type TaskType,
   type Task,
   type TaskPriority,
   type TaskStatus,
 } from "../../shared/contract.js";
+import { EpicPicker } from "../../components/epic-picker.js";
 import { errorMessage } from "../../shared/errors.js";
 import {
   AttachmentChip,
@@ -139,6 +142,8 @@ function blankDraft(
     priority: "none",
     labelIds: [],
     dueDate: "",
+    type: "task",
+    epicId: null,
   };
 }
 
@@ -178,6 +183,7 @@ export function NewTaskDialog({
     setDraft((current) => {
       const resolved = {
         ...current,
+        epicId: current.projectId === effectiveProjectId ? current.epicId : null,
         projectId: effectiveProjectId,
         labelIds: labels.data
           ? current.labelIds.filter((id) =>
@@ -201,7 +207,7 @@ export function NewTaskDialog({
     // oxlint-disable-next-line react/exhaustive-deps
   }, [open]);
 
-  const { title, description, status, priority, dueDate } = draft;
+  const { title, description, status, priority, dueDate, type, epicId } = draft;
   const projectList = projects.data ?? [];
   const project =
     projectList.find((entry) => entry.id === draft.projectId) ??
@@ -244,7 +250,7 @@ export function NewTaskDialog({
   );
 
   const changeProject = (id: string) =>
-    updateDraft(() => ({ projectId: id, labelIds: [] }));
+    updateDraft(() => ({ projectId: id, labelIds: [], epicId: null }));
 
   const toggleLabel = (labelId: string) =>
     updateDraft((current) => ({
@@ -336,6 +342,8 @@ export function NewTaskDialog({
         priority,
         dueDate: dueDate === "" ? null : dueDate,
         parentTaskId: null,
+        type,
+        epicId: type === "epic" || draft.projectId !== effectiveProjectId ? null : epicId,
         labelIds,
       });
       if (!result.ok) {
@@ -407,7 +415,7 @@ export function NewTaskDialog({
               style={{ backgroundColor: project.color }}
             />
           ) : null}
-          New task
+          {type === "epic" ? "New epic" : "New task"}
           {project ? ` · ${project.name}` : ""}
         </DialogTitle>
         <DialogDescription className="sr-only">
@@ -495,133 +503,152 @@ export function NewTaskDialog({
         </div>
         <div
           className={cn(
-            "flex shrink-0 flex-wrap items-center gap-1.5 px-4 pt-3",
+            "shrink-0 px-4 pt-3",
             createdTask && "hidden",
           )}
         >
-          <TaskFieldPicker
-            dialogOpen={open}
-            label="Project"
-            value={effectiveProjectId}
-            options={projectList.map((entry) => ({
-              value: entry.id,
-              label: entry.name,
-              color: entry.color,
-              keywords: [entry.prefix],
-            }))}
-            onValueChange={changeProject}
-          />
-          <TaskFieldPicker<TaskStatus>
-            dialogOpen={open}
-            label="Status"
-            value={status}
-            options={TASK_STATUSES.map((value) => ({
-              value,
-              label: STATUS_LABELS[value],
-            }))}
-            onValueChange={(status) => updateDraft(() => ({ status }))}
-          />
-          <TaskFieldPicker<TaskPriority>
-            dialogOpen={open}
-            label="Priority"
-            value={priority}
-            options={TASK_PRIORITIES.map((value) => ({
-              value,
-              label: PRIORITY_LABELS[value],
-            }))}
-            onValueChange={(priority) => updateDraft(() => ({ priority }))}
-          />
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className={cn(CHIP_TRIGGER, "border-input font-normal")}
-              >
-                {selectedLabels.length === 0 ? (
-                  <>
-                    <Icon name="Plus" className="size-3" />
-                    Labels
-                  </>
-                ) : (
-                  <>
-                    <span className="flex items-center gap-0.5">
-                      {selectedLabels.slice(0, 3).map((label) => (
-                        <span
+          <div className="flex min-w-0 items-center gap-1.5 border-b border-border-hairline pb-2">
+            <TaskFieldPicker
+              dialogOpen={open}
+              label="Project"
+              value={effectiveProjectId}
+              options={projectList.map((entry) => ({
+                value: entry.id,
+                label: entry.name,
+                color: entry.color,
+                keywords: [entry.prefix],
+              }))}
+              onValueChange={changeProject}
+            />
+            <TaskFieldPicker<TaskType>
+              dialogOpen={open}
+              label="Type"
+              value={type}
+              options={TASK_TYPES.map((value) => ({ value, label: value === "epic" ? "Epic" : "Task" }))}
+              onValueChange={(type) => updateDraft(() => ({ type, epicId: null }))}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 pt-2">
+            {type === "task" ? (
+              <EpicPicker
+                projectId={effectiveProjectId}
+                value={epicId}
+                onChange={(epicId) => updateDraft(() => ({ epicId }))}
+                className={cn(CHIP_TRIGGER, "max-w-64 border border-input")}
+              />
+            ) : null}
+            <TaskFieldPicker<TaskStatus>
+              dialogOpen={open}
+              label="Status"
+              value={status}
+              options={TASK_STATUSES.map((value) => ({
+                value,
+                label: STATUS_LABELS[value],
+              }))}
+              onValueChange={(status) => updateDraft(() => ({ status }))}
+            />
+            <TaskFieldPicker<TaskPriority>
+              dialogOpen={open}
+              label="Priority"
+              value={priority}
+              options={TASK_PRIORITIES.map((value) => ({
+                value,
+                label: PRIORITY_LABELS[value],
+              }))}
+              onValueChange={(priority) => updateDraft(() => ({ priority }))}
+            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(CHIP_TRIGGER, "border-input font-normal")}
+                >
+                  {selectedLabels.length === 0 ? (
+                    <>
+                      <Icon name="Plus" className="size-3" />
+                      Labels
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex items-center gap-0.5">
+                        {selectedLabels.slice(0, 3).map((label) => (
+                          <span
+                            key={label.id}
+                            aria-hidden
+                            className="size-2 rounded-full"
+                            style={{ backgroundColor: label.color }}
+                          />
+                        ))}
+                      </span>
+                      {selectedLabels.length === 1
+                        ? selectedLabels[0]!.name
+                        : `${selectedLabels.length} labels`}
+                    </>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-56 p-0" align="start">
+                <Command>
+                  <CommandInput
+                    placeholder="Add labels…"
+                    value={labelQuery}
+                    onValueChange={setLabelQuery}
+                  />
+                  <CommandList>
+                    <CommandEmpty
+                      className={
+                        labelQuery.trim() !== "" ? "p-1 text-left" : undefined
+                      }
+                    >
+                      {labelQuery.trim() !== "" ? (
+                        <button
+                          type="button"
+                          disabled={creatingLabel}
+                          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                          onClick={() => void createLabelFromQuery()}
+                        >
+                          <Icon name="Plus" className="size-3.5" />
+                          Create “{labelQuery.trim()}”
+                        </button>
+                      ) : (
+                        "No labels in this project."
+                      )}
+                    </CommandEmpty>
+                    <CommandGroup>
+                      {(labels.data ?? []).map((label) => (
+                        <CommandItem
                           key={label.id}
-                          aria-hidden
-                          className="size-2 rounded-full"
-                          style={{ backgroundColor: label.color }}
-                        />
+                          value={label.name}
+                          onSelect={() => toggleLabel(label.id)}
+                        >
+                          <span
+                            aria-hidden
+                            className="size-2.5 rounded-full"
+                            style={{ backgroundColor: label.color }}
+                          />
+                          <span className="flex-1">{label.name}</span>
+                          {labelIds.includes(label.id) ? (
+                            <Icon name="Check" className="size-3.5" />
+                          ) : null}
+                        </CommandItem>
                       ))}
-                    </span>
-                    {selectedLabels.length === 1
-                      ? selectedLabels[0]!.name
-                      : `${selectedLabels.length} labels`}
-                  </>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-56 p-0" align="start">
-              <Command>
-                <CommandInput
-                  placeholder="Add labels…"
-                  value={labelQuery}
-                  onValueChange={setLabelQuery}
-                />
-                <CommandList>
-                  <CommandEmpty
-                    className={
-                      labelQuery.trim() !== "" ? "p-1 text-left" : undefined
-                    }
-                  >
-                    {labelQuery.trim() !== "" ? (
-                      <button
-                        type="button"
-                        disabled={creatingLabel}
-                        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                        onClick={() => void createLabelFromQuery()}
-                      >
-                        <Icon name="Plus" className="size-3.5" />
-                        Create “{labelQuery.trim()}”
-                      </button>
-                    ) : (
-                      "No labels in this project."
-                    )}
-                  </CommandEmpty>
-                  <CommandGroup>
-                    {(labels.data ?? []).map((label) => (
-                      <CommandItem
-                        key={label.id}
-                        value={label.name}
-                        onSelect={() => toggleLabel(label.id)}
-                      >
-                        <span
-                          aria-hidden
-                          className="size-2.5 rounded-full"
-                          style={{ backgroundColor: label.color }}
-                        />
-                        <span className="flex-1">{label.name}</span>
-                        {labelIds.includes(label.id) ? (
-                          <Icon name="Check" className="size-3.5" />
-                        ) : null}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
-          <input
-            type="date"
-            value={dueDate}
-            onChange={(event) => {
-              const next = event.target.value;
-              updateDraft(() => ({ dueDate: next }));
-            }}
-            aria-label="Due date"
-            className="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          />
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(event) => {
+                const next = event.target.value;
+                updateDraft(() => ({ dueDate: next }));
+              }}
+              aria-label="Due date"
+              className="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
         </div>
         {error || labels.error ? (
           <p
@@ -685,7 +712,7 @@ export function NewTaskDialog({
                   disabled={!canSubmit}
                   onClick={() => void submit()}
                 >
-                  Create task
+                  {type === "epic" ? "Create epic" : "Create task"}
                 </Button>
               </div>
             </>
