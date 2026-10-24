@@ -18,6 +18,62 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => vi.useRealTimers());
 
+test("today shows six four-hour bars, clips current details and disables future hours", async () => {
+  const restore = mockNativeDialog();
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-20T10:17:38Z"));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const range = resolveRange({ days: 1 });
+  const todayMetric = { ...metric, series: Array.from({ length: 6 }, (_, index) => ({
+    date: new Date(Date.parse(range.since) + (index + 1) * range.bucketMs).toISOString(), value: index + 1,
+  })) };
+  const today = { ...data, repositories: [{ ...repo, range, updatedAt: range.until, deployments: todayMetric, ci: todayMetric }] };
+  const interval = vi.fn().mockResolvedValue({ ...today.repositories[0], range: { ...range, label: "selected interval" } });
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => today, interval }, settings: {} });
+  try {
+    await act(async () => {});
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    await act(async () => {});
+    expect(slot.getByText("Today")).toBeTruthy();
+    expect(slot.getByRole("region", { name: "Repository activity today" })).toBeTruthy();
+    for (const title of ["Deployment throughput", "CI pass rate over time"]) {
+      const bars = slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) });
+      expect(bars).toHaveLength(6);
+      bars.forEach((bar, index) => {
+        expect(bar.getAttribute("aria-label")).toContain(`${String(index * 4).padStart(2, "0")}:00`);
+        expect(bar.hasAttribute("disabled")).toBe(index >= 3);
+        if (index >= 3) expect(bar.textContent).toBe("—");
+      });
+    }
+    fireEvent.click(slot.getByRole("button", { name: /Deployment throughput · 08:00/ }));
+    await act(async () => {});
+    expect(interval).toHaveBeenLastCalledWith({ repository: repo.repository, since: "2026-10-20T08:00:00.000Z", until: range.until });
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    fireEvent.click(slot.getByRole("button", { name: /CI pass rate over time · 00:00/ }));
+    await act(async () => {});
+    expect(interval).toHaveBeenLastCalledWith({ repository: repo.repository, since: range.since, until: "2026-10-20T03:59:59.999Z" });
+  } finally { slot.lifecycle.unmount(); restore(); }
+});
+
+test("a fresh snapshot from yesterday refreshes after UTC midnight", async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-21T00:00:05Z"));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const yesterday = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 1 }, new Date("2026-10-20T23:59:59Z")), updatedAt: "2026-10-20T23:59:59Z" }] };
+  const metrics = vi.fn().mockResolvedValue(data);
+  const snapshot = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(yesterday);
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot, metrics }, settings: { refreshSeconds: 300 } });
+  try {
+    await act(async () => {});
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    await act(async () => {});
+    expect(metrics).toHaveBeenLastCalledWith({ days: 1 });
+    expect(metrics).toHaveBeenCalledTimes(2);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("sidebar page discovers repositories without manual configuration and shows the empty state", async () => {
   const metrics = vi.fn().mockResolvedValue({ ...data, repositories: [] });
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
@@ -227,10 +283,10 @@ test("presets preserve displayed data while updating and ignore superseded respo
     expect(metrics).toHaveBeenLastCalledWith({ days: 3 });
     expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     await act(async () => { finishDay({ ...data, repositories: [{ ...repo, range: resolveRange({ days: 1 }) }] }); });
-    expect(slot.queryByRole("region", { name: "Repository activity in the last 1 day" })).toBeNull();
+    expect(slot.queryByRole("region", { name: "Repository activity today" })).toBeNull();
     metrics.mockImplementation(() => new Promise(() => {}));
     fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
-    expect(slot.getByRole("region", { name: "Repository activity in the last 1 day" })).toBeTruthy();
+    expect(slot.getByRole("region", { name: "Repository activity today" })).toBeTruthy();
     fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "3" } });
     expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     slot.lifecycle.unmount();

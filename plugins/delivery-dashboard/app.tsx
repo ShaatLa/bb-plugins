@@ -98,7 +98,8 @@ export function Dashboard() {
         if (!force && available && available.result.repositories.length > 0) {
           const checkedAt = Math.min(...available.result.repositories.map((repo) => Date.parse(repo.updatedAt)));
           const age = Date.now() - checkedAt;
-          if (age >= 0 && age < seconds * 1000) {
+          const sameDay = !range || !("days" in range) || range.days !== 1 || available.result.repositories.every((repo) => repo.range.since === resolveRange(range).since);
+          if (sameDay && age >= 0 && age < seconds * 1000) {
             nextRefresh = seconds * 1000 - age;
             return;
           }
@@ -165,7 +166,7 @@ export function Dashboard() {
         ];
         const name = repo.projectName?.trim() || repo.repository.split("/")[1].replace(/[-_]+/g, " ");
         const projectTitle = name.charAt(0).toUpperCase() + name.slice(1);
-        const rangeTitle = repo.range.label.startsWith("last ") ? `L${repo.range.label.slice(1)}` : "Custom range";
+        const rangeTitle = repo.range.label === "today" ? "Today" : repo.range.label.startsWith("last ") ? `L${repo.range.label.slice(1)}` : "Custom range";
         const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
           .formatRange(new Date(repo.range.since), new Date(repo.range.until));
         return <section key={repo.repository} aria-label={repo.repository} className="space-y-3">

@@ -94,7 +94,7 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
     { label: "Lines added", value: activity.additions, prefix: "+", tone: "text-emerald-500", detail: "Cumulative commit additions" },
     { label: "Lines deleted", value: activity.deletions, prefix: "−", tone: "text-destructive", detail: "Cumulative commit deletions" },
   ];
-  return <Card role="region" aria-label={`Repository activity in the ${repo.range.label}`} className="space-y-3 p-4">
+  return <Card role="region" aria-label={`Repository activity ${repo.range.label === "today" ? "today" : `in the ${repo.range.label}`}`} className="space-y-3 p-4">
     <h4 className="text-sm font-medium">Activity · {repo.range.label}</h4>
     <dl className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 8rem), 1fr))" }}>
       {statistics.map((stat) => <div key={stat.label} className="min-w-0">
