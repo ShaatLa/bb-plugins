@@ -33,6 +33,7 @@ export function resolveRange(input: RangeInput, now = new Date()): DateRange {
   }
   const duration = Math.max(1, until - since);
   // Keep long ranges readable; the final bucket may be shorter than the others.
-  const bucketMs = label === "today" ? 4 * 3_600_000 : duration <= day ? 3_600_000 : Math.ceil(duration / (14 * day)) * day;
+  const bucketMs = label === "today" ? 4 * 3_600_000 : "days" in selection && selection.days === 3 ? day / 2
+    : duration <= day ? 3_600_000 : Math.ceil(duration / (14 * day)) * day;
   return { since: new Date(since).toISOString(), until: new Date(until).toISOString(), label, bucketMs };
 }

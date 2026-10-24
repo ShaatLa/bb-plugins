@@ -660,6 +660,12 @@ test("derives narrower and custom ranges from persisted raw history without down
     fetchMock.mockClear();
     expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toEqual(narrower);
     expect(fetchMock).not.toHaveBeenCalled();
+    const threeDays = await harness.behavior.callRpc("snapshot", { days: 3 });
+    expect(threeDays).toMatchObject({ repositories: [{
+      range: { bucketMs: 43_200_000, since: "2026-10-17T12:00:00.000Z", until: "2026-10-20T12:00:00.000Z" },
+      deployments: { value: 1 / 3, series: [0, 0, 0, 0, 1, 0].map((value) => ({ value })) },
+      ci: { value: 80, series: [null, null, null, null, 80, null].map((value) => ({ value })) },
+    }] });
     const custom = await harness.behavior.callRpc("snapshot", { start: "2026-10-19", end: "2026-10-19" });
     expect(custom).toMatchObject({ repositories: [{ deployments: { value: expect.closeTo(1) }, commitActivity: { commits: 2 }, ci: { value: 80 } }] });
     const empty = await harness.behavior.callRpc("snapshot", { start: "2026-10-18", end: "2026-10-18" });

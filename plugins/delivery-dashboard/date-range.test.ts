@@ -7,7 +7,8 @@ test.each(presets.filter((days) => days !== 1))("%i-day preset has the requested
   const range = resolveRange({ days }, now);
   expect(Date.parse(range.until) - Date.parse(range.since)).toBe(days * 86_400_000);
   expect(range.until).toBe(now.toISOString());
-  expect(Math.ceil(days * 86_400_000 / range.bucketMs)).toBe(Math.min(days, Math.ceil(days / Math.ceil(days / 14))));
+  expect(Math.ceil(days * 86_400_000 / range.bucketMs)).toBe(days === 3 ? 6 : Math.min(days, Math.ceil(days / Math.ceil(days / 14))));
+  if (days === 3) expect(range.bucketMs).toBe(43_200_000);
 });
 
 test("custom dates include both UTC days and cap today's endpoint at now", () => {
