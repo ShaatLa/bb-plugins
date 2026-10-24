@@ -12,7 +12,7 @@ The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry point
 
 ## Requirements
 
-Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibility ranges are declared in each plugin's `package.json`.
+Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibility ranges are declared in each plugin's `package.json`. The SDK comes with BB; it is not a separate user installation step.
 
 Additional requirements depend on the plugin:
 
@@ -21,6 +21,10 @@ Additional requirements depend on the plugin:
 - **Delivery Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
 ## Install from GitHub
+
+Run these commands in BB's terminal, or a shell with `bb` on PATH. **Git must be available on the BB server machine**, with network access to GitHub and the npm registry. This public collection does not require a GitHub login to download; plugin-specific account requirements are listed above.
+
+BB supplies its own npm/Node tooling for Git installations. You do **not** need to clone the repository, install npm/Bun yourself, or run the development commands below. Cloning is only needed for local development or the optional built-in Tasks migration helper.
 
 Install the plugins you need:
 
