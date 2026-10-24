@@ -1,0 +1,50 @@
+---
+name: delivery-dashboard
+description: Configure or explain the Delivery Dashboard sidebar dashboard plugin and its GitHub metrics.
+---
+
+# Delivery Dashboard
+
+Open **Delivery dashboard** in the navigation sidebar (bar-chart icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
+
+Configure in Settings → Plugins → Delivery Dashboard:
+- `repository`: additional GitHub `owner/repo` entries, comma-, whitespace-, or newline-separated. Existing single entries remain valid.
+- `importBbRepositories`: enabled by default. Imports GitHub `gitRemoteUrl` values from all BB projects on each refresh, skipping non-GitHub hosts and missing remotes. SSH/SCP, HTTPS, and Git formats work. Entries are de-duplicated case-insensitively. Disable to use only the manual list.
+- `token`: optional secret override. Blank uses `GH_TOKEN`, then `GITHUB_TOKEN`, then the active GitHub.com account from `gh auth token --hostname github.com` on the BB server machine. Never print credentials or pass them in chat. The token is not copied to settings or sent to the frontend. Without credentials, public-repo access is anonymous.
+- `refreshSeconds`: integer 30–3600; default 300. Applies without reload.
+
+The sidebar page shows a separate section per repository, with deployment records per day averaged over the selected range (all environments/outcomes), current open PRs including drafts, and successful / completed GitHub Actions workflow runs created within the selected range. Cancelled, skipped, neutral, and failed completed runs count in the denominator. No completed runs gives an empty rate.
+
+Frontend polling runs while the dashboard page is mounted, after each request settles. The Refresh button retries immediately. Failed metrics show an error rather than zero. A failed RPC retains values marked stale. The backend aborts requests on unload and bounds each API request to 20 seconds. Deployments are paginated until the selected window is complete; repeated or empty intermediate pages fail explicitly.
+
+For private repositories use a fine-grained token scoped to the repository with Actions, Deployments, Pull requests, and Contents read permissions (plus GitHub's required metadata access); organization SSO may require authorization. GitHub.com only. Data comes from GitHub REST APIs on the BB server. The token is never returned to the browser.
+
+BB project discovery failures appear in the UI while manual repositories still load. Projects without a recorded remote need a manual entry. The same repository list appears on the dashboard page.
+
+There is no plugin-specific CLI. Use `bb plugin config delivery-dashboard` for non-secret settings, and the settings UI for credentials. Build with `bb plugin build <plugin-path>` before install or release.
+
+Charts show hourly buckets for one day, daily buckets up to two weeks, and at most 14 larger whole-day buckets for longer ranges, with UTC labels. The final bucket may be shorter; hover details show its actual boundaries. Deployment counts and CI success percentages come from GitHub records. CI days without runs show “—”. Large CI histories are split into disjoint UTC time searches of at most 1,000 runs each. Failed pagination or inconsistent counts are unavailable; capped large-search counts never produce a precise summary.
+
+Additional sections per repository:
+- CI outcomes count each conclusion in the same complete selected-range run dataset as the pass rate and chart. Failed, cancelled, skipped, timed out, etc. are separate. Large histories split automatically; incomplete/changing pagination hides the breakdown and series. A fallback summary is used only for searches of at most 1,000 runs. Complete histories no longer depend on a separate success-count query.
+- PRs awaiting review use `is:pr is:open draft:false review:required`, show the five oldest and total, and link to GitHub. Age is since opening, not time waiting for a review request.
+- Latest production deployment is independent of the selected window: scan deployments newest first until production is found or the list ends for `production_environment: true` or an environment named `production` case-insensitively. Latest status, environment/ref, creation age, update time, and a safe HTTPS log link are shown. Missing status is unknown; unsafe/missing log URLs fall back to GitHub's deployment list. Repeated or empty intermediate deployment pages are an error.
+
+Repository activity shows PRs created over the same selected range (all states, including drafts), plus default-branch commits and cumulative additions/deletions. Commit history is filtered by committed date. Sums cover all file types and merge commits as GitHub reports them; they are not net growth or source-code-only LOC. GraphQL is used for commit statistics, requiring a system/override token even for public repositories. Pagination is anchored to the initial head commit, de-duplicated and checked for completeness without a 1,000-commit cap. Incomplete results show unavailable values, not partial totals; empty repositories/history show real zeroes. The displayed branch identifies the commit scope; PR counts are repository-wide.
+
+Refreshes are silent once data is available: existing cards/charts remain visible and the Refresh button keeps a stable width. Sidebar remounts reuse the current window snapshot; new windows read the persisted server snapshot before collecting fresh GitHub data in the background. Browser storage is not used. The last-checked time identifies the displayed snapshot, and failed RPC refreshes retain values with a stale-data warning.
+
+Use the Date range selector for 1, 3, 7 (default), 14, 30, or 90 rolling days. Custom dates uses From/Through date inputs and Apply dates, includes both dates in UTC, caps today at refresh time, and rejects invalid/reversed/future/pre-1970 dates. Filters apply to deployment frequency, created PRs, commit/line activity, CI summary/outcomes, and charts for every repository; open PRs, review queue, and latest production remain current state. Previous results keep their own loaded range captions during a filter change. Superseded responses cannot replace newer selections. The filter selection survives sidebar remounts within the current window. RPC metrics accepts null (default week), { days: 1|3|7|14|30|90 }, or { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }.
+
+Click a bar in either history chart, including empty bars, to open Interval statistics for that repository and exact UTC bucket boundaries. Keyboard Enter/Space also opens it. The popup loads on demand and shows deployments, created PRs, commits, lines added/deleted, CI pass rate, and CI outcomes. Buckets can be hourly, rolling daily, or multiple days; do not describe a multi-day bucket as a calendar day. Earlier buckets exclude the shared endpoint, avoiding double counting. Close/Escape/backdrop dismiss the modal; failed requests offer Retry, and the underlying dashboard remains visible and keeps its filter. The interval RPC accepts { repository, since, until } with validated ISO UTC endpoints from 1970 through now.
+
+Repository headings use the first matching BB project name, capitalized, falling back to the repository name with hyphens/underscores replaced by spaces. The owner/repository identifier remains in the heading tooltip. Period captions start with a capital letter and use compact UTC calendar dates; exact UTC endpoints are in the tooltip. The unlabeled, accessible date selector and Refresh button sit next to each other, with custom date inputs below. Refresh replaces its visible text with a spinner while retaining its accessible name, stable width, and busy state during initial, manual, interval, or date-range requests. Previous results remain visible without a date-range update message.
+
+The interval popup is centered and constrained within the dashboard pane intersected with the visual viewport, with 16px outer margins. A ResizeObserver tracks pane/split resizing so an adjacent native browser cannot cover it; visual viewport listeners also handle pinch zoom, panning, and on-screen keyboard changes. Its cards adapt to the available width and overflow scrolls vertically. The pane observer and viewport listeners are removed on close.
+
+CI history first determines whether a search needs splitting, then fetches each leaf search’s remaining pages concurrently (at most nine more). A shared four-request budget covers all repositories, interval requests and background refreshes. Per-request deadlines start after queueing. Counts, unique run IDs, UTC boundaries and final pagination markers are checked before showing complete history.
+
+Opening the dashboard reads a persisted server snapshot before refreshing from GitHub. A background service keeps the default weekly range warm while the page is closed, using refreshSeconds. Eight recently requested ranges survive plugin/BB restarts in plugin-owned SQLite; settings changes clear them and invalidate older in-flight writes. Concurrent refreshes of a range are coalesced. Snapshots contain no credentials. The 600 ms display budget targets existing snapshots; a first-ever or uncached range still needs GitHub collection. Last checked identifies the snapshot time, and failed background requests preserve displayed values with a warning. Browser storage is not used.
+
+
+The Anvil production card includes **Deploy production**. Confirming starts `simple-life-app/anvil`'s `production.yaml` workflow on `main`, preserving its verification, Development-delivery check, and GitHub approvals. The target is fixed; arbitrary repositories, refs, and workflow paths cannot be supplied. The backend checks that Anvil is still configured/imported and blocks overlapping dispatch requests. The existing GitHub authorization must have [Actions write permission](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success means the workflow was requested, not that production has deployed; use View workflow to follow it. Requests are never retried automatically; after an unconfirmed request, check GitHub before trying again.
