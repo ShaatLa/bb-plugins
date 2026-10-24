@@ -187,7 +187,7 @@ describe("question and evidence UI", () => {
               { rpc },
             );
       const slot = mount();
-      await slot.findByText("Needs answer · 1");
+      await slot.findByRole("img", { name: "1 unanswered question" });
       await slot.findByText("No decision needed");
       fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
       await waitFor(() =>
@@ -209,7 +209,7 @@ describe("question and evidence UI", () => {
       await waitFor(() => expect(restored.queryByText(task.title)).toBeNull());
       fireEvent.click(filter);
       await restored.findByText(task.title);
-      expect(restored.queryByText("Needs answer · 1")).toBeNull();
+      expect(restored.queryByRole("img", { name: "1 unanswered question" })).toBeNull();
     },
   );
 
