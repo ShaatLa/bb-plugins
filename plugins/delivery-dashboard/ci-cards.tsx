@@ -45,12 +45,13 @@ export function CiTiming({ repo }: { repo: Metrics }) {
   return <Card role="region" aria-label="CI run timings" className="space-y-4 border-primary/20 p-4 sm:p-5">
     <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · completed runs, including cancelled and skipped</p></div>
     {!data ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
       <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
     </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
-      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4 sm:gap-6">{([
-        ["Total elapsed", data.timing.count ? data.timing.totalMs : null], ["Average", data.timing.averageMs], ["Median", data.timing.medianMs], ["P95", data.timing.p95Ms],
-      ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">{([
+        ["Median", data.timing.medianMs], ["Average", data.timing.averageMs], ["P95", data.timing.p95Ms],
+      ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground" title={label === "P95" ? "95% of measured runs finish within this time or faster; about 5% take longer." : undefined}>{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
+      <p className="text-xs text-muted-foreground">Total elapsed: {elapsed(data.timing.count ? data.timing.totalMs : null)}</p>
       <p className="text-xs text-muted-foreground">Timing available for {data.timing.count} of {data.total} runs. Estimate from start to last update; reruns may inflate it. Totals add overlapping runs and are not billed runner time.</p>
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
