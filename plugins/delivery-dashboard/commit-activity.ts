@@ -5,9 +5,16 @@ export const commitActivitySchema = z.object({
   commits: count.nullable(), additions: count.nullable(), deletions: count.nullable(),
   branch: z.string().nullable(), error: z.string().nullable(),
 });
+export const commitRowSchema = z.object({ oid: z.string().min(1), additions: count, deletions: count, committedDate: z.iso.datetime({ offset: true }) });
+export function summarizeCommitActivity(rows: z.infer<typeof commitRowSchema>[], branch: string | null) {
+  return {
+    commits: rows.length, additions: rows.reduce((sum, row) => sum + row.additions, 0),
+    deletions: rows.reduce((sum, row) => sum + row.deletions, 0), branch, error: null,
+  };
+}
 const historySchema = z.object({
   totalCount: count,
-  nodes: z.array(z.object({ oid: z.string().min(1), additions: count, deletions: count, committedDate: z.iso.datetime({ offset: true }) })).max(100),
+  nodes: z.array(commitRowSchema).max(100),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
 });
 const targetSchema = z.object({ oid: z.string().min(1), history: historySchema });
@@ -27,7 +34,7 @@ const nextQuery = `query CommitActivityPage(${parameters},$head:GitObjectID!) {
 
 type Request = (path: string, init?: Pick<RequestInit, "method" | "body">) => Promise<{ body: unknown }>;
 
-export async function loadCommitActivity(repository: string, token: string | undefined, since: string, until: string, request: Request): Promise<z.infer<typeof commitActivitySchema>> {
+export async function loadCommitActivity(repository: string, token: string | undefined, since: string, until: string, request: Request, onHistory?: (rows: z.infer<typeof commitRowSchema>[], branch: string | null) => void): Promise<z.infer<typeof commitActivitySchema>> {
   if (!token) throw new Error("GitHub authorization is required for commit and line statistics. Use system gh authorization or a plugin token.");
   const [owner, name] = repository.split("/");
   const variables = { owner, name, since, until, cursor: null as string | null };
@@ -38,7 +45,10 @@ export async function loadCommitActivity(repository: string, token: string | und
     return result.data;
   }
   const branch = firstSchema.parse(await query(firstQuery)).repository.defaultBranchRef;
-  if (!branch) return { commits: 0, additions: 0, deletions: 0, branch: null, error: null };
+  if (!branch) {
+    onHistory?.([], null);
+    return { commits: 0, additions: 0, deletions: 0, branch: null, error: null };
+  }
   const head = branch.target.oid;
   const expected = branch.target.history.totalCount;
   const rows = new Map<string, z.infer<typeof historySchema>["nodes"][number]>();
@@ -53,10 +63,9 @@ export async function loadCommitActivity(repository: string, token: string | und
     }
     if (!target.history.pageInfo.hasNextPage) {
       if (rows.size !== expected) throw new Error("GitHub returned an incomplete commit history. Retry on the next refresh.");
-      return {
-        commits: rows.size, additions: [...rows.values()].reduce((sum, row) => sum + row.additions, 0),
-        deletions: [...rows.values()].reduce((sum, row) => sum + row.deletions, 0), branch: branch.name, error: null,
-      };
+      const commits = [...rows.values()];
+      onHistory?.(commits, branch.name);
+      return summarizeCommitActivity(commits, branch.name);
     }
     const cursor = target.history.pageInfo.endCursor;
     if (!cursor || cursors.has(cursor) || target.history.nodes.length === 0 || rows.size >= expected) throw new Error("GitHub returned an invalid commit history cursor.");

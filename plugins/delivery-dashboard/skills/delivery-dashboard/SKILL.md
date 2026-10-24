@@ -51,4 +51,8 @@ The Anvil production card includes **Deploy production**. Confirming starts `sim
 
 Repository headings link directly to their GitHub repository using BB’s standard URL opener (the right Browser pane when the built-in browser is selected). Normal link modifiers and copy-link behavior remain available. The dashboard uses a package icon in the sidebar and plugin branding.
 
-Persisted snapshots seed a newly opened range only when that window has no matching in-memory snapshot. Polling and sidebar remounts retain the current in-memory dataset during refresh instead of reapplying older server data. Snapshots from before the CI search-splitting revision are invalidated.
+The window retains eight range snapshots keyed by configuration and selection. Returning to a loaded range renders its cards immediately while metrics refresh in the background. Completed superseded requests still populate their own cache entry, without replacing the current view; settings changes invalidate pending cache writes. Persisted snapshots only seed ranges absent from memory, so polling cannot reapply older server data.
+
+Complete deployment, CI and commit records are stored with their source snapshot in plugin-owned SQLite. An uncached preset or custom range contained in a stored history is computed locally, anchored to the source snapshot’s endpoint and last-checked time. Only its created-PR count needs a GitHub count request; the resulting range snapshot is then stored. Current open PRs, reviews and production reuse the source snapshot. Ranges outside stored coverage require a first GitHub collection; existing aggregate-only snapshots need one refresh to acquire raw history.
+
+Fresh range snapshots are reused until refreshSeconds expires; changing dates does not start another full collection while the cached data is fresh. The Refresh button explicitly forces collection, and expired data refreshes in the background.

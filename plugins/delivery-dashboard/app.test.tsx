@@ -228,6 +228,11 @@ test("presets preserve displayed data while updating and ignore superseded respo
     expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     await act(async () => { finishDay({ ...data, repositories: [{ ...repo, range: resolveRange({ days: 1 }) }] }); });
     expect(slot.queryByRole("region", { name: "Repository activity in the last 1 day" })).toBeNull();
+    metrics.mockImplementation(() => new Promise(() => {}));
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 1 day" })).toBeTruthy();
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "3" } });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     slot.lifecycle.unmount();
     const reopened = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
     try { expect((reopened.getByRole("combobox", { name: "Date range" }) as HTMLSelectElement).value).toBe("3"); }
@@ -474,4 +479,58 @@ test("an older persisted snapshot cannot restore a removed CI limit error over f
     expect(reopened.getByRole("group", { name: /CI pass rate over time:.*Oct 14/ })).toBeTruthy();
     await act(async () => { finish(data); });
   } finally { reopened.lifecycle.unmount(); }
+});
+
+test("switching back to a loaded range renders immediately without a snapshot RPC", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const month = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 30 }), ci: { ...metric, value: 75 } }] };
+  const metrics = vi.fn().mockResolvedValueOnce(data).mockResolvedValueOnce(month).mockImplementation(() => new Promise(() => {}));
+  const snapshot = vi.fn(() => null);
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot, metrics }, settings: {} });
+  try {
+    await slot.findByRole("region", { name: "Repository activity in the last 7 days" });
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    await slot.findByRole("region", { name: "Repository activity in the last 30 days" });
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "7" } });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBeTruthy();
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    await act(async () => {});
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 30 days" })).toBeTruthy();
+    expect(slot.getByText("75.0%")).toBeTruthy();
+    await act(async () => {});
+    expect(snapshot).toHaveBeenCalledTimes(2);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("fresh range snapshots skip GitHub collection until expiry while Refresh forces collection", async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const fresh = { ...data, repositories: [{ ...repo, updatedAt: new Date().toISOString() }] };
+  const month = { ...fresh, repositories: [{ ...fresh.repositories[0], range: resolveRange({ days: 30 }), ci: { ...metric, value: 75 } }] };
+  const metrics = vi.fn(async () => fresh);
+  const snapshot = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(month);
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot, metrics }, settings: { refreshSeconds: 30 } });
+  try {
+    await act(async () => {});
+    expect(metrics).toHaveBeenCalledTimes(1);
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    await act(async () => {});
+    expect(slot.getByText("75.0%")).toBeTruthy();
+    expect(metrics).toHaveBeenCalledTimes(1);
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "7" } });
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    await act(async () => {});
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(metrics).toHaveBeenCalledTimes(1);
+    fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
+    await act(async () => {});
+    expect(metrics).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(metrics).toHaveBeenCalledTimes(3);
+  } finally { slot.lifecycle.unmount(); }
 });
