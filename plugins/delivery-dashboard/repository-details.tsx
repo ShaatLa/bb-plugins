@@ -5,6 +5,7 @@ import { Button } from "./components/ui/button";
 import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { CardDetailsView } from "./card-details-view";
 
 function ageLabel(timestamp: string, checkedAt: string) {
   const hours = Math.max(0, Math.floor((Date.parse(checkedAt) - Date.parse(timestamp)) / 3_600_000));
@@ -21,8 +22,8 @@ const labels: Record<string, string> = {
 export function RepositoryDetails({ repo }: { repo: Metrics }) {
   const { reviewQueue, production } = repo;
   const deployment = production.deployment;
-  return <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-    <CiOutcomes repo={repo} />
+  return <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
+    <CiOutcomes repo={repo} showDetails />
     <Card role="region" aria-label="PRs awaiting review" className="space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-sm font-medium">PRs awaiting review</h4>
@@ -46,6 +47,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
           <p className="text-xs text-muted-foreground" title={new Date(deployment.createdAt).toLocaleString()}>Created {ageLabel(deployment.createdAt, repo.updatedAt)} ago</p>
           <p className="text-xs text-muted-foreground">Updated {new Date(deployment.updatedAt).toLocaleString()}</p>
           <UrlLink href={deployment.url} className="inline-flex items-center gap-1 text-sm hover:underline">View deployment<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
+          <CardDetailsView key={`${repo.repository}:${deployment.environment}:${repo.updatedAt}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}
       {repo.repository.toLowerCase() === productionTarget.repository && <ProductionDeployButton />}
     </Card>
@@ -110,7 +112,7 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
   </Card>;
 }
 
-export function CiOutcomes({ repo }: { repo: Metrics }) {
+export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showDetails?: boolean }) {
   return <Card role="region" aria-label="CI outcomes" className="space-y-3 p-4">
       <div><h4 className="text-sm font-medium">CI outcomes</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
       {repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
@@ -119,5 +121,6 @@ export function CiOutcomes({ repo }: { repo: Metrics }) {
           <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
         </div>)}
       </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>}
+      {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}:${repo.updatedAt}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
     </Card>;
 }

@@ -18,6 +18,39 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => vi.useRealTimers());
 
+test("side-card details load only when expanded, reuse the response and allow retry", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const result = { checkedAt: repo.updatedAt, items: [{ id: 1, title: "Tests · broken build", createdAt: repo.updatedAt, state: "failure", url: "https://github.com/acme/widgets/actions/runs/1", compareUrl: null }] };
+  const cardDetails = vi.fn().mockRejectedValueOnce(new Error("private error")).mockResolvedValue(result);
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data, cardDetails }, settings: {} });
+  try {
+    const summary = await slot.findByText("Latest failed runs");
+    const details = summary.closest("details")!;
+    expect(cardDetails).not.toHaveBeenCalled();
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await act(async () => {});
+    expect(cardDetails).toHaveBeenLastCalledWith({ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until });
+    expect(slot.getByRole("alert").textContent).not.toContain("private error");
+    fireEvent.click(slot.getByRole("button", { name: "Retry details" }));
+    expect((await slot.findByRole("link", { name: "Tests · broken build" })).getAttribute("href")).toBe(result.items[0].url);
+    details.open = false;
+    fireEvent(details, new Event("toggle"));
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await act(async () => {});
+    expect(cardDetails).toHaveBeenCalledTimes(2);
+    const compareUrl = "https://github.com/acme/widgets/compare/old...new";
+    cardDetails.mockResolvedValue({ ...result, items: [{ ...result.items[0], title: "main · abc1234", state: "success", compareUrl }] });
+    const production = slot.getByText("Recent production deployments").closest("details")!;
+    production.open = true;
+    fireEvent(production, new Event("toggle"));
+    expect((await slot.findByRole("link", { name: "Changes since previous deployment" })).getAttribute("href")).toBe(compareUrl);
+    expect(cardDetails).toHaveBeenLastCalledWith({ kind: "production", repository: repo.repository, environment: "production" });
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("today shows six four-hour bars, clips current details and disables future hours", async () => {
   const restore = mockNativeDialog();
   vi.resetModules();
@@ -220,7 +253,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     await act(async () => {});
     const originalCards = slot.getByRole("region", { name: "acme/widgets" });
     const refreshButton = slot.getByRole("button", { name: "Refresh" });
-    const refreshIcon = refreshButton.querySelector('[data-icon="RefreshCw"]');
+    const refreshIcon = refreshButton.querySelector('svg[data-refresh-icon]');
     expect(refreshIcon).not.toBeNull();
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
@@ -230,7 +263,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     expect(slot.getByText("12.0 / day")).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
-    expect(refreshButton.querySelector('[data-icon="RefreshCw"]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(true);
     expect(refreshIcon?.classList.contains("motion-reduce:animate-none")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).textContent?.trim()).toBe("");
@@ -238,7 +271,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     expect(slot.queryByText(/Loading|Refreshing/)).toBeNull();
     await act(async () => { finish(data); });
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
-    expect(refreshButton.querySelector('[data-icon="RefreshCw"]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
