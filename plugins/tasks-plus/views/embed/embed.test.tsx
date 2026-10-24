@@ -333,7 +333,7 @@ describe("Task embed panel", () => {
     expect(heading.getAttribute("aria-label")).toBe("Task heading");
     expect(
       heading.parentElement!.contains(
-        slot.getByRole("button", { name: "Copy task title" }),
+        slot.getByRole("button", { name: "Copy task key" }),
       ),
     ).toBe(true);
     expect(slot.getAllByText(task.key)).toHaveLength(1);

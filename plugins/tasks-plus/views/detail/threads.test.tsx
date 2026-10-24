@@ -337,9 +337,9 @@ it("shows an epic's tasks and progress and creates a member without turning it i
   await slot.findByRole("button", { name: "2/2 tasks" });
 });
 
-describe("copying the task title", () => {
+describe("copying the task key", () => {
   it.each(["main", "side"])(
-    "copies the key and title from the %s detail view",
+    "copies only the key from the %s detail view",
     async (surface) => {
       const options = { rpc: detailRpc() };
       const slot =
@@ -351,11 +351,11 @@ describe("copying the task title", () => {
               options,
             );
       fireEvent.click(
-        await slot.findByRole("button", { name: "Copy task title" }),
+        await slot.findByRole("button", { name: "Copy task key" }),
       );
-      await slot.findByText("Task title copied");
+      await slot.findByText("Task key copied");
       expect(slot.inspection.experimental_clipboardWrites).toEqual([
-        { text: "TSK-5 · Ship the PR pill" },
+        { text: "TSK-5" },
       ]);
       expect(
         slot.getByRole("textbox", { name: "Task title" }).textContent,
@@ -368,8 +368,8 @@ describe("copying the task title", () => {
       });
       const heading = back.closest("header")!;
       expect(heading.getAttribute("aria-label")).toBe("Task heading");
-      expect(slot.getByRole("button", { name: "Copy task title" }).closest("header")).toBe(heading);
-      expect(slot.getByText(task.key).nextElementSibling).toBe(slot.getByRole("button", { name: "Copy task title" }));
+      expect(slot.getByRole("button", { name: "Copy task key" }).closest("header")).toBe(heading);
+      expect(slot.getByText(task.key).nextElementSibling).toBe(slot.getByRole("button", { name: "Copy task key" }));
       expect(
         heading.parentElement!.contains(
           slot.getByRole("textbox", { name: "Task title" }),
@@ -393,7 +393,7 @@ describe("copying the task title", () => {
     },
   );
 
-  it("copies the current edited title before its save round-trip finishes", async () => {
+  it("copies only the key while the task title is being edited", async () => {
     const slot = renderSlot(
       app.navPanels[0]!,
       { subPath: "task/TSK-5" },
@@ -402,10 +402,10 @@ describe("copying the task title", () => {
     const title = await slot.findByRole("textbox", { name: "Task title" });
     title.textContent = "Updated task title";
     fireEvent.input(title);
-    fireEvent.click(slot.getByRole("button", { name: "Copy task title" }));
-    await slot.findByText("Task title copied");
+    fireEvent.click(slot.getByRole("button", { name: "Copy task key" }));
+    await slot.findByText("Task key copied");
     expect(slot.inspection.experimental_clipboardWrites).toEqual([
-      { text: "TSK-5 · Updated task title" },
+      { text: "TSK-5" },
     ]);
   });
 
@@ -424,10 +424,10 @@ describe("copying the task title", () => {
         },
       );
       fireEvent.click(
-        await slot.findByRole("button", { name: "Copy task title" }),
+        await slot.findByRole("button", { name: "Copy task key" }),
       );
-      await slot.findByText("Could not copy task title. Please try again.");
-      expect(slot.queryByText("Task title copied")).toBeNull();
+      await slot.findByText("Could not copy task key. Please try again.");
+      expect(slot.queryByText("Task key copied")).toBeNull();
     },
   );
 });
