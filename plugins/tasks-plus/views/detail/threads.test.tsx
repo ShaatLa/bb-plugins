@@ -336,3 +336,71 @@ it("shows an epic's tasks and progress and creates a member without turning it i
   await slot.behavior.emitRealtime("tasks:changed", { taskId: remaining.id, projectId: PROJECT_ID });
   await slot.findByRole("button", { name: "2/2 tasks" });
 });
+
+describe("copying the task title", () => {
+  it.each(["main", "side"])(
+    "copies the key and title from the %s detail view",
+    async (surface) => {
+      const options = { rpc: detailRpc() };
+      const slot =
+        surface === "main"
+          ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+          : renderSlot(
+              app.threadPanelActions[0]!,
+              { threadId: "thr_copy", params: { taskKey: "TSK-5" } },
+              options,
+            );
+      fireEvent.click(
+        await slot.findByRole("button", { name: "Copy task title" }),
+      );
+      await slot.findByText("Task title copied");
+      expect(slot.inspection.experimental_clipboardWrites).toEqual([
+        { text: "TSK-5 · Ship the PR pill" },
+      ]);
+      expect(
+        slot.getByRole("textbox", { name: "Task title" }).textContent,
+      ).toBe(task.title);
+      expect(slot.rpcCalls.some((call) => call.method === "updateTask")).toBe(
+        false,
+      );
+    },
+  );
+
+  it("copies the current edited title before its save round-trip finishes", async () => {
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "task/TSK-5" },
+      { rpc: detailRpc() },
+    );
+    const title = await slot.findByRole("textbox", { name: "Task title" });
+    title.textContent = "Updated task title";
+    fireEvent.input(title);
+    fireEvent.click(slot.getByRole("button", { name: "Copy task title" }));
+    await slot.findByText("Task title copied");
+    expect(slot.inspection.experimental_clipboardWrites).toEqual([
+      { text: "TSK-5 · Updated task title" },
+    ]);
+  });
+
+  it.each(["refused", "failed"])(
+    "reports clipboard writes that are %s",
+    async (failure) => {
+      const slot = renderSlot(
+        app.navPanels[0]!,
+        { subPath: "task/TSK-5" },
+        {
+          rpc: detailRpc(),
+          experimental_copyToClipboard: async () => {
+            if (failure === "failed") throw new Error("Clipboard unavailable");
+            return false;
+          },
+        },
+      );
+      fireEvent.click(
+        await slot.findByRole("button", { name: "Copy task title" }),
+      );
+      await slot.findByText("Could not copy task title. Please try again.");
+      expect(slot.queryByText("Task title copied")).toBeNull();
+    },
+  );
+});
