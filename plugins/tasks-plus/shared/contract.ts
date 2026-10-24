@@ -1,4 +1,4 @@
-import { defineRpcContract } from "@get-bb/plugin-sdk";
+import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   TASK_SORTS,
@@ -604,7 +604,7 @@ const updatePresetInputSchema = z
     }
   });
 
-export const tasksRpcContract = defineRpcContract({
+export const tasksRpcContract = {
   createFolder: {
     input: z
       .object({
@@ -1050,7 +1050,7 @@ export const tasksRpcContract = defineRpcContract({
       })
       .strict(),
   },
-});
+} as const satisfies PluginRpcContract;
 
 export type TasksRpcContract = typeof tasksRpcContract;
 export type Folder = z.infer<typeof folderSchema>;
