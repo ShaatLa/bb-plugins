@@ -10,6 +10,10 @@
     {
       "name": "tasks-plus",
       "source": "./plugins/tasks-plus"
+    },
+    {
+      "name": "delivery-dashboard",
+      "source": "./plugins/delivery-dashboard"
     }
   ]
 }

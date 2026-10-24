@@ -4,6 +4,7 @@ BB plugins maintained by [ShaatLa](https://github.com/ShaatLa).
 
 | Plugin | Description | Source |
 | --- | --- | --- |
+| Delivery Dashboard | GitHub delivery metrics, CI history, review queues and commit activity, including large repositories. | [delivery-dashboard](plugins/delivery-dashboard/) |
 | Tasks Plus | BB Tasks with existing-thread dispatch, remembered projects, kanban side panel and project defaults. | [tasks-plus](plugins/tasks-plus/) |
 | Antigravity provider | Use the installed agy with Google models, BB tools, live quotas and diagnostics. | [provider-antigravity](plugins/provider-antigravity/) |
 
@@ -13,6 +14,7 @@ Requires BB 0.46.1 or newer. Antigravity additionally requires an installed, sig
 For a private repository, Git must have access to this GitHub account.
 
 ```sh
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin delivery-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
 
 # Disable built-in Tasks before activating its replacement.
