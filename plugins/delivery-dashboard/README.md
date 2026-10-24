@@ -1,6 +1,6 @@
 # Delivery Dashboard for BB
 
-Adds a responsive **Delivery dashboard** page in BB's sidebar with GitHub deployment frequency, open PR count, and CI pass rate for multiple repositories. Refreshes every five minutes by default, with an immediate Refresh button.
+Adds a responsive **Delivery dashboard** page in BB's sidebar with GitHub deployment frequency, open PR count, and CI pass rate for multiple repositories. Refreshes every five minutes by default, with an immediate Refresh icon button. The same reload icon spins while loading, keeping its size and respecting reduced-motion preferences. External links use compact icons.
 
 Open **Delivery dashboard** using the package icon in BB’s navigation sidebar. The page route is `/plugins/delivery-dashboard/dashboard`; the old homepage section is removed.
 

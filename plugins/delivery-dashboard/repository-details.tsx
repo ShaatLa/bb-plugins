@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { productionTarget } from "./production";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
-import { UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
 
@@ -35,7 +35,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
           <UrlLink href={pr.url} className="min-w-0 break-words text-sm hover:underline">#{pr.number} {pr.title}</UrlLink>
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground" title={`Opened ${new Date(pr.createdAt).toLocaleString()}`}>{ageLabel(pr.createdAt, repo.updatedAt)} open</span>
         </li>)}</ul>}
-      <UrlLink href={`https://github.com/${repo.repository}/pulls?q=${encodeURIComponent("is:pr is:open draft:false review:none")}`} className="inline-block text-xs text-muted-foreground hover:underline">View review queue ↗</UrlLink>
+      <UrlLink href={`https://github.com/${repo.repository}/pulls?q=${encodeURIComponent("is:pr is:open draft:false review:none")}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">View review queue<Icon name="ExternalLink" aria-hidden className="size-3 shrink-0" /></UrlLink>
     </Card>
     <Card role="region" aria-label="Latest production deployment" className="space-y-3 p-4">
       <h4 className="text-sm font-medium">Latest production deployment</h4>
@@ -45,7 +45,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
           <p className="break-all text-sm">{deployment.environment} · {deployment.ref}</p>
           <p className="text-xs text-muted-foreground" title={new Date(deployment.createdAt).toLocaleString()}>Created {ageLabel(deployment.createdAt, repo.updatedAt)} ago</p>
           <p className="text-xs text-muted-foreground">Updated {new Date(deployment.updatedAt).toLocaleString()}</p>
-          <UrlLink href={deployment.url} className="inline-block text-sm hover:underline">View deployment ↗</UrlLink>
+          <UrlLink href={deployment.url} className="inline-flex items-center gap-1 text-sm hover:underline">View deployment<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}
       {repo.repository.toLowerCase() === productionTarget.repository && <ProductionDeployButton />}
     </Card>
@@ -69,7 +69,7 @@ function ProductionDeployButton() {
     finally { setPending(false); }
   }
   if (url) return <div role="status" className="space-y-2 text-sm">
-    <p>Production workflow requested.</p><UrlLink href={url} className="hover:underline">View workflow ↗</UrlLink>
+    <p>Production workflow requested.</p><UrlLink href={url} className="inline-flex items-center gap-1 hover:underline">View workflow<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
   </div>;
   return <div className="space-y-3 border-t border-border pt-3">
     <Button ref={trigger} size="sm" variant="outline" disabled={pending} aria-expanded={confirm} onClick={() => setConfirm(true)}>Deploy production</Button>
