@@ -49,6 +49,8 @@ export interface Task {
   dueDate: string | null;
   parentTaskId: string | null;
   type: TaskType;
+  executionTarget: "agent" | "owner";
+  requesterThreadId: string | null;
   epicId: string | null;
   position: number;
   createdAt: string;
@@ -152,6 +154,7 @@ export interface UpdateProjectInput {
 }
 
 export interface CreateTaskInput {
+  requesterThreadId?: string | null;
   projectId: string;
   title: string;
   description?: string;
@@ -160,10 +163,12 @@ export interface CreateTaskInput {
   dueDate?: string | null;
   parentTaskId?: string | null;
   type?: TaskType;
+  executionTarget?: "agent" | "owner";
   epicId?: string | null;
 }
 
 export interface UpdateTaskInput {
+  requesterThreadId?: string | null;
   title?: string;
   description?: string;
   status?: TaskStatus;
@@ -171,6 +176,7 @@ export interface UpdateTaskInput {
   dueDate?: string | null;
   parentTaskId?: string | null;
   type?: TaskType;
+  executionTarget?: "agent" | "owner";
   epicId?: string | null;
 }
 
@@ -187,6 +193,7 @@ export interface ListTasksFilters {
   activeOnly?: boolean;
   parentTaskId?: string | null;
   type?: TaskType;
+  executionTarget?: "agent" | "owner";
   epicId?: string | null;
   search?: string;
   sort?: TaskSort;

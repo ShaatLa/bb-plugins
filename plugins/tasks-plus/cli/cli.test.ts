@@ -173,10 +173,10 @@ describe("bb tasks CLI", () => {
 
     const listResult = await harness.runCli(["list", "--project", "CLI"]);
     expect(stdout(listResult)).toContain(
-      "KEY    STATUS   PRIORITY  DUE  TITLE                   LABELS   AGENTS",
+      "KEY    STATUS   EXECUTOR  PRIORITY  DUE  TITLE                   LABELS   AGENTS",
     );
     expect(listResult.stdout).toContain(
-      "CLI-1  backlog  medium    -    Ship the canonical CLI  Backend  0",
+      "CLI-1  backlog  agent     medium    -    Ship the canonical CLI  Backend  0",
     );
 
     const showResult = await harness.runCli(["show", "cli-1", "--json"]);

@@ -1,3 +1,4 @@
+import { useBbContext } from "@get-bb/plugin-sdk/app";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
@@ -143,6 +144,7 @@ function blankDraft(
     labelIds: [],
     dueDate: "",
     type: "task",
+    executionTarget: "agent",
     epicId: null,
   };
 }
@@ -161,6 +163,7 @@ export function NewTaskDialog({
   defaultStatus,
 }: NewTaskDialogProps) {
   const rpc = useTasksRpc();
+  const bbContext = useBbContext();
   const navigation = useTasksNavigation();
   const projects = useProjects();
 
@@ -183,7 +186,8 @@ export function NewTaskDialog({
     setDraft((current) => {
       const resolved = {
         ...current,
-        epicId: current.projectId === effectiveProjectId ? current.epicId : null,
+        epicId:
+          current.projectId === effectiveProjectId ? current.epicId : null,
         projectId: effectiveProjectId,
         labelIds: labels.data
           ? current.labelIds.filter((id) =>
@@ -343,7 +347,13 @@ export function NewTaskDialog({
         dueDate: dueDate === "" ? null : dueDate,
         parentTaskId: null,
         type,
-        epicId: type === "epic" || draft.projectId !== effectiveProjectId ? null : epicId,
+        executionTarget: draft.executionTarget ?? "agent",
+        requesterThreadId:
+          draft.executionTarget === "owner" ? bbContext.threadId : null,
+        epicId:
+          type === "epic" || draft.projectId !== effectiveProjectId
+            ? null
+            : epicId,
         labelIds,
       });
       if (!result.ok) {
@@ -479,7 +489,11 @@ export function NewTaskDialog({
             onChange={(markdown) =>
               updateDraft(() => ({ description: markdown }))
             }
-            placeholder="Description — rich text, round-trips as markdown for agents"
+            placeholder={
+              draft.executionTarget === "owner"
+                ? "Action to take, why the owner is needed, and how to verify completion…"
+                : "Description — rich text, round-trips as markdown for agents"
+            }
             className="mt-2 min-h-16 flex-auto overflow-y-auto"
             onAttachFiles={stageMore}
           />
@@ -501,13 +515,8 @@ export function NewTaskDialog({
             </p>
           ) : null}
         </div>
-        <div
-          className={cn(
-            "shrink-0 px-4 pt-3",
-            createdTask && "hidden",
-          )}
-        >
-          <div className="flex min-w-0 items-center gap-1.5 border-b border-border-hairline pb-2">
+        <div className={cn("shrink-0 px-4 pt-3", createdTask && "hidden")}>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border-hairline pb-2">
             <TaskFieldPicker
               dialogOpen={open}
               label="Project"
@@ -524,11 +533,28 @@ export function NewTaskDialog({
               dialogOpen={open}
               label="Type"
               value={type}
-              options={TASK_TYPES.map((value) => ({ value, label: value === "epic" ? "Epic" : "Task" }))}
-              onValueChange={(type) => updateDraft(() => ({ type, epicId: null }))}
+              options={TASK_TYPES.map((value) => ({
+                value,
+                label: value === "epic" ? "Epic" : "Task",
+              }))}
+              onValueChange={(type) =>
+                updateDraft(() => ({ type, epicId: null }))
+              }
             />
           </div>
           <div className="flex flex-wrap items-center gap-1.5 pt-2">
+            <TaskFieldPicker<"agent" | "owner">
+              dialogOpen={open}
+              label="Executor"
+              value={draft.executionTarget ?? "agent"}
+              options={[
+                { value: "agent", label: "Agent" },
+                { value: "owner", label: "Owner action" },
+              ]}
+              onValueChange={(executionTarget) =>
+                updateDraft(() => ({ executionTarget }))
+              }
+            />
             {type === "task" ? (
               <EpicPicker
                 projectId={effectiveProjectId}

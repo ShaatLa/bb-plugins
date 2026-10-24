@@ -524,6 +524,8 @@ describe("delegation seed prompt", () => {
       dueDate: null,
       parentTaskId: null,
       type: "task",
+      executionTarget: "agent",
+      requesterThreadId: null,
       epicId: null,
       position: 1_024,
       createdAt: "2026-07-15T17:01:00.000Z",

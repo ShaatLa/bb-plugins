@@ -29,16 +29,29 @@ import {
   type BoardCardMeta,
   type BoardData,
 } from "./board-data.js";
-import { labelFilterOptions, selectedLabelIds, STATUS_LABELS } from "../list/lib.js";
+import {
+  labelFilterOptions,
+  selectedLabelIds,
+  STATUS_LABELS,
+} from "../list/lib.js";
 import { ListFilterBar, type ListFilterState } from "../list/filter-bar.js";
-import { listPreferenceScope, loadListPreference, storeListPreference } from "../list/list-preference.js";
+import {
+  listPreferenceScope,
+  loadListPreference,
+  storeListPreference,
+} from "../list/list-preference.js";
 import { matchesFilters } from "../list/optimistic.js";
 import { Button } from "@/components/ui/button";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { QuestionCount, useQuestionCounts } from "../../components/question-count";
+import {
+  QuestionCount,
+  useQuestionCounts,
+} from "../../components/question-count";
+
+import { DetailToasts, useDetailToasts } from "../detail/toast";
 
 const DRAG_THRESHOLD_PX = 5;
 
@@ -124,12 +137,24 @@ function TaskCard({
           ? "rotate-2 shadow-md"
           : "cursor-pointer touch-none hover:border-input",
         dragging && "opacity-40",
+        task.executionTarget === "owner" && "border-l-[3px] border-l-warning",
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
           <span className="shrink-0 tabular-nums">{task.key}</span>
-          {task.type === "epic" ? <span className="inline-flex items-center gap-1"><Icon name="Zap" className="size-3" />Epic</span> : null}
+          {task.executionTarget === "owner" ? (
+            <span className="inline-flex items-center gap-1 text-warning">
+              <Icon name="User" className="size-3" />
+              Owner
+            </span>
+          ) : null}
+          {task.type === "epic" ? (
+            <span className="inline-flex items-center gap-1">
+              <Icon name="Zap" className="size-3" />
+              Epic
+            </span>
+          ) : null}
           <WorkingAgentsChip threads={meta.workingThreads} />
         </div>
         <QuestionCount count={unansweredQuestions} />
@@ -196,14 +221,20 @@ interface BoardViewProps {
 
 export function BoardView({ projectId }: BoardViewProps) {
   const rpc = useTasksRpc();
+  const { toasts, push, dismiss } = useDetailToasts();
   const navigation = useTasksNavigation();
   const preferenceScope = listPreferenceScope(projectId, false);
-  const [filters, setFilters] = useState(() => loadListPreference(preferenceScope).filters);
+  const [filters, setFilters] = useState(
+    () => loadListPreference(preferenceScope).filters,
+  );
   useEffect(() => {
     setFilters(loadListPreference(preferenceScope).filters);
   }, [preferenceScope]);
   const changeFilters = (next: ListFilterState) => {
-    storeListPreference(preferenceScope, { ...loadListPreference(preferenceScope), filters: next });
+    storeListPreference(preferenceScope, {
+      ...loadListPreference(preferenceScope),
+      filters: next,
+    });
     setFilters(next);
   };
   const board = useTasksQuery<BoardData>(
@@ -226,14 +257,31 @@ export function BoardView({ projectId }: BoardViewProps) {
   }, [board.data]);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
-  const labelOptions = labelFilterOptions([...(board.data?.labelsById.values() ?? [])]);
+  const labelOptions = labelFilterOptions([
+    ...(board.data?.labelsById.values() ?? []),
+  ]);
   const labelIds = selectedLabelIds(labelOptions, filters.labelNames);
-  const visibleColumns = columns && groupColumns(Object.values(columns).flat().filter((task) =>
-    (!filters.unansweredOnly || (questionCounts.data?.get(task.id) ?? 0) > 0) &&
-    (filters.type === undefined || task.type === filters.type) &&
-    (filters.labelNames.length === 0 || labelIds.length > 0) &&
-    matchesFilters(task, filters.statuses, filters.priorities, labelIds),
-  ));
+  const visibleColumns =
+    columns &&
+    groupColumns(
+      Object.values(columns)
+        .flat()
+        .filter(
+          (task) =>
+            (!filters.unansweredOnly ||
+              (questionCounts.data?.get(task.id) ?? 0) > 0) &&
+            (filters.executionTarget === undefined ||
+              task.executionTarget === filters.executionTarget) &&
+            (filters.type === undefined || task.type === filters.type) &&
+            (filters.labelNames.length === 0 || labelIds.length > 0) &&
+            matchesFilters(
+              task,
+              filters.statuses,
+              filters.priorities,
+              labelIds,
+            ),
+        ),
+    );
   const visibleColumnsRef = useRef(visibleColumns);
   visibleColumnsRef.current = visibleColumns;
 
@@ -296,11 +344,13 @@ export function BoardView({ projectId }: BoardViewProps) {
     );
     // Keep hidden cards in place when translating a filtered drop to the full column.
     const remaining = current[toStatus].filter((task) => task.id !== taskId);
-    const fullIndex = neighbors.afterTaskId !== null
-      ? remaining.findIndex((task) => task.id === neighbors.afterTaskId)
-      : neighbors.beforeTaskId !== null
-        ? remaining.findIndex((task) => task.id === neighbors.beforeTaskId) + 1
-        : remaining.length;
+    const fullIndex =
+      neighbors.afterTaskId !== null
+        ? remaining.findIndex((task) => task.id === neighbors.afterTaskId)
+        : neighbors.beforeTaskId !== null
+          ? remaining.findIndex((task) => task.id === neighbors.beforeTaskId) +
+            1
+          : remaining.length;
     setColumns(applyBoardMove(current, taskId, toStatus, fullIndex));
     void rpc
       .call("boardMove", {
@@ -313,6 +363,10 @@ export function BoardView({ projectId }: BoardViewProps) {
       .then(
         (result) => {
           if (!result.ok) board.refresh();
+          else if (result.notification === "not_sent")
+            push(
+              "Saved as Done, but the requester thread could not be notified. Notify it manually.",
+            );
         },
         () => board.refresh(),
       );
@@ -460,7 +514,10 @@ export function BoardView({ projectId }: BoardViewProps) {
     if (indicatorBeforeTaskId === null) children.push(indicator);
 
     return (
-      <div key={status} className="flex max-h-full min-w-[230px] flex-1 basis-[230px] flex-col">
+      <div
+        key={status}
+        className="flex max-h-full min-w-[230px] flex-1 basis-[230px] flex-col"
+      >
         <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold">
           <StatusIcon status={status} />
           <span>{STATUS_LABELS[status]}</span>
@@ -502,46 +559,55 @@ export function BoardView({ projectId }: BoardViewProps) {
         filters={filters}
         onChange={changeFilters}
         labelOptions={labelOptions}
-        taskCount={Object.values(visibleColumns).reduce((count, tasks) => count + tasks.length, 0)}
+        taskCount={Object.values(visibleColumns).reduce(
+          (count, tasks) => count + tasks.length,
+          0,
+        )}
       />
       {filters.unansweredOnly && questionCounts.error ? (
-        <p role="alert" className="px-4 py-2 text-sm text-destructive">Couldn't load question counts. <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>Retry questions</Button></p>
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">
+          Couldn't load question counts.{" "}
+          <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>
+            Retry questions
+          </Button>
+        </p>
       ) : null}
-    <div
-      ref={boardRef}
-      className={cn(
-        "flex min-h-0 flex-1 items-start gap-3 overflow-x-auto p-4",
-        drag !== null && "cursor-grabbing",
-      )}
-    >
-      {visibleBoardStatuses(visibleColumns).map(renderColumn)}
-      {drag && ghostTask ? (
-        <div
-          className="pointer-events-none fixed z-50"
-          style={{
-            left: drag.x - drag.offsetX,
-            top: drag.y - drag.offsetY,
-            width: drag.width,
+      <div
+        ref={boardRef}
+        className={cn(
+          "flex min-h-0 flex-1 items-start gap-3 overflow-x-auto p-4",
+          drag !== null && "cursor-grabbing",
+        )}
+      >
+        {visibleBoardStatuses(visibleColumns).map(renderColumn)}
+        {drag && ghostTask ? (
+          <div
+            className="pointer-events-none fixed z-50"
+            style={{
+              left: drag.x - drag.offsetX,
+              top: drag.y - drag.offsetY,
+              width: drag.width,
+            }}
+          >
+            <TaskCard
+              task={ghostTask}
+              labelsById={labelsById}
+              meta={metaByTaskId.get(ghostTask.id) ?? EMPTY_META}
+              unansweredQuestions={questionCounts.data?.get(ghostTask.id)}
+              ghost
+            />
+          </div>
+        ) : null}
+        <DetailToasts toasts={toasts} onDismiss={dismiss} />
+        <NewTaskDialog
+          open={quickAddStatus !== null}
+          onOpenChange={(open) => {
+            if (!open) setQuickAddStatus(null);
           }}
-        >
-          <TaskCard
-            task={ghostTask}
-            labelsById={labelsById}
-            meta={metaByTaskId.get(ghostTask.id) ?? EMPTY_META}
-            unansweredQuestions={questionCounts.data?.get(ghostTask.id)}
-            ghost
-          />
-        </div>
-      ) : null}
-      <NewTaskDialog
-        open={quickAddStatus !== null}
-        onOpenChange={(open) => {
-          if (!open) setQuickAddStatus(null);
-        }}
-        projectId={projectId}
-        defaultStatus={quickAddStatus ?? undefined}
-      />
-    </div>
+          projectId={projectId}
+          defaultStatus={quickAddStatus ?? undefined}
+        />
+      </div>
     </div>
   );
 }

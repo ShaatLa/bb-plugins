@@ -136,6 +136,7 @@ export const TaskRow = memo(function TaskRow({
           "relative grid w-full grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-border-hairline px-3.5 py-1.5 text-left transition-opacity hover:bg-state-hover",
           "@md:flex @md:h-[34px] @md:py-0",
           pending && "opacity-70",
+          task.executionTarget === "owner" && "border-l-[3px] border-l-warning",
         )}
       >
         <button
@@ -176,7 +177,18 @@ export const TaskRow = memo(function TaskRow({
           {task.title}
         </span>
         <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
-          {task.type === "epic" ? <span className={RAIL_CHIP_CLASS}><Icon name="Zap" className="size-3" />Epic</span> : null}
+          {task.executionTarget === "owner" ? (
+            <span className="flex items-center gap-1 text-warning">
+              <Icon name="User" className="size-3" />
+              Owner
+            </span>
+          ) : null}
+          {task.type === "epic" ? (
+            <span className={RAIL_CHIP_CLASS}>
+              <Icon name="Zap" className="size-3" />
+              Epic
+            </span>
+          ) : null}
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
           <QuestionCount count={unansweredQuestions} />
           <LabelChips task={task} labelsById={labelsById} />

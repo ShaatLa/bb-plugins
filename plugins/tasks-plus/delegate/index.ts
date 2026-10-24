@@ -71,7 +71,10 @@ function markdownSection(title: string, body: string): string {
 function formatSubtasks(subtasks: readonly Task[]): string {
   if (subtasks.length === 0) return "None.";
   return subtasks
-    .map((subtask) => `- ${subtask.key} · ${subtask.title} (${subtask.status})`)
+    .map(
+      (subtask) =>
+        `- ${subtask.key} · ${subtask.title} (${subtask.status})${subtask.executionTarget === "owner" ? " · Owner action: the owner must perform it; do not dispatch or complete it on their behalf" : ""}`,
+    )
     .join("\n");
 }
 
@@ -327,6 +330,8 @@ export function handlers(
   return {
     async delegateToThread(input) {
       const task = requireTask(store.tasks, input.taskId);
+      if (task.executionTarget === "owner")
+        throw new Error("Owner actions cannot be dispatched to an agent");
       const project = requireProject(store.tasks, task.projectId);
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
       if (
@@ -386,6 +391,8 @@ export function handlers(
     },
     async delegate(input) {
       const task = requireTask(store.tasks, input.taskId);
+      if (task.executionTarget === "owner")
+        throw new Error("Owner actions cannot be dispatched to an agent");
       const project = requireProject(store.tasks, task.projectId);
       const linkedBbProjectId = requireLinkedBbProject(project);
       const preset = requirePreset(store.tasks, input.presetId);
@@ -481,6 +488,8 @@ export function handlers(
 
     async taskThreadsAttach(input) {
       const task = requireTask(store.tasks, input.taskId);
+      if (task.executionTarget === "owner")
+        throw new Error("Owner actions cannot be dispatched to an agent");
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
       const title = truncateToWidth(
         thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task),
@@ -502,6 +511,8 @@ export function handlers(
 
     async taskThreadsDetach(input) {
       const task = requireTask(store.tasks, input.taskId);
+      if (task.executionTarget === "owner")
+        throw new Error("Owner actions cannot be dispatched to an agent");
       const taskThread = store.tasks.getTaskThreadByThreadId(
         task.id,
         input.threadId,

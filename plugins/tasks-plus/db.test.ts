@@ -43,6 +43,7 @@ function cursorForEmptyArrayFilter(
     activeOnly: false,
     parentTaskId: { specified: false, value: null },
     type: null,
+    executionTarget: null,
     epicId: { specified: false },
     search: null,
     sort: "manual",
@@ -64,7 +65,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(10);
+      ).toBe(11);
     } finally {
       await harness.dispose();
     }

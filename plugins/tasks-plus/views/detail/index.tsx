@@ -134,7 +134,9 @@ function SubTasksSection({
 
   return (
     <section ref={ref} className="mt-5">
-      {task.type === "epic" ? <h2 className="mb-2 text-sm font-semibold">Tasks in this epic</h2> : null}
+      {task.type === "epic" ? (
+        <h2 className="mb-2 text-sm font-semibold">Tasks in this epic</h2>
+      ) : null}
       {subtasks.map((subtask) => (
         <button
           key={subtask.id}
@@ -243,12 +245,17 @@ function TaskDetail({ task }: { task: Task }) {
   );
   const epicId = task.epicId ?? parent.data?.epicId ?? null;
   const epic = useTasksQuery(
-    async (query) => epicId ? (await query.call("getTask", { taskId: epicId })).task : null,
+    async (query) =>
+      epicId ? (await query.call("getTask", { taskId: epicId })).task : null,
     ["tasks:changed"],
     [epicId],
   );
   const subtasks = useTasksQuery(
-    async (query) => listAllTasks(query, task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id }),
+    async (query) =>
+      listAllTasks(
+        query,
+        task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id },
+      ),
     ["tasks:changed"],
     [task.id, task.type],
   );
@@ -308,6 +315,10 @@ function TaskDetail({ task }: { task: Task }) {
         ...input,
       });
       if (!result.ok) push(result.error.message);
+      else if (result.notification === "not_sent")
+        push(
+          "Saved as Done, but the requester thread could not be notified. Notify it manually.",
+        );
     } catch (error) {
       push(errorMessage(error));
     }
@@ -364,7 +375,9 @@ function TaskDetail({ task }: { task: Task }) {
       const result = await rpc.call("createTask", {
         projectId: task.projectId,
         title,
-        ...(task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id }),
+        ...(task.type === "epic"
+          ? { epicId: task.id }
+          : { parentTaskId: task.id }),
         status: "todo",
       });
       if (!result.ok) {
@@ -390,13 +403,28 @@ function TaskDetail({ task }: { task: Task }) {
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
-          {task.type === "epic" || epic.data || parentTask || subtasks.data?.length ? (
+          {task.type === "epic" ||
+          epic.data ||
+          parentTask ||
+          subtasks.data?.length ? (
             <div className="mb-4 flex flex-wrap items-center gap-2">
-              {task.type === "epic" ? <span className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">Epic</span> : null}
+              {task.type === "epic" ? (
+                <span className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">
+                  Epic
+                </span>
+              ) : null}
               {epic.data ? (
-                <button type="button" className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input" onClick={() => navigation.go({ kind: "task", taskKey: epic.data!.key })}>
+                <button
+                  type="button"
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input"
+                  onClick={() =>
+                    navigation.go({ kind: "task", taskKey: epic.data!.key })
+                  }
+                >
                   <Icon name="Zap" className="size-3" />
-                  <span className="truncate">{epic.data.key} · {epic.data.title}</span>
+                  <span className="truncate">
+                    {epic.data.key} · {epic.data.title}
+                  </span>
                 </button>
               ) : null}
               {parentTask ? (
@@ -452,7 +480,11 @@ function TaskDetail({ task }: { task: Task }) {
             onChange={onDescriptionChange}
             variant="doc"
             className="min-h-24"
-            placeholder="Add a description… rich text: headings, lists, code, checkboxes, @mentions"
+            placeholder={
+              task.executionTarget === "owner"
+                ? "Action to take, why the owner is needed, and how to verify completion…"
+                : "Add a description… rich text: headings, lists, code, checkboxes, @mentions"
+            }
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}
@@ -537,10 +569,15 @@ function TaskDetail({ task }: { task: Task }) {
               key={task.id}
               taskId={task.id}
               adding={addingQuestion === task.id}
-              onAddingChange={(adding) => setAddingQuestion(adding ? task.id : null)}
+              onAddingChange={(adding) =>
+                setAddingQuestion(adding ? task.id : null)
+              }
               onError={push}
             />
-            <TaskActivity taskId={task.id} pullRequests={pullRequests.data?.pullRequests} />
+            <TaskActivity
+              taskId={task.id}
+              pullRequests={pullRequests.data?.pullRequests}
+            />
           </div>
         </div>
 

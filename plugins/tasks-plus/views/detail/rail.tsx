@@ -1,3 +1,4 @@
+import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
 import type {
   Label,
@@ -53,6 +54,8 @@ import { cn } from "@/lib/utils";
 
 export interface TaskPropertyUpdate {
   status?: TaskStatus;
+  executionTarget?: Task["executionTarget"];
+  requesterThreadId?: string | null;
   type?: Task["type"];
   epicId?: string | null;
   priority?: TaskPriority;
@@ -116,7 +119,85 @@ function StatusMenu({
   );
 }
 
-function TypeMenu({ task, onUpdate, triggerClassName }: {
+function ExecutorMenu({
+  task,
+  onUpdate,
+  triggerClassName,
+}: {
+  task: Task;
+  onUpdate: TaskPropertiesProps["onUpdate"];
+  triggerClassName: string;
+}) {
+  const context = useBbContext();
+  const navigate = useBbNavigate();
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Executor"
+            className={triggerClassName}
+          >
+            <Icon
+              name={task.executionTarget === "owner" ? "User" : "Bot"}
+              className="size-3.5"
+            />
+            {task.executionTarget === "owner" ? "Owner action" : "Agent"}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          {(["agent", "owner"] as const).map((executionTarget) => (
+            <DropdownMenuItem
+              key={executionTarget}
+              onSelect={() =>
+                onUpdate({
+                  executionTarget,
+                  ...(executionTarget === "owner" &&
+                  !task.requesterThreadId &&
+                  context.threadId
+                    ? { requesterThreadId: context.threadId }
+                    : {}),
+                })
+              }
+            >
+              {executionTarget === "owner" ? "Owner action" : "Agent"}
+            </DropdownMenuItem>
+          ))}
+          {task.executionTarget === "owner" && context.threadId ? (
+            <DropdownMenuItem
+              onSelect={() => onUpdate({ requesterThreadId: context.threadId })}
+            >
+              Use this thread as requester
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {task.executionTarget === "owner" ? (
+        task.requesterThreadId ? (
+          <button
+            type="button"
+            className={triggerClassName}
+            onClick={() => navigate.toThread(task.requesterThreadId!)}
+          >
+            <Icon name="ArrowUpRight" className="size-3.5" />
+            Requester thread
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            No requester thread
+          </span>
+        )
+      ) : null}
+    </>
+  );
+}
+
+function TypeMenu({
+  task,
+  onUpdate,
+  triggerClassName,
+}: {
   task: Task;
   onUpdate: (update: TaskPropertyUpdate) => void;
   triggerClassName: string;
@@ -124,8 +205,15 @@ function TypeMenu({ task, onUpdate, triggerClassName }: {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" aria-label="Task type" className={triggerClassName}>
-          <Icon name={task.type === "epic" ? "Zap" : "ListTodo"} className="size-3.5" />
+        <button
+          type="button"
+          aria-label="Task type"
+          className={triggerClassName}
+        >
+          <Icon
+            name={task.type === "epic" ? "Zap" : "ListTodo"}
+            className="size-3.5"
+          />
           {task.type === "epic" ? "Epic" : "Task"}
         </button>
       </DropdownMenuTrigger>
@@ -549,7 +637,16 @@ export function PropertiesRail({
       <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
         Properties
       </h2>
-      <TypeMenu task={task} onUpdate={onUpdate} triggerClassName={RAIL_ROW_CLASS} />
+      <TypeMenu
+        task={task}
+        onUpdate={onUpdate}
+        triggerClassName={RAIL_ROW_CLASS}
+      />
+      <ExecutorMenu
+        task={task}
+        onUpdate={onUpdate}
+        triggerClassName={RAIL_ROW_CLASS}
+      />
       {task.type !== "epic" && task.parentTaskId === null ? (
         <EpicPicker
           projectId={task.projectId}
@@ -574,7 +671,11 @@ export function PropertiesRail({
         triggerClassName={RAIL_ROW_CLASS}
       />
       {onAddQuestion ? (
-        <button type="button" className={RAIL_ROW_CLASS} onClick={onAddQuestion}>
+        <button
+          type="button"
+          className={RAIL_ROW_CLASS}
+          onClick={onAddQuestion}
+        >
           <Icon name="FileQuestion" className="size-3.5" />
           Add question
         </button>
@@ -609,31 +710,40 @@ export function PropertiesRail({
         triggerClassName={RAIL_ROW_CLASS}
       />
 
-      <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-        Dispatch target
-      </div>
-      {project !== undefined ? (
-        <DispatchTargetMenu
-          project={project}
-          bbProjects={bbProjects.data ?? []}
-          onError={onError}
-          triggerClassName={RAIL_ROW_CLASS}
-        />
-      ) : (
-        <div className="py-0.5 text-sm text-muted-foreground">…</div>
-      )}
+      {task.executionTarget !== "owner" ? (
+        <>
+          <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
+            Dispatch target
+          </div>
+          {project !== undefined ? (
+            <DispatchTargetMenu
+              project={project}
+              bbProjects={bbProjects.data ?? []}
+              onError={onError}
+              triggerClassName={RAIL_ROW_CLASS}
+            />
+          ) : (
+            <div className="py-0.5 text-sm text-muted-foreground">…</div>
+          )}
 
-      <div className="mt-2.5 py-0.5">
-        <DispatchControl
-          taskId={task.id}
-          projectId={task.projectId}
-          threads={threads}
-          presets={presets}
-          onError={onError}
-          align="start"
-          className="w-full"
-        />
-      </div>
+          <div className="mt-2.5 py-0.5">
+            <DispatchControl
+              taskId={task.id}
+              projectId={task.projectId}
+              threads={threads}
+              presets={presets}
+              onError={onError}
+              align="start"
+              className="w-full"
+            />
+          </div>
+        </>
+      ) : (
+        <p className="mt-3 text-xs text-muted-foreground">
+          The owner performs this action. Mark Done after verifying the result;
+          the requester thread will be notified if set.
+        </p>
+      )}
 
       <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
         Agents
@@ -696,6 +806,11 @@ export function InlineProperties({
         triggerClassName={CHIP_CLASS}
       />
       <TypeMenu task={task} onUpdate={onUpdate} triggerClassName={CHIP_CLASS} />
+      <ExecutorMenu
+        task={task}
+        onUpdate={onUpdate}
+        triggerClassName={CHIP_CLASS}
+      />
       {task.type !== "epic" && task.parentTaskId === null ? (
         <EpicPicker
           projectId={task.projectId}
@@ -737,14 +852,16 @@ export function InlineProperties({
           <Icon name="Plus" className="size-3" />
         </button>
       </LabelsMenu>
-      <DispatchControl
-        taskId={task.id}
-        projectId={task.projectId}
-        threads={threads}
-        presets={presets}
-        onError={onError}
-        className="ml-auto max-w-56"
-      />
+      {task.executionTarget !== "owner" ? (
+        <DispatchControl
+          taskId={task.id}
+          projectId={task.projectId}
+          threads={threads}
+          presets={presets}
+          onError={onError}
+          className="ml-auto max-w-56"
+        />
+      ) : null}
     </div>
   );
 }

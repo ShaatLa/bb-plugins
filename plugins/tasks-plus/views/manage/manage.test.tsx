@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -34,8 +34,9 @@ if (!window.matchMedia) {
 
 const app = await loadPluginApp(() => import("../../app"));
 const { derivePrefix } = await import("./shared.js");
-const { describePresetEnvironment, savePresetDraft } =
-  await import("./preset-dialog.js");
+const { describePresetEnvironment, savePresetDraft } = await import(
+  "./preset-dialog.js"
+);
 const { NEW_TASK_DRAFT_STORAGE_KEY } = await import("./new-task-draft.js");
 
 afterEach(() => {
@@ -93,41 +94,81 @@ describe("NewTaskDialog", () => {
     try {
       const store = createStore(bb);
       registerTasksApi(bb, store);
-      const project = store.tasks.createProject({ name: "Epic verification", prefix: "CHECK", color: "purple" });
-      const otherProject = store.tasks.createProject({ name: "Other project", prefix: "OTHER", color: "blue" });
-      const epic = store.tasks.createTask({ projectId: project.id, title: "Selected initiative", type: "epic" });
-      store.tasks.createTask({ projectId: otherProject.id, title: "Foreign initiative", type: "epic" });
-      const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, {
-        rpc: {
-          listProjects: (input) => harness.callRpc("listProjects", input),
-          listFolders: () => harness.callRpc("listFolders"),
-          listPresets: () => harness.callRpc("listPresets"),
-          sidebarSummary: () => harness.callRpc("sidebarSummary"),
-          listTasks: (input) => harness.callRpc("listTasks", input),
-          listLabels: (input) => harness.callRpc("listLabels", input),
-          createTask: (input) => harness.callRpc("createTask", input),
-        },
+      const project = store.tasks.createProject({
+        name: "Epic verification",
+        prefix: "CHECK",
+        color: "purple",
       });
+      const otherProject = store.tasks.createProject({
+        name: "Other project",
+        prefix: "OTHER",
+        color: "blue",
+      });
+      const epic = store.tasks.createTask({
+        projectId: project.id,
+        title: "Selected initiative",
+        type: "epic",
+      });
+      store.tasks.createTask({
+        projectId: otherProject.id,
+        title: "Foreign initiative",
+        type: "epic",
+      });
+      const slot = renderSlot(
+        app.navPanels[0]!,
+        { subPath: project.id },
+        {
+          context: { threadId: "thr_owner_creator" },
+          rpc: {
+            listProjects: (input) => harness.callRpc("listProjects", input),
+            listFolders: () => harness.callRpc("listFolders"),
+            listPresets: () => harness.callRpc("listPresets"),
+            sidebarSummary: () => harness.callRpc("sidebarSummary"),
+            listTasks: (input) => harness.callRpc("listTasks", input),
+            listLabels: (input) => harness.callRpc("listLabels", input),
+            createTask: (input) => harness.callRpc("createTask", input),
+          },
+        },
+      );
       fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
-      fireEvent.change(await slot.findByLabelText("Task title"), { target: { value: "Task assigned from the dialog" } });
+      fireEvent.change(await slot.findByLabelText("Task title"), {
+        target: { value: "Task assigned from the dialog" },
+      });
+      const dialog = within(slot.getByRole("dialog"));
+      fireEvent.click(dialog.getByRole("button", { name: "Executor" }));
+      fireEvent.click(
+        await slot.findByRole("option", { name: "Owner action" }),
+      );
       fireEvent.click(slot.getByRole("button", { name: "Epic" }));
-      const option = await slot.findByRole("option", { name: /Selected initiative/ });
-      expect(slot.queryByRole("option", { name: /Foreign initiative/ })).toBeNull();
+      const option = await slot.findByRole("option", {
+        name: /Selected initiative/,
+      });
+      expect(
+        slot.queryByRole("option", { name: /Foreign initiative/ }),
+      ).toBeNull();
       fireEvent.click(option);
-      expect(slot.getByRole("button", { name: "Epic" }).textContent).toContain(epic.key);
+      expect(slot.getByRole("button", { name: "Epic" }).textContent).toContain(
+        epic.key,
+      );
       const submit = slot.getByRole("button", { name: "Create task" });
       await waitFor(() => expect(submit).toHaveProperty("disabled", false));
       fireEvent.click(submit);
-      await waitFor(() => expect(store.tasks.listTasks({ epicId: epic.id })).toHaveLength(1));
+      await waitFor(() =>
+        expect(store.tasks.listTasks({ epicId: epic.id })).toHaveLength(1),
+      );
       const member = store.tasks.listTasks({ epicId: epic.id })[0]!;
       expect(member).toMatchObject({
         title: "Task assigned from the dialog",
+        executionTarget: "owner",
+        requesterThreadId: "thr_owner_creator",
         type: "task",
         projectId: project.id,
         epicId: epic.id,
         parentTaskId: null,
       });
-      expect(await harness.callRpc("getTask", { taskId: member.id })).toMatchObject({ task: { epicId: epic.id } });
+      expect(
+        await harness.callRpc("getTask", { taskId: member.id }),
+      ).toMatchObject({ task: { epicId: epic.id } });
       slot.lifecycle.unmount();
     } finally {
       cleanup();
@@ -204,7 +245,9 @@ describe("NewTaskDialog", () => {
               .getAttribute("value"),
           ).toBe("Keep this draft open"),
         );
-        const createButton = slot.getByRole("button", { name: field === "Type" ? "Create epic" : "Create task" });
+        const createButton = slot.getByRole("button", {
+          name: field === "Type" ? "Create epic" : "Create task",
+        });
         await waitFor(() =>
           expect(createButton).toHaveProperty("disabled", false),
         );

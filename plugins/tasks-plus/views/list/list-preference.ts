@@ -94,6 +94,10 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
       : record;
   return {
     filters: {
+      ...(filtersRaw.executionTarget === "agent" ||
+      filtersRaw.executionTarget === "owner"
+        ? { executionTarget: filtersRaw.executionTarget }
+        : {}),
       ...(filtersRaw.unansweredOnly === true ? { unansweredOnly: true } : {}),
       statuses: uniqueValidValues<TaskStatus>(filtersRaw.statuses, STATUS_SET),
       priorities: uniqueValidValues<TaskPriority>(
@@ -101,7 +105,9 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
         PRIORITY_SET,
       ),
       labelNames: uniqueLabelNames(filtersRaw.labelNames),
-      ...(filtersRaw.type === "task" || filtersRaw.type === "epic" ? { type: filtersRaw.type } : {}),
+      ...(filtersRaw.type === "task" || filtersRaw.type === "epic"
+        ? { type: filtersRaw.type }
+        : {}),
     },
     sort: sanitizeSort(record.sort),
   };

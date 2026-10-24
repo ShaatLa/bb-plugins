@@ -114,6 +114,7 @@ function SortChip({
 export interface ListFilterState {
   unansweredOnly?: boolean;
   type?: TaskType;
+  executionTarget?: "agent" | "owner";
   statuses: TaskStatus[];
   priorities: TaskPriority[];
   labelNames: string[];
@@ -129,6 +130,7 @@ export function hasActiveFilters(filters: ListFilterState): boolean {
   return (
     filters.unansweredOnly === true ||
     filters.type !== undefined ||
+    filters.executionTarget !== undefined ||
     filters.statuses.length > 0 ||
     filters.priorities.length > 0 ||
     filters.labelNames.length > 0
@@ -158,13 +160,47 @@ export function ListFilterBar({
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
-        <button type="button" aria-pressed={filters.unansweredOnly === true} className={chipTriggerClass(filters.unansweredOnly === true)} onClick={() => onChange({ ...filters, unansweredOnly: !filters.unansweredOnly })}>
-          <Icon name="FileQuestion" className="size-3" />Needs answer
+        <button
+          type="button"
+          aria-pressed={filters.unansweredOnly === true}
+          className={chipTriggerClass(filters.unansweredOnly === true)}
+          onClick={() =>
+            onChange({ ...filters, unansweredOnly: !filters.unansweredOnly })
+          }
+        >
+          <Icon name="FileQuestion" className="size-3" />
+          Needs answer
         </button>
+        <FilterChip
+          icon="User"
+          label="Executor"
+          selectedNames={
+            filters.executionTarget
+              ? [filters.executionTarget === "owner" ? "Owner" : "Agent"]
+              : []
+          }
+        >
+          {([undefined, "agent", "owner"] as const).map((executionTarget) => (
+            <DropdownMenuCheckboxItem
+              key={executionTarget ?? "all"}
+              checked={filters.executionTarget === executionTarget}
+              onCheckedChange={() => onChange({ ...filters, executionTarget })}
+              onSelect={keepOpen}
+            >
+              {executionTarget === undefined
+                ? "All"
+                : executionTarget === "owner"
+                  ? "Owner"
+                  : "Agent"}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </FilterChip>
         <FilterChip
           icon="Zap"
           label="Type"
-          selectedNames={filters.type ? [filters.type === "epic" ? "Epic" : "Task"] : []}
+          selectedNames={
+            filters.type ? [filters.type === "epic" ? "Epic" : "Task"] : []
+          }
         >
           <DropdownMenuCheckboxItem
             checked={filters.type === undefined}

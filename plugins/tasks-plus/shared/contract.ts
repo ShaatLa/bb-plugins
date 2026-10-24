@@ -15,6 +15,9 @@ export const TASK_STATUSES = [
   "canceled",
 ] as const;
 
+export const EXECUTION_TARGETS = ["agent", "owner"] as const;
+export type ExecutionTarget = (typeof EXECUTION_TARGETS)[number];
+
 export const TASK_TYPES = ["task", "epic"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
@@ -307,6 +310,8 @@ export const taskSchema = z
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),
     type: z.enum(TASK_TYPES).default("task"),
+    executionTarget: z.enum(EXECUTION_TARGETS).default("agent"),
+    requesterThreadId: evidenceThreadSchema.nullable().default(null),
     epicId: idSchema.nullable().default(null),
     position: z.number(),
     createdAt: z.string(),
@@ -423,6 +428,7 @@ const tasksDomainErrorSchema = z
     code: z.enum([
       "task_parent_invalid",
       "task_epic_invalid",
+      "task_execution_invalid",
       "secret_detected",
       "subtask_depth_exceeded",
       "subtask_project_mismatch",
@@ -436,7 +442,13 @@ const tasksDomainErrorSchema = z
   .strict();
 
 const taskMutationResultSchema = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), task: taskSchema }).strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      task: taskSchema,
+      notification: z.enum(["sent", "not_sent"]).optional(),
+    })
+    .strict(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).strict(),
 ]);
 
@@ -486,8 +498,10 @@ const updateTaskInputSchema = z
     dueDate: dueDateSchema.nullable().optional(),
     parentTaskId: idSchema.nullable().optional(),
     type: z.enum(TASK_TYPES).optional(),
+    executionTarget: z.enum(EXECUTION_TARGETS).optional(),
     epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
+    requesterThreadId: evidenceThreadSchema.nullable().optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()
@@ -500,6 +514,8 @@ const updateTaskInputSchema = z
       input.dueDate !== undefined ||
       input.parentTaskId !== undefined ||
       input.type !== undefined ||
+      input.executionTarget !== undefined ||
+      input.requesterThreadId !== undefined ||
       input.epicId !== undefined ||
       input.labelIds !== undefined,
     { message: "at least one task field must be updated" },
@@ -671,6 +687,8 @@ export const tasksRpcContract = defineRpcContract({
         dueDate: dueDateSchema.nullable().default(null),
         parentTaskId: idSchema.nullable().default(null),
         type: z.enum(TASK_TYPES).default("task"),
+        executionTarget: z.enum(EXECUTION_TARGETS).default("agent"),
+        requesterThreadId: evidenceThreadSchema.nullable().default(null),
         epicId: idSchema.nullable().default(null),
         labelIds: taskLabelsSchema.default([]),
         template: nonBlankStringSchema.optional(),
@@ -802,6 +820,7 @@ export const tasksRpcContract = defineRpcContract({
         activeOnly: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
+        executionTarget: z.enum(EXECUTION_TARGETS).optional(),
         epicId: idSchema.nullable().optional(),
         search: z.string().optional(),
         sort: taskSortSchema.default("manual"),
