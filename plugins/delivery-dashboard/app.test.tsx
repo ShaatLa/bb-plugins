@@ -25,7 +25,8 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   const isolated = await loadPluginApp(() => import("./app"));
   const ciInsights = summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
     created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z`,
-  })), "main");
+  })).concat([{ id: 4, workflow_id: 43, name: "Slower workflow", head_branch: "main", event: "push", conclusion: "success",
+    created_at: "2026-10-20T04:00:00Z", run_started_at: "2026-10-20T04:00:00Z", updated_at: "2026-10-20T04:05:00Z" }]), "main");
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights }] }) }, settings: {} });
   try {
     const attention = await slot.findByRole("region", { name: "CI health" });
@@ -38,10 +39,14 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
       slot.getByRole("region", { name: "Repository activity in the last 7 days" }), slot.getByRole("region", { name: "PRs awaiting review" })];
     for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(attention.contains(slot.getByRole("region", { name: "CI signals" }))).toBe(true);
-    expect(timings.textContent).toContain("6m 0s");
-    expect(timings.textContent).toContain("Timing available for 3 of 3 runs");
+    expect(timings.textContent).toContain("11m 0s");
+    expect(timings.textContent).toContain("Timing available for 4 of 4 runs");
     expect(slot.getByRole("link", { name: /Unit tests · main · #3/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
-    expect(slot.getByRole("link", { name: /Unit tests3\/3 timed/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/workflows/42");
+    const workflows = slot.getByRole("list", { name: "Workflow timings" });
+    expect(workflows.querySelector("li a")?.textContent).toBe("Slower workflow");
+    const unit = workflows.querySelector('a[href$="/actions/workflows/42"]');
+    expect(unit?.closest("li")?.textContent).toContain("Total 6m 0s");
+    expect(unit?.closest("li")?.querySelector(".text-lg")?.textContent).toBe("2m 0s");
   } finally { slot.lifecycle.unmount(); }
 });
 
