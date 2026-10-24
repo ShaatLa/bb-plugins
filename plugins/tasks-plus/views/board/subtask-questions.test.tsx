@@ -255,3 +255,74 @@ it("adds own and child question counts, prioritizes children needing answers and
   );
   expect(own.selectedOptionIds).toEqual([]);
 });
+
+it.each(["main", "side"])(
+  "marks the exact sub-task needing an answer inside the %s task detail",
+  async (surface) => {
+    const {
+      parent,
+      child,
+      quietChild,
+      rpc,
+      sdk,
+      structured,
+      question,
+      project,
+    } = await setup();
+    const slot =
+      surface === "side"
+        ? renderSlot(
+            app.threadPanelActions[0]!,
+            { threadId: "thr_subtasks", params: { taskKey: parent.key } },
+            { rpc, sdk },
+          )
+        : renderSlot(
+            app.navPanels[0]!,
+            { subPath: `task/${parent.key}` },
+            { rpc },
+          );
+    const childRow = (await slot.findByText(child.title)).closest("button")!;
+    await within(childRow).findByRole("img", { name: "1 unanswered question" });
+    const quietRow = slot.getByText(quietChild.title).closest("button")!;
+    expect(
+      within(quietRow).queryByRole("img", { name: /unanswered/ }),
+    ).toBeNull();
+    await structured.handlers.answerQuestion({
+      questionId: question.id,
+      revision: question.revision,
+      selectedOptionIds: [question.options[0]!.id],
+      authorName: "Owner",
+    });
+    await slot.behavior.emitRealtime("tasks:changed", {
+      taskId: child.id,
+      projectId: project.id,
+    });
+    await waitFor(() =>
+      expect(
+        within(childRow).queryByRole("img", { name: /unanswered/ }),
+      ).toBeNull(),
+    );
+    const { question: next } = await structured.handlers.createQuestion({
+      taskId: child.id,
+      prompt: "One more decision?",
+      mode: "single",
+      options: ["Yes", "No"],
+    });
+    await slot.behavior.emitRealtime("tasks:changed", {
+      taskId: child.id,
+      projectId: project.id,
+    });
+    await within(childRow).findByRole("img", { name: "1 unanswered question" });
+    fireEvent.click(childRow);
+    if (surface === "side") {
+      await slot.findByRole("group", { name: next.prompt });
+      expect(slot.navigateCalls).toEqual([]);
+    } else {
+      expect(slot.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "tasks",
+        options: { subPath: `task/${child.key}` },
+      });
+    }
+  },
+);
