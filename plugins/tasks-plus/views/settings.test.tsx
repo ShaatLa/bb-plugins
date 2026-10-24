@@ -101,6 +101,31 @@ it("saves a project workflow in compact settings and uses it in the list, board 
         "canceled",
       ]),
     );
+    await waitFor(() =>
+      expect(
+        settings
+          .getByRole("button", { name: "Move In testing up" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(
+      settings.getByRole("button", { name: "Move In testing up" }),
+    );
+    await waitFor(() =>
+      expect(
+        store.tasks
+          .getProject(project.id)
+          ?.statuses?.map((status) => status.id),
+      ).toEqual([
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_testing",
+        "in_review",
+        "done",
+        "canceled",
+      ]),
+    );
     expect(store.tasks.getProject(other.id)?.statuses).toHaveLength(6);
     settings.lifecycle.unmount();
     const task = store.tasks.createTask({
@@ -125,6 +150,18 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     expect(
       board.getByRole("button", { name: "New In testing task" }),
     ).toBeTruthy();
+    expect(
+      board
+        .getAllByRole("button", { name: /^New .+ task$/ })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "New Backlog task",
+      "New Todo task",
+      "New In Progress task",
+      "New In testing task",
+      "New In Review task",
+      "New Done task",
+    ]);
     fireEvent.click(board.getByText(task.title));
     expect(board.navigateCalls).toContainEqual({
       method: "toPluginPanel",
@@ -177,7 +214,16 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
     expect(
       settings.queryByRole("button", { name: "Remove Backlog" }),
     ).toBeNull();
-    expect(settings.queryByRole("button", { name: /Move .+ up/ })).toBeNull();
+    expect(
+      settings
+        .getByRole("button", { name: "Move Backlog up" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      settings
+        .getByRole("button", { name: "Move Canceled down" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
     backlog.focus();
     fireEvent.change(backlog, { target: { value: "Incoming" } });
     fireEvent.keyDown(backlog, { key: "Enter" });

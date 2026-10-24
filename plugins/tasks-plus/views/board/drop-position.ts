@@ -11,10 +11,9 @@ export const BOARD_STATUSES = [
 export function visibleBoardStatuses(
   columns: Readonly<Record<TaskStatus, readonly unknown[]>>,
 ): TaskStatus[] {
-  return [
-    ...Object.keys(columns).filter((status) => status !== "canceled"),
-    ...((columns.canceled?.length ?? 0) > 0 ? ["canceled"] : []),
-  ];
+  return Object.keys(columns).filter(
+    (status) => status !== "canceled" || columns[status]!.length > 0,
+  );
 }
 
 interface BoardDropNeighbors {

@@ -27,7 +27,7 @@ describe("visibleBoardStatuses", () => {
     ]);
   });
 
-  it("appends Canceled at the end once it holds cards", () => {
+  it("shows Canceled once it holds cards", () => {
     expect(visibleBoardStatuses(columns(2))).toEqual([
       "backlog",
       "todo",
@@ -35,6 +35,12 @@ describe("visibleBoardStatuses", () => {
       "in_review",
       "done",
       "canceled",
+    ]);
+  });
+
+  it("keeps Canceled in its configured position", () => {
+    expect(visibleBoardStatuses({ backlog: [], canceled: ["c1"], in_testing: [], done: [] })).toEqual([
+      "backlog", "canceled", "in_testing", "done",
     ]);
   });
 });
