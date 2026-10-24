@@ -23,6 +23,7 @@ export const metricsSchema = z.object({
   repository: z.string(),
   updatedAt: z.string(),
   range: rangeSchema,
+  pending: z.array(z.string()).optional(),
   deployments: metricSchema,
   pullRequests: metricSchema,
   pullRequestsCreated: metricSchema,
@@ -40,6 +41,9 @@ export const metricsSchema = z.object({
   }),
 });
 export type Metrics = z.infer<typeof metricsSchema>;
+export const metricsProgressSchema = z.object({
+  selection: z.string(), startedAt: z.number(), metrics: metricsSchema.extend({ projectName: z.string().nullable() }),
+});
 
 const countSchema = z.object({ total_count: z.number().int().nonnegative() });
 const searchSchema = countSchema.extend({ incomplete_results: z.boolean() });
@@ -55,6 +59,7 @@ export const historicalRecordsSchema = z.object({
   runs: z.array(runSchema),
   commits: z.array(commitRowSchema),
   branch: z.string().nullable(),
+  head: z.string().nullable().optional(),
 });
 export type HistoricalRecords = z.infer<typeof historicalRecordsSchema>;
 
@@ -72,7 +77,9 @@ async function limitedRequest<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function githubRequest(path: string, token: string | undefined, signal: AbortSignal, init?: Pick<RequestInit, "method" | "body">): Promise<{ body: unknown; hasNext: boolean }> {
+export type GitHubResponse = { body: unknown; hasNext: boolean; etag?: string };
+export type GitHubRequest = (path: string, init?: Pick<RequestInit, "method" | "body">) => Promise<GitHubResponse>;
+export async function githubRequest(path: string, token: string | undefined, signal: AbortSignal, init?: Pick<RequestInit, "method" | "body">, previous?: GitHubResponse): Promise<GitHubResponse> {
   return limitedRequest(async () => {
     signal.throwIfAborted();
     const response = await fetch(`https://api.github.com${path}`, {
@@ -82,10 +89,12 @@ export async function githubRequest(path: string, token: string | undefined, sig
         "Content-Type": "application/json",
         "X-GitHub-Api-Version": "2026-03-10",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previous?.etag ? { "If-None-Match": previous.etag } : {}),
       },
       signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
       redirect: "error",
     });
+    if (response.status === 304 && previous?.etag) return { ...previous, ...(response.headers.has("link") ? { hasNext: /rel="next"/.test(response.headers.get("link")!) } : {}) };
     if (!response.ok) {
       const hint = response.status === 401 ? "Check the access token."
         : response.status === 404 ? "Check the repository and token permissions."
@@ -93,11 +102,16 @@ export async function githubRequest(path: string, token: string | undefined, sig
         : "Try again at the next refresh.";
       throw new Error(`GitHub returned ${response.status}. ${hint}`);
     }
-    return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? "") };
+    return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? ""), ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : {}) };
   });
 }
 
-export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void): Promise<Metrics> {
+export type LoadOptions = {
+  request?: GitHubRequest; historyRange?: DateRange; previous?: HistoricalRecords;
+  localOnly?: boolean; partitionCi?: boolean; onProgress?: (metrics: Metrics) => void;
+  onWarning?: (message: string) => void;
+};
+export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void, options: LoadOptions = {}): Promise<Metrics> {
   repositorySchema.parse(repository);
   const now = new Date();
   const historyData: Partial<HistoricalRecords> = {};
@@ -105,6 +119,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
   const cutoff = Date.parse(range.since);
   const end = Date.parse(range.until);
   const since = range.since;
+  const historyRange = options.historyRange ?? range;
+  const historyStart = Date.parse(historyRange.since), historyEnd = Date.parse(historyRange.until);
   const calendarDay = range.label === "today";
   const days = calendarDay ? 1 : Math.max(1, end - cutoff) / 86_400_000;
   const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - cutoff) / range.bucketMs);
@@ -115,7 +131,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     const time = Date.parse(timestamp);
     return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - cutoff) / range.bucketMs));
   };
-  const request = (path: string, init?: Pick<RequestInit, "method" | "body">) => githubRequest(path, token, signal, init);
+  const request: GitHubRequest = options.request ?? ((path, init) => githubRequest(path, token, signal, init));
   const deploymentPages = new Map<number, ReturnType<typeof request>>();
   const deploymentFingerprints = new Set<string>();
   function deploymentPage(page: number) {
@@ -125,6 +141,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
         throw new Error("GitHub returned a repeated or empty deployment page; retry on the next refresh.");
       }
       deploymentFingerprints.add(fingerprint);
+      // A full cached final page can acquire a successor without changing its body.
+      if (!result.hasNext && Array.isArray(result.body) && result.body.length === 100) return { ...result, hasNext: true };
       return result;
     }));
     return deploymentPages.get(page)!;
@@ -138,10 +156,11 @@ export async function loadMetrics(repository: string, token: string | undefined,
       const rows = deploymentsSchema.parse(body);
       for (const row of rows) {
         const index = bucket(row.created_at);
-        if (index >= 0) { count++; series[index].value++; selected.push(row); }
+        if (index >= 0) { count++; series[index].value++; }
+        if (Date.parse(row.created_at) >= historyStart && Date.parse(row.created_at) <= historyEnd) selected.push(row);
       }
       // GitHub lists deployments newest first; stop once the page crosses the window.
-      if (!hasNext || rows.some((row) => Date.parse(row.created_at) < cutoff)) {
+      if (!hasNext || rows.some((row) => Date.parse(row.created_at) < historyStart)) {
         historyData.deployments = selected;
         return {
           value: count / days,
@@ -153,6 +172,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
   }
   async function pullRequests(created = false) {
     if (cached && !created) return cached.metrics.pullRequests;
+    if (cached && created && options.localOnly) return cached.metrics.range.since === since && cached.metrics.range.until === range.until
+      ? cached.metrics.pullRequestsCreated : { value: null, detail: "Loading created PR count…", error: null, series: null, seriesError: null };
     const query = encodeURIComponent(`repo:${repository} is:pr ${created ? `created:${since}..${range.until}` : "is:open"}`);
     const { body } = await request(`/search/issues?q=${query}&per_page=1`);
     const result = searchSchema.parse(body);
@@ -188,7 +209,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     }
   }
   async function ci() {
-    const path = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${since}..${range.until}`)}`;
+    const path = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${historyRange.since}..${historyRange.until}`)}`;
     const completedPath = `${path}&status=completed&per_page=100`;
     const first = cached ? null : await request(`${completedPath}&page=1`);
     const completed = cached ? cached.records.runs.length : countSchema.parse(first!.body).total_count;
@@ -208,7 +229,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
       const total = completed - countSchema.parse(cancelled.body).total_count - countSchema.parse(skipped.body).total_count;
       return { metric: { ...summary(total, successful), series: null, seriesError: message }, outcomes: null };
     }
-    async function history(start: number, finish: number, response?: Awaited<ReturnType<typeof request>>): Promise<Map<number, z.infer<typeof runSchema>>> {
+    async function history(start: number, finish: number, response?: Awaited<ReturnType<typeof request>>, parallel = true, retried = false): Promise<Map<number, z.infer<typeof runSchema>>> {
       const filteredPath = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${new Date(start).toISOString()}..${new Date(finish).toISOString()}`)}&status=completed&per_page=100`;
       const initial = response ?? await request(`${filteredPath}&page=1`);
       const total = countSchema.parse(initial.body).total_count;
@@ -216,8 +237,11 @@ export async function loadMetrics(repository: string, token: string | undefined,
         // GitHub caps each filtered search at 1,000 and may truncate total_count at 2,500.
         const middle = Math.floor((start + finish) / 2000) * 1000;
         if (middle < start || middle + 1000 > finish) throw new Error("GitHub returned more than 1,000 runs in one second; complete CI history is unavailable.");
-        const rows = await history(start, middle);
-        for (const [id, row] of await history(middle + 1000, finish)) {
+        // Parallelize the first split; deeper sequential splits bound work on inconsistent counts.
+        const [rows, right] = parallel
+          ? await Promise.all([history(start, middle, undefined, false), history(middle + 1000, finish, undefined, false)])
+          : [await history(start, middle, undefined, false), await history(middle + 1000, finish, undefined, false)];
+        for (const [id, row] of right) {
           if (rows.has(id)) throw new Error("GitHub returned overlapping CI search results.");
           rows.set(id, row);
         }
@@ -228,41 +252,67 @@ export async function loadMetrics(repository: string, token: string | undefined,
         { length: Math.max(0, Math.ceil(total / 100) - 1) },
         (_, index) => request(`${response ? completedPath : filteredPath}&page=${index + 2}`),
       ))];
-      for (const page of pages) {
-        if (countSchema.parse(page.body).total_count !== total) throw new Error("Run counts changed during pagination");
-        for (const row of runsSchema.parse(page.body).workflow_runs) {
-          const time = Date.parse(row.created_at);
-          if (time < start || time > finish) throw new Error("GitHub returned a run outside the time window");
-          rows.set(row.id, row);
+      try {
+        for (const page of pages) {
+          if (countSchema.parse(page.body).total_count !== total) throw new Error("Run counts changed during pagination");
+          for (const row of runsSchema.parse(page.body).workflow_runs) {
+            const time = Date.parse(row.created_at);
+            if (time < start || time > finish) throw new Error("GitHub returned a run outside the time window");
+            rows.set(row.id, row);
+          }
         }
+        if (pages[pages.length - 1].hasNext || rows.size !== total) throw new Error("Incomplete run history");
+        return rows;
+      } catch (error) {
+        if (!retried && error instanceof Error && ["Run counts changed during pagination", "Incomplete run history"].includes(error.message)) return history(start, finish, undefined, parallel, true);
+        throw error;
       }
-      if (pages[pages.length - 1].hasNext || rows.size !== total) throw new Error("Incomplete run history");
-      return rows;
     }
     try {
+      async function completeHistory() {
+        if (!options.partitionCi || completed <= 1000 || historyEnd - historyStart <= 7 * 86_400_000) return history(historyStart, historyEnd, first!);
+        const windows: [number, number][] = [];
+        for (let start = historyStart; start <= historyEnd;) {
+          const finish = Math.min(historyEnd, (Math.floor(start / (7 * 86_400_000)) + 1) * 7 * 86_400_000 - 1);
+          windows.push([start, finish]);
+          start = finish + 1;
+        }
+        // Read the active tail after closed windows so its pages cannot queue behind old history.
+        const results = await Promise.all(windows.slice(0, -1).map(([start, finish]) => history(start, finish)));
+        const tail = windows[windows.length - 1];
+        results.push(await history(tail[0], tail[1]));
+        const combined = new Map<number, z.infer<typeof runSchema>>();
+        for (const result of results) for (const [id, row] of result) {
+          if (combined.has(id)) throw new Error("GitHub returned overlapping CI search results.");
+          combined.set(id, row);
+        }
+        if (completed <= 1000 && combined.size !== completed) throw new Error("GitHub run counts changed during refresh.");
+        return combined;
+      }
       const rows = cached
         ? new Map(cached.records.runs.filter((row) => bucket(row.created_at) >= 0).map((row) => [row.id, row]))
-        : await history(cutoff, end, first!);
+        : await completeHistory();
       historyData.runs = [...rows.values()];
       const totals = emptySeries();
       const passed = Array<number>(bucketCount).fill(0);
       const outcomes: Record<string, number> = Object.create(null);
       for (const row of rows.values()) {
         const index = bucket(row.created_at);
-        if (index < 0) throw new Error("GitHub returned a run outside the time window");
+        if (index < 0) continue;
         const state = row.conclusion ?? "unknown";
         outcomes[state] = (outcomes[state] ?? 0) + 1;
         if (state === "cancelled" || state === "skipped") continue;
         totals[index].value++;
         if (state === "success") passed[index]++;
       }
-      return { metric: { ...summary(rows.size - (outcomes.cancelled ?? 0) - (outcomes.skipped ?? 0), outcomes.success ?? 0), series: totals.map((point, index) => ({
+      return { metric: { ...summary(Object.values(outcomes).reduce((sum, count) => sum + count, 0) - (outcomes.cancelled ?? 0) - (outcomes.skipped ?? 0), outcomes.success ?? 0), series: totals.map((point, index) => ({
         date: point.date, value: point.value === 0 ? null : passed[index] / point.value * 100,
       })), seriesError: null }, outcomes };
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
+      options.onWarning?.(error instanceof Error && error.name !== "ZodError" ? error.message : "Invalid GitHub CI response");
       // Large fallback counts can be truncated; never turn them into a precise pass rate.
-      if (completed > 1000) throw new Error("GitHub complete CI history could not be loaded. Retry on the next refresh.");
+      if (completed > 1000 || historyRange.since !== since || historyRange.until !== range.until) throw new Error("GitHub complete CI history could not be loaded. Retry on the next refresh.");
       return incomplete("Unable to load complete CI history and outcome breakdown. Retry on the next refresh.");
     }
   }
@@ -274,28 +324,40 @@ export async function loadMetrics(repository: string, token: string | undefined,
   function failedMetric(reason: unknown) {
     return { value: null, detail: "Unavailable", series: null, seriesError: null, error: errorMessage(reason) };
   }
-  const [deployResult, prResult, ciResult, reviewResult, productionResult, createdPrResult, commitResult] = await Promise.allSettled([
-    deployments(), pullRequests(), ci(), reviews(), production(), pullRequests(true),
-    cached ? Promise.resolve(summarizeCommitActivity(cached.records.commits.filter((row) => {
-      const time = Date.parse(row.committedDate);
-      return time >= cutoff && time <= end;
-    }), cached.records.branch)) : loadCommitActivity(repository, token, since, range.until, request, (rows, branch) => {
-      historyData.commits = rows;
-      historyData.branch = branch;
-    }),
-  ]);
-  if (!cached && deployResult.status === "fulfilled" && ciResult.status === "fulfilled" && ciResult.value.outcomes !== null && commitResult.status === "fulfilled") {
-    onHistory?.(historicalRecordsSchema.parse(historyData));
-  }
-  return {
+  const empty = { value: null, detail: "Loading…", error: null, series: null, seriesError: null };
+  const pending = ["deployments", "pullRequests", "ci", "reviewQueue", "production", "pullRequestsCreated", "commitActivity"];
+  const result: Metrics = {
     repository, updatedAt: cached?.metrics.updatedAt ?? now.toISOString(), range,
-    deployments: deployResult.status === "fulfilled" ? deployResult.value : failedMetric(deployResult.reason),
-    pullRequestsCreated: createdPrResult.status === "fulfilled" ? createdPrResult.value : failedMetric(createdPrResult.reason),
-    commitActivity: commitResult.status === "fulfilled" ? commitResult.value : { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(commitResult.reason) },
-    pullRequests: prResult.status === "fulfilled" ? prResult.value : failedMetric(prResult.reason),
-    ci: ciResult.status === "fulfilled" ? ciResult.value.metric : failedMetric(ciResult.reason),
-    ciOutcomes: ciResult.status === "fulfilled" ? ciResult.value.outcomes : null,
-    reviewQueue: reviewResult.status === "fulfilled" ? reviewResult.value : { total: null, items: [], error: errorMessage(reviewResult.reason) },
-    production: productionResult.status === "fulfilled" ? productionResult.value : { deployment: null, error: errorMessage(productionResult.reason) },
+    deployments: empty, pullRequests: empty, ci: empty, pullRequestsCreated: empty, ciOutcomes: null,
+    commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: null },
+    reviewQueue: { total: null, items: [], error: null }, production: { deployment: null, error: null }, pending: [...pending],
   };
+  async function settle(key: string, operation: Promise<Partial<Metrics>>, failure: (reason: unknown) => Partial<Metrics>) {
+    try { Object.assign(result, await operation); }
+    catch (reason) { Object.assign(result, failure(reason)); }
+    pending.splice(pending.indexOf(key), 1);
+    result.pending = [...pending];
+    options.onProgress?.({ ...result });
+  }
+  let commitsComplete = false;
+  const commits = cached ? Promise.resolve(summarizeCommitActivity(cached.records.commits.filter((row) => {
+    const time = Date.parse(row.committedDate);
+    return time >= cutoff && time <= end;
+  }), cached.records.branch)) : loadCommitActivity(repository, token, historyRange.since, historyRange.until, request, (rows, branch, head) => {
+    historyData.commits = rows;
+    historyData.branch = branch;
+    historyData.head = head;
+  }, options.previous).then(() => summarizeCommitActivity(historyData.commits!.filter((row) => Date.parse(row.committedDate) >= cutoff && Date.parse(row.committedDate) <= end), historyData.branch!));
+  await Promise.all([
+    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric(reason) })),
+    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric(reason) })),
+    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric(reason), ciOutcomes: null })),
+    settle("reviewQueue", reviews().then((reviewQueue) => ({ reviewQueue })), (reason) => ({ reviewQueue: { total: null, items: [], error: errorMessage(reason) } })),
+    settle("production", production().then((production) => ({ production })), (reason) => ({ production: { deployment: null, error: errorMessage(reason) } })),
+    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
+    settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
+  ]);
+  if (options.localOnly && result.pullRequestsCreated.value === null && !result.pullRequestsCreated.error) result.pending = ["pullRequestsCreated"];
+  if (!cached && result.deployments.error === null && result.ciOutcomes !== null && commitsComplete) onHistory?.(historicalRecordsSchema.parse(historyData));
+  return result;
 }

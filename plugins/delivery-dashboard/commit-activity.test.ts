@@ -58,3 +58,27 @@ test("loads more than 1,000 commits anchored to the initial head", async () => {
   });
   expect(request).toHaveBeenCalledTimes(13);
 });
+
+test("unchanged heads reuse complete cached commit records after checking the current count", async () => {
+  const commits = Array.from({ length: 250 }, (_, index) => row(index === 0 ? "head" : String(index), 2, 1));
+  const request = vi.fn().mockResolvedValue(first(target(commits.slice(0, 100), 250, "next")));
+  expect(await loadCommitActivity("acme/widgets", "token", since, until, request, undefined, { head: "head", branch: "main", commits })).toMatchObject({ commits: 250, additions: 500 });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+test("fast-forward updates merge new commits only after proving ancestry and completeness", async () => {
+  const commits = Array.from({ length: 250 }, (_, index) => row(index === 0 ? "old-head" : String(index), 2, 1));
+  const value = { ...target([row("new-head", 10, 3), commits[0]], 251, "next"), oid: "new-head" };
+  const request = vi.fn().mockResolvedValue(first(value));
+  const remember = vi.fn();
+  expect(await loadCommitActivity("acme/widgets", "token", since, until, request, remember, { head: "old-head", branch: "main", commits })).toMatchObject({ commits: 251, additions: 510 });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(remember.mock.calls[0][2]).toBe("new-head");
+});
+
+test("rewritten heads discard unreachable cached commits and read the replacement history", async () => {
+  const request = vi.fn().mockResolvedValueOnce(first({ ...target([row("replacement", 10, 2)], 2, "next"), oid: "replacement" }))
+    .mockResolvedValueOnce({ body: { data: { repository: { target: { ...target([row("replacement-parent", 5, 1)], 2), oid: "replacement" } } } } });
+  expect(await loadCommitActivity("acme/widgets", "token", since, until, request, undefined, { head: "old-head", branch: "main", commits: [row("old-head", 1000, 1000)] })).toMatchObject({ commits: 2, additions: 15, deletions: 3 });
+  expect(request).toHaveBeenCalledTimes(2);
+});
