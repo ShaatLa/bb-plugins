@@ -11,6 +11,45 @@ async function setup() {
 }
 const old = () => Date.now() - 8 * 86_400_000;
 
+test("prunes records older than a year, invalidates whole aggregates and HTTP pages, and advances at UTC midnight", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-24T12:00:00Z"));
+  const { database, harness } = await setup();
+  try {
+    const dates = ["2025-10-23T23:59:59.999Z", "2025-10-24T00:00:00.000Z", "2026-10-23T00:00:00.000Z"];
+    const history = { checkedAt: Date.now() - 1000, metrics: { range: { since: dates[2] } }, coverage: { since: dates[0], until: dates[2] }, records: {
+      deployments: dates.map((created_at) => ({ created_at })),
+      runs: dates.map((created_at, id) => ({ id: id + 1, created_at, conclusion: "success" })),
+      commits: dates.map((committedDate, id) => ({ committedDate, oid: String(id), additions: 1, deletions: 0 })), branch: "main", head: "head",
+    } };
+    for (const [name, data] of [["current", history], ["obsolete", { ...history, metrics: { range: { since: dates[0] } } }]] as const) {
+      database.prepare("INSERT INTO repository_history VALUES (?, ?, ?, ?)").run(name, "config", JSON.stringify(data), Date.now());
+      database.prepare("INSERT INTO dashboard_snapshots (selection, configuration, data, refreshed_at) VALUES (?, ?, ?, ?)").run(name, "config", JSON.stringify({ repositories: [data.metrics] }), Date.now());
+    }
+    const pages = [
+      ["/repos/acme/widgets/actions/runs?created=2025-10-23..2026-10-23", { workflow_runs: [] }],
+      ["/repos/acme/widgets/deployments?page=2", dates.map((created_at) => ({ created_at }))],
+      ["/search/issues?q=repo:acme/widgets%20created:2025-10-23..2026-10-23", { total_count: 0 }],
+      ["/repos/acme/widgets/actions/runs?created=2025-10-24..2026-10-23", { workflow_runs: [{ created_at: dates[1] }] }],
+      ["/search/issues?q=repo:acme/widgets%20is:open", { items: [{ created_at: dates[0] }] }],
+    ] as const;
+    for (const [path, body] of pages) database.prepare("INSERT INTO github_responses VALUES (?, ?, ?, ?)").run(JSON.stringify(["config", path]), JSON.stringify({ body, hasNext: false, etag: "original" }), Date.now(), Date.now());
+    expect(cleanupCache(database).removed).toBe(5);
+    const retained = () => JSON.parse((database.prepare("SELECT data FROM repository_history WHERE repository = 'current'").get() as { data: string }).data);
+    expect(retained()).toMatchObject({ checkedAt: history.checkedAt, coverage: { since: dates[1] }, records: { head: "head", branch: "main" } });
+    expect(retained().records.deployments).toEqual(dates.slice(1).map((created_at) => ({ created_at })));
+    expect(retained().records.runs).toHaveLength(2);
+    expect(retained().records.commits).toHaveLength(2);
+    expect(database.prepare("SELECT selection FROM dashboard_snapshots").all()).toEqual([{ selection: "current" }]);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM github_responses").get()).toEqual({ count: 2 });
+    vi.setSystemTime(new Date("2026-10-25T00:00:00Z"));
+    cleanupCache(database);
+    expect(retained().coverage.since).toBe("2025-10-25T00:00:00.000Z");
+    expect(retained().records.commits).toHaveLength(1);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM github_responses").get()).toEqual({ count: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("expires idle cache entries without expiring actively used 90-day history or extending freshness", async () => {
   const { database, harness } = await setup();
   try {

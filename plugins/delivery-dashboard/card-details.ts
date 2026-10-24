@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { githubRequest, repositorySchema, secureUrlSchema } from "./metrics";
+import { minimumDate } from "./date-range";
 
 export const cardDetailsInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ci"), repository: repositorySchema, since: z.iso.datetime(), until: z.iso.datetime() }).strict(),
@@ -22,7 +23,7 @@ export async function loadCardDetails(input: CardDetailsInput, token: string | u
   const request = (path: string) => githubRequest(path, token, signal);
   const base = `https://github.com/${input.repository}`;
   if (input.kind === "ci") {
-    if (Date.parse(input.since) < 0 || Date.parse(input.since) > Date.parse(input.until) || Date.parse(input.until) > Date.now()) throw new Error("Invalid statistics interval.");
+    if (Date.parse(input.since) < Date.parse(minimumDate()) || Date.parse(input.since) > Date.parse(input.until) || Date.parse(input.until) > Date.now()) throw new Error("Invalid statistics interval.");
     const { body } = await request(`/repos/${input.repository}/actions/runs?status=failure&created=${encodeURIComponent(`${input.since}..${input.until}`)}&per_page=5&page=1`);
     const { workflow_runs } = z.object({ workflow_runs: z.array(z.object({
       id: z.number().int().positive(), name: z.string().nullable().optional(), display_title: z.string().optional(),

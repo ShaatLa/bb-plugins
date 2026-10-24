@@ -495,8 +495,9 @@ test("RPC accepts presets and rejects invalid custom dates before making GitHub 
     const result = await harness.behavior.callRpc("metrics", { days: 90 });
     expect(result).toMatchObject({ repositories: [{ range: { since: "2026-07-22T12:00:00.000Z", until: "2026-10-20T12:00:00.000Z" } }] });
     fetchMock.mockClear();
-    for (const input of [{ days: 2 }, { start: "2026-10-21", end: "2026-10-20" }, { start: "2025-02-29", end: "2025-03-01" }]) {
+    for (const input of [{ days: 2 }, { start: "2026-10-21", end: "2026-10-20" }, { start: "2025-02-29", end: "2025-03-01" }, { start: "2025-10-19", end: "2026-10-20" }]) {
       await expect(harness.behavior.callRpc("metrics", input)).rejects.toThrow();
+      await expect(harness.behavior.callRpc("snapshot", input)).rejects.toThrow();
     }
     expect(fetchMock).not.toHaveBeenCalled();
   } finally { await harness.lifecycle.dispose(); }
@@ -518,7 +519,7 @@ test("bar interval RPC validates endpoints and requests statistics for just the 
     fetchMock.mockClear();
     for (const change of [
       { repository: "../../secret" }, { since: "invalid" }, { since: "2026-10-20T00:00:00.000Z" },
-      { until: "2026-10-21T00:00:00.000Z" }, { since: "1969-12-31T00:00:00.000Z" },
+      { until: "2026-10-21T00:00:00.000Z" }, { since: "2025-10-19T23:59:59.999Z" },
     ]) await expect(harness.behavior.callRpc("interval", { ...input, ...change })).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
   } finally { await harness.lifecycle.dispose(); }

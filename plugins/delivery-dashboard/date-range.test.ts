@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { presets, rangeInputSchema, resolveRange } from "./date-range";
+import { minimumDate, presets, rangeInputSchema, resolveRange } from "./date-range";
 
 const now = new Date("2026-10-20T12:00:00Z");
 
@@ -12,11 +12,19 @@ test.each(presets.filter((days) => days !== 1))("%i-day preset has the requested
 });
 
 test("custom dates include both UTC days and cap today's endpoint at now", () => {
-  expect(resolveRange({ start: "2024-02-29", end: "2024-03-01" }, now)).toMatchObject({
+  expect(resolveRange({ start: "2024-02-29", end: "2024-03-01" }, new Date("2024-03-20T12:00:00Z"))).toMatchObject({
     since: "2024-02-29T00:00:00.000Z", until: "2024-03-01T23:59:59.999Z", label: "2024-02-29 – 2024-03-01",
   });
   expect(resolveRange({ start: "2026-10-20", end: "2026-10-20" }, now).until).toBe(now.toISOString());
   expect(resolveRange(null, now)).toEqual(resolveRange({ days: 7 }, now));
+});
+
+test("custom dates stop at the inclusive UTC anniversary, including leap years", () => {
+  expect(minimumDate(now)).toBe("2025-10-20");
+  expect(minimumDate(new Date("2024-02-29T23:00:00Z"))).toBe("2023-02-28");
+  expect(minimumDate(new Date("2025-03-01T00:00:00Z"))).toBe("2024-03-01");
+  expect(resolveRange({ start: "2025-10-20", end: "2026-10-20" }, now).since).toBe("2025-10-20T00:00:00.000Z");
+  expect(() => resolveRange({ start: "2025-10-19", end: "2026-10-20" }, now)).toThrow("past year");
 });
 
 test("invalid, reversed, future, and unsupported ranges are rejected", () => {

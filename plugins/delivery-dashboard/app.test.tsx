@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { resolveRange } from "./date-range";
+import { minimumDate, resolveRange } from "./date-range";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
 const app = await loadPluginApp(() => import("./app"));
@@ -388,6 +388,11 @@ test("custom dates apply explicitly and invalid dates keep the current results",
   try {
     await act(async () => {});
     fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "custom" } });
+    expect(slot.getByLabelText("From date").getAttribute("min")).toBe(minimumDate());
+    fireEvent.change(slot.getByLabelText("From date"), { target: { value: "2024-10-20" } });
+    fireEvent.click(slot.getByRole("button", { name: "Apply dates" }));
+    expect(slot.getByRole("alert").textContent).toContain("past year");
+    expect(metrics).toHaveBeenCalledTimes(1);
     fireEvent.change(slot.getByLabelText("From date"), { target: { value: "2026-10-10" } });
     fireEvent.change(slot.getByLabelText("Through date"), { target: { value: "2026-10-01" } });
     fireEvent.click(slot.getByRole("button", { name: "Apply dates" }));

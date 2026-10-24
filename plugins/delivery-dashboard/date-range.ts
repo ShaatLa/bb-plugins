@@ -14,6 +14,12 @@ export const rangeSchema = z.object({
 export type DateRange = z.infer<typeof rangeSchema>;
 const day = 86_400_000;
 
+export function minimumDate(now = new Date()): string {
+  const year = now.getUTCFullYear() - 1, month = now.getUTCMonth();
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(now.getUTCDate(), lastDay))).toISOString().slice(0, 10);
+}
+
 export function resolveRange(input: RangeInput, now = new Date()): DateRange {
   const selection = rangeInputSchema.parse(input) ?? { days: 7 };
   let until = now.getTime();
@@ -24,8 +30,8 @@ export function resolveRange(input: RangeInput, now = new Date()): DateRange {
     label = selection.days === 1 ? "today" : `last ${selection.days} days`;
   } else {
     const today = now.toISOString().slice(0, 10);
-    if (selection.start < "1970-01-01" || selection.start > selection.end || selection.end > today) {
-      throw new Error("Choose dates from 1970 through today, with the start on or before the end.");
+    if (selection.start < minimumDate(now) || selection.start > selection.end || selection.end > today) {
+      throw new Error("Choose dates within the past year through today, with the start on or before the end.");
     }
     since = Date.parse(`${selection.start}T00:00:00.000Z`);
     until = Math.min(until, Date.parse(`${selection.end}T23:59:59.999Z`));
