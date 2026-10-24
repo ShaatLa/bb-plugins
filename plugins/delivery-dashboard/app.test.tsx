@@ -455,3 +455,23 @@ test("unconfirmed production requests explain how to check status without exposi
     expect(slot.getByRole("button", { name: "Start deployment" }).hasAttribute("disabled")).toBe(false);
   } finally { slot.lifecycle.unmount(); }
 });
+
+test("an older persisted snapshot cannot restore a removed CI limit error over fresh cached history", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const legacyMessage = "CI history and outcome breakdown are unavailable above 1,000 runs in the selected range.";
+  const legacy = { ...data, repositories: [{ ...repo, updatedAt: "2026-10-19T12:00:00Z", ci: { ...metric, series: null, seriesError: legacyMessage }, ciOutcomes: null }] };
+  let finish!: (value: typeof data) => void;
+  const metrics = vi.fn().mockResolvedValueOnce(data).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const options = { rpc: { snapshot: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(legacy), metrics }, settings: { repository: "acme/widgets" } };
+  const first = renderSlot(isolated.navPanels[0], { subPath: "" }, options);
+  await first.findByText("12.0 / day");
+  first.lifecycle.unmount();
+  const reopened = renderSlot(isolated.navPanels[0], { subPath: "" }, options);
+  try {
+    await act(async () => {});
+    expect(reopened.queryAllByText(legacyMessage)).toHaveLength(0);
+    expect(reopened.getByRole("group", { name: /CI pass rate over time:.*Oct 14/ })).toBeTruthy();
+    await act(async () => { finish(data); });
+  } finally { reopened.lifecycle.unmount(); }
+});
