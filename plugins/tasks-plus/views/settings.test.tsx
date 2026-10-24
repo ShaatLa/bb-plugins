@@ -71,15 +71,21 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     expect(
       settings.getByRole("button", { name: "Open Tasks" }).className,
     ).toContain("h-7");
-    fireEvent.change(
-      settings.getByRole("textbox", { name: "New status name" }),
-      { target: { value: "In testing" } },
-    );
+    expect(
+      settings.queryByRole("textbox", { name: "New status ID" }),
+    ).toBeNull();
+    expect(
+      settings.queryByRole("button", { name: "Save statuses" }),
+    ).toBeNull();
+    expect(
+      settings.queryByRole("button", { name: "Reset changes" }),
+    ).toBeNull();
     fireEvent.click(settings.getByRole("button", { name: "Add status" }));
-    fireEvent.click(
-      settings.getByRole("button", { name: "Move In testing up" }),
-    );
-    fireEvent.click(settings.getByRole("button", { name: "Save statuses" }));
+    const newStatus = settings.getByRole("textbox", {
+      name: "New status name",
+    });
+    fireEvent.change(newStatus, { target: { value: "In testing" } });
+    fireEvent.keyDown(newStatus, { key: "Enter" });
     await waitFor(() =>
       expect(
         store.tasks
@@ -89,8 +95,8 @@ it("saves a project workflow in compact settings and uses it in the list, board 
         "backlog",
         "todo",
         "in_progress",
-        "in_testing",
         "in_review",
+        "in_testing",
         "done",
         "canceled",
       ]),
@@ -137,6 +143,122 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     expect(
       await detail.findByRole("menuitem", { name: "In testing" }),
     ).toBeTruthy();
+  } finally {
+    cleanup();
+    await harness.dispose();
+  }
+});
+
+it("autosaves names and removals, hides system removal, and keeps rejected changes editable", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const project = store.tasks.createProject({
+      name: "Workflow",
+      prefix: "WF",
+      color: "blue",
+    });
+    const settings = renderSlot(
+      app.settingsSections[0]!,
+      {},
+      {
+        rpc: Object.fromEntries(
+          ["listProjects", "updateProject"].map((method) => [
+            method,
+            (input: unknown) => harness.callRpc(method, input),
+          ]),
+        ),
+      },
+    );
+    const backlog = await settings.findByRole("textbox", {
+      name: "Status name backlog",
+    });
+    expect(
+      settings.queryByRole("button", { name: "Remove Backlog" }),
+    ).toBeNull();
+    expect(settings.queryByRole("button", { name: /Move .+ up/ })).toBeNull();
+    backlog.focus();
+    fireEvent.change(backlog, { target: { value: "Incoming" } });
+    fireEvent.keyDown(backlog, { key: "Enter" });
+    await waitFor(() =>
+      expect(store.tasks.getProject(project.id)?.statuses?.[0]).toEqual({
+        id: "backlog",
+        name: "Incoming",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        settings
+          .getByRole("button", { name: "Add status" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+
+    fireEvent.click(settings.getByRole("button", { name: "Add status" }));
+    fireEvent.change(
+      settings.getByRole("textbox", { name: "New status name" }),
+      { target: { value: "Проверка" } },
+    );
+    fireEvent.keyDown(
+      settings.getByRole("textbox", { name: "New status name" }),
+      { key: "Enter" },
+    );
+    await waitFor(() =>
+      expect(
+        store.tasks
+          .getProject(project.id)
+          ?.statuses?.find((s) => s.id === "status"),
+      ).toEqual({ id: "status", name: "Проверка" }),
+    );
+    const task = store.tasks.createTask({
+      projectId: project.id,
+      title: "Used status",
+      status: "status",
+    });
+    fireEvent.click(
+      await settings.findByRole("button", { name: "Remove Проверка" }),
+    );
+    await settings.findByRole("alert");
+    expect(
+      settings.getByRole("textbox", { name: "Status name status" }),
+    ).toBeTruthy();
+    expect(store.tasks.getTask(task.id)?.status).toBe("status");
+    store.tasks.updateTask(task.id, { status: "todo" });
+    fireEvent.click(settings.getByRole("button", { name: "Remove Проверка" }));
+    await waitFor(() =>
+      expect(store.tasks.getProject(project.id)?.statuses).toHaveLength(6),
+    );
+    await waitFor(() =>
+      expect(
+        settings.queryByRole("textbox", { name: "Status name status" }),
+      ).toBeNull(),
+    );
+
+    fireEvent.click(settings.getByRole("button", { name: "Add status" }));
+    fireEvent.change(
+      settings.getByRole("textbox", { name: "New status name" }),
+      { target: { value: "Todo" } },
+    );
+    fireEvent.keyDown(
+      settings.getByRole("textbox", { name: "New status name" }),
+      { key: "Enter" },
+    );
+    await settings.findByRole("alert");
+    expect(store.tasks.getProject(project.id)?.statuses).toHaveLength(6);
+    expect(
+      (
+        settings.getByRole("textbox", {
+          name: "New status name",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("Todo");
+    fireEvent.click(
+      settings.getByRole("button", { name: "Cancel new status" }),
+    );
+    expect(
+      settings.queryByRole("textbox", { name: "New status name" }),
+    ).toBeNull();
   } finally {
     cleanup();
     await harness.dispose();

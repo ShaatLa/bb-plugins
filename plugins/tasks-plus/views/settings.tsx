@@ -27,71 +27,72 @@ function ProjectStatuses({ project }: { project: Project }) {
     () => project.statuses ?? DEFAULT_TASK_STATUSES,
   );
   const [saved, setSaved] = useState(statuses);
+  const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
-  const [id, setId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const dirty = JSON.stringify(statuses) !== JSON.stringify(saved);
-  const changeOrder = (index: number, delta: number) =>
-    setStatuses((current) => {
-      const next = [...current];
-      [next[index], next[index + delta]] = [next[index + delta]!, next[index]!];
-      return next;
-    });
-  const add = () => {
-    const statusId =
-      id.trim() ||
-      name
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_|_$/g, "");
-    const next = [...statuses];
-    next.splice(
-      Math.max(
-        0,
-        next.findIndex((status) => status.id === "done"),
-      ),
-      0,
-      { id: statusId, name: name.trim() },
-    );
-    const parsed = taskStatusesSchema.safeParse(next);
-    if (!parsed.success) {
-      setError(parsed.error.issues[0]!.message);
-      return;
-    }
-    setStatuses(parsed.data);
-    setName("");
-    setId("");
-    setError(null);
-  };
-  const save = async () => {
+  const [didSave, setDidSave] = useState(false);
+  const save = async (next: TaskStatusDefinition[]) => {
+    if (JSON.stringify(next) === JSON.stringify(saved)) return;
     setSaving(true);
     setError(null);
     try {
-      const parsed = taskStatusesSchema.parse(statuses);
+      const parsed = taskStatusesSchema.parse(next);
       const result = await rpc.call("updateProject", {
         projectId: project.id,
         statuses: parsed,
       });
-      const next = result.project.statuses ?? parsed;
-      setStatuses(next);
-      setSaved(next);
+      const updated = result.project.statuses ?? parsed;
+      setStatuses(updated);
+      setSaved(updated);
+      setAdding(false);
+      setName("");
+      setDidSave(true);
     } catch (error) {
       setError(errorMessage(error));
     } finally {
       setSaving(false);
     }
   };
+  const add = () => {
+    if (!name.trim()) {
+      setAdding(false);
+      return;
+    }
+    let base = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "");
+    if (!/^[a-z]/.test(base)) base = `status_${base}`;
+    base = base.slice(0, 58).replace(/_$/g, "");
+    let id = base;
+    for (
+      let suffix = 2;
+      statuses.some((status) => status.id === id);
+      suffix++
+    ) {
+      id = `${base}_${suffix}`;
+    }
+    const next = [...statuses];
+    next.splice(
+      next.findIndex((status) => status.id === "done"),
+      0,
+      {
+        id,
+        name: name.trim(),
+      },
+    );
+    void save(next);
+  };
   return (
     <div className="max-w-2xl space-y-2">
       <p className="text-xs text-muted-foreground">
-        Each project has its own workflow. New stages stay open; Done and
-        Canceled keep their completion meaning. System IDs are fixed. A status
-        used by tasks cannot be deleted.
+        Changes save automatically. System statuses stay; statuses used by tasks
+        cannot be deleted.
       </p>
       <fieldset disabled={saving} className="space-y-1.5">
-        {statuses.map((status, index) => (
+        {statuses.map((status) => (
           <div key={status.id} className="flex items-center gap-1.5">
             <Input
               aria-label={`Status name ${status.id}`}
@@ -106,113 +107,92 @@ function ProjectStatuses({ project }: { project: Project }) {
                   ),
                 )
               }
+              onBlur={() => void save(statuses)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  setStatuses(saved);
+                  setError(null);
+                }
+              }}
             />
-            <span
-              className="w-28 shrink-0 truncate font-mono text-xs text-muted-foreground"
-              title={status.id}
-            >
-              {status.id}
-            </span>
+            {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
+              <span className="size-7 shrink-0" />
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                aria-label={`Remove ${status.name}`}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() =>
+                  void save(statuses.filter((entry) => entry.id !== status.id))
+                }
+              >
+                <Icon name="Trash2" className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        ))}
+        {adding ? (
+          <div className="flex items-center gap-1.5">
+            <Input
+              autoFocus
+              aria-label="New status name"
+              placeholder="Status name"
+              className="h-7 min-w-0 flex-1 text-xs"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onBlur={add}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  setAdding(false);
+                  setName("");
+                  setError(null);
+                }
+              }}
+            />
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label={`Move ${status.name} up`}
-              disabled={index === 0}
-              onClick={() => changeOrder(index, -1)}
-            >
-              <Icon name="ChevronUp" className="size-3.5" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              aria-label={`Move ${status.name} down`}
-              disabled={index === statuses.length - 1}
-              onClick={() => changeOrder(index, 1)}
-            >
-              <Icon name="ChevronDown" className="size-3.5" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              aria-label={`Remove ${status.name}`}
-              disabled={(TASK_STATUSES as readonly string[]).includes(
-                status.id,
-              )}
-              onClick={() =>
-                setStatuses((current) =>
-                  current.filter((entry) => entry.id !== status.id),
-                )
-              }
+              aria-label="Cancel new status"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setAdding(false);
+                setName("");
+                setError(null);
+              }}
             >
               <Icon name="Trash2" className="size-3.5" />
             </Button>
           </div>
-        ))}
-        <div className="flex flex-wrap items-center gap-1.5 pt-2">
-          <Input
-            aria-label="New status name"
-            placeholder="In testing"
-            className="h-7 min-w-32 flex-1 text-xs"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-          <Input
-            aria-label="New status ID"
-            placeholder="in_testing (optional)"
-            className="h-7 w-44 font-mono text-xs"
-            value={id}
-            onChange={(event) => setId(event.target.value)}
-          />
+        ) : (
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="h-7 px-2.5"
-            disabled={!name.trim() || statuses.length >= 32}
-            onClick={add}
+            className="h-7 gap-1.5 px-2.5"
+            disabled={statuses.length >= 32}
+            onClick={() => setAdding(true)}
           >
+            <Icon name="Plus" className="size-3.5" />
             Add status
           </Button>
-        </div>
+        )}
       </fieldset>
-      <div className="flex items-center gap-2 pt-1">
-        <Button
-          type="button"
-          size="sm"
-          className="h-7 px-2.5"
-          disabled={!dirty || saving}
-          onClick={() => void save()}
-        >
-          {saving ? "Saving…" : "Save statuses"}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2.5"
-          disabled={!dirty || saving}
-          onClick={() => {
-            setStatuses(saved);
-            setError(null);
-          }}
-        >
-          Reset changes
-        </Button>
-      </div>
       {error ? (
         <p role="alert" className="text-xs text-destructive">
           {error}
         </p>
-      ) : null}
-      {!dirty && !error ? (
+      ) : saving || didSave ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Statuses saved.
+          {saving ? "Saving…" : "Statuses saved."}
         </p>
       ) : null}
     </div>
