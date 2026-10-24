@@ -19,7 +19,7 @@ export function IntervalDialog({ selection, onClose }: { selection: IntervalSele
   useLayoutEffect(() => {
     const element = dialog.current!;
     const viewport = window.visualViewport;
-    const container = element.closest<HTMLElement>("[data-delivery-dashboard-viewport]");
+    const container = element.closest<HTMLElement>("[data-ci-dashboard-viewport]");
     function position() {
       const width = viewport?.width ?? window.innerWidth;
       const height = viewport?.height ?? window.innerHeight;

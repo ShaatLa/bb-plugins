@@ -271,7 +271,7 @@ test("renders imported and additional repositories independently", async () => {
 
 test("registers only a sidebar page and renders accessible charts from real series", async () => {
   expect(app.homepageSections).toHaveLength(0);
-  expect(app.navPanels[0]).toMatchObject({ title: "Delivery dashboard", path: "dashboard", icon: "Package" });
+  expect(app.navPanels[0]).toMatchObject({ title: "CI Dashboard", path: "dashboard", icon: "Package" });
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
@@ -369,7 +369,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(true);
     expect(refreshIcon?.classList.contains("motion-reduce:animate-none")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).textContent?.trim()).toBe("");
-    expect(slot.getByRole("region", { name: "GitHub delivery metrics" }).getAttribute("aria-busy")).toBe("false");
+    expect(slot.getByRole("region", { name: "GitHub CI metrics" }).getAttribute("aria-busy")).toBe("false");
     expect(slot.queryByText(/Loading|Refreshing/)).toBeNull();
     await act(async () => { finish(data); });
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
@@ -569,7 +569,7 @@ test("popup stays inside its dashboard pane beside a native browser and tracks s
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data, interval: () => new Promise(() => {}) }, settings: {} });
   try {
     const plot = await slot.findByRole("group", { name: /Deployment throughput:/ });
-    const container = plot.closest("[data-delivery-dashboard-viewport]")!;
+    const container = plot.closest("[data-ci-dashboard-viewport]")!;
     const bounds = vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(280, 40, 600, 800));
     fireEvent.click(plot.querySelector("button")!);
     const dialog = slot.getByRole("dialog") as HTMLDialogElement;

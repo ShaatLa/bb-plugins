@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { minimumDate, rangeInputSchema, rangeSchema, resolveRange, type RangeInput, type DateRange } from "./date-range";
 import { historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, type HistoricalRecords, type Metrics } from "./metrics";
@@ -10,6 +10,7 @@ import { githubRepository, repositoriesSettingSchema, splitRepositories, uniqueR
 import { cardDetailsInput, cardDetailsOutput, loadCardDetails } from "./card-details";
 import { createGitHubCache } from "./github-cache";
 import { cleanupCache } from "./cache-cleanup";
+import { ciQuerySchema, ciReportSchema, ciReport, type CiQuery } from "./agent-ci";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -27,6 +28,8 @@ export const rpcContract = defineRpcContract({
     output: metricsSchema,
   },
 });
+
+export const ciRpcContract = defineRpcContract({ ci: { input: ciQuerySchema, output: ciReportSchema } });
 
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -239,7 +242,7 @@ export default function plugin(bb: BbPluginApi) {
       } finally { signal.removeEventListener("abort", stop); }
     },
   });
-  bb.rpc.register(rpcContract, {
+  const handlers: PluginRpcHandlers<typeof rpcContract> = {
     async cardDetails(input) {
       const { token: override } = await settings.get();
       const { token } = await resolveGithubToken(override, controller.signal);
@@ -315,6 +318,30 @@ export default function plugin(bb: BbPluginApi) {
         return result;
       }
       return null;
+    },
+  };
+  bb.rpc.register(rpcContract, handlers);
+  async function readCi(input: CiQuery) {
+    resolveRange(input.selection);
+    const snapshot = input.refresh ? null : await handlers.snapshot(input.selection);
+    const data = snapshot ?? await metrics(input.selection, input.refresh);
+    const { refreshSeconds } = await settings.get();
+    return ciReport(data, input, refreshSeconds, snapshot !== null);
+  }
+  bb.rpc.register(ciRpcContract, { ci: readCi }, {
+    experimental_discoverable: true,
+    experimental_description: "Read-only CI Dashboard summaries: pass rates, outcomes, workflow health and estimated elapsed timings. Cached by default; timestamps and staleness are explicit.",
+  });
+  bb.agents.registerTool({
+    name: "ci_dashboard_metrics",
+    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh data. Cancelled/skipped are excluded from pass rates but included in timing estimates. No deployments or other writes are triggered.",
+    parameters: ciQuerySchema,
+    presentation: { label: { pending: "Reading CI Dashboard", completed: "Read CI Dashboard" } },
+    async execute(input, { signal }) {
+      signal.throwIfAborted();
+      const result = await readCi(input);
+      signal.throwIfAborted();
+      return JSON.stringify(result);
     },
   });
 }

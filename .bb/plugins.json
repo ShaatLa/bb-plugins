@@ -12,8 +12,12 @@
       "source": "./plugins/tasks-plus"
     },
     {
+      "name": "ci-dashboard",
+      "source": "./plugins/ci-dashboard"
+    },
+    {
       "name": "delivery-dashboard",
-      "source": "./plugins/delivery-dashboard"
+      "source": "./plugins/ci-dashboard"
     }
   ]
 }
