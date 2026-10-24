@@ -158,7 +158,7 @@ export function ListFilterBar({
   const showLabelChip =
     labelOptions.length > 0 || filters.labelNames.length > 0;
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
+    <div className="flex shrink-0 items-start gap-1.5 border-b border-border-hairline px-3.5 py-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         <button
           type="button"
@@ -357,7 +357,7 @@ export function ListFilterBar({
       {sort !== undefined && onSortChange ? (
         <SortChip sort={sort} onChange={onSortChange} />
       ) : null}
-      <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-subtle-foreground">
+      <span className="flex h-6 shrink-0 items-center whitespace-nowrap text-xs tabular-nums text-subtle-foreground max-md:pointer-coarse:h-8">
         {taskCount === undefined
           ? ""
           : `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`}
