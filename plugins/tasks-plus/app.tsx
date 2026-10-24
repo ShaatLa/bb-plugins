@@ -14,8 +14,8 @@ function TasksSettings() {
         Send tasks to existing threads from the task card. Busy threads receive the task in their queue using their current settings.
       </p>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => navigate.toPluginPanel("tasks")}>Open Tasks</Button>
-        <Button variant="outline" onClick={() => navigate.toPluginPanel("tasks", { subPath: "manage" })}>Manage projects and presets</Button>
+        <Button size="sm" className="h-7 px-2.5" variant="outline" onClick={() => navigate.toPluginPanel("tasks")}>Open Tasks</Button>
+        <Button size="sm" className="h-7 px-2.5" variant="outline" onClick={() => navigate.toPluginPanel("tasks", { subPath: "manage" })}>Manage projects and presets</Button>
       </div>
     </div>
   );

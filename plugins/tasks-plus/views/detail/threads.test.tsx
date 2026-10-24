@@ -368,6 +368,8 @@ describe("copying the task title", () => {
       });
       const heading = back.closest("header")!;
       expect(heading.getAttribute("aria-label")).toBe("Task heading");
+      expect(slot.getByRole("button", { name: "Copy task title" }).closest("header")).toBe(heading);
+      expect(slot.getByText(task.key).nextElementSibling).toBe(slot.getByRole("button", { name: "Copy task title" }));
       expect(
         heading.parentElement!.contains(
           slot.getByRole("textbox", { name: "Task title" }),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
 import type { Task } from "../../shared/contract.js";
@@ -86,16 +86,15 @@ function SubTaskDonut({
   );
 }
 
-function EditableTitle({
+function CopyTaskTitle({
   task,
-  onSave,
+  titleRef,
   onError,
 }: {
   task: Task;
-  onSave: (title: string) => void;
+  titleRef: RefObject<HTMLHeadingElement | null>;
   onError: (message: string) => void;
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -121,7 +120,44 @@ function EditableTitle({
   };
 
   return (
-    <div className="mb-2.5 mt-1 flex items-start gap-2">
+    <>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+              aria-label="Copy task title"
+              onClick={() => void copyTitle()}
+            >
+              <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {copied ? "Copied" : "Copy task key and title"}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <span role="status" className="sr-only">
+        {copied ? "Task title copied" : ""}
+      </span>
+    </>
+  );
+}
+
+function EditableTitle({
+  task,
+  titleRef,
+  onSave,
+}: {
+  task: Task;
+  titleRef: RefObject<HTMLHeadingElement | null>;
+  onSave: (title: string) => void;
+}) {
+  return (
+    <div className="mb-2.5 mt-1">
       <h1
         ref={titleRef}
         key={`${task.id}:${task.title}`}
@@ -147,28 +183,6 @@ function EditableTitle({
       >
         {task.title}
       </h1>
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-              aria-label="Copy task title"
-              onClick={() => void copyTitle()}
-            >
-              <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {copied ? "Copied" : "Copy task key and title"}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-      <span role="status" className="sr-only">
-        {copied ? "Task title copied" : ""}
-      </span>
     </div>
   );
 }
@@ -265,7 +279,14 @@ function DetailSkeleton() {
   );
 }
 
-function TaskDetail({ task, header }: { task: Task; header: ReactNode }) {
+function TaskDetail({
+  task,
+  header,
+}: {
+  task: Task;
+  header: (copyAction?: ReactNode) => ReactNode;
+}) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const rpc = useTasksRpc();
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
@@ -469,7 +490,14 @@ function TaskDetail({ task, header }: { task: Task; header: ReactNode }) {
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
-          {header}
+          {header(
+            <CopyTaskTitle
+              key={task.id}
+              task={task}
+              titleRef={titleRef}
+              onError={push}
+            />,
+          )}
           {task.type === "epic" ||
           epic.data ||
           parentTask ||
@@ -525,8 +553,8 @@ function TaskDetail({ task, header }: { task: Task; header: ReactNode }) {
 
           <EditableTitle
             task={task}
+            titleRef={titleRef}
             onSave={(title) => void updateTask({ title })}
-            onError={push}
           />
 
           <InlineProperties
@@ -685,7 +713,7 @@ export function DetailView({
     if (canonicalKey) onCanonicalKey?.(canonicalKey);
   }, [canonicalKey, onCanonicalKey]);
 
-  const header = (
+  const header = (copyAction?: ReactNode) => (
     <header
       aria-label="Task heading"
       className="mb-4 flex min-w-0 items-center gap-2"
@@ -700,17 +728,20 @@ export function DetailView({
       >
         <Icon name="ArrowLeft" className="size-4" />
       </Button>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
+      <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">
         {canonicalKey ?? taskKey}
       </span>
-      {headerActions}
+      {copyAction}
+      {headerActions ? (
+        <div className="ml-auto flex shrink-0">{headerActions}</div>
+      ) : null}
     </header>
   );
 
   if (query.data == null) {
     return (
       <div className="flex min-h-full flex-col p-7">
-        {header}
+        {header()}
         {query.data === undefined ? (
           query.error ? (
             <div className="flex flex-1 items-center justify-center p-6 text-sm text-destructive">
