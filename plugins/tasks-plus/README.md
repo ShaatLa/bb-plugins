@@ -233,7 +233,7 @@ another command or agent will consume the output.
 
 `--project` takes a tracker project prefix or id such as `PROD`, never a bb
 project id (`proj_...`); `bb tasks project list` shows both columns. Repeatable
-options (`--label`, `--status`, `--priority`, `--add-label`, `--remove-label`)
+options (`--label`, `--status`, `--exclude-status`, `--priority`, `--add-label`, `--remove-label`)
 also accept one comma-separated list. File paths (`--file`, `--attach`,
 `--out`, `--description-file`, `--body-file`) resolve on the invoking machine:
 inside an agent thread that is the thread's machine, otherwise the server's
@@ -334,3 +334,14 @@ CLI сохраняет инициирующий тред автоматичес�
 Кнопки запуска агента скрыты; оба dispatch API и CLI запрещают запуск Owner action. Перевод задачи с работающим агентом в Owner требует сначала остановить агента. Агент может создать запрос, добавить описание и комментарии, отслеживать результат; не выполняет ручное действие и не подтверждает его за owner. В описании укажите действие, причину обращения и проверяемый результат; отдельной валидации заполнения нет.
 
 Переход в Done через свойства, список, доску или CLI атомарно записывает комментарий о завершении, затем уведомляет сохранённый тред через queue-if-active. Повторный Done не дублирует уведомление; после переоткрытия новое завершение уведомляет снова. Недоступный тред или ошибка доставки не откатывают статус; предупреждение сохраняется в Activity и возвращается как `notification: not_sent` (при успехе `sent`). Автоматической повторной доставки нет. Импорт только восстанавливает данные, не рассылает уведомления.
+
+
+### Исключение статусов в CLI
+
+```sh
+bb tasks list --project ANV --exclude-status done --json
+bb tasks list --project ANV --exclude-status done,canceled --json
+bb tasks list --project ANV --status todo,done --exclude-status done --json
+```
+
+Флаг можно повторять. Исключения вычитаются из `--status`, а без него — из всех статусов. Если не осталось статусов, результат пустой. Фильтр применяется до пагинации и сочетается с остальными фильтрами. Формат архива остаётся v5.

@@ -2038,6 +2038,14 @@ export function registerTasksCli(
               description:
                 "Keep only these workflow statuses; repeat the flag or pass a comma-separated list",
             },
+            "exclude-status": {
+              type: "enum",
+              values: TASK_STATUSES,
+              repeatable: true,
+              split: ",",
+              description:
+                "Exclude these workflow statuses, including from --status; repeat or comma-separate",
+            },
             priority: {
               type: "enum",
               values: TASK_PRIORITIES,
@@ -2115,6 +2123,12 @@ export function registerTasksCli(
                 }
                 return matches[0]!.id;
               });
+              const excludedStatuses = new Set(input.options["exclude-status"]);
+              const statuses = (
+                input.options.status.length > 0
+                  ? input.options.status
+                  : TASK_STATUSES
+              ).filter((status) => !excludedStatuses.has(status));
               const limit = input.options.limit;
               const result = tasksRpcContract.listTasks.output.parse(
                 await domain.listTasks(
@@ -2126,8 +2140,9 @@ export function registerTasksCli(
                       ? (await resolveTask(domain, input.options.epic)).id
                       : undefined,
                     statuses:
-                      input.options.status.length > 0
-                        ? input.options.status
+                      input.options.status.length > 0 ||
+                      excludedStatuses.size > 0
+                        ? statuses
                         : undefined,
                     priorities:
                       input.options.priority.length > 0
