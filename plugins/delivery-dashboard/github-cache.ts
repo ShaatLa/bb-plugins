@@ -14,6 +14,7 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
     if (init?.method && init.method !== "GET") return githubRequest(path, token, signal, init);
     const key = JSON.stringify([configuration, path]);
     const row = database.prepare("SELECT data, checked_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number } | undefined;
+    if (row) database.prepare("UPDATE github_responses SET last_used_at = ? WHERE cache_key = ?").run(Date.now(), key);
     let previous: GitHubResponse | undefined;
     if (row) {
       try { previous = responseSchema.parse(JSON.parse(row.data)); } catch { /* Invalid cache entries are refetched. */ }
@@ -38,9 +39,9 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
         result = { ...result, body: { total_count: body.total_count, incomplete_results: body.incomplete_results, ...(Array.isArray(body.items) ? { items: body.items.map((row) => pick(row, ["number", "title", "created_at"])) } : {}) } };
       }
       if (canWrite()) {
-        database.prepare("INSERT INTO github_responses (cache_key, data, checked_at) VALUES (?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET data = excluded.data, checked_at = excluded.checked_at")
-          .run(key, JSON.stringify(result), Date.now());
-        database.prepare("DELETE FROM github_responses WHERE cache_key NOT IN (SELECT cache_key FROM github_responses ORDER BY checked_at DESC LIMIT 512)").run();
+        database.prepare("INSERT INTO github_responses (cache_key, data, checked_at, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET data = excluded.data, checked_at = excluded.checked_at, last_used_at = excluded.last_used_at")
+          .run(key, JSON.stringify(result), Date.now(), Date.now());
+        database.prepare("DELETE FROM github_responses WHERE cache_key NOT IN (SELECT cache_key FROM github_responses ORDER BY last_used_at DESC, rowid DESC LIMIT 512)").run();
       }
       return result;
     });

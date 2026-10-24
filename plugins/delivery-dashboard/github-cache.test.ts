@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 test("conditional pages survive reload, reuse 304 bodies, and replace changed run outcomes", async () => {
   const { bb, harness } = createFakePluginHost();
   const database = bb.storage.database();
-  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)").run();
+  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL DEFAULT 0)").run();
   const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ total_count: 1, workflow_runs: [{ id: 1, created_at: "2026-10-19T00:00:00Z", conclusion: "failure", unused: "large response" }] }, { headers: { etag: '"first"', link: '<https://api.github.com/next>; rel="next"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }))
     .mockResolvedValueOnce(Response.json({ total_count: 1, workflow_runs: [{ id: 1, created_at: "2026-10-19T00:00:00Z", conclusion: "success" }] }, { headers: { etag: '"second"' } }));
@@ -29,7 +29,7 @@ test("conditional pages survive reload, reuse 304 bodies, and replace changed ru
 test("current-state TTL shares requests across ranges, force revalidates, and invalidated writes are rejected", async () => {
   const { bb, harness } = createFakePluginHost();
   const database = bb.storage.database();
-  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)").run();
+  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL DEFAULT 0)").run();
   const fetchMock = vi.fn().mockImplementation(async () => Response.json({ total_count: 7, unused_sensitive: "do-not-store" }, { headers: { etag: '"same"' } }));
   vi.stubGlobal("fetch", fetchMock);
   try {
