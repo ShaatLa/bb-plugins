@@ -122,6 +122,7 @@ test("renders imported and additional repositories independently", async () => {
     expect(slot.getByRole("heading", { name: "Release platform" })).toBeTruthy();
     const repositoryLink = slot.getByRole("link", { name: "Widgets" });
     expect(repositoryLink.getAttribute("href")).toBe("https://github.com/acme/widgets");
+    expect(repositoryLink.querySelector('[data-icon="ExternalLink"][aria-hidden="true"]')).not.toBeNull();
     fireEvent.click(repositoryLink);
     expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/widgets");
     fireEvent.click(slot.getByRole("link", { name: "Release platform" }));
@@ -161,13 +162,14 @@ test("renders CI outcomes, review ages, and a linked production deployment", asy
   try {
     expect(await slot.findByRole("region", { name: "CI outcomes" })).toBeTruthy();
     expect(slot.getByText("Cancelled")).toBeTruthy();
+    expect(slot.getByRole("link", { name: "View deployment" }).querySelector('[data-icon="ExternalLink"][aria-hidden="true"]')).not.toBeNull();
     expect(slot.getByText("Skipped")).toBeTruthy();
     expect(slot.getByText("3d 6h open")).toBeTruthy();
     expect(slot.getByRole("link", { name: "#17 Needs review" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/17");
-    expect(slot.getByRole("link", { name: "View deployment ↗" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/1");
+    expect(slot.getByRole("link", { name: "View deployment" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/1");
     expect(slot.getByText("Created 2h ago")).toBeTruthy();
     expect(slot.getByText("No reviews yet · excludes drafts · oldest 5")).toBeTruthy();
-    const reviewLink = new URL(slot.getByRole("link", { name: "View review queue ↗" }).getAttribute("href")!);
+    const reviewLink = new URL(slot.getByRole("link", { name: "View review queue" }).getAttribute("href")!);
     expect(reviewLink.searchParams.get("q")).toBe("is:pr is:open draft:false review:none");
   } finally { slot.lifecycle.unmount(); }
 });
@@ -217,20 +219,28 @@ test("pending interval and manual refreshes leave the same cards visible without
   try {
     await act(async () => {});
     const originalCards = slot.getByRole("region", { name: "acme/widgets" });
+    const refreshButton = slot.getByRole("button", { name: "Refresh" });
+    const refreshIcon = refreshButton.querySelector('[data-icon="RefreshCw"]');
+    expect(refreshIcon).not.toBeNull();
+    expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
+    expect(refreshButton.textContent).toBe("");
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(metrics).toHaveBeenCalledTimes(2);
     expect(slot.getByRole("region", { name: "acme/widgets" })).toBe(originalCards);
     expect(slot.getByText("12.0 / day")).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
-    expect(slot.getByRole("button", { name: "Refresh" }).querySelector("svg")).not.toBeNull();
+    expect(refreshButton.querySelector('[data-icon="RefreshCw"]')).toBe(refreshIcon);
+    expect(refreshIcon?.classList.contains("animate-spin")).toBe(true);
+    expect(refreshIcon?.classList.contains("motion-reduce:animate-none")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).textContent?.trim()).toBe("");
     expect(slot.getByRole("region", { name: "GitHub delivery metrics" }).getAttribute("aria-busy")).toBe("false");
     expect(slot.queryByText(/Loading|Refreshing/)).toBeNull();
     await act(async () => { finish(data); });
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
-    expect(slot.getByRole("button", { name: "Refresh" }).querySelector("svg")).toBeNull();
-    expect(slot.getByRole("button", { name: "Refresh" }).textContent).toBe("Refresh");
+    expect(refreshButton.querySelector('[data-icon="RefreshCw"]')).toBe(refreshIcon);
+    expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
+    expect(refreshButton.textContent).toBe("");
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
     await act(async () => {});
     expect(metrics).toHaveBeenCalledTimes(3);
@@ -497,7 +507,7 @@ test("production dispatch needs confirmation, supports cancel, and links the req
     expect(deployProduction).toHaveBeenCalledTimes(1);
     await act(async () => { finish({ url: "https://github.com/simple-life-app/anvil/actions/runs/123" }); });
     expect(slot.getByText("Production workflow requested.")).toBeTruthy();
-    expect(slot.getByRole("link", { name: "View workflow ↗" }).getAttribute("href")).toContain("/actions/runs/123");
+    expect(slot.getByRole("link", { name: "View workflow" }).getAttribute("href")).toContain("/actions/runs/123");
     expect(slot.queryByRole("button", { name: "Deploy production" })).toBeNull();
   } finally { slot.lifecycle.unmount(); }
 });

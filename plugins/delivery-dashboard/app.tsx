@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { presets, resolveRange, type RangeInput } from "./date-range";
-import { definePluginApp, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { DashboardData, rpcContract } from "./server";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -144,8 +144,8 @@ export function Dashboard() {
           </select>
           <svg aria-hidden="true" viewBox="0 0 12 8" fill="none" className="pointer-events-none absolute right-3 top-1/2 h-2 w-3 -translate-y-1/2 text-foreground"><path d="m1 1 5 5 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </span>
-        <Button variant="outline" size="sm" className="h-9 min-w-[6rem] shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
-          {busy ? <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-3.5 animate-spin motion-reduce:animate-none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg> : "Refresh"}
+        <Button variant="outline" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
+          <Icon name="RefreshCw" aria-hidden className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`} />
         </Button>
       </div>
       {mode === "custom" && <div className="flex flex-wrap items-end gap-3">
@@ -172,7 +172,7 @@ export function Dashboard() {
         return <section key={repo.repository} aria-label={repo.repository} className="space-y-3">
           <h3 className="break-words text-base font-semibold">
             <UrlLink href={`https://github.com/${repo.repository}`} title={`Open ${repo.repository} on GitHub`} className="inline-flex items-center gap-1.5 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              {projectTitle}<span aria-hidden="true" className="text-sm text-muted-foreground">↗</span>
+              {projectTitle}<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
             </UrlLink>
           </h3>
           <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(repo.range.since).toUTCString()} – ${new Date(repo.range.until).toUTCString()}`}>
