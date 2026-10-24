@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { summarizeCi } from "./ci-insights";
 import { minimumDate, resolveRange } from "./date-range";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
@@ -17,6 +18,26 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 };
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => vi.useRealTimers());
+
+test("CI cards show actionable failures, workflow breakdown and overall and individual timing", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const ciInsights = summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
+    created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z`,
+  })), "main");
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights }] }) }, settings: {} });
+  try {
+    const attention = await slot.findByRole("region", { name: "CI needs attention" });
+    expect(attention.textContent).toContain("3 consecutive failures");
+    expect(slot.getByRole("link", { name: "Unit tests · main: latest run failed" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
+    expect(slot.getByText("3 failed · 0.0% passed · 3 counted runs")).toBeTruthy();
+    const timings = slot.getByRole("region", { name: "CI run timings" });
+    expect(timings.textContent).toContain("6m 0s");
+    expect(timings.textContent).toContain("Timing available for 3 of 3 runs");
+    expect(slot.getByRole("link", { name: /Unit tests · main · #3/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
+    expect(slot.getByRole("link", { name: /Unit tests3\/3 timed/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/workflows/42");
+  } finally { slot.lifecycle.unmount(); }
+});
 
 test("progress renders ready cards before the full RPC and rejects older or other-range events", async () => {
   vi.resetModules();

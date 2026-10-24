@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createFakePluginHost, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
-import { loadMetrics } from "./metrics";
+import { loadMetrics, type Metrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
 import { resolveRange } from "./date-range";
@@ -55,6 +55,30 @@ test("today aggregates cached records into six midnight-aligned four-hour bucket
   expect(result.ci.series?.map((point) => point.value)).toEqual([100, 100, 0, null, null, null]);
   expect(result.commitActivity).toMatchObject({ commits: 4, additions: 40, deletions: 8 });
   expect(new URL(fetchMock.mock.calls.at(-1)![0]).searchParams.get("q")).toContain("created:2026-10-20T00:00:00.000Z..2026-10-20T10:17:38.000Z");
+});
+
+test("workflow metadata survives persistence and powers contained ranges without more history requests", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: string) => {
+    const response = await normal(input);
+    if (!new URL(input).pathname.endsWith("/actions/runs")) return response;
+    const body = await response.json();
+    return Response.json({ ...body, workflow_runs: body.workflow_runs.map((run: Record<string, unknown>) => ({ ...run,
+      workflow_id: 42, name: "Tests", head_branch: "main", event: "push", run_started_at: recent, updated_at: "2026-10-19T12:02:00Z",
+    })) });
+  });
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("metrics", { days: 7 }) as { repositories: Metrics[] };
+    expect(result).toMatchObject({ repositories: [{ ciInsights: { identified: 10, defaultBranch: "main", timing: { count: 10, totalMs: 1_200_000 } } }] });
+    fetchMock.mockClear();
+    const local = await harness.behavior.callRpc("snapshot", { days: 3 });
+    expect(local).toMatchObject({ repositories: [{ ciInsights: result.repositories[0].ciInsights }] });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const stored = JSON.parse((bb.storage.database().prepare("SELECT data FROM repository_history").get() as { data: string }).data);
+    expect(stored.records.runs[0]).toMatchObject({ workflow_id: 42, run_started_at: recent });
+  } finally { await harness.lifecycle.dispose(); }
 });
 
 test("counts paginated deployments inside the seven-day window and calculates all metrics", async () => {
