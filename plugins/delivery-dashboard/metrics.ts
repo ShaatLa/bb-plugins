@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
-import { commitActivitySchema, loadCommitActivity } from "./commit-activity";
+import { commitActivitySchema, commitRowSchema, loadCommitActivity, summarizeCommitActivity } from "./commit-activity";
 
 export const repositorySchema = z.string().max(200).regex(
   /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/,
@@ -50,6 +50,14 @@ const productionRowsSchema = z.array(z.object({ id: z.number().int().positive(),
 const statusesSchema = z.array(z.object({ state: z.string(), created_at: timestampSchema, log_url: z.string().nullable().optional() }));
 const reviewSearchSchema = searchSchema.extend({ items: z.array(z.object({ number: z.number().int().positive(), title: z.string(), created_at: timestampSchema })).max(5) });
 
+export const historicalRecordsSchema = z.object({
+  deployments: deploymentsSchema,
+  runs: z.array(runSchema),
+  commits: z.array(commitRowSchema),
+  branch: z.string().nullable(),
+});
+export type HistoricalRecords = z.infer<typeof historicalRecordsSchema>;
+
 // Share the budget across repositories and interval/background refreshes.
 let activeRequests = 0;
 const waitingRequests: (() => void)[] = [];
@@ -64,9 +72,10 @@ async function limitedRequest<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null)): Promise<Metrics> {
+export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void): Promise<Metrics> {
   repositorySchema.parse(repository);
   const now = new Date();
+  const historyData: Partial<HistoricalRecords> = {};
   rangeSchema.parse(range);
   const cutoff = Date.parse(range.since);
   const end = Date.parse(range.until);
@@ -120,22 +129,27 @@ export async function loadMetrics(repository: string, token: string | undefined,
   async function deployments() {
     let count = 0;
     const series = emptySeries();
+    const selected: HistoricalRecords["deployments"] = [];
     for (let page = 1; ; page++) {
-      const { body, hasNext } = await deploymentPage(page);
+      const { body, hasNext } = cached ? { body: cached.records.deployments, hasNext: false } : await deploymentPage(page);
       const rows = deploymentsSchema.parse(body);
       for (const row of rows) {
         const index = bucket(row.created_at);
-        if (index >= 0) { count++; series[index].value++; }
+        if (index >= 0) { count++; series[index].value++; selected.push(row); }
       }
       // GitHub lists deployments newest first; stop once the page crosses the window.
-      if (!hasNext || rows.some((row) => Date.parse(row.created_at) < cutoff)) return {
-        value: count / days,
-        detail: `${count} deployment records · ${range.label} · all environments and outcomes`,
-        error: null, series, seriesError: null,
-      };
+      if (!hasNext || rows.some((row) => Date.parse(row.created_at) < cutoff)) {
+        historyData.deployments = selected;
+        return {
+          value: count / days,
+          detail: `${count} deployment records · ${range.label} · all environments and outcomes`,
+          error: null, series, seriesError: null,
+        };
+      }
     }
   }
   async function pullRequests(created = false) {
+    if (cached && !created) return cached.metrics.pullRequests;
     const query = encodeURIComponent(`repo:${repository} is:pr ${created ? `created:${since}..${range.until}` : "is:open"}`);
     const { body } = await request(`/search/issues?q=${query}&per_page=1`);
     const result = searchSchema.parse(body);
@@ -143,6 +157,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     return { value: result.total_count, detail: created ? `Created · ${range.label} · all states, includes drafts` : "Open now · includes drafts", error: null, series: null, seriesError: null };
   }
   async function reviews() {
+    if (cached) return cached.metrics.reviewQueue;
     const query = encodeURIComponent(`repo:${repository} is:pr is:open draft:false review:none`);
     const { body } = await request(`/search/issues?q=${query}&sort=created&order=asc&per_page=5`);
     const result = reviewSearchSchema.parse(body);
@@ -152,6 +167,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     })) };
   }
   async function production() {
+    if (cached) return cached.metrics.production;
     for (let page = 1; ; page++) {
       const { body, hasNext } = await deploymentPage(page);
       const latest = productionRowsSchema.parse(body).find((row) => row.production_environment || row.environment.toLowerCase() === "production");
@@ -171,8 +187,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
   async function ci() {
     const path = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${since}..${range.until}`)}`;
     const completedPath = `${path}&status=completed&per_page=100`;
-    const first = await request(`${completedPath}&page=1`);
-    const completed = countSchema.parse(first.body).total_count;
+    const first = cached ? null : await request(`${completedPath}&page=1`);
+    const completed = cached ? cached.records.runs.length : countSchema.parse(first!.body).total_count;
     function summary(total: number, successful: number) {
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
@@ -221,7 +237,10 @@ export async function loadMetrics(repository: string, token: string | undefined,
       return rows;
     }
     try {
-      const rows = await history(cutoff, end, first);
+      const rows = cached
+        ? new Map(cached.records.runs.filter((row) => bucket(row.created_at) >= 0).map((row) => [row.id, row]))
+        : await history(cutoff, end, first!);
+      historyData.runs = [...rows.values()];
       const totals = emptySeries();
       const passed = Array<number>(bucketCount).fill(0);
       const outcomes: Record<string, number> = Object.create(null);
@@ -254,10 +273,19 @@ export async function loadMetrics(repository: string, token: string | undefined,
   }
   const [deployResult, prResult, ciResult, reviewResult, productionResult, createdPrResult, commitResult] = await Promise.allSettled([
     deployments(), pullRequests(), ci(), reviews(), production(), pullRequests(true),
-    loadCommitActivity(repository, token, since, range.until, request),
+    cached ? Promise.resolve(summarizeCommitActivity(cached.records.commits.filter((row) => {
+      const time = Date.parse(row.committedDate);
+      return time >= cutoff && time <= end;
+    }), cached.records.branch)) : loadCommitActivity(repository, token, since, range.until, request, (rows, branch) => {
+      historyData.commits = rows;
+      historyData.branch = branch;
+    }),
   ]);
+  if (!cached && deployResult.status === "fulfilled" && ciResult.status === "fulfilled" && ciResult.value.outcomes !== null && commitResult.status === "fulfilled") {
+    onHistory?.(historicalRecordsSchema.parse(historyData));
+  }
   return {
-    repository, updatedAt: now.toISOString(), range,
+    repository, updatedAt: cached?.metrics.updatedAt ?? now.toISOString(), range,
     deployments: deployResult.status === "fulfilled" ? deployResult.value : failedMetric(deployResult.reason),
     pullRequestsCreated: createdPrResult.status === "fulfilled" ? createdPrResult.value : failedMetric(createdPrResult.reason),
     commitActivity: commitResult.status === "fulfilled" ? commitResult.value : { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(commitResult.reason) },

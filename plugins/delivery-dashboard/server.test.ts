@@ -502,7 +502,7 @@ test("reads persisted snapshots without GitHub and invalidates them on settings 
     fetchMock.mockClear();
     vi.mocked(resolveGithubToken).mockClear();
     expect(await harness.behavior.callRpc("snapshot", { days: 7 })).toEqual(result);
-    expect(await harness.behavior.callRpc("snapshot", { days: 1 })).toBeNull();
+    expect(await harness.behavior.callRpc("snapshot", { days: 90 })).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(resolveGithubToken).not.toHaveBeenCalled();
     const rows = bb.storage.database().prepare("SELECT * FROM dashboard_snapshots").all();
@@ -615,4 +615,36 @@ test.each([
   expect(result.ci.series?.every((point) => point.value === null)).toBe(true);
   expect(result.ci.detail).toContain("No completed runs after excluding cancelled and skipped");
   expect(result.ciOutcomes).toEqual(first === second ? { [first]: 2 } : { [first]: 1, [second]: 1 });
+});
+
+
+test("derives narrower and custom ranges from persisted raw history without downloading history again", async () => {
+  let { bb, harness } = createFakePluginHost({
+    pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
+  });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 90 });
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    fetchMock.mockClear();
+    const narrower = await harness.behavior.callRpc("snapshot", { days: 30 });
+    expect(narrower).toMatchObject({ repositories: [{
+      range: { label: "last 30 days", since: "2026-09-20T12:00:00.000Z", until: "2026-10-20T12:00:00.000Z" },
+      deployments: { value: 1 / 30 }, commitActivity: { commits: 2, additions: 120, deletions: 15 },
+      ci: { value: 80 }, ciOutcomes: { success: 8, failure: 2 },
+    }] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe("/search/issues");
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("q")).toContain("created:2026-09-20T12:00:00.000Z..2026-10-20T12:00:00.000Z");
+    fetchMock.mockClear();
+    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toEqual(narrower);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const custom = await harness.behavior.callRpc("snapshot", { start: "2026-10-19", end: "2026-10-19" });
+    expect(custom).toMatchObject({ repositories: [{ deployments: { value: expect.closeTo(1) }, commitActivity: { commits: 2 }, ci: { value: 80 } }] });
+    const empty = await harness.behavior.callRpc("snapshot", { start: "2026-10-18", end: "2026-10-18" });
+    expect(empty).toMatchObject({ repositories: [{ deployments: { value: 0 }, commitActivity: { commits: 0, additions: 0, deletions: 0 }, ci: { value: null }, ciOutcomes: {} }] });
+    fetchMock.mockClear();
+    expect(await harness.behavior.callRpc("snapshot", { start: "2026-07-01", end: "2026-07-02" })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { await harness.lifecycle.dispose(); }
 });

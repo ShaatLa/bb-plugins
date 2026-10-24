@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { DashboardData, rpcContract } from "./server";
@@ -11,6 +11,15 @@ import { RepositoryActivity, RepositoryDetails } from "./repository-details";
 type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
 // Keep the last view across sidebar navigation within this window; never persist repository data in browser storage.
 let lastSnapshot: DashboardSnapshot | null = null;
+const snapshots = new Map<string, DashboardSnapshot>();
+let cacheGeneration = 0;
+const snapshotKey = (configuration: string, selection: string) => JSON.stringify([configuration, selection]);
+function rememberSnapshot(snapshot: DashboardSnapshot) {
+  const key = snapshotKey(snapshot.configuration, snapshot.selection);
+  snapshots.delete(key);
+  snapshots.set(key, snapshot);
+  if (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!);
+}
 let lastSelection: RangeInput = { days: 7 };
 
 export function Dashboard() {
@@ -31,6 +40,12 @@ export function Dashboard() {
     try { resolveRange(next); }
     catch { setRangeError("Choose valid dates from 1970 through today, with the start on or before the end."); return; }
     lastSelection = next;
+    const cached = snapshots.get(snapshotKey(configuration, JSON.stringify(next)));
+    if (cached) {
+      rememberSnapshot(cached);
+      lastSnapshot = cached;
+      setData(cached);
+    }
     setRange(next);
     setRangeError(null);
   }
@@ -39,41 +54,75 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  useRealtime("configuration-changed", () => setRefresh((n) => n + 1));
+  const previousRefresh = useRef(refresh);
+  useRealtime("configuration-changed", () => {
+    cacheGeneration++;
+    snapshots.clear();
+    lastSnapshot = null;
+    setData(null);
+    setRefresh((n) => n + 1);
+  });
 
   useEffect(() => {
     setError(null);
     if (isLoading) return;
     let disposed = false;
+    const generation = cacheGeneration;
+    const key = snapshotKey(configuration, selection);
+    const force = refresh !== previousRefresh.current;
+    previousRefresh.current = refresh;
     let timer: ReturnType<typeof setTimeout>;
-    async function load() {
+    async function load(force = false) {
       setBusy(true);
+      let nextRefresh = seconds * 1000;
       try {
+        const cached = snapshots.get(key);
+        if (cached && !disposed) {
+          lastSnapshot = cached;
+          setData(cached);
+        }
         // Persisted snapshots seed a view; polling must not rewind fresh in-memory data.
-        if (lastSnapshot?.configuration !== configuration || lastSnapshot.selection !== selection) {
+        if (!cached) {
           const snapshot = await rpc.call("snapshot", range).catch(() => null);
-          if (snapshot && !disposed) {
-            lastSnapshot = { configuration, selection, result: snapshot };
-            setData(lastSnapshot);
+          if (snapshot && generation === cacheGeneration && !snapshots.has(key)) {
+            const entry = { configuration, selection, result: snapshot };
+            rememberSnapshot(entry);
+            if (!disposed) {
+              lastSnapshot = entry;
+              setData(entry);
+            }
           }
         }
         if (disposed) return;
+        const available = snapshots.get(key);
+        if (!force && available && available.result.repositories.length > 0) {
+          const checkedAt = Math.min(...available.result.repositories.map((repo) => Date.parse(repo.updatedAt)));
+          const age = Date.now() - checkedAt;
+          if (age >= 0 && age < seconds * 1000) {
+            nextRefresh = seconds * 1000 - age;
+            return;
+          }
+        }
         const result = await rpc.call("metrics", range);
-        if (!disposed) {
-          lastSnapshot = { configuration, selection, result };
-          setData(lastSnapshot);
-          setError(null);
+        if (generation === cacheGeneration) {
+          const entry = { configuration, selection, result };
+          rememberSnapshot(entry);
+          if (!disposed) {
+            lastSnapshot = entry;
+            setData(entry);
+            setError(null);
+          }
         }
       } catch {
         if (!disposed) setError("Refresh failed. Displayed values may be out of date. Check connectivity and plugin settings.");
       } finally {
         if (!disposed) {
           setBusy(false);
-          timer = setTimeout(load, seconds * 1000);
+          timer = setTimeout(load, nextRefresh);
         }
       }
     }
-    void load();
+    void load(force);
     return () => { disposed = true; clearTimeout(timer); };
   }, [rpc, isLoading, configuration, selection, seconds, refresh]);
 
