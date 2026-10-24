@@ -8,7 +8,7 @@ import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryChart } from "./history-chart";
 import { RepositoryActivity, RepositoryDetails } from "./repository-details";
 
-type DashboardSnapshot = { configuration: string; result: DashboardData };
+type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
 // Keep the last view across sidebar navigation within this window; never persist repository data in browser storage.
 let lastSnapshot: DashboardSnapshot | null = null;
 let lastSelection: RangeInput = { days: 7 };
@@ -49,15 +49,18 @@ export function Dashboard() {
     async function load() {
       setBusy(true);
       try {
-        const snapshot = await rpc.call("snapshot", range).catch(() => null);
-        if (snapshot && !disposed) {
-          lastSnapshot = { configuration, result: snapshot };
-          setData(lastSnapshot);
+        // Persisted snapshots seed a view; polling must not rewind fresh in-memory data.
+        if (lastSnapshot?.configuration !== configuration || lastSnapshot.selection !== selection) {
+          const snapshot = await rpc.call("snapshot", range).catch(() => null);
+          if (snapshot && !disposed) {
+            lastSnapshot = { configuration, selection, result: snapshot };
+            setData(lastSnapshot);
+          }
         }
         if (disposed) return;
         const result = await rpc.call("metrics", range);
         if (!disposed) {
-          lastSnapshot = { configuration, result };
+          lastSnapshot = { configuration, selection, result };
           setData(lastSnapshot);
           setError(null);
         }
