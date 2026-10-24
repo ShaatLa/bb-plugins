@@ -27,11 +27,16 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   })), "main");
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights }] }) }, settings: {} });
   try {
-    const attention = await slot.findByRole("region", { name: "CI needs attention" });
+    const attention = await slot.findByRole("region", { name: "CI health" });
+    expect(slot.queryByRole("region", { name: "CI needs attention" })).toBeNull();
     expect(attention.textContent).toContain("3 consecutive failures");
     expect(slot.getByRole("link", { name: "Unit tests · main: latest run failed" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
     expect(slot.getByText("3 failed · 0.0% passed · 3 counted runs")).toBeTruthy();
     const timings = slot.getByRole("region", { name: "CI run timings" });
+    const order = [timings, attention, slot.getByRole("heading", { name: "CI pass rate over time" }),
+      slot.getByRole("region", { name: "Repository activity in the last 7 days" }), slot.getByRole("region", { name: "PRs awaiting review" })];
+    for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(attention.contains(slot.getByRole("region", { name: "CI signals" }))).toBe(true);
     expect(timings.textContent).toContain("6m 0s");
     expect(timings.textContent).toContain("Timing available for 3 of 3 runs");
     expect(slot.getByRole("link", { name: /Unit tests · main · #3/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
@@ -255,7 +260,7 @@ test("unavailable history is explained without showing an invented chart", async
 test("renders CI outcomes, review ages, and a linked production deployment", async () => {
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
   try {
-    expect(await slot.findByRole("region", { name: "CI outcomes" })).toBeTruthy();
+    expect(await slot.findByRole("region", { name: "CI health" })).toBeTruthy();
     expect(slot.getByText("Cancelled")).toBeTruthy();
     expect(slot.getByRole("link", { name: "View deployment" }).querySelector('[data-icon="ExternalLink"][aria-hidden="true"]')).not.toBeNull();
     expect(slot.getByText("Skipped")).toBeTruthy();

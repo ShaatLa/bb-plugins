@@ -5,7 +5,7 @@ import { Button } from "./components/ui/button";
 import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
-import { CiAttention, CiTiming, passRate } from "./ci-cards";
+import { CiSignals, passRate } from "./ci-cards";
 import { CardDetailsView } from "./card-details-view";
 
 function ageLabel(timestamp: string, checkedAt: string) {
@@ -23,8 +23,7 @@ const labels: Record<string, string> = {
 export function RepositoryDetails({ repo }: { repo: Metrics }) {
   const { reviewQueue, production } = repo;
   const deployment = production.deployment;
-  return <><div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
-    <CiOutcomes repo={repo} showDetails />
+  return <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
     <Card role="region" aria-label="PRs awaiting review" className="space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-sm font-medium">PRs awaiting review</h4>
@@ -52,7 +51,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}
       {repo.repository.toLowerCase() === productionTarget.repository && <ProductionDeployButton />}
     </Card>
-  </div><div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2"><CiAttention repo={repo} /><CiTiming repo={repo} /></div></>;
+  </div>;
 }
 
 
@@ -114,21 +113,25 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
 }
 
 export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showDetails?: boolean }) {
-  return <Card role="region" aria-label="CI outcomes" className="space-y-3 p-4">
-      <div><h4 className="text-sm font-medium">CI outcomes</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
+  return <Card role="region" aria-label={showDetails ? "CI health" : "CI outcomes"} className="space-y-4 p-4">
+      <div><h4 className="text-sm font-medium">{showDetails ? "CI health" : "CI outcomes"}</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
+      <div className={showDetails ? "grid grid-cols-1 items-start gap-5 lg:grid-cols-2" : undefined}>
+      {showDetails && <CiSignals repo={repo} />}
+      <div className="min-w-0 space-y-3">
       {repo.pending?.includes("ci") ? <p role="status" className="text-xs text-muted-foreground">Loading CI outcomes…</p> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
         {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
           <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
           <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
         </div>)}
       </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>}
-      {showDetails && !repo.pending?.includes("ci") && repo.ciInsights && repo.ciInsights.workflows.some((workflow) => workflow.failed > 0) && <div className="space-y-2 border-t border-border pt-3">
-        <h5 className="text-xs font-medium">Top failing workflows</h5>
+      {showDetails && !repo.pending?.includes("ci") && repo.ciInsights && repo.ciInsights.workflows.some((workflow) => workflow.failed > 0) && <details className="space-y-2 border-t border-border pt-3">
+        <summary className="cursor-pointer text-sm">Top failing workflows</summary>
         {repo.ciInsights.workflows.filter((workflow) => workflow.failed > 0).slice(0, 3).map((workflow) => <p key={workflow.id} className="text-sm">
           <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${workflow.failureId}`} className="break-words hover:underline">{workflow.name}</UrlLink>
           <span className="block text-xs text-muted-foreground">{workflow.failed} failed · {passRate(workflow)} passed · {workflow.eligible} counted runs</span>
         </p>)}
-      </div>}
+      </details>}
       {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}:${repo.updatedAt}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
+      </div></div>
     </Card>;
 }

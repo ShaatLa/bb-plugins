@@ -16,11 +16,11 @@ function unavailable(repo: Metrics) {
   return repo.pending?.includes("ci") ? "Loading CI details…" : (repo.ci.error || repo.ci.seriesError ? "CI details unavailable. See the CI summary." : "Refresh to load workflow details.");
 }
 
-export function CiAttention({ repo }: { repo: Metrics }) {
+export function CiSignals({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
   const ready = data && !repo.pending?.includes("ci");
-  return <Card role="region" aria-label="CI needs attention" className="space-y-3 p-4">
-    <div><h4 className="text-sm font-medium">Needs attention</h4><p className="mt-1 text-xs text-muted-foreground">Latest completed runs within {repo.range.label} · cancelled and skipped excluded</p></div>
+  return <section aria-label="CI signals" className="min-w-0 space-y-3">
+    <div><h5 className="text-sm font-medium">Needs attention</h5><p className="mt-1 text-xs text-muted-foreground">Latest completed runs within {repo.range.label} · cancelled and skipped excluded</p></div>
     {!ready ? <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
       {data.identified < data.total && <p className="text-xs text-muted-foreground">Workflow details available for {data.identified} of {data.total} runs. Refresh to complete coverage.</p>}
       {!data.defaultBranch && <p className="text-xs text-muted-foreground">Default branch is unavailable; main-branch checks could not be evaluated.</p>}
@@ -36,18 +36,19 @@ export function CiAttention({ repo }: { repo: Metrics }) {
         <p>PR workflows: <strong className="tabular-nums">{passRate(data.pullRequests)}</strong><span className="block text-xs text-muted-foreground">{data.pullRequests.eligible} counted runs</span></p>
       </div>
     </>}
-  </Card>;
+  </section>;
 }
 
 export function CiTiming({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
-  return <Card role="region" aria-label="CI run timings" className="space-y-3 p-4">
+  return <Card role="region" aria-label="CI run timings" className="space-y-4 border-primary/20 p-4 sm:p-5">
     <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · completed runs, including cancelled and skipped</p></div>
     {!data || repo.pending?.includes("ci") ? <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{([
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4 sm:gap-6">{([
         ["Total elapsed", data.timing.count ? data.timing.totalMs : null], ["Average", data.timing.averageMs], ["Median", data.timing.medianMs], ["P95", data.timing.p95Ms],
-      ] as const).map(([label, value]) => <div key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="text-lg font-semibold tabular-nums">{elapsed(value)}</dd></div>)}</dl>
+      ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
       <p className="text-xs text-muted-foreground">Timing available for {data.timing.count} of {data.total} runs. Estimate from start to last update; reruns may inflate it. Totals add overlapping runs and are not billed runner time.</p>
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
         <summary className="cursor-pointer text-sm">By workflow · {data.workflows.length}</summary>
         <ul className="mt-2 divide-y divide-border">{[...data.workflows].sort((a, b) => b.timing.totalMs - a.timing.totalMs || a.id - b.id).map((workflow) => <li key={workflow.id} className="flex items-start justify-between gap-3 py-2 text-sm">
@@ -59,6 +60,7 @@ export function CiTiming({ repo }: { repo: Metrics }) {
         <summary className="cursor-pointer text-sm">Longest runs · top {data.slowRuns.length}</summary>
         <ul className="mt-2 space-y-2">{data.slowRuns.map((run) => <li key={run.id} className="flex items-start justify-between gap-3 text-sm"><UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} className="min-w-0 break-words hover:underline">{run.name} · {run.branch ?? "Unknown branch"} · #{run.id}</UrlLink><span className="shrink-0 tabular-nums">{elapsed(run.durationMs)}</span></li>)}</ul>
       </details>}
+      </div>
     </>}
   </Card>;
 }
