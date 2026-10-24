@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type ReactNode,
-  type RefObject,
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
@@ -93,13 +92,11 @@ function SubTaskDonut({
   );
 }
 
-function CopyTaskTitle({
-  task,
-  titleRef,
+function CopyTaskKey({
+  taskKey,
   onError,
 }: {
-  task: Task;
-  titleRef: RefObject<HTMLHeadingElement | null>;
+  taskKey: string;
   onError: (message: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -109,12 +106,11 @@ function CopyTaskTitle({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const copyTitle = async () => {
-    const title = titleRef.current?.textContent?.trim() || task.title;
+  const copyKey = async () => {
     try {
       if (
         !(await experimental_copyToClipboard({
-          text: `${task.key} · ${title}`,
+          text: taskKey,
         }))
       ) {
         throw new Error("Clipboard write failed");
@@ -122,7 +118,7 @@ function CopyTaskTitle({
       setCopied(true);
     } catch {
       setCopied(false);
-      onError("Could not copy task title. Please try again.");
+      onError("Could not copy task key. Please try again.");
     }
   };
 
@@ -136,19 +132,19 @@ function CopyTaskTitle({
               variant="ghost"
               size="icon"
               className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-              aria-label="Copy task title"
-              onClick={() => void copyTitle()}
+              aria-label="Copy task key"
+              onClick={() => void copyKey()}
             >
               <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            {copied ? "Copied" : "Copy task key and title"}
+            {copied ? "Copied" : "Copy task key"}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <span role="status" className="sr-only">
-        {copied ? "Task title copied" : ""}
+        {copied ? "Task key copied" : ""}
       </span>
     </>
   );
@@ -156,17 +152,14 @@ function CopyTaskTitle({
 
 function EditableTitle({
   task,
-  titleRef,
   onSave,
 }: {
   task: Task;
-  titleRef: RefObject<HTMLHeadingElement | null>;
   onSave: (title: string) => void;
 }) {
   return (
     <div className="mb-2.5 mt-1">
       <h1
-        ref={titleRef}
         key={`${task.id}:${task.title}`}
         contentEditable
         suppressContentEditableWarning
@@ -296,7 +289,6 @@ function TaskDetail({
   task: Task;
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
   const rpc = useTasksRpc();
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
@@ -501,10 +493,9 @@ function TaskDetail({
       <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
-            <CopyTaskTitle
+            <CopyTaskKey
               key={task.id}
-              task={task}
-              titleRef={titleRef}
+              taskKey={task.key}
               onError={push}
             />,
           )}
@@ -563,7 +554,6 @@ function TaskDetail({
 
           <EditableTitle
             task={task}
-            titleRef={titleRef}
             onSave={(title) => void updateTask({ title })}
           />
 
