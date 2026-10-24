@@ -2358,3 +2358,140 @@ describe("bb tasks CLI", () => {
     await harness.dispose();
   });
 });
+
+describe("excluded task statuses", () => {
+  it("subtracts validated exclusions from all statuses or an explicit selection", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
+    try {
+      await plugin(bb);
+      const store = createStore(bb);
+      const project = store.tasks.createProject({
+        name: "Exclusions",
+        prefix: "EXC",
+        color: "blue",
+      });
+      const statuses = [
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "done",
+        "canceled",
+      ] as const;
+      for (const status of statuses)
+        store.tasks.createTask({
+          projectId: project.id,
+          title: status,
+          status,
+        });
+      const cases: Array<[string[], string[]]> = [
+        [["--exclude-status", "done"], statuses.filter((s) => s !== "done")],
+        [
+          ["--exclude-status", "done,canceled"],
+          statuses.filter((s) => s !== "done" && s !== "canceled"),
+        ],
+        [
+          ["--exclude-status", "done", "--exclude-status", "canceled"],
+          statuses.filter((s) => s !== "done" && s !== "canceled"),
+        ],
+        [["--status", "todo,done", "--exclude-status", "done"], ["todo"]],
+        [["--status", "done", "--exclude-status", "done"], []],
+        [["--exclude-status", statuses.join(",")], []],
+      ];
+      for (const [args, expected] of cases) {
+        const page = JSON.parse(
+          stdout(
+            await harness.runCli([
+              "list",
+              "--project",
+              "EXC",
+              ...args,
+              "--json",
+            ]),
+          ),
+        );
+        expect(
+          page.tasks.map((task: { status: string }) => task.status).sort(),
+        ).toEqual([...expected].sort());
+        expect(page.nextCursor).toBeNull();
+      }
+      const invalid = await harness.runCli([
+        "list",
+        "--exclude-status",
+        "not-a-status",
+        "--json",
+      ]);
+      expect(invalid.exitCode).not.toBe(0);
+      expect(JSON.parse(invalid.stdout)).toMatchObject({
+        ok: false,
+        error: { code: "invalid_value" },
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("paginates the filtered result and rejects cursors with changed effective exclusions", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
+    try {
+      await plugin(bb);
+      const store = createStore(bb);
+      const project = store.tasks.createProject({
+        name: "Pages",
+        prefix: "XP",
+        color: "blue",
+      });
+      for (let index = 0; index < 6; index++)
+        store.tasks.createTask({
+          projectId: project.id,
+          title: `Task ${index}`,
+          status: index % 2 === 0 ? "done" : "todo",
+        });
+      const args = [
+        "list",
+        "--project",
+        "XP",
+        "--exclude-status",
+        "done",
+        "--limit",
+        "2",
+        "--json",
+      ];
+      const first = JSON.parse(stdout(await harness.runCli(args)));
+      expect(first.tasks).toHaveLength(2);
+      expect(
+        first.tasks.every((task: { status: string }) => task.status === "todo"),
+      ).toBe(true);
+      expect(first.nextCursor).toBeTypeOf("string");
+      const second = JSON.parse(
+        stdout(await harness.runCli([...args, "--cursor", first.nextCursor])),
+      );
+      expect(second.tasks).toHaveLength(1);
+      expect(second.tasks[0].status).toBe("todo");
+      expect(second.nextCursor).toBeNull();
+      expect(
+        new Set(
+          [...first.tasks, ...second.tasks].map(
+            (task: { id: string }) => task.id,
+          ),
+        ).size,
+      ).toBe(3);
+      const changed = await harness.runCli([
+        "list",
+        "--project",
+        "XP",
+        "--exclude-status",
+        "todo",
+        "--cursor",
+        first.nextCursor,
+        "--json",
+      ]);
+      expect(changed.exitCode).not.toBe(0);
+      expect(JSON.parse(changed.stdout).error.message).toContain(
+        "current filters",
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
