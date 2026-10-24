@@ -26,6 +26,7 @@ import { useTasksNavigation } from "../../shell/routes.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { TaskActivity } from "../activity/task-activity.js";
 import { QuestionsSection } from "./questions";
+import { QuestionCount, useQuestionCounts } from "../../components/question-count";
 import { AttachmentsGrid, uploadAttachment } from "./attachments.js";
 import {
   createDescriptionSaver,
@@ -206,6 +207,7 @@ function SubTasksSection({
 }) {
   const navigation = useTasksNavigation();
   const { label: statusLabel } = useTaskStatuses(task.projectId);
+  const questionCounts = useQuestionCounts(subtasks);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -236,7 +238,8 @@ function SubTasksSection({
           <span className="shrink-0 text-xs text-muted-foreground">
             {subtask.key}
           </span>
-          <span className="min-w-0 truncate">{subtask.title}</span>
+          <span className="min-w-0 flex-1 truncate">{subtask.title}</span>
+          <QuestionCount count={questionCounts.data?.get(subtask.id)} />
         </button>
       ))}
       {adding ? (
