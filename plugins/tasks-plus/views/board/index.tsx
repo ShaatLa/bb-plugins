@@ -134,8 +134,12 @@ function TaskCard({
       <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
         {task.title}
       </div>
+      {unansweredQuestions ? (
+        <div className="mt-1.5 flex">
+          <QuestionCount count={unansweredQuestions} />
+        </div>
+      ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <QuestionCount count={unansweredQuestions} />
         <PriorityIcon priority={task.priority} />
         {labels.map((label) => (
           <span
