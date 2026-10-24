@@ -4,7 +4,11 @@ import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
 import type { Task } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
-import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_copyToClipboard,
+  useBbNavigate,
+  useRpc,
+} from "@get-bb/plugin-sdk/app";
 import {
   listAllTasks,
   useMentionItems,
@@ -32,6 +36,13 @@ import { DetailToasts, useDetailToasts } from "./toast.js";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface DetailViewProps {
   taskKey: string;
@@ -75,35 +86,87 @@ function SubTaskDonut({
 function EditableTitle({
   task,
   onSave,
+  onError,
 }: {
   task: Task;
   onSave: (title: string) => void;
+  onError: (message: string) => void;
 }) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copyTitle = async () => {
+    const title = titleRef.current?.textContent?.trim() || task.title;
+    try {
+      if (
+        !(await experimental_copyToClipboard({
+          text: `${task.key} · ${title}`,
+        }))
+      ) {
+        throw new Error("Clipboard write failed");
+      }
+      setCopied(true);
+    } catch {
+      setCopied(false);
+      onError("Could not copy task title. Please try again.");
+    }
+  };
+
   return (
-    <h1
-      key={`${task.id}:${task.title}`}
-      contentEditable
-      suppressContentEditableWarning
-      role="textbox"
-      aria-label="Task title"
-      className="mb-2.5 mt-1 text-2xl font-semibold leading-tight outline-none"
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          event.currentTarget.blur();
-        }
-      }}
-      onBlur={(event) => {
-        const next = event.currentTarget.textContent?.trim() ?? "";
-        if (!next) {
-          event.currentTarget.textContent = task.title;
-          return;
-        }
-        if (next !== task.title) onSave(next);
-      }}
-    >
-      {task.title}
-    </h1>
+    <div className="mb-2.5 mt-1 flex items-start gap-2">
+      <h1
+        ref={titleRef}
+        key={`${task.id}:${task.title}`}
+        contentEditable
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label="Task title"
+        className="min-w-0 flex-1 break-words text-2xl font-semibold leading-tight outline-none"
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            event.currentTarget.blur();
+          }
+        }}
+        onBlur={(event) => {
+          const next = event.currentTarget.textContent?.trim() ?? "";
+          if (!next) {
+            event.currentTarget.textContent = task.title;
+            return;
+          }
+          if (next !== task.title) onSave(next);
+        }}
+      >
+        {task.title}
+      </h1>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+              aria-label="Copy task title"
+              onClick={() => void copyTitle()}
+            >
+              <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {copied ? "Copied" : "Copy task key and title"}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <span role="status" className="sr-only">
+        {copied ? "Task title copied" : ""}
+      </span>
+    </div>
   );
 }
 
@@ -459,6 +522,7 @@ function TaskDetail({ task }: { task: Task }) {
           <EditableTitle
             task={task}
             onSave={(title) => void updateTask({ title })}
+            onError={push}
           />
 
           <InlineProperties
