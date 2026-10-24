@@ -4,7 +4,7 @@ See GitHub deployment frequency, current open pull requests, and GitHub Actions 
 
 GitHub repositories are imported automatically from BB projects. Add more owner/repo entries in settings, or disable import to use only your manual list. Each repository gets its own metrics. The dashboard refreshes every five minutes by default; adjust the interval or refresh immediately. System GitHub authorization is used automatically; a secret token override is optional. Credentials remain server-side.
 
-Deploy frequency counts all deployment records over the selected date range, averaged per day. CI pass rate counts successful versus completed workflow runs created over the selected date range. Each metric includes its definition, and unavailable metrics show errors rather than misleading zeroes. See README.md for setup, permissions, and API limits.
+Deploy frequency counts all deployment records over the selected date range, averaged per day. CI pass rate counts successful versus completed workflow runs excluding cancelled and skipped created over the selected date range. Cancelled and skipped runs remain visible in CI outcomes. Each metric includes its definition, and unavailable metrics show errors rather than misleading zeroes. See README.md for setup, permissions, and API limits.
 
 Deployment-throughput and CI-pass-rate charts use actual GitHub data, grouped into hourly, daily, or larger intervals according to the range, with UTC labels and hover details. Incomplete histories are clearly marked. Open the dashboard from the package icon in the navigation sidebar.
 

@@ -174,16 +174,20 @@ export async function loadMetrics(repository: string, token: string | undefined,
     const first = await request(`${completedPath}&page=1`);
     const completed = countSchema.parse(first.body).total_count;
     function summary(total: number, successful: number) {
-      if (successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
+      if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
         value: total === 0 ? null : successful / total * 100,
-        detail: total === 0 ? `No completed workflow runs · ${range.label}` : `${successful} of ${total} completed workflow runs · ${range.label}`, error: null,
+        detail: total === 0 ? `No completed runs after excluding cancelled and skipped · ${range.label}` : `${successful} of ${total} completed workflow runs · cancelled and skipped excluded · ${range.label}`, error: null,
       };
     }
     async function incomplete(message: string) {
-      const { body } = await request(`${path}&status=success&per_page=1`);
-      const successful = countSchema.parse(body).total_count;
-      return { metric: { ...summary(completed, successful), series: null, seriesError: message }, outcomes: null };
+      const [success, cancelled, skipped] = await Promise.all([
+        request(`${path}&status=success&per_page=1`), request(`${path}&status=cancelled&per_page=1`),
+        request(`${path}&status=skipped&per_page=1`),
+      ]);
+      const successful = countSchema.parse(success.body).total_count;
+      const total = completed - countSchema.parse(cancelled.body).total_count - countSchema.parse(skipped.body).total_count;
+      return { metric: { ...summary(total, successful), series: null, seriesError: message }, outcomes: null };
     }
     async function history(start: number, finish: number, response?: Awaited<ReturnType<typeof request>>): Promise<Map<number, z.infer<typeof runSchema>>> {
       const filteredPath = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${new Date(start).toISOString()}..${new Date(finish).toISOString()}`)}&status=completed&per_page=100`;
@@ -224,12 +228,13 @@ export async function loadMetrics(repository: string, token: string | undefined,
       for (const row of rows.values()) {
         const index = bucket(row.created_at);
         if (index < 0) throw new Error("GitHub returned a run outside the time window");
-        totals[index].value++;
-        if (row.conclusion === "success") passed[index]++;
         const state = row.conclusion ?? "unknown";
         outcomes[state] = (outcomes[state] ?? 0) + 1;
+        if (state === "cancelled" || state === "skipped") continue;
+        totals[index].value++;
+        if (state === "success") passed[index]++;
       }
-      return { metric: { ...summary(rows.size, outcomes.success ?? 0), series: totals.map((point, index) => ({
+      return { metric: { ...summary(rows.size - (outcomes.cancelled ?? 0) - (outcomes.skipped ?? 0), outcomes.success ?? 0), series: totals.map((point, index) => ({
         date: point.date, value: point.value === 0 ? null : passed[index] / point.value * 100,
       })), seriesError: null }, outcomes };
     } catch {

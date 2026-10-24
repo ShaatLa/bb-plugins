@@ -26,7 +26,7 @@ beforeEach(() => {
     if (url.pathname === "/search/issues") return url.searchParams.get("q")?.includes("review:none")
       ? Response.json({ total_count: 1, incomplete_results: false, items: [{ number: 17, title: "Needs review", created_at: "2026-10-17T06:00:00Z" }] })
       : Response.json({ total_count: 42, incomplete_results: false });
-    return Response.json({ total_count: url.searchParams.get("status") === "success" ? 8 : 10,
+    return Response.json({ total_count: url.searchParams.get("status") === "success" ? 8 : ["cancelled", "skipped"].includes(url.searchParams.get("status")!) ? 0 : 10,
       workflow_runs: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, created_at: recent, conclusion: index < 8 ? "success" : "failure" })),
     });
   });
@@ -284,10 +284,10 @@ test("shares at most four concurrent GitHub requests across repositories", async
 test("does not render an incomplete CI history when counts change during pagination", async () => {
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string) => input.includes("actions/runs")
-    ? Response.json({ total_count: new URL(input).searchParams.get("status") === "success" ? 1 : 2,
+    ? Response.json({ total_count: new URL(input).searchParams.get("status") === "success" ? 2 : ["cancelled", "skipped"].includes(new URL(input).searchParams.get("status")!) ? 1 : 5,
       workflow_runs: [{ id: 1, created_at: recent, conclusion: "success" }] }) : normal(input));
   const result = await load();
-  expect(result.ci.value).toBe(50);
+  expect(result.ci.value).toBeCloseTo(200 / 3);
   expect(result.ci.series).toBeNull();
   expect(result.ci.seriesError).toBeTruthy();
 });
@@ -298,10 +298,12 @@ test("CI summary, chart, and breakdown use the same runs instead of racing a sec
   fetchMock.mockImplementation(async (input: string) => {
     if (!input.includes("actions/runs")) return normal(input);
     if (new URL(input).searchParams.get("status") === "success") throw new Error("Independent success count must not be fetched");
-    return Response.json({ total_count: 6, workflow_runs: ["success", "failure", "cancelled", "skipped", "timed_out", null].map((conclusion, i) => ({ id: i + 1, created_at: recent, conclusion })) });
+    return Response.json({ total_count: 6, workflow_runs: ["success", "failure", "cancelled", "skipped", "timed_out", null].map((conclusion, i) => ({ id: i + 1, created_at: conclusion === "cancelled" ? "2026-10-14T12:00:00Z" : recent, conclusion })) });
   });
   const result = await load();
-  expect(result.ci.value).toBeCloseTo(100 / 6);
+  expect(result.ci.value).toBe(25);
+  expect(result.ci.detail).toContain("1 of 4 completed workflow runs · cancelled and skipped excluded");
+  expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 25]);
   expect(result.ciOutcomes).toEqual({ success: 1, failure: 1, cancelled: 1, skipped: 1, timed_out: 1, unknown: 1 });
   expect(result.ci.seriesError).toBeNull();
 });
@@ -595,4 +597,22 @@ test("overlapping production dispatches send only one request", async () => {
     await first;
     expect(fetchMock).toHaveBeenCalledTimes(1);
   } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test.each([
+  ["cancelled", "cancelled"],
+  ["skipped", "skipped"],
+  ["cancelled", "skipped"],
+])("histories containing only omitted outcomes have no pass rate (%s, %s)", async (first, second) => {
+  const normal = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: string) => input.includes("actions/runs")
+    ? Response.json({ total_count: 2, workflow_runs: [first, second].map((conclusion, index) => ({ id: index + 1, created_at: recent, conclusion })) }) : normal(input));
+  const result = await load();
+  expect(result.ci.value).toBeNull();
+  expect(result.ci.error).toBeNull();
+  expect(result.ci.seriesError).toBeNull();
+  expect(result.ci.series?.every((point) => point.value === null)).toBe(true);
+  expect(result.ci.detail).toContain("No completed runs after excluding cancelled and skipped");
+  expect(result.ciOutcomes).toEqual(first === second ? { [first]: 2 } : { [first]: 1, [second]: 1 });
 });
