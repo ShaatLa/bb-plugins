@@ -813,7 +813,7 @@ describe("Tasks RPC domain API", () => {
       body: "This comment must survive delivery failures.",
       notifiedCount: 0,
     });
-    expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
+    await vi.waitFor(() => expect(harness.sdk.callsTo("threads.send")).toHaveLength(1));
     expect(harness.logEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

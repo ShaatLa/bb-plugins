@@ -409,6 +409,7 @@ describe("task delegation", () => {
       }),
     ]);
     expect(harness.realtimeSignals).toEqual([
+      { channel: "comments:changed", payload: { taskId: task.id } },
       { channel: "threads:changed", payload: { taskId: task.id } },
       {
         channel: "tasks:changed",
@@ -481,6 +482,7 @@ describe("task thread detach", () => {
         .map((thread) => thread.threadId),
     ).toEqual(["thr_dead"]);
     expect(harness.realtimeSignals).toEqual([
+      { channel: "comments:changed", payload: { taskId: task.id } },
       { channel: "threads:changed", payload: { taskId: task.id } },
       {
         channel: "tasks:changed",

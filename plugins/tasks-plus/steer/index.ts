@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
+import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { errorMessage } from "../shared/errors";
 import { isSideChatShapedThread } from "../shared/side-chat";
 
@@ -32,30 +33,51 @@ export async function deliverCommentToLatestAgent(
   const task = store.getTask(input.taskId);
   if (!task) throw new Error(`Task not found: ${input.taskId}`);
 
-  const threadId =
+  const previous = store.listTaskThreads(input.taskId);
+  const links = await reconcileTaskThreads(bb, store, input.taskId);
+  const preferred =
     input.threadId ??
     store.getLatestAgentComment(input.taskId, input.commentId)?.threadId;
-  if (!threadId) return 0;
-  const prompt = steerPrompt(task.key, input.authorName, input.body);
-  try {
-    const thread = await bb.sdk.threads.get({ threadId });
-    if (
-      isSideChatShapedThread(thread) ||
-      thread.archivedAt != null ||
-      thread.deletedAt != null ||
-      thread.status === "stopping"
-    )
-      return 0;
-    await bb.sdk.threads.send({
-      threadId,
-      input: [{ type: "text", text: prompt, mentions: [] }],
-      mode: input.mode ?? "steer-if-active",
-    });
-    return 1;
-  } catch (error) {
-    bb.log.warn(
-      `failed to deliver comment ${input.commentId} to thread ${threadId}: ${errorMessage(error)}`,
+  const detached = store
+    .listComments(input.taskId)
+    .filter(
+      (comment) =>
+        comment.kind === "system" && comment.body.startsWith("Thread detached"),
     );
-    return 0;
+  const ownerRequester = task.executionTarget === "owner" && input.threadId;
+  const canUsePreferred =
+    ownerRequester ||
+    (!detached.some((comment) => comment.threadId === preferred) &&
+      (links.length > 0 || (previous.length === 0 && detached.length === 0)));
+  const candidates = [
+    ...new Set([
+      ...(preferred && canUsePreferred ? [preferred] : []),
+      ...links.map((link) => link.threadId),
+    ]),
+  ];
+  const prompt = steerPrompt(task.key, input.authorName, input.body);
+  for (const threadId of candidates) {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (
+        isSideChatShapedThread(thread) ||
+        thread.archivedAt != null ||
+        thread.deletedAt != null ||
+        thread.status === "stopping"
+      )
+        continue;
+      await bb.sdk.threads.send({
+        threadId,
+        input: [{ type: "text", text: prompt, mentions: [] }],
+        mode: input.mode ?? "steer-if-active",
+      });
+      return 1;
+    } catch (error) {
+      bb.log.warn(
+        `failed to deliver comment ${input.commentId} to thread ${threadId}: ${errorMessage(error)}`,
+      );
+      return 0;
+    }
   }
+  return 0;
 }

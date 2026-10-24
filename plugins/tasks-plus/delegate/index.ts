@@ -1,3 +1,4 @@
+import { recordThreadLink } from "../lifecycle/thread-links";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -492,19 +493,39 @@ export function handlers(
       if (task.executionTarget === "owner")
         throw new Error("Owner actions cannot be dispatched to an agent");
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
+      if (
+        thread.archivedAt != null ||
+        thread.deletedAt != null ||
+        thread.status === "stopping"
+      )
+        throw new Error(
+          "Choose a thread that is not archived, deleted, or stopping",
+        );
+      const existing = store.tasks.getTaskThreadByThreadId(task.id, thread.id);
       const title = truncateToWidth(
         thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task),
         MAX_DELEGATED_THREAD_TITLE_WIDTH,
       );
 
-      store.tasks.upsertTaskThread({
-        taskId: task.id,
-        threadId: thread.id,
-        presetName: MANUAL_PRESET_NAME,
-        title,
-        liveStatus: taskThreadLiveStatus(thread),
-      });
+      store.transaction(() => {
+        store.tasks.upsertTaskThread({
+          taskId: task.id,
+          threadId: thread.id,
+          presetName: MANUAL_PRESET_NAME,
+          title,
+          liveStatus: taskThreadLiveStatus(thread),
+        });
 
+        if (!existing) {
+          recordThreadLink(
+            store.tasks,
+            task.id,
+            thread.id,
+            `Thread attached: @thread:${thread.id}`,
+          );
+        }
+      });
+      if (!existing) publishCommentsChanged(bb, task.id);
       publishThreadsChanged(bb, task.id);
       publishTasksChanged(bb, task.id, task.projectId);
       return { threadId: thread.id };
@@ -523,8 +544,16 @@ export function handlers(
           `Thread ${input.threadId} is not attached to ${task.key}`,
         );
       }
-      store.tasks.deleteTaskThread(taskThread.id);
-
+      store.transaction(() => {
+        store.tasks.deleteTaskThread(taskThread.id);
+        recordThreadLink(
+          store.tasks,
+          task.id,
+          taskThread.threadId,
+          `Thread detached (manual): @thread:${taskThread.threadId} (attached ${taskThread.attachedAt})`,
+        );
+      });
+      publishCommentsChanged(bb, task.id);
       publishThreadsChanged(bb, task.id);
       publishTasksChanged(bb, task.id, task.projectId);
       return { threadId: taskThread.threadId };

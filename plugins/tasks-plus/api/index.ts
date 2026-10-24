@@ -14,6 +14,7 @@ import {
   removeAttachmentBlobs,
 } from "../attachments";
 import { deliverCommentToLatestAgent } from "../steer";
+import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { displayName } from "../shared/display-name";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
@@ -1121,8 +1122,8 @@ export function registerHandlers(
         throw error;
       }
     },
-    listTaskThreads(input) {
-      return { taskThreads: store.tasks.listTaskThreads(input.taskId) };
+    async listTaskThreads(input) {
+      return { taskThreads: await reconcileTaskThreads(bb, store.tasks, input.taskId) };
     },
     async listTaskPullRequests(input) {
       return listTaskPullRequests(bb, store, input.taskId);

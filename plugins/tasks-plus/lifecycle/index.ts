@@ -3,6 +3,7 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
+import { reconcileTaskThreads } from "./thread-links";
 
 const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
 
@@ -99,10 +100,14 @@ async function reconcileTrackedThread(
     const thread = await bb.sdk.threads.get({
       threadId: trackedThread.threadId,
     });
-    transitionThread(bb, store, trackedThread, liveStatusFromThread(thread));
+    if (thread.archivedAt != null || thread.deletedAt != null) {
+      await reconcileTaskThreads(bb, store.tasks, trackedThread.taskId, thread);
+    } else {
+      transitionThread(bb, store, trackedThread, liveStatusFromThread(thread));
+    }
   } catch (error) {
     if (sdkErrorCode(error) === "thread_not_found") {
-      transitionThread(bb, store, trackedThread, "completed");
+      await reconcileTaskThreads(bb, store.tasks, trackedThread.taskId);
       return;
     }
     bb.log.warn(
@@ -117,11 +122,7 @@ async function reconcileTrackedThreads(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): Promise<void> {
-  const nonTerminalThreads = trackedThreads(store).filter(
-    (thread) => !TERMINAL_LIVE_STATUSES.has(thread.liveStatus),
-  );
-
-  for (const trackedThread of nonTerminalThreads) {
+  for (const trackedThread of trackedThreads(store)) {
     await reconcileTrackedThread(bb, store, trackedThread);
   }
 }
@@ -144,6 +145,12 @@ export async function registerLifecycle(
   });
   bb.events.on("thread.deleted", ({ thread }) => {
     transitionTrackedThread(bb, store, thread.id, "completed");
+  });
+
+  bb.events.on("thread.archived", async ({ thread }) => {
+    for (const link of store.tasks.listTaskThreadsByThreadId(thread.id)) {
+      await reconcileTaskThreads(bb, store.tasks, link.taskId, thread);
+    }
   });
 
   await reconcileTrackedThreads(bb, store);

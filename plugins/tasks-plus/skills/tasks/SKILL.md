@@ -225,3 +225,8 @@ Exclude workflow statuses with `bb tasks list --project ABC --exclude-status don
 ## Project workflows (0.6.0)
 
 Discover status IDs with `bb tasks project show PREFIX --json` (`project.statuses`, ordered `{id,name}` array). Use IDs with `create/update --status`, `list --status` and `--exclude-status`; names are editable labels. `project update PREFIX --statuses-file PATH [--machine HOST]` replaces the complete array from the invoking machine. Keep all six system IDs. Custom IDs use `[a-z][a-z0-9_]{0,63}` and are open stages; only `done` completes and `canceled` cancels. Removing a status in use is rejected. Moving an epic/task between projects requires all its current status IDs in the destination. Archive v6 persists the workflow; v1–v5 import as the original workflow. API list filters also accept `excludeStatuses`; inclusion and exclusion are combined.
+
+
+## Worker assignment recovery (0.7.0)
+
+Every new/replacement worker must `bb tasks attach KEY`; the task can have several workers. `bb tasks threads KEY` reconciles actual BB thread state. Archived/deleted/missing workers are detached with an Activity history event. The remaining available worker receives notifications; if none remains, the latest worker's immediate BB parent (`parentThreadId`, not the task/epic parent) is attached as the fallback. If that parent is unavailable, the task is unassigned. A fallback parent does not promote the assignment to its own parent. Transient lookup failures preserve associations. Manual detach preserves history and does not inherit a parent. Do not assume an old agent comment means its thread still owns the task. Detached workers are not restored by unarchive; attach explicitly again. History is stored in exported system comments; archive stays v6.
