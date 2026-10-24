@@ -253,7 +253,14 @@ describe("project archives", () => {
       prompt: "Which platforms?",
       mode: "multiple",
       allowOther: true,
-      options: ["macOS", "Linux"],
+      options: [
+        {
+          label: "macOS",
+          recommended: true,
+          recommendationReason: "Primary platform",
+        },
+        "Linux",
+      ],
     });
     let { question: answered } = await structured.handlers.answerQuestion({
       questionId: question.id,
@@ -301,6 +308,14 @@ describe("project archives", () => {
     const restored = createStructuredStore(target.bb, target.store);
     expect(restored.listQuestions(source.task.id)).toEqual([answered]);
     expect(answered.history).toHaveLength(3);
+    expect(answered.options[0]).toMatchObject({
+      recommended: true,
+      recommendationReason: "Primary platform",
+    });
+    expect(answered.history![0]!.options[0]).toMatchObject({
+      recommended: true,
+      recommendationReason: "Primary platform",
+    });
     expect(answered.answerText).toBe("Windows later");
     expect(restored.listTemplates(source.project.id)).toEqual(
       structured.listTemplates(source.project.id),

@@ -857,6 +857,16 @@ export function registerTasksCli(
               type: "boolean",
               description: "Allow a free-text answer",
             },
+            recommend: {
+              type: "string",
+              repeatable: true,
+              description:
+                "Recommend this option number (1-based); repeat for multiple choice",
+            },
+            "recommendation-reason": {
+              type: "string",
+              description: "Optional reason for the recommended option(s)",
+            },
             json: JSON_OPTION,
           },
           run(input) {
@@ -865,11 +875,38 @@ export function registerTasksCli(
                 domain,
                 input.positionals["key-or-id"],
               );
+              const recommended = input.options.recommend.map((value) =>
+                z.coerce.number().int().min(1).max(20).parse(value),
+              );
+              if (
+                recommended.some(
+                  (number) => number > input.options.option.length,
+                )
+              )
+                throw new CliError(
+                  "Recommended option number is outside the supplied options",
+                );
+              if (
+                input.options["recommendation-reason"] &&
+                recommended.length === 0
+              )
+                throw new CliError(
+                  "--recommendation-reason requires --recommend",
+                );
               const result = await domain.createQuestion(
                 tasksRpcContract.createQuestion.input.parse({
                   taskId: task.id,
                   prompt: input.options.prompt,
-                  options: input.options.option,
+                  options: input.options.option.map((label, index) =>
+                    recommended.includes(index + 1)
+                      ? {
+                          label,
+                          recommended: true,
+                          recommendationReason:
+                            input.options["recommendation-reason"],
+                        }
+                      : label,
+                  ),
                   mode: input.options.multiple ? "multiple" : "single",
                   allowOther: input.options["allow-other"],
                 }),
@@ -994,7 +1031,21 @@ export function registerTasksCli(
             "options-file": {
               type: "string",
               description:
-                "JSON array of {id?, label}; retain existing IDs, omit IDs for new choices",
+                "JSON array of {id?, label, recommended?, recommendationReason?}; retain existing IDs",
+            },
+            recommend: {
+              type: "string",
+              repeatable: true,
+              description:
+                "Recommend this existing option ID; replaces current recommendations",
+            },
+            "no-recommendation": {
+              type: "boolean",
+              description: "Clear all recommendations",
+            },
+            "recommendation-reason": {
+              type: "string",
+              description: "Optional reason; requires --recommend",
             },
             "allow-other": {
               type: "boolean",
@@ -1052,22 +1103,54 @@ export function registerTasksCli(
                   );
                 }
               }
-              const result = await domain.updateQuestion(
-                tasksRpcContract.updateQuestion.input.parse({
-                  questionId: current.id,
-                  revision: input.options.revision,
-                  prompt: input.options.prompt ?? current.prompt,
-                  mode: input.options.mode ?? current.mode,
-                  options,
-                  allowOther: input.options["no-other"]
-                    ? false
-                    : input.options["allow-other"]
-                      ? true
-                      : current.allowOther,
-                  reopen: input.options.reopen,
-                  authorName: taskAuthor(ctx),
-                }),
-              );
+              const update = tasksRpcContract.updateQuestion.input.parse({
+                questionId: current.id,
+                revision: input.options.revision,
+                prompt: input.options.prompt ?? current.prompt,
+                mode: input.options.mode ?? current.mode,
+                options,
+                allowOther: input.options["no-other"]
+                  ? false
+                  : input.options["allow-other"]
+                    ? true
+                    : current.allowOther,
+                reopen: input.options.reopen,
+                authorName: taskAuthor(ctx),
+              });
+              const recommended = input.options.recommend;
+              if (
+                input.options["no-recommendation"] &&
+                (recommended.length || input.options["recommendation-reason"])
+              )
+                throw new CliError(
+                  "Use --no-recommendation or --recommend, exclusively",
+                );
+              if (
+                input.options["recommendation-reason"] &&
+                recommended.length === 0
+              )
+                throw new CliError(
+                  "--recommendation-reason requires --recommend",
+                );
+              if (
+                recommended.some(
+                  (id) => !update.options.some((option) => option.id === id),
+                )
+              )
+                throw new CliError(
+                  "Recommended option ID does not belong to this question's options",
+                );
+              if (recommended.length || input.options["no-recommendation"]) {
+                update.options = update.options.map((option) => ({
+                  ...option,
+                  recommended:
+                    recommended.includes(option.id ?? "") || undefined,
+                  recommendationReason: recommended.includes(option.id ?? "")
+                    ? input.options["recommendation-reason"]
+                    : undefined,
+                }));
+              }
+              const result = await domain.updateQuestion(update);
               return input.options.json
                 ? JSON.stringify(result)
                 : `Saved question ${result.question.id} (revision ${result.question.revision})`;

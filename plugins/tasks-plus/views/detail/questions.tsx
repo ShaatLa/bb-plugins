@@ -6,6 +6,32 @@ import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
 
+// shortcut: Honor explicit legacy suffixes until old questions carry recommendation metadata.
+const LEGACY_RECOMMENDATION = /\s*\((?:рекомендую|recommended)\)\s*$/i;
+
+function OptionText({ option }: { option: TaskQuestion["options"][number] }) {
+  const legacy =
+    option.recommended === undefined &&
+    LEGACY_RECOMMENDATION.test(option.label);
+  const label = legacy
+    ? option.label.replace(LEGACY_RECOMMENDATION, "")
+    : option.label;
+  return (
+    <span className="min-w-0 break-words">
+      {option.recommended || legacy ? (
+        <strong className="font-semibold">{label}</strong>
+      ) : (
+        label
+      )}
+      {option.recommendationReason ? (
+        <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+          {option.recommendationReason}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function QuestionAnswer({
   question,
   onSave,
@@ -60,7 +86,7 @@ function QuestionAnswer({
               );
             }}
           />
-          <span className="min-w-0 break-words">{option.label}</span>
+          <OptionText option={option} />
         </label>
       ))}
       {question.allowOther ? (
@@ -161,7 +187,7 @@ function QuestionAnswer({
                       {entry.selectedOptionIds.includes(option.id)
                         ? "✓ "
                         : "• "}
-                      {option.label}
+                      <OptionText option={option} />
                     </li>
                   ))}
                 </ul>
@@ -205,10 +231,9 @@ export function QuestionsSection({
     [taskId],
   );
   const [prompt, setPrompt] = useState("");
-  const [options, setOptions] = useState<{ id?: string; label: string }[]>([
-    { label: "" },
-    { label: "" },
-  ]);
+  const [options, setOptions] = useState<
+    (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]
+  >([{ label: "" }, { label: "" }]);
   const [multiple, setMultiple] = useState(false);
   const [allowOther, setAllowOther] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -288,13 +313,23 @@ export function QuestionsSection({
             event.preventDefault();
             setSaving(true);
             try {
+              const normalizedOptions = options.map((option) => ({
+                ...(option.id ? { id: option.id } : {}),
+                label: option.label,
+                ...(option.recommended !== undefined
+                  ? { recommended: option.recommended }
+                  : {}),
+                ...(option.recommendationReason !== undefined
+                  ? { recommendationReason: option.recommendationReason }
+                  : {}),
+              }));
               if (editing) {
                 await rpc.call("updateQuestion", {
                   questionId: editing.id,
                   revision: editing.revision,
                   prompt,
                   mode: multiple ? "multiple" : "single",
-                  options,
+                  options: normalizedOptions,
                   allowOther,
                   reopen,
                   authorName: "You",
@@ -304,7 +339,7 @@ export function QuestionsSection({
                   taskId,
                   prompt,
                   mode: multiple ? "multiple" : "single",
-                  options: options.map((option) => option.label),
+                  options: normalizedOptions.map(({ id, ...option }) => option),
                   allowOther,
                 });
               }
@@ -328,39 +363,96 @@ export function QuestionsSection({
             onChange={(event) => setPrompt(event.target.value)}
           />
           {options.map((value, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <Input
-                aria-label={`Option ${index + 1}`}
-                placeholder={`Option ${index + 1}`}
-                value={value.label}
-                maxLength={500}
-                required
-                disabled={saving}
-                onChange={(event) =>
-                  setOptions((current) =>
-                    current.map((option, at) =>
-                      at === index
-                        ? { ...option, label: event.target.value }
-                        : option,
-                    ),
-                  )
-                }
-              />
-              {options.length > 2 ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
+            <div key={index} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Input
+                  aria-label={`Option ${index + 1}`}
+                  placeholder={`Option ${index + 1}`}
+                  value={value.label}
+                  maxLength={500}
+                  required
                   disabled={saving}
-                  aria-label={`Remove option ${index + 1}`}
-                  onClick={() =>
+                  onChange={(event) =>
                     setOptions((current) =>
-                      current.filter((_, at) => at !== index),
+                      current.map((option, at) =>
+                        at === index
+                          ? { ...option, label: event.target.value }
+                          : option,
+                      ),
                     )
                   }
-                >
-                  Remove
-                </Button>
+                />
+                <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    aria-label={`Recommend option ${index + 1}`}
+                    checked={value.recommended === true}
+                    disabled={saving}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setOptions((current) =>
+                        current.map((option, at) =>
+                          at === index
+                            ? {
+                                ...option,
+                                recommended: checked || undefined,
+                                recommendationReason: checked
+                                  ? option.recommendationReason
+                                  : undefined,
+                              }
+                            : !multiple && checked
+                              ? {
+                                  ...option,
+                                  recommended: undefined,
+                                  recommendationReason: undefined,
+                                }
+                              : option,
+                        ),
+                      );
+                    }}
+                  />
+                  Recommend
+                </label>
+                {options.length > 2 ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={saving}
+                    aria-label={`Remove option ${index + 1}`}
+                    onClick={() =>
+                      setOptions((current) =>
+                        current.filter((_, at) => at !== index),
+                      )
+                    }
+                  >
+                    Remove
+                  </Button>
+                ) : null}
+              </div>
+              {value.recommended ? (
+                <Textarea
+                  aria-label={`Recommendation reason ${index + 1}`}
+                  placeholder="Why this option? (optional)"
+                  value={value.recommendationReason ?? ""}
+                  maxLength={2000}
+                  disabled={saving}
+                  onChange={(event) => {
+                    const reason = event.target.value;
+                    setOptions((current) =>
+                      current.map((option, at) =>
+                        at === index
+                          ? {
+                              ...option,
+                              recommendationReason: reason.trim()
+                                ? reason
+                                : undefined,
+                            }
+                          : option,
+                      ),
+                    );
+                  }}
+                />
               ) : null}
             </div>
           ))}
@@ -381,7 +473,26 @@ export function QuestionsSection({
                 type="checkbox"
                 checked={multiple}
                 disabled={saving}
-                onChange={(event) => setMultiple(event.target.checked)}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setMultiple(checked);
+                  if (!checked) {
+                    const first = options.findIndex(
+                      (option) => option.recommended,
+                    );
+                    setOptions((current) =>
+                      current.map((option, index) =>
+                        index === first
+                          ? option
+                          : {
+                              ...option,
+                              recommended: undefined,
+                              recommendationReason: undefined,
+                            },
+                      ),
+                    );
+                  }
+                }}
               />
               Allow multiple answers
             </label>

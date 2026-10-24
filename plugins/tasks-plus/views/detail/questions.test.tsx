@@ -55,6 +55,95 @@ function setup() {
 }
 
 describe("question and evidence UI", () => {
+  it("creates and edits bold recommendations without preselecting an answer", async () => {
+    const { task, rpc, structured } = setup();
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    fireEvent.click(
+      within(await slot.findByRole("complementary")).getByRole("button", {
+        name: "Add question",
+      }),
+    );
+    fireEvent.change(slot.getByRole("textbox", { name: "Question" }), {
+      target: { value: "Which approach?" },
+    });
+    for (const [index, label] of ["A", "B"].entries())
+      fireEvent.change(
+        slot.getByRole("textbox", { name: `Option ${index + 1}` }),
+        { target: { value: label } },
+      );
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Allow multiple answers" }),
+    );
+    fireEvent.click(slot.getByRole("checkbox", { name: "Recommend option 1" }));
+    fireEvent.click(slot.getByRole("checkbox", { name: "Recommend option 2" }));
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Allow multiple answers" }),
+    );
+    expect(
+      slot.getByRole("checkbox", { name: "Recommend option 2" }),
+    ).toHaveProperty("checked", false);
+    fireEvent.change(
+      slot.getByRole("textbox", { name: "Recommendation reason 1" }),
+      { target: { value: "Safer" } },
+    );
+    fireEvent.click(slot.getByRole("button", { name: "Create question" }));
+    const group = await slot.findByRole("group", { name: "Which approach?" });
+    const choice = within(group).getByRole("radio", { name: /A/ });
+    expect(choice).toHaveProperty("checked", false);
+    expect(choice.closest("label")?.querySelector("strong")?.textContent).toBe(
+      "A",
+    );
+    expect(within(group).getByText("Safer")).toBeTruthy();
+    expect(structured.listQuestions(task.id)[0]?.selectedOptionIds).toEqual([]);
+    fireEvent.click(
+      within(group).getByRole("button", { name: "Edit question" }),
+    );
+    fireEvent.click(slot.getByRole("checkbox", { name: "Recommend option 2" }));
+    fireEvent.click(slot.getByRole("button", { name: "Save question" }));
+    await waitFor(() =>
+      expect(
+        structured.listQuestions(task.id)[0]?.options[1]?.recommended,
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(slot.queryByRole("textbox", { name: "Question" })).toBeNull(),
+    );
+    const current = structured.listQuestions(task.id)[0]!;
+    expect(current.options[0]!.recommended).toBeUndefined();
+    expect(current.history[0]!.options[0]).toMatchObject({
+      recommended: true,
+      recommendationReason: "Safer",
+    });
+  });
+
+  it("renders explicit legacy recommendation suffixes in bold without changing their stored labels", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({
+      taskId: task.id,
+      prompt: "Legacy?",
+      mode: "single",
+      options: ["A (рекомендую)", "B"],
+    });
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    const group = await slot.findByRole("group", { name: "Legacy?" });
+    const choice = within(group).getByRole("radio", { name: "A" });
+    expect(choice).toHaveProperty("checked", false);
+    expect(choice.closest("label")?.querySelector("strong")?.textContent).toBe(
+      "A",
+    );
+    expect(structured.listQuestions(task.id)[0]!.options[0]!.label).toBe(
+      "A (рекомендую)",
+    );
+  });
+
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
     const { question } = await structured.handlers.createQuestion({
@@ -209,7 +298,9 @@ describe("question and evidence UI", () => {
       await waitFor(() => expect(restored.queryByText(task.title)).toBeNull());
       fireEvent.click(filter);
       await restored.findByText(task.title);
-      expect(restored.queryByRole("img", { name: "1 unanswered question" })).toBeNull();
+      expect(
+        restored.queryByRole("img", { name: "1 unanswered question" }),
+      ).toBeNull();
     },
   );
 
