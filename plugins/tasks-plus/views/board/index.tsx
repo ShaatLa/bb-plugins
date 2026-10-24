@@ -126,19 +126,17 @@ function TaskCard({
         dragging && "opacity-40",
       )}
     >
-      <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
-        <span className="tabular-nums">{task.key}</span>
-        {task.type === "epic" ? <span className="inline-flex items-center gap-1"><Icon name="Zap" className="size-3" />Epic</span> : null}
-        <WorkingAgentsChip threads={meta.workingThreads} />
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+          <span className="shrink-0 tabular-nums">{task.key}</span>
+          {task.type === "epic" ? <span className="inline-flex items-center gap-1"><Icon name="Zap" className="size-3" />Epic</span> : null}
+          <WorkingAgentsChip threads={meta.workingThreads} />
+        </div>
+        <QuestionCount count={unansweredQuestions} />
       </div>
       <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
         {task.title}
       </div>
-      {unansweredQuestions ? (
-        <div className="mt-1.5 flex">
-          <QuestionCount count={unansweredQuestions} />
-        </div>
-      ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <PriorityIcon priority={task.priority} />
         {labels.map((label) => (
