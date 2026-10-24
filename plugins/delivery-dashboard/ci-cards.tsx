@@ -56,14 +56,26 @@ export function CiTiming({ repo }: { repo: Metrics }) {
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
         <summary className="cursor-pointer text-sm">By workflow · {data.workflows.length}</summary>
-        <ul className="mt-2 divide-y divide-border">{[...data.workflows].sort((a, b) => b.timing.totalMs - a.timing.totalMs || a.id - b.id).map((workflow) => <li key={workflow.id} className="flex items-start justify-between gap-3 py-2 text-sm">
-          <UrlLink href={`https://github.com/${repo.repository}/actions/workflows/${workflow.id}`} className="min-w-0 break-words hover:underline">{workflow.name}<span className="block text-xs text-muted-foreground">{workflow.timing.count}/{workflow.total} timed · avg {elapsed(workflow.timing.averageMs)} · P95 {elapsed(workflow.timing.p95Ms)}</span></UrlLink>
-          <span className="shrink-0 tabular-nums">{elapsed(workflow.timing.count ? workflow.timing.totalMs : null)}</span>
+        <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground"><span>Slowest averages first</span><span>Average</span></div>
+        <ul aria-label="Workflow timings" className="mt-2 space-y-2">{[...data.workflows].sort((a, b) => (b.timing.averageMs ?? -1) - (a.timing.averageMs ?? -1) || a.id - b.id).map((workflow) => <li key={workflow.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted/40 p-3">
+          <UrlLink href={`https://github.com/${repo.repository}/actions/workflows/${workflow.id}`} className="min-w-0 break-words text-sm font-medium leading-snug hover:underline">{workflow.name}</UrlLink>
+          <span className="whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums">{elapsed(workflow.timing.averageMs)}</span>
+          <div className="col-span-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>P95 <span className="font-medium tabular-nums text-foreground">{elapsed(workflow.timing.p95Ms)}</span></span>
+            <span className="tabular-nums">{workflow.timing.count}/{workflow.total} timed</span>
+            <span className="tabular-nums">Total {elapsed(workflow.timing.count ? workflow.timing.totalMs : null)}</span>
+          </div>
         </li>)}</ul>
       </details>}
       {data.slowRuns.length > 0 && <details className="border-t border-border pt-3">
         <summary className="cursor-pointer text-sm">Longest runs · top {data.slowRuns.length}</summary>
-        <ul className="mt-2 space-y-2">{data.slowRuns.map((run) => <li key={run.id} className="flex items-start justify-between gap-3 text-sm"><UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} className="min-w-0 break-words hover:underline">{run.name} · {run.branch ?? "Unknown branch"} · #{run.id}</UrlLink><span className="shrink-0 tabular-nums">{elapsed(run.durationMs)}</span></li>)}</ul>
+        <ul aria-label="Longest CI runs" className="mt-3 space-y-2">{data.slowRuns.map((run) => <li key={run.id}>
+          <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} aria-label={`${run.name} · ${run.branch ?? "Unknown branch"} · #${run.id} · ${elapsed(run.durationMs)}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted/40 p-3 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <span className="min-w-0 break-words text-sm font-medium leading-snug">{run.name}</span>
+            <span className="whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums">{elapsed(run.durationMs)}</span>
+            <span className="col-span-2 flex min-w-0 items-baseline justify-between gap-3 text-xs text-muted-foreground"><span className="min-w-0 truncate" title={run.branch ?? "Unknown branch"}>{run.branch ?? "Unknown branch"}</span><span className="shrink-0 tabular-nums">#{run.id}</span></span>
+          </UrlLink>
+        </li>)}</ul>
       </details>}
       </div>
     </>}

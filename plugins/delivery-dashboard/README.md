@@ -123,3 +123,6 @@ Dashboard hierarchy: headline success/deployment/PR metrics first, then a full-w
 
 
 Loading states use theme-aware neutral skeletons shaped like KPI values, timing statistics, CI signals/outcomes, activity numbers, lists and charts. The initial dashboard also shows a structural skeleton; lazy details and interval dialogs follow the same pattern. Each pending field reveals independently. Available values stay visible even when marked pending, zeroes remain values, and failures/unavailable data retain explanatory messages rather than skeletons. Skeletons are decorative, with a named busy status for assistive technology, and disable pulsing when reduced motion is requested.
+
+
+Expanded timing lists use compact inset rows with aligned duration values. Workflows sort by average duration descending (missing averages last); average is the prominent value, with P95, measured-run coverage and cumulative total in secondary metadata. Longest-run links separate workflow, duration, branch and run ID; long branch names truncate visually with their full name in the tooltip and accessible link label.
