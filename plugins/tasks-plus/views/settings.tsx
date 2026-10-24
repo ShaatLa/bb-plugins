@@ -85,14 +85,22 @@ function ProjectStatuses({ project }: { project: Project }) {
     );
     void save(next);
   };
+  const move = (index: number, delta: number) => {
+    const next = [...statuses];
+    [next[index], next[index + delta]] = [next[index + delta]!, next[index]!];
+    void save(next);
+  };
   return (
     <div className="max-w-2xl space-y-2">
       <p className="text-xs text-muted-foreground">
         Changes save automatically. System statuses stay; statuses used by tasks
         cannot be deleted.
       </p>
-      <fieldset disabled={saving} className="w-80 min-w-0 max-w-full space-y-1.5">
-        {statuses.map((status) => (
+      <fieldset
+        disabled={saving}
+        className="w-80 min-w-0 max-w-full space-y-1.5"
+      >
+        {statuses.map((status, index) => (
           <div key={status.id} className="flex items-center gap-1.5">
             <Input
               aria-label={`Status name ${status.id}`}
@@ -117,6 +125,30 @@ function ProjectStatuses({ project }: { project: Project }) {
                 }
               }}
             />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              aria-label={`Move ${status.name} up`}
+              disabled={index === 0}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => move(index, -1)}
+            >
+              <Icon name="ChevronUp" className="size-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              aria-label={`Move ${status.name} down`}
+              disabled={index === statuses.length - 1}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => move(index, 1)}
+            >
+              <Icon name="ChevronDown" className="size-3.5" />
+            </Button>
             {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
               <span className="size-7 shrink-0" />
             ) : (
