@@ -144,7 +144,7 @@ export function Dashboard() {
           </select>
           <svg aria-hidden="true" viewBox="0 0 12 8" fill="none" className="pointer-events-none absolute right-3 top-1/2 h-2 w-3 -translate-y-1/2 text-foreground"><path d="m1 1 5 5 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </span>
-        <Button variant="outline" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
+        <Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
           <svg data-refresh-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`}>
             <path d="M20 11a8 8 0 0 0-14-5L3 9m0-6v6h6M4 13a8 8 0 0 0 14 5l3-3m0 6v-6h-6" />
           </svg>
