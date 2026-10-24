@@ -211,10 +211,14 @@ function ProjectStatuses({ project }: { project: Project }) {
                 }
               }}
             >
-              <Icon
-                name="GripVertical"
-                className="size-3.5 text-muted-foreground"
-              />
+              <svg aria-hidden="true" viewBox="0 0 12 16" className="size-3.5 fill-current text-muted-foreground">
+                <circle cx="4" cy="3" r="1" />
+                <circle cx="8" cy="3" r="1" />
+                <circle cx="4" cy="8" r="1" />
+                <circle cx="8" cy="8" r="1" />
+                <circle cx="4" cy="13" r="1" />
+                <circle cx="8" cy="13" r="1" />
+              </svg>
             </Button>
             <Input
               aria-label={`Status name ${status.id}`}
