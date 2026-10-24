@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-delivery-dashboard",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "type": "module",
   "engines": {
     "bb": ">=0.46",
@@ -10,7 +10,10 @@
     "name": "CI Dashboard",
     "description": "GitHub Actions health, pass rates, run timings and agent-readable CI metrics, with cached history, PR and deployment context.",
     "branding": {
-      "icon": "./assets/icon.svg"
+      "icon": "./assets/icon.svg",
+      "experimental_icons": {
+        "pipeline": "./assets/icon.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx"

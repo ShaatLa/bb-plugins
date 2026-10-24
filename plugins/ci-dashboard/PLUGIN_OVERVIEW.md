@@ -6,7 +6,7 @@ GitHub repositories are imported automatically from BB projects. Add more owner/
 
 Deploy frequency counts all deployment records over the selected date range, averaged per day. CI pass rate counts successful versus completed workflow runs excluding cancelled and skipped created over the selected date range. Cancelled and skipped runs remain visible in CI outcomes. Each metric includes its definition, and unavailable metrics show errors rather than misleading zeroes. See README.md for setup, permissions, and API limits.
 
-Deployment-throughput and CI-pass-rate charts use actual GitHub data, grouped into four-hour intervals for today, 12-hour intervals for three days, hourly intervals for custom days, or daily/larger intervals according to the range, with UTC labels and hover details. Incomplete histories are clearly marked. Open the dashboard from the package icon in the navigation sidebar.
+Deployment-throughput and CI-pass-rate charts use actual GitHub data, grouped into four-hour intervals for today, 12-hour intervals for three days, hourly intervals for custom days, or daily/larger intervals according to the range, with UTC labels and hover details. Incomplete histories are clearly marked. Open the dashboard from the pipeline icon in the navigation sidebar.
 
 Each repository also shows completed CI outcomes (including failures, cancellations, and skips), the five oldest unreviewed non-draft PRs with their age and links, and the newest production deployment with its status, environment, ref, times, and a log link. CI cards and charts use one complete dataset to keep the figures consistent.
 

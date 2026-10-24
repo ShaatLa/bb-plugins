@@ -271,7 +271,7 @@ test("renders imported and additional repositories independently", async () => {
 
 test("registers only a sidebar page and renders accessible charts from real series", async () => {
   expect(app.homepageSections).toHaveLength(0);
-  expect(app.navPanels[0]).toMatchObject({ title: "CI Dashboard", path: "dashboard", icon: "Package" });
+  expect(app.navPanels[0]).toMatchObject({ title: "CI Dashboard", path: "dashboard", icon: "delivery-dashboard/pipeline" });
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
