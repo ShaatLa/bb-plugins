@@ -1,6 +1,7 @@
 import { useId } from "react";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 
 export function HistoryChart({ title, metric, range, onSelect, percent = false }: {
   title: string; metric: Metrics["deployments"]; range: Metrics["range"]; onSelect: (since: string, until: string) => void; percent?: boolean;
@@ -42,7 +43,10 @@ export function HistoryChart({ title, metric, range, onSelect, percent = false }
         <div className="mt-2 grid gap-2 text-center text-xs text-muted-foreground" style={{ gridTemplateColumns: `repeat(${series.length}, minmax(38px, 1fr))` }}>
           {series.map((point, index) => <span key={point.date}>{dateLabel(point.date, index)}</span>)}
         </div>
-      </div> : <p role="status" className="flex min-h-48 items-center justify-center text-center text-sm text-muted-foreground">
+      </div> : !metric.error && !metric.seriesError && metric.detail.startsWith("Loading") ? <LoadingSkeleton label={`Loading ${title}`} className="mt-5 min-h-48">
+        <div className="grid h-40 grid-cols-6 items-end gap-2 border-b border-border pb-2">{[0, 1, 2, 3, 4, 5].map((key) => <Skeleton key={key} className="h-32 w-full rounded-b-none" />)}</div>
+        <div className="grid grid-cols-6 gap-2">{[0, 1, 2, 3, 4, 5].map((key) => <Skeleton key={key} className="h-3 w-full" />)}</div>
+      </LoadingSkeleton> : <p role="status" className="flex min-h-48 items-center justify-center text-center text-sm text-muted-foreground">
         {metric.error || metric.seriesError || (metric.detail.startsWith("Loading") ? metric.detail : "History is unavailable.")}
       </p>}
     </figure>

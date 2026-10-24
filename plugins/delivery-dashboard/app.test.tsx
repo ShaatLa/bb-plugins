@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
 import { minimumDate, resolveRange } from "./date-range";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
@@ -44,6 +45,35 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   } finally { slot.lifecycle.unmount(); }
 });
 
+test("progressive loading skeletons clear independently while ready cards and errors remain readable", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  let finish!: (value: typeof data) => void;
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => new Promise<typeof data>((resolve) => { finish = resolve; }) }, settings: {} });
+  try {
+    await act(async () => {});
+    const empty = { value: null, detail: "Loading…", series: null, error: null, seriesError: null };
+    const partial: Metrics & { projectName: null } = { ...repo, pending: ["ci", "deployments"], ci: empty, deployments: empty, ciOutcomes: null };
+    const progress = (metrics: typeof partial, startedAt: number) => slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt, metrics });
+    await progress(partial, 1);
+    for (const name of ["Loading CI pass rate", "Loading Deploy frequency", "Loading CI timings", "Loading CI outcomes…", "Loading CI pass rate over time", "Loading Deployment throughput"]) {
+      const skeleton = slot.getByRole("status", { name });
+      expect(skeleton.getAttribute("aria-busy")).toBe("true");
+      expect(skeleton.querySelector(".animate-pulse[aria-hidden=true]")?.classList.contains("motion-reduce:animate-none")).toBe(true);
+    }
+    expect(slot.getByRole("heading", { name: "Open pull requests" }).parentElement?.textContent).toContain("12");
+    await progress({ ...partial, ci: metric, ciOutcomes: repo.ciOutcomes, pending: ["deployments"] }, 2);
+    expect(slot.queryByRole("status", { name: "Loading CI pass rate" })).toBeNull();
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    expect(slot.getByRole("status", { name: "Loading Deploy frequency" })).toBeTruthy();
+    await progress({ ...partial, deployments: { ...empty, detail: "Unavailable", error: "GitHub returned 403. Check access." }, pending: ["ci"] }, 3);
+    expect(slot.queryByRole("status", { name: "Loading Deploy frequency" })).toBeNull();
+    expect(slot.getAllByText("GitHub returned 403. Check access.").length).toBeGreaterThan(0);
+    await act(async () => { finish(data); });
+    expect(slot.queryByRole("status", { name: /^Loading/ })).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("progress renders ready cards before the full RPC and rejects older or other-range events", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));
@@ -78,10 +108,10 @@ test("a fresh local calculation stays visible while its missing PR count loads",
   try {
     await act(async () => {});
     expect(slot.getByText("12.0%")).toBeTruthy();
-    expect(slot.getByText("Updating…")).toBeTruthy();
+    expect(slot.getByRole("status", { name: "Loading PRs created" }).getAttribute("aria-busy")).toBe("true");
     expect(metrics).toHaveBeenCalledTimes(1);
     await act(async () => { finish(data); });
-    expect(slot.queryByText("Updating…")).toBeNull();
+    expect(slot.queryByRole("status", { name: "Loading PRs created" })).toBeNull();
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -501,8 +531,8 @@ test("popup tracks the visible viewport on zoom, resize, and pan, and removes it
     fireEvent.click(plot.querySelector("button")!);
     const dialog = slot.getByRole("dialog") as HTMLDialogElement;
     const loading = slot.getByRole("status", { name: "Loading interval statistics" });
-    expect(loading.textContent?.trim()).toBe("");
-    expect(loading.querySelector("svg")).not.toBeNull();
+    expect(loading.getAttribute("aria-busy")).toBe("true");
+    expect(loading.querySelector(".animate-pulse[aria-hidden=true]")).not.toBeNull();
     expect(dialog.style.maxWidth).toBe("288px");
     expect(dialog.style.maxHeight).toBe("448px");
     expect(dialog.style.left).toBe("180px");
@@ -562,7 +592,7 @@ test("shows an explicit status until the first GitHub metrics arrive", async () 
     rpc: { snapshot: () => null, metrics: () => pending }, settings: { repository: "acme/widgets" },
   });
   try {
-    expect(await slot.findByText("Loading GitHub metrics…")).toBeTruthy();
+    expect((await slot.findByRole("status", { name: "Loading GitHub metrics…" })).querySelector(".animate-pulse[aria-hidden=true]")).not.toBeNull();
     await act(async () => { finish(data); });
     expect(slot.queryByText("Loading GitHub metrics…")).toBeNull();
     expect(slot.getByText("12.0 / day")).toBeTruthy();

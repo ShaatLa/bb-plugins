@@ -1,6 +1,7 @@
 import { UrlLink } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 
 function elapsed(ms: number | null) {
   if (ms === null) return "—";
@@ -18,10 +19,10 @@ function unavailable(repo: Metrics) {
 
 export function CiSignals({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
-  const ready = data && !repo.pending?.includes("ci");
+  const ready = data;
   return <section aria-label="CI signals" className="min-w-0 space-y-3">
     <div><h5 className="text-sm font-medium">Needs attention</h5><p className="mt-1 text-xs text-muted-foreground">Latest completed runs within {repo.range.label} · cancelled and skipped excluded</p></div>
-    {!ready ? <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
+    {!ready ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI signals" /> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
       {data.identified < data.total && <p className="text-xs text-muted-foreground">Workflow details available for {data.identified} of {data.total} runs. Refresh to complete coverage.</p>}
       {!data.defaultBranch && <p className="text-xs text-muted-foreground">Default branch is unavailable; main-branch checks could not be evaluated.</p>}
       {data.alerts.length ? <ul className="divide-y divide-border">{data.alerts.slice(0, 5).map((alert) => <li key={`${alert.kind}:${alert.runId}`} className="space-y-1 py-2 first:pt-0">
@@ -43,7 +44,10 @@ export function CiTiming({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
   return <Card role="region" aria-label="CI run timings" className="space-y-4 border-primary/20 p-4 sm:p-5">
     <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · completed runs, including cancelled and skipped</p></div>
-    {!data || repo.pending?.includes("ci") ? <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
+    {!data ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
+      <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
+    </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
       <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4 sm:gap-6">{([
         ["Total elapsed", data.timing.count ? data.timing.totalMs : null], ["Average", data.timing.averageMs], ["Median", data.timing.medianMs], ["P95", data.timing.p95Ms],
       ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
