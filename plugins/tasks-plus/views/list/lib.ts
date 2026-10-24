@@ -35,14 +35,21 @@ interface StatusGroup {
   tasks: Task[];
 }
 
-export function groupTasksByStatus(tasks: readonly Task[]): StatusGroup[] {
+export function groupTasksByStatus(
+  tasks: readonly Task[],
+  statuses: readonly string[] = TASK_STATUSES,
+): StatusGroup[] {
   const byStatus = new Map<TaskStatus, Task[]>();
   for (const task of tasks) {
     const bucket = byStatus.get(task.status);
     if (bucket) bucket.push(task);
     else byStatus.set(task.status, [task]);
   }
-  return TASK_STATUSES.flatMap((status) => {
+  const ordered = [...statuses];
+  for (const status of byStatus.keys())
+    if (!ordered.includes(status))
+      ordered.splice(Math.max(0, ordered.indexOf("done")), 0, status);
+  return ordered.flatMap((status) => {
     const bucket = byStatus.get(status);
     return bucket ? [{ status, tasks: bucket }] : [];
   });

@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import { z } from "zod";
 import {
   attachmentSchema,
@@ -23,6 +24,7 @@ export const archiveProjectSchema = z
       z.literal(3),
       z.literal(4),
       z.literal(5),
+      z.literal(6),
     ]),
     project: projectSchema,
     folders: z.array(folderSchema),
@@ -97,6 +99,17 @@ function unique(ids: readonly string[], label: string) {
 
 export function validateArchive({ manifest, records }: ProjectArchive): void {
   const projectId = manifest.project.id;
+  if (manifest.version === 6 && !manifest.project.statuses)
+    throw new Error("Archive v6 requires project statuses");
+  if (manifest.version < 6 && manifest.project.statuses)
+    throw new Error("Project statuses require archive v6");
+  const statusIds = new Set(
+    (manifest.project.statuses ?? DEFAULT_TASK_STATUSES).map(
+      (status) => status.id,
+    ),
+  );
+  if (records.some((record) => !statusIds.has(record.task.status)))
+    throw new Error("Task has a status not defined by its project");
   if (
     !manifest.project.name.trim() ||
     manifest.labels.some((label) => !label.name.trim()) ||

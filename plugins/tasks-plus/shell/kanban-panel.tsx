@@ -1,3 +1,4 @@
+import { TaskStatusesProvider } from "./task-statuses.js";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { BoardView } from "../views/board/index.js";
 import { useProjects } from "./data.js";
@@ -32,5 +33,5 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
 }
 
 export function KanbanPanel(props: PluginNavPanelProps) {
-  return <TasksRefreshProvider><KanbanPanelContent {...props} /></TasksRefreshProvider>;
+  return <TasksRefreshProvider><TaskStatusesProvider><KanbanPanelContent {...props} /></TaskStatusesProvider></TasksRefreshProvider>;
 }

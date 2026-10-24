@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
 import type {
@@ -8,7 +9,7 @@ import type {
   TaskStatus,
   TaskThread,
 } from "../../shared/contract.js";
-import { TASK_PRIORITIES, TASK_STATUSES } from "../../shared/contract.js";
+import { TASK_PRIORITIES } from "../../shared/contract.js";
 import type { Preset } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
@@ -22,7 +23,6 @@ import {
   DUE_DATE_PRESETS,
   localIsoDate,
   PRIORITY_LABELS,
-  STATUS_LABELS,
 } from "../list/lib.js";
 import { EpicPicker } from "../../components/epic-picker.js";
 import { DispatchControl } from "./threads.js";
@@ -96,19 +96,20 @@ function StatusMenu({
   onUpdate: (update: TaskPropertyUpdate) => void;
   triggerClassName: string;
 }) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(task.projectId);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" className={triggerClassName}>
           <StatusIcon status={task.status} />
-          {STATUS_LABELS[task.status]}
+          {statusLabel(task.status)}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        {TASK_STATUSES.map((status) => (
+        {statusIds.map((status) => (
           <DropdownMenuItem key={status} onSelect={() => onUpdate({ status })}>
             <StatusIcon status={status} />
-            {STATUS_LABELS[status]}
+            {statusLabel(status)}
             {status === task.status ? (
               <Icon name="Check" className="ml-auto size-3.5" />
             ) : null}

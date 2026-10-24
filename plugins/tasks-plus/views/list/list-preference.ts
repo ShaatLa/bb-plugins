@@ -1,6 +1,6 @@
+import { taskStatusSchema } from "../../shared/statuses.js";
 import {
   TASK_PRIORITIES,
-  TASK_STATUSES,
   type TaskPriority,
   type TaskStatus,
 } from "../../shared/contract.js";
@@ -36,7 +36,6 @@ export function listPreferenceScope(
   return "all";
 }
 
-const STATUS_SET = new Set<string>(TASK_STATUSES);
 const PRIORITY_SET = new Set<string>(TASK_PRIORITIES);
 const SORT_SET = new Set<string>(TASK_SORTS);
 
@@ -99,7 +98,7 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
         ? { executionTarget: filtersRaw.executionTarget }
         : {}),
       ...(filtersRaw.unansweredOnly === true ? { unansweredOnly: true } : {}),
-      statuses: uniqueValidValues<TaskStatus>(filtersRaw.statuses, STATUS_SET),
+      statuses: Array.isArray(filtersRaw.statuses) ? [...new Set(filtersRaw.statuses.filter((value): value is string => taskStatusSchema.safeParse(value).success))] : [],
       priorities: uniqueValidValues<TaskPriority>(
         filtersRaw.priorities,
         PRIORITY_SET,

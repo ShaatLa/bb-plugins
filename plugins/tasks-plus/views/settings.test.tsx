@@ -1,0 +1,144 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, expect, it } from "vitest";
+import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createStore, registerTasksApi } from "../api";
+
+window.matchMedia ??= (media: string) => ({
+  matches: false,
+  media,
+  onchange: null,
+  addListener() {},
+  removeListener() {},
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent: () => false,
+});
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+Element.prototype.scrollIntoView ??= () => {};
+const app = await loadPluginApp(() => import("../app"));
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
+
+it("saves a project workflow in compact settings and uses it in the list, board and task picker", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const project = store.tasks.createProject({
+      name: "Workflow",
+      prefix: "WF",
+      color: "blue",
+    });
+    const other = store.tasks.createProject({
+      name: "Z Other",
+      prefix: "OTH",
+      color: "blue",
+    });
+    const methods = [
+      "listProjects",
+      "updateProject",
+      "listFolders",
+      "listPresets",
+      "sidebarSummary",
+      "listTasks",
+      "listLabels",
+      "getTask",
+      "getTaskByKey",
+      "listAttachments",
+      "listTaskThreads",
+      "listQuestions",
+      "questionCounts",
+      "listComments",
+      "updateTask",
+      "listTaskPullRequests",
+    ];
+    const rpc = Object.fromEntries(
+      methods.map((method) => [
+        method,
+        (input: unknown) => harness.callRpc(method, input),
+      ]),
+    );
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    await settings.findByRole("textbox", { name: "Status name backlog" });
+    expect(
+      settings.getByRole("button", { name: "Open Tasks" }).className,
+    ).toContain("h-7");
+    fireEvent.change(
+      settings.getByRole("textbox", { name: "New status name" }),
+      { target: { value: "In testing" } },
+    );
+    fireEvent.click(settings.getByRole("button", { name: "Add status" }));
+    fireEvent.click(
+      settings.getByRole("button", { name: "Move In testing up" }),
+    );
+    fireEvent.click(settings.getByRole("button", { name: "Save statuses" }));
+    await waitFor(() =>
+      expect(
+        store.tasks
+          .getProject(project.id)
+          ?.statuses?.map((status) => status.id),
+      ).toEqual([
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_testing",
+        "in_review",
+        "done",
+        "canceled",
+      ]),
+    );
+    expect(store.tasks.getProject(other.id)?.statuses).toHaveLength(6);
+    settings.lifecycle.unmount();
+    const task = store.tasks.createTask({
+      projectId: project.id,
+      title: "Check the build",
+      status: "in_testing",
+    });
+    const list = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `${project.id}?view=list` },
+      { rpc },
+    );
+    await list.findByText(task.title);
+    expect(list.getByText("In testing")).toBeTruthy();
+    list.lifecycle.unmount();
+    const board = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `${project.id}?view=board` },
+      { rpc },
+    );
+    await board.findByText(task.title);
+    expect(
+      board.getByRole("button", { name: "New In testing task" }),
+    ).toBeTruthy();
+    fireEvent.click(board.getByText(task.title));
+    expect(board.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "tasks",
+      options: { subPath: `task/${task.key}` },
+    });
+    board.lifecycle.unmount();
+    const detail = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `task/${task.key}` },
+      { rpc },
+    );
+    await detail.findByRole("textbox", { name: "Task title" });
+    const status = await detail.findAllByRole("button", { name: "In testing" });
+    fireEvent.keyDown(status[0]!, { key: "ArrowDown" });
+    expect(
+      await detail.findByRole("menuitem", { name: "In testing" }),
+    ).toBeTruthy();
+  } finally {
+    cleanup();
+    await harness.dispose();
+  }
+});

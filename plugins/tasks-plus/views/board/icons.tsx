@@ -11,6 +11,7 @@ const STATUS_CLASS: Record<TaskStatus, string> = {
 };
 
 function statusArtwork(status: TaskStatus) {
+  if (!["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(status)) return <circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.6" />;
   switch (status) {
     case "backlog":
       return (
@@ -103,7 +104,7 @@ export function StatusIcon({
       viewBox="0 0 14 14"
       aria-hidden
       data-status-icon={status}
-      className={cn("size-3.5 shrink-0", STATUS_CLASS[status], className)}
+      className={cn("size-3.5 shrink-0", STATUS_CLASS[status] ?? "text-timeline-accent", className)}
     >
       {statusArtwork(status)}
     </svg>

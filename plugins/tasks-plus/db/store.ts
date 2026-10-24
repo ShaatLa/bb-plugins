@@ -1,3 +1,7 @@
+import {
+  DEFAULT_TASK_STATUSES,
+  taskStatusesSchema,
+} from "../shared/statuses.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -68,6 +72,7 @@ interface FolderRow {
 }
 
 interface ProjectRow {
+  statuses: string | null;
   id: string;
   name: string;
   prefix: string;
@@ -221,6 +226,7 @@ function taskQueryFingerprint(
   const normalized = JSON.stringify({
     projectId: filters.projectId ?? null,
     statuses: normalizedFilterValues(filters.statuses),
+    excludeStatuses: normalizedFilterValues(filters.excludeStatuses),
     priorities: normalizedFilterValues(filters.priorities),
     labelIds: normalizedFilterValues(filters.labelIds),
     activeOnly: filters.activeOnly === true,
@@ -358,6 +364,10 @@ function folderFromRow(row: FolderRow): Folder {
 
 function projectFromRow(row: ProjectRow): Project {
   return {
+    statuses:
+      row.statuses == null
+        ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
+        : taskStatusesSchema.parse(JSON.parse(row.statuses)),
     id: row.id,
     name: row.name,
     prefix: row.prefix,
@@ -650,6 +660,15 @@ export function createTasksStore(db: PluginDatabase) {
     return project;
   }
 
+  function validateTaskStatus(projectId: string, status: string) {
+    if (
+      !(requireProject(projectId).statuses ?? DEFAULT_TASK_STATUSES).some(
+        (entry) => entry.id === status,
+      )
+    )
+      throw new Error(`Unknown task status: ${status}`);
+  }
+
   function createProject(input: CreateProjectInput): Project {
     const id = createUlid();
     const folderId = input.folderId ?? null;
@@ -702,33 +721,47 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function updateProject(id: string, input: UpdateProjectInput): Project {
-    const current = requireProject(id);
-    const folderId =
-      input.folderId === undefined ? current.folderId : input.folderId;
-    if (folderId !== null) requireFolder(folderId);
-    db.prepare<[string, string, string, string | null, string | null, string]>(
-      `
+    return db.transaction(() => {
+      const current = requireProject(id);
+      const statuses = taskStatusesSchema.parse(
+        input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
+      );
+      assertNoSecretsInValue(statuses, "statuses");
+      const ids = new Set(statuses.map((status) => status.id));
+      if (listTasks({ projectId: id }).some((task) => !ids.has(task.status)))
+        throw new Error(
+          "Cannot remove a status that is used by tasks; move those tasks first",
+        );
+      const folderId =
+        input.folderId === undefined ? current.folderId : input.folderId;
+      if (folderId !== null) requireFolder(folderId);
+      db.prepare<
+        [string, string, string, string | null, string | null, string, string]
+      >(
+        `
       UPDATE projects
-      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?
+      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?
       WHERE id = ?
     `,
-    ).run(
-      input.name === undefined
-        ? current.name
-        : requireNonEmpty(input.name, "Project name"),
-      input.prefix === undefined
-        ? current.prefix
-        : validatePrefix(input.prefix),
-      input.color === undefined
-        ? current.color
-        : requireNonEmpty(input.color, "Project color"),
-      folderId,
-      input.linkedBbProjectId === undefined
-        ? current.linkedBbProjectId
-        : validateLinkedBbProjectId(input.linkedBbProjectId),
-      id,
-    );
-    return requireProject(id);
+      ).run(
+        input.name === undefined
+          ? current.name
+          : requireNonEmpty(input.name, "Project name"),
+        input.prefix === undefined
+          ? current.prefix
+          : validatePrefix(input.prefix),
+        input.color === undefined
+          ? current.color
+          : requireNonEmpty(input.color, "Project color"),
+        folderId,
+        input.linkedBbProjectId === undefined
+          ? current.linkedBbProjectId
+          : validateLinkedBbProjectId(input.linkedBbProjectId),
+        JSON.stringify(statuses),
+        id,
+      );
+      return requireProject(id);
+    })();
   }
 
   function deleteProject(id: string): boolean {
@@ -855,6 +888,7 @@ export function createTasksStore(db: PluginDatabase) {
       const project = requireProject(input.projectId);
       const id = createUlid();
       const status = input.status ?? "backlog";
+      validateTaskStatus(project.id, status);
       const parentTaskId = input.parentTaskId ?? null;
       const type = input.type ?? "task";
       const epicId = input.epicId ?? null;
@@ -951,6 +985,35 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function listTasksPage(filters: ListTasksFilters = {}): ListTasksPage {
+    if (filters.excludeStatuses?.length) {
+      const allowed = new Set([
+        ...DEFAULT_TASK_STATUSES.map((status) => status.id),
+        ...listProjects().flatMap((project) =>
+          (project.statuses ?? DEFAULT_TASK_STATUSES).map(
+            (status) => status.id,
+          ),
+        ),
+      ]);
+      for (const status of filters.excludeStatuses)
+        if (!allowed.has(status))
+          throw new Error(`Unknown task status: ${status}`);
+    }
+    if (filters.statuses?.length) {
+      const known = new Set([
+        ...DEFAULT_TASK_STATUSES.map((status) => status.id),
+        ...(filters.projectId
+          ? [requireProject(filters.projectId)]
+          : listProjects()
+        ).flatMap((project) =>
+          (project.statuses ?? DEFAULT_TASK_STATUSES).map(
+            (status) => status.id,
+          ),
+        ),
+      ]);
+      for (const status of filters.statuses)
+        if (!known.has(status))
+          throw new Error(`Unknown task status: ${status}`);
+    }
     const clauses: string[] = [];
     const parameters: Record<string, SqlParameter> = {};
 
@@ -969,6 +1032,14 @@ export function createTasksStore(db: PluginDatabase) {
         });
         clauses.push(`t.status IN (${names.join(", ")})`);
       }
+    }
+    if (filters.excludeStatuses?.length) {
+      const names = filters.excludeStatuses.map((status, index) => {
+        const name = `excludedStatus${index}`;
+        parameters[name] = status;
+        return `@${name}`;
+      });
+      clauses.push(`t.status NOT IN (${names.join(", ")})`);
     }
     if (filters.priorities !== undefined) {
       if (filters.priorities.length === 0) {
@@ -1209,6 +1280,7 @@ export function createTasksStore(db: PluginDatabase) {
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
       const status = input.status ?? current.status;
+      validateTaskStatus(current.projectId, status);
       const parentTaskId =
         input.parentTaskId === undefined
           ? current.parentTaskId
@@ -1308,6 +1380,7 @@ export function createTasksStore(db: PluginDatabase) {
         ...members,
         ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
       ];
+      for (const task of moving) validateTaskStatus(target.id, task.status);
       const movingIds = new Set(moving.map((task) => task.id));
 
       const allocated = db
@@ -1431,6 +1504,7 @@ export function createTasksStore(db: PluginDatabase) {
   const updatePositionTransaction = db.transaction(
     (id: string, input: UpdateTaskPositionInput): Task => {
       const task = requireTask(id);
+      validateTaskStatus(task.projectId, input.status);
       if (input.beforeTaskId === id || input.afterTaskId === id) {
         throw new Error("A task cannot be its own reorder neighbor");
       }

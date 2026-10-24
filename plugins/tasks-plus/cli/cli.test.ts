@@ -779,7 +779,7 @@ describe("bb tasks CLI", () => {
     ]);
     expect(invalidStatus).toMatchObject({ exitCode: 1, stdout: "" });
     expect(invalidStatus.stderr).toContain(
-      "invalid value 'almost-done' for --status. Expected one of: backlog, todo, in_progress, in_review, done, canceled",
+      "Status ID must be lowercase letters, digits or underscores",
     );
 
     const invalidDueDate = await harness.runCli([
@@ -2166,7 +2166,7 @@ describe("bb tasks CLI", () => {
     expect(listHelp).toContain("--limit <1-500>");
     expect(listHelp).toContain("default: 100");
     expect(listHelp).toContain(
-      "--status <backlog|todo|in_progress|in_review|done|canceled>",
+      "--status <status-id>",
     );
 
     const createHelp = stdout(await harness.runCli(["create", "--help"]));

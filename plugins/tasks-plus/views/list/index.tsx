@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Label, Task } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
@@ -34,7 +35,6 @@ import {
   groupTasksByStatus,
   labelFilterOptions,
   selectedLabelIds,
-  STATUS_LABELS,
 } from "./lib.js";
 import { editedTasks, matchesFilters } from "./optimistic.js";
 import { useListTaskEdits } from "./use-task-edits.js";
@@ -71,6 +71,7 @@ function LoadingRows() {
 }
 
 export function ListView({ projectId, activeOnly = false }: ListViewProps) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const navigation = useTasksNavigation();
   const rpc = useTasksRpc();
   const openTask = useCallback(
@@ -191,8 +192,8 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     questionCounts.data,
   ]);
   const groups = useMemo(
-    () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort)),
-    [displayTasks, sort],
+    () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort), statusIds),
+    [displayTasks, sort, statusIds],
   );
 
   const showProject = projectId === null;
@@ -299,7 +300,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
             className="sticky top-0 z-20 isolate flex items-center gap-2 border-b border-border-hairline bg-background px-3.5 pb-1.5 pt-2.5 text-sm font-semibold"
           >
             <StatusIcon status={group.status} />
-            {STATUS_LABELS[group.status]}
+            {statusLabel(group.status)}
             <span className="text-xs font-normal tabular-nums text-subtle-foreground">
               {group.tasks.length}
             </span>

@@ -1,8 +1,8 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import type { ReactNode } from "react";
 import { TaskSearch } from "../../components/task-search.js";
 import {
   TASK_PRIORITIES,
-  TASK_STATUSES,
   TASK_TYPES,
   type TaskType,
   type TaskPriority,
@@ -21,7 +21,6 @@ import { PriorityIcon, StatusIcon } from "./icons.js";
 import {
   PRIORITY_LABELS,
   SORT_LABELS,
-  STATUS_LABELS,
   type LabelFilterOption,
 } from "./lib.js";
 
@@ -154,6 +153,7 @@ export function ListFilterBar({
   labelOptions: readonly LabelFilterOption[];
   taskCount: number | undefined;
 }) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const keepOpen = (event: Event) => event.preventDefault();
   const showLabelChip =
     labelOptions.length > 0 || filters.labelNames.length > 0;
@@ -224,10 +224,10 @@ export function ListFilterBar({
           icon="Circle"
           label="Status"
           selectedNames={filters.statuses.map(
-            (status) => STATUS_LABELS[status],
+            (status) => statusLabel(status),
           )}
         >
-          {TASK_STATUSES.map((status) => (
+          {statusIds.map((status) => (
             <DropdownMenuCheckboxItem
               key={status}
               checked={filters.statuses.includes(status)}
@@ -241,7 +241,7 @@ export function ListFilterBar({
             >
               <span className="flex items-center gap-2">
                 <StatusIcon status={status} className="size-3" />
-                {STATUS_LABELS[status]}
+                {statusLabel(status)}
               </span>
             </DropdownMenuCheckboxItem>
           ))}

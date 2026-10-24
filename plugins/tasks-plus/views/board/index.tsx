@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
   useEffect,
   useRef,
@@ -32,7 +33,6 @@ import {
 import {
   labelFilterOptions,
   selectedLabelIds,
-  STATUS_LABELS,
 } from "../list/lib.js";
 import { ListFilterBar, type ListFilterState } from "../list/filter-bar.js";
 import {
@@ -57,16 +57,9 @@ const DRAG_THRESHOLD_PX = 5;
 
 type ColumnMap = Record<TaskStatus, Task[]>;
 
-function groupColumns(tasks: readonly Task[]): ColumnMap {
-  const columns: ColumnMap = {
-    backlog: [],
-    todo: [],
-    in_progress: [],
-    in_review: [],
-    done: [],
-    canceled: [],
-  };
-  for (const task of tasks) columns[task.status].push(task);
+function groupColumns(tasks: readonly Task[], statuses: readonly string[]): ColumnMap {
+  const columns: ColumnMap = Object.fromEntries(statuses.map((status) => [status, []]));
+  for (const task of tasks) (columns[task.status] ??= []).push(task);
   return columns;
 }
 
@@ -220,6 +213,7 @@ interface BoardViewProps {
 }
 
 export function BoardView({ projectId }: BoardViewProps) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const rpc = useTasksRpc();
   const { toasts, push, dismiss } = useDetailToasts();
   const navigation = useTasksNavigation();
@@ -253,8 +247,8 @@ export function BoardView({ projectId }: BoardViewProps) {
     setColumns(undefined);
   }, [projectId]);
   useEffect(() => {
-    if (board.data) setColumns(groupColumns(board.data.tasks));
-  }, [board.data]);
+    if (board.data) setColumns(groupColumns(board.data.tasks, statusIds));
+  }, [board.data, statusIds]);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
   const labelOptions = labelFilterOptions([
@@ -281,6 +275,7 @@ export function BoardView({ projectId }: BoardViewProps) {
               labelIds,
             ),
         ),
+      statusIds,
     );
   const visibleColumnsRef = useRef(visibleColumns);
   visibleColumnsRef.current = visibleColumns;
@@ -520,7 +515,7 @@ export function BoardView({ projectId }: BoardViewProps) {
       >
         <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold">
           <StatusIcon status={status} />
-          <span>{STATUS_LABELS[status]}</span>
+          <span>{statusLabel(status)}</span>
           <span className="font-normal text-muted-foreground">
             {cards.length}
           </span>
@@ -528,7 +523,7 @@ export function BoardView({ projectId }: BoardViewProps) {
             variant="ghost"
             size="icon"
             className="ml-auto size-6 text-muted-foreground"
-            aria-label={`New ${STATUS_LABELS[status]} task`}
+            aria-label={`New ${statusLabel(status)} task`}
             onClick={() => setQuickAddStatus(status)}
           >
             <Icon name="Plus" className="size-3.5" />

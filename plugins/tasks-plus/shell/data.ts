@@ -31,6 +31,7 @@ export type TasksRpc = ReturnType<typeof useTasksRpc>;
 interface TaskListQuery {
   projectId?: string;
   statuses?: TaskStatus[];
+  excludeStatuses?: TaskStatus[];
   priorities?: TaskPriority[];
   labelIds?: string[];
   activeOnly?: boolean;
@@ -72,7 +73,7 @@ export async function listTasksOpenFirst(
 ): Promise<Task[]> {
   const openRequest = listAllTasks(rpc, {
     ...input,
-    statuses: [...OPEN_TASK_STATUSES],
+    excludeStatuses: [...CLOSED_TASK_STATUSES],
   }).then((open) => {
     publish(open);
     return open;

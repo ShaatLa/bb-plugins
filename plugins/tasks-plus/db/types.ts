@@ -1,4 +1,5 @@
 import type { TaskSort } from "../shared/pagination.js";
+import type { TaskStatusDefinition } from "../shared/statuses.js";
 import type { Evidence } from "../shared/contract.js";
 import type {
   PRESET_ENVIRONMENT_KINDS,
@@ -31,6 +32,7 @@ export interface Project {
   name: string;
   prefix: string;
   nextTaskNumber: number;
+  statuses?: TaskStatusDefinition[];
   color: string;
   folderId: string | null;
   linkedBbProjectId: string | null;
@@ -151,6 +153,7 @@ export interface UpdateProjectInput {
   color?: string;
   folderId?: string | null;
   linkedBbProjectId?: string | null;
+  statuses?: TaskStatusDefinition[];
 }
 
 export interface CreateTaskInput {
@@ -188,6 +191,7 @@ export interface MoveTaskToProjectResult {
 export interface ListTasksFilters {
   projectId?: string;
   statuses?: readonly TaskStatus[];
+  excludeStatuses?: readonly TaskStatus[];
   priorities?: readonly TaskPriority[];
   labelIds?: readonly string[];
   activeOnly?: boolean;

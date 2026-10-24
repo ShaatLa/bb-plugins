@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { readAttachmentContent } from "../attachments";
@@ -42,7 +43,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-tasks-plus",
-      version: 5,
+      version: 6,
       project,
       folders,
       labels: store.tasks
@@ -121,7 +122,11 @@ function dbRow(value: object): Row {
   return Object.fromEntries(
     Object.entries(value).map(([key, value]) => [
       key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
-      typeof value === "boolean" ? Number(value) : value,
+      key === "statuses"
+        ? JSON.stringify(value)
+        : typeof value === "boolean"
+          ? Number(value)
+          : value,
     ]),
   );
 }
@@ -152,6 +157,8 @@ export function restoreProject(
     assertNoSecrets(template.name, "template name");
     assertNoSecrets(template.body, "template body");
   }
+  if (archive.manifest.project.statuses)
+    assertNoSecretsInValue(archive.manifest.project.statuses, "statuses");
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
@@ -182,6 +189,8 @@ export function restoreProject(
           throw new Error(
             "Evidence comments are append-only; add a newer record instead",
           );
+        if (table === "projects" && current.statuses == null)
+          current.statuses = JSON.stringify(DEFAULT_TASK_STATUSES);
         const differs = Object.keys(row).some(
           (key) => current[key] !== row[key],
         );
@@ -210,6 +219,7 @@ export function restoreProject(
       throw new Error("Task number exceeds the supported range");
     const project = {
       ...manifest.project,
+      statuses: manifest.project.statuses ?? DEFAULT_TASK_STATUSES,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,
         currentProject?.nextTaskNumber ?? 1,
@@ -232,6 +242,10 @@ export function restoreProject(
     for (const record of records) merged.set(record.task.id, record.task);
     const numbers = new Set<number>();
     for (const task of merged.values()) {
+      if (!project.statuses.some((status) => status.id === task.status))
+        throw new Error(
+          "Imported workflow removes a status used by retained tasks",
+        );
       if (numbers.has(task.number))
         throw new Error(`Duplicate task number: ${task.number}`);
       numbers.add(task.number);

@@ -33,8 +33,9 @@ export function StatusIcon({
     <svg
       viewBox="0 0 14 14"
       aria-hidden
-      className={cn("size-3.5 shrink-0", STATUS_COLOR_CLASS[status], className)}
+      className={cn("size-3.5 shrink-0", STATUS_COLOR_CLASS[status] ?? "text-timeline-accent", className)}
     >
+      {!["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(status) ? <circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.6" /> : null}
       {status === "backlog" ? ring(true) : null}
       {status === "todo" ? ring(false) : null}
       {status === "in_progress" ? (

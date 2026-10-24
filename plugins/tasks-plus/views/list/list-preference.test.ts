@@ -130,7 +130,7 @@ describe("loadListPreference / storeListPreference", () => {
         version: 1,
         scopes: {
           all: {
-            filters: { statuses: ["bogus"], priorities: ["high"] },
+            filters: { statuses: ["bogus!"], priorities: ["high"] },
             sort: "priority",
           },
         },
