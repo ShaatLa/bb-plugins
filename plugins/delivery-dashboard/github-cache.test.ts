@@ -47,3 +47,22 @@ test("current-state TTL shares requests across ranges, force revalidates, and in
     expect(JSON.stringify(database.prepare("SELECT data FROM github_responses").all())).not.toContain("do-not-store");
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test("upgrades slim CI pages without reusing legacy ETags and retains diagnostic fields through 304", async () => {
+  const { bb, harness } = createFakePluginHost();
+  const database = bb.storage.database();
+  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL)").run();
+  const path = "/repos/acme/widgets/actions/runs?created=fixed&page=1";
+  database.prepare("INSERT INTO github_responses VALUES (?, ?, ?, ?)").run(JSON.stringify(["config", path]), JSON.stringify({ body: { total_count: 0, workflow_runs: [] }, hasNext: false, etag: "legacy" }), Date.now(), Date.now());
+  const run = { id: 1, created_at: "2026-10-19T00:00:00Z", conclusion: "failure", name: "Tests", workflow_id: 42, head_branch: "main", event: "push", run_started_at: "2026-10-19T00:00:00Z", updated_at: "2026-10-19T00:01:00Z" };
+  const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ total_count: 1, workflow_runs: [{ ...run, unused: "do-not-store" }] }, { headers: { etag: "enriched" } })).mockResolvedValueOnce(new Response(null, { status: 304 }));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const request = () => createGitHubCache(database)("config", undefined, new AbortController().signal, 300_000, true, () => true)(path);
+    expect(await request()).toMatchObject({ body: { workflow_runs: [run] } });
+    expect(fetchMock.mock.calls[0][1].headers["If-None-Match"]).toBeUndefined();
+    expect(await request()).toMatchObject({ body: { workflow_runs: [run] } });
+    expect(fetchMock.mock.calls[1][1].headers["If-None-Match"]).toBe("enriched");
+    expect(JSON.stringify(database.prepare("SELECT data FROM github_responses").all())).not.toContain("do-not-store");
+  } finally { await harness.lifecycle.dispose(); }
+});

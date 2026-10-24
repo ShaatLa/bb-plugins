@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
 import { commitActivitySchema, commitRowSchema, loadCommitActivity, summarizeCommitActivity } from "./commit-activity";
 
@@ -29,6 +30,7 @@ export const metricsSchema = z.object({
   pullRequestsCreated: metricSchema,
   commitActivity: commitActivitySchema,
   ci: metricSchema,
+  ciInsights: ciInsightsSchema.nullable().optional(),
   ciOutcomes: z.record(z.string(), z.number().int().nonnegative()).nullable(),
   reviewQueue: z.object({
     total: z.number().int().nonnegative().nullable(),
@@ -48,7 +50,7 @@ export const metricsProgressSchema = z.object({
 const countSchema = z.object({ total_count: z.number().int().nonnegative() });
 const searchSchema = countSchema.extend({ incomplete_results: z.boolean() });
 const deploymentsSchema = z.array(z.object({ created_at: timestampSchema }));
-const runSchema = z.object({ id: z.number().int().positive(), created_at: timestampSchema, conclusion: z.string().nullable() });
+const runSchema = ciRunSchema;
 const runsSchema = z.object({ workflow_runs: z.array(runSchema) });
 const productionRowsSchema = z.array(z.object({ id: z.number().int().positive(), environment: z.string(), production_environment: z.boolean(), ref: z.string(), created_at: timestampSchema }));
 const statusesSchema = z.array(z.object({ state: z.string(), created_at: timestampSchema, log_url: z.string().nullable().optional() }));
@@ -337,6 +339,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
     catch (reason) { Object.assign(result, failure(reason)); }
     pending.splice(pending.indexOf(key), 1);
     result.pending = [...pending];
+    const runs = cached?.records.runs ?? historyData.runs;
+    if ((key === "ci" || key === "commitActivity") && !pending.includes("ci") && result.ciOutcomes && runs) result.ciInsights = summarizeCi(runs.filter((row) => bucket(row.created_at) >= 0), cached?.records.branch ?? historyData.branch ?? null);
     options.onProgress?.({ ...result });
   }
   let commitsComplete = false;

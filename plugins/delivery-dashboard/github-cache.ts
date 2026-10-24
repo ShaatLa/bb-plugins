@@ -12,7 +12,7 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
   const pending = new Map<string, Promise<GitHubResponse>>();
   return (configuration: string, token: string | undefined, signal: AbortSignal, ttl: number, force: boolean, canWrite: () => boolean): GitHubRequest => async (path, init) => {
     if (init?.method && init.method !== "GET") return githubRequest(path, token, signal, init);
-    const key = JSON.stringify([configuration, path]);
+    const key = JSON.stringify([path.includes("/actions/runs?") ? `${configuration}:ci-metadata-v1` : configuration, path]);
     const row = database.prepare("SELECT data, checked_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number } | undefined;
     if (row) database.prepare("UPDATE github_responses SET last_used_at = ? WHERE cache_key = ?").run(Date.now(), key);
     let previous: GitHubResponse | undefined;
@@ -25,8 +25,8 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
     const operation = githubRequest(path, token, signal, init, previous).then((result) => {
       // Workflow responses contain large unused nested objects; retain only metric inputs.
       if (path.includes("/actions/runs?") && result.body && typeof result.body === "object" && "workflow_runs" in result.body && Array.isArray(result.body.workflow_runs)) {
-        const body = result.body as { total_count?: unknown; workflow_runs: { id?: unknown; created_at?: unknown; conclusion?: unknown }[] };
-        result = { ...result, body: { total_count: body.total_count, workflow_runs: body.workflow_runs.map(({ id, created_at, conclusion }) => ({ id, created_at, conclusion })) } };
+        const body = result.body as { total_count?: unknown; workflow_runs: unknown[] };
+        result = { ...result, body: { total_count: body.total_count, workflow_runs: body.workflow_runs.map((row) => pick(row, ["id", "created_at", "conclusion", "workflow_id", "name", "head_branch", "event", "run_started_at", "updated_at"])) } };
       }
       if (path.includes("/deployments?") && Array.isArray(result.body)) result = { ...result, body: result.body.map((row) => pick(row, ["id", "environment", "production_environment", "ref", "created_at"])) };
       if (path.includes("/statuses?") && Array.isArray(result.body)) result = { ...result, body: result.body.map((row) => {
