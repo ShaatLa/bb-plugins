@@ -1,6 +1,8 @@
+import { displayName } from "../../shared/display-name.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -30,10 +32,7 @@ import {
   type BoardCardMeta,
   type BoardData,
 } from "./board-data.js";
-import {
-  labelFilterOptions,
-  selectedLabelIds,
-} from "../list/lib.js";
+import { labelFilterOptions, selectedLabelIds } from "../list/lib.js";
 import { ListFilterBar, type ListFilterState } from "../list/filter-bar.js";
 import {
   listPreferenceScope,
@@ -57,8 +56,13 @@ const DRAG_THRESHOLD_PX = 5;
 
 type ColumnMap = Record<TaskStatus, Task[]>;
 
-function groupColumns(tasks: readonly Task[], statuses: readonly string[]): ColumnMap {
-  const columns: ColumnMap = Object.fromEntries(statuses.map((status) => [status, []]));
+function groupColumns(
+  tasks: readonly Task[],
+  statuses: readonly string[],
+): ColumnMap {
+  const columns: ColumnMap = Object.fromEntries(
+    statuses.map((status) => [status, []]),
+  );
   for (const task of tasks) (columns[task.status] ??= []).push(task);
   return columns;
 }
@@ -92,7 +96,13 @@ function WorkingAgentsChip({ threads }: { threads: TaskThread[] }) {
 }
 
 interface TaskCardProps {
+  statusLabel?: (status: TaskStatus) => string;
   unansweredQuestions?: number;
+  subtasks?: readonly Task[];
+  questionCounts?: ReadonlyMap<string, number>;
+  unansweredOnly?: boolean;
+  onOpenSubtask?: (task: Task) => void;
+
   task: Task;
   labelsById: Map<string, Label>;
   meta: BoardCardMeta;
@@ -104,7 +114,12 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  statusLabel = displayName,
   unansweredQuestions,
+  subtasks = [],
+  questionCounts,
+  unansweredOnly = false,
+  onOpenSubtask,
   task,
   labelsById,
   meta,
@@ -114,6 +129,33 @@ function TaskCard({
   onPointerDown,
   onClick,
 }: TaskCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  const childQuestions = subtasks.reduce(
+    (sum, child) => sum + (questionCounts?.get(child.id) ?? 0),
+    0,
+  );
+  const autoExpand = unansweredOnly && childQuestions > 0;
+  useEffect(() => {
+    if (autoExpand) setExpanded(true);
+  }, [autoExpand]);
+  const questionTitle =
+    childQuestions > 0
+      ? `${questionCounts?.get(task.id) ?? 0} in this task; ${childQuestions} in sub-tasks`
+      : undefined;
+  const visibleSubtasks = expanded
+    ? [...subtasks]
+        .filter(
+          (child) =>
+            !unansweredOnly || (questionCounts?.get(child.id) ?? 0) > 0,
+        )
+        .sort(
+          (a, b) =>
+            Number((questionCounts?.get(b.id) ?? 0) > 0) -
+              Number((questionCounts?.get(a.id) ?? 0) > 0) ||
+            a.position - b.position ||
+            a.id.localeCompare(b.id),
+        )
+    : [];
   const labels = task.labelIds
     .map((labelId) => labelsById.get(labelId))
     .filter((label): label is Label => label !== undefined);
@@ -126,64 +168,137 @@ function TaskCard({
       onClick={onClick}
       className={cn(
         "shrink-0 rounded-lg border border-border bg-card px-2.5 py-2 shadow-2xs select-none",
-        ghost
-          ? "rotate-2 shadow-md"
-          : "cursor-pointer touch-none hover:border-input",
+        ghost ? "rotate-2 shadow-md" : "cursor-pointer hover:border-input",
         dragging && "opacity-40",
         task.executionTarget === "owner" && "border-l-[3px] border-l-warning",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
-          <span className="shrink-0 tabular-nums">{task.key}</span>
-          {task.executionTarget === "owner" ? (
-            <span className="inline-flex items-center gap-1 text-warning">
-              <Icon name="User" className="size-3" />
-              Owner
-            </span>
-          ) : null}
-          {task.type === "epic" ? (
-            <span className="inline-flex items-center gap-1">
-              <Icon name="Zap" className="size-3" />
-              Epic
-            </span>
-          ) : null}
-          <WorkingAgentsChip threads={meta.workingThreads} />
+      <div className="touch-none">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+            <span className="shrink-0 tabular-nums">{task.key}</span>
+            {task.executionTarget === "owner" ? (
+              <span className="inline-flex items-center gap-1 text-warning">
+                <Icon name="User" className="size-3" />
+                Owner
+              </span>
+            ) : null}
+            {task.type === "epic" ? (
+              <span className="inline-flex items-center gap-1">
+                <Icon name="Zap" className="size-3" />
+                Epic
+              </span>
+            ) : null}
+            <WorkingAgentsChip threads={meta.workingThreads} />
+          </div>
+          {childQuestions > 0 && !ghost ? (
+            <button
+              type="button"
+              aria-label={`Show sub-task questions for ${task.key}`}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpanded(true);
+              }}
+              className="rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <QuestionCount
+                count={unansweredQuestions}
+                title={questionTitle}
+              />
+            </button>
+          ) : (
+            <QuestionCount count={unansweredQuestions} title={questionTitle} />
+          )}
         </div>
-        <QuestionCount count={unansweredQuestions} />
-      </div>
-      <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
-        {task.title}
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <PriorityIcon priority={task.priority} />
-        {labels.map((label) => (
-          <span
-            key={label.id}
-            className="flex items-center gap-1 rounded-md border border-border px-1.5 text-2xs text-muted-foreground"
-          >
+        <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
+          {task.title}
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <PriorityIcon priority={task.priority} />
+          {labels.map((label) => (
             <span
-              aria-hidden
-              className="size-1.5 rounded-full"
-              style={{ backgroundColor: label.color }}
+              key={label.id}
+              className="flex items-center gap-1 rounded-md border border-border px-1.5 text-2xs text-muted-foreground"
+            >
+              <span
+                aria-hidden
+                className="size-1.5 rounded-full"
+                style={{ backgroundColor: label.color }}
+              />
+              {label.name}
+            </span>
+          ))}
+          {meta.subTotal > 0 ? (
+            subtasks.length > 0 && !ghost ? (
+              <button
+                type="button"
+                aria-label={`Sub-tasks of ${task.key}`}
+                aria-expanded={expanded}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpanded((value) => !value);
+                }}
+                className="flex items-center gap-1 rounded-sm text-2xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <Icon
+                  name={expanded ? "ChevronDown" : "ChevronRight"}
+                  className="size-3"
+                />
+                Sub-tasks · {meta.subDone}/{subtasks.length}
+              </button>
+            ) : (
+              <span className="flex items-center gap-0.5 text-2xs text-muted-foreground">
+                <Icon name="GitBranch" className="size-3" />
+                {meta.subDone}/{meta.subTotal}
+              </span>
+            )
+          ) : null}
+          {meta.attachmentCount > 0 ? (
+            <Icon
+              name="Paperclip"
+              className="size-3 text-muted-foreground"
+              aria-label={`${meta.attachmentCount} attachments`}
             />
-            {label.name}
-          </span>
-        ))}
-        {meta.subTotal > 0 ? (
-          <span className="flex items-center gap-0.5 text-2xs text-muted-foreground">
-            <Icon name="GitBranch" className="size-3" />
-            {meta.subDone}/{meta.subTotal}
-          </span>
-        ) : null}
-        {meta.attachmentCount > 0 ? (
-          <Icon
-            name="Paperclip"
-            className="size-3 text-muted-foreground"
-            aria-label={`${meta.attachmentCount} attachments`}
-          />
-        ) : null}
+          ) : null}
+        </div>
       </div>
+      {expanded && subtasks.length > 0 && !ghost ? (
+        <div
+          role="list"
+          aria-label={`Sub-tasks of ${task.key}`}
+          className="mt-2 max-h-52 space-y-1 overflow-y-auto border-t border-border pt-2"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {visibleSubtasks.map((child) => (
+            <div key={child.id} role="listitem" data-subtask-key={child.key}>
+              <button
+                type="button"
+                aria-label={`Open sub-task ${child.key}: ${child.title}`}
+                title={statusLabel(child.status)}
+                onClick={() => onOpenSubtask?.(child)}
+                className="flex w-full items-start gap-1.5 rounded-md p-1 text-left text-xs hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <StatusIcon status={child.status} className="mt-0.5" />
+                <span className="min-w-0 flex-1">
+                  <span className="text-2xs tabular-nums text-muted-foreground">
+                    {child.key}
+                  </span>
+                  <span className="block break-words">{child.title}</span>
+                </span>
+                <QuestionCount count={questionCounts?.get(child.id)} />
+              </button>
+            </div>
+          ))}
+          {visibleSubtasks.length === 0 ? (
+            <p className="p-1 text-xs text-muted-foreground">
+              No unanswered sub-task questions.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -242,7 +357,29 @@ export function BoardView({ projectId }: BoardViewProps) {
   );
 
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
-  const questionCounts = useQuestionCounts(board.data?.tasks ?? []);
+  const questionCounts = useQuestionCounts([
+    ...(board.data?.tasks ?? []),
+    ...(board.data?.subtasks ?? []),
+  ]);
+  const subtasksByParent = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const child of board.data?.subtasks ?? []) {
+      const children = map.get(child.parentTaskId!) ?? [];
+      children.push(child);
+      map.set(child.parentTaskId!, children);
+    }
+    return map;
+  }, [board.data?.subtasks]);
+  const questionTotals = useMemo(() => {
+    const counts = new Map(questionCounts.data);
+    for (const child of board.data?.subtasks ?? [])
+      counts.set(
+        child.parentTaskId!,
+        (counts.get(child.parentTaskId!) ?? 0) +
+          (questionCounts.data?.get(child.id) ?? 0),
+      );
+    return counts;
+  }, [questionCounts.data, board.data?.subtasks]);
   useEffect(() => {
     setColumns(undefined);
   }, [projectId]);
@@ -263,7 +400,7 @@ export function BoardView({ projectId }: BoardViewProps) {
         .filter(
           (task) =>
             (!filters.unansweredOnly ||
-              (questionCounts.data?.get(task.id) ?? 0) > 0) &&
+              (questionTotals.get(task.id) ?? 0) > 0) &&
             (filters.executionTarget === undefined ||
               task.executionTarget === filters.executionTarget) &&
             (filters.type === undefined || task.type === filters.type) &&
@@ -493,9 +630,14 @@ export function BoardView({ projectId }: BoardViewProps) {
         <TaskCard
           key={task.id}
           task={task}
+          statusLabel={statusLabel}
           labelsById={labelsById}
           meta={metaByTaskId.get(task.id) ?? EMPTY_META}
-          unansweredQuestions={questionCounts.data?.get(task.id)}
+          unansweredQuestions={questionTotals.get(task.id)}
+          subtasks={subtasksByParent.get(task.id)}
+          questionCounts={questionCounts.data}
+          unansweredOnly={filters.unansweredOnly}
+          onOpenSubtask={openTask}
           dragging={drag?.taskId === task.id}
           cardRef={(element) => {
             if (element) cardRefs.current.set(task.id, element);
@@ -588,7 +730,7 @@ export function BoardView({ projectId }: BoardViewProps) {
               task={ghostTask}
               labelsById={labelsById}
               meta={metaByTaskId.get(ghostTask.id) ?? EMPTY_META}
-              unansweredQuestions={questionCounts.data?.get(ghostTask.id)}
+              unansweredQuestions={questionTotals.get(ghostTask.id)}
               ghost
             />
           </div>
