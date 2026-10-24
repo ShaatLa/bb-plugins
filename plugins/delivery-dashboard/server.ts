@@ -57,7 +57,7 @@ export default function plugin(bb: BbPluginApi) {
     return JSON.stringify(rangeInputSchema.parse(input) ?? { days: 7 });
   }
   function configuration(values: Awaited<ReturnType<typeof settings.get>>) {
-    return createHash("sha256").update(JSON.stringify([values.repository, values.importBbRepositories, values.token ?? ""])).digest("hex");
+    return createHash("sha256").update(JSON.stringify(["review:none", values.repository, values.importBbRepositories, values.token ?? ""])).digest("hex");
   }
   settings.onChange(() => {
     generation++;

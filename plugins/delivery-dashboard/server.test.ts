@@ -23,7 +23,7 @@ beforeEach(() => {
     if (url.pathname === "/search/issues" && url.searchParams.get("q")?.includes("created:")) return Response.json({ total_count: 9, incomplete_results: false });
     if (url.pathname.includes("/statuses")) return Response.json([{ state: "success", created_at: recent, log_url: "https://github.com/acme/widgets/actions/runs/1" }]);
     if (url.pathname.endsWith("/deployments")) return Response.json([{ id: 1, created_at: recent, environment: "production", production_environment: true, ref: "main" }]);
-    if (url.pathname === "/search/issues") return url.searchParams.get("q")?.includes("review:required")
+    if (url.pathname === "/search/issues") return url.searchParams.get("q")?.includes("review:none")
       ? Response.json({ total_count: 1, incomplete_results: false, items: [{ number: 17, title: "Needs review", created_at: "2026-10-17T06:00:00Z" }] })
       : Response.json({ total_count: 42, incomplete_results: false });
     return Response.json({ total_count: url.searchParams.get("status") === "success" ? 8 : 10,
@@ -309,12 +309,13 @@ test("CI summary, chart, and breakdown use the same runs instead of racing a sec
 test("review queue returns the oldest PRs with canonical links and incomplete results stay unavailable", async () => {
   const result = await load();
   expect(result.reviewQueue).toMatchObject({ total: 1, error: null, items: [{ number: 17, title: "Needs review", createdAt: "2026-10-17T06:00:00Z", url: "https://github.com/acme/widgets/pull/17" }] });
-  const url = new URL(fetchMock.mock.calls.find(([url]) => new URL(url).searchParams.get("q")?.includes("review:required"))![0]);
+  const url = new URL(fetchMock.mock.calls.find(([url]) => new URL(url).searchParams.get("q")?.includes("review:none"))![0]);
+  expect(url.searchParams.get("q")).toBe("repo:acme/widgets is:pr is:open draft:false review:none");
   expect(url.searchParams.get("sort")).toBe("created");
   expect(url.searchParams.get("order")).toBe("asc");
   expect(url.searchParams.get("per_page")).toBe("5");
   const normal = fetchMock.getMockImplementation()!;
-  fetchMock.mockImplementation(async (input: string) => input.includes("search/issues") && new URL(input).searchParams.get("q")?.includes("review:required")
+  fetchMock.mockImplementation(async (input: string) => input.includes("search/issues") && new URL(input).searchParams.get("q")?.includes("review:none")
     ? Response.json({ total_count: 1, incomplete_results: true, items: [] }) : normal(input));
   expect((await load()).reviewQueue).toMatchObject({ total: null, items: [], error: expect.stringContaining("incomplete") });
 });
@@ -362,7 +363,7 @@ test("no production or pending reviews is distinct from an API error", async () 
   fetchMock.mockImplementation(async (input: string) => {
     const url = new URL(input);
     if (url.pathname.endsWith("/deployments")) return Response.json([]);
-    if (url.pathname === "/search/issues" && url.searchParams.get("q")?.includes("review:required")) return Response.json({ total_count: 0, incomplete_results: false, items: [] });
+    if (url.pathname === "/search/issues" && url.searchParams.get("q")?.includes("review:none")) return Response.json({ total_count: 0, incomplete_results: false, items: [] });
     return normal(input);
   });
   const result = await load();
