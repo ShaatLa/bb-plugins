@@ -20,8 +20,8 @@ export function resolveRange(input: RangeInput, now = new Date()): DateRange {
   let since: number;
   let label: string;
   if ("days" in selection) {
-    since = until - selection.days * day;
-    label = `last ${selection.days} ${selection.days === 1 ? "day" : "days"}`;
+    since = selection.days === 1 ? Math.floor(until / day) * day : until - selection.days * day;
+    label = selection.days === 1 ? "today" : `last ${selection.days} days`;
   } else {
     const today = now.toISOString().slice(0, 10);
     if (selection.start < "1970-01-01" || selection.start > selection.end || selection.end > today) {
@@ -33,6 +33,6 @@ export function resolveRange(input: RangeInput, now = new Date()): DateRange {
   }
   const duration = Math.max(1, until - since);
   // Keep long ranges readable; the final bucket may be shorter than the others.
-  const bucketMs = duration <= day ? 3_600_000 : Math.ceil(duration / (14 * day)) * day;
+  const bucketMs = label === "today" ? 4 * 3_600_000 : duration <= day ? 3_600_000 : Math.ceil(duration / (14 * day)) * day;
   return { since: new Date(since).toISOString(), until: new Date(until).toISOString(), label, bucketMs };
 }

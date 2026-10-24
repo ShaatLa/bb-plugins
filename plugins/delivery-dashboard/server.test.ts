@@ -4,6 +4,7 @@ import plugin from "./server";
 import { loadMetrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
+import { resolveRange } from "./date-range";
 
 vi.mock("./auth", () => ({ resolveGithubToken: vi.fn() }));
 
@@ -35,6 +36,26 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 const load = () => loadMetrics("acme/widgets", "private-token", new AbortController().signal);
+
+test("today aggregates cached records into six midnight-aligned four-hour buckets", async () => {
+  const source = await load();
+  vi.setSystemTime(new Date("2026-10-20T10:17:38Z"));
+  const dates = ["2026-10-19T23:59:59Z", "2026-10-20T00:00:00Z", "2026-10-20T03:59:59Z", "2026-10-20T04:00:00Z", "2026-10-20T08:12:00Z", "2026-10-20T12:00:00Z"];
+  const result = await loadMetrics("acme/widgets", "token", new AbortController().signal, resolveRange({ days: 1 }), {
+    metrics: source, records: {
+      deployments: dates.map((created_at) => ({ created_at })),
+      runs: dates.map((created_at, id) => ({ id, created_at, conclusion: id === 4 ? "failure" : "success" })),
+      commits: dates.map((committedDate, id) => ({ oid: String(id), committedDate, additions: 10, deletions: 2 })), branch: "main",
+    },
+  });
+  expect(result.deployments.value).toBe(4);
+  expect(result.deployments.series?.map((point) => point.value)).toEqual([2, 1, 1, 0, 0, 0]);
+  expect(result.deployments.series?.map((point) => point.date)).toEqual([4, 8, 12, 16, 20, 24].map((hour) => new Date(Date.parse(result.range.since) + hour * 3_600_000).toISOString()));
+  expect(result.ci.value).toBe(75);
+  expect(result.ci.series?.map((point) => point.value)).toEqual([100, 100, 0, null, null, null]);
+  expect(result.commitActivity).toMatchObject({ commits: 4, additions: 40, deletions: 8 });
+  expect(new URL(fetchMock.mock.calls.at(-1)![0]).searchParams.get("q")).toContain("created:2026-10-20T00:00:00.000Z..2026-10-20T10:17:38.000Z");
+});
 
 test("counts paginated deployments inside the seven-day window and calculates all metrics", async () => {
   const normal = fetchMock.getMockImplementation()!;

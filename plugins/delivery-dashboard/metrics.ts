@@ -80,10 +80,11 @@ export async function loadMetrics(repository: string, token: string | undefined,
   const cutoff = Date.parse(range.since);
   const end = Date.parse(range.until);
   const since = range.since;
-  const days = Math.max(1, end - cutoff) / 86_400_000;
-  const bucketCount = Math.ceil(Math.max(1, end - cutoff) / range.bucketMs);
+  const calendarDay = range.label === "today";
+  const days = calendarDay ? 1 : Math.max(1, end - cutoff) / 86_400_000;
+  const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - cutoff) / range.bucketMs);
   const emptySeries = () => Array.from({ length: bucketCount }, (_, i) => ({
-    date: new Date(Math.min(end, cutoff + (i + 1) * range.bucketMs)).toISOString(), value: 0,
+    date: new Date(calendarDay ? cutoff + (i + 1) * range.bucketMs : Math.min(end, cutoff + (i + 1) * range.bucketMs)).toISOString(), value: 0,
   }));
   const bucket = (timestamp: string) => {
     const time = Date.parse(timestamp);
