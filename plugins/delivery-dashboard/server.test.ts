@@ -616,8 +616,12 @@ test("the background service warms the default snapshot and stops on disposal", 
   const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
   try {
     await plugin(bb);
+    const old = Date.now() - 8 * 86_400_000;
+    bb.storage.database().prepare("INSERT INTO github_responses (cache_key, data, checked_at, last_used_at) VALUES (?, ?, ?, ?)").run("expired", "{}", old, old);
+    vi.setSystemTime(new Date(Date.now() + 3_600_001));
     const service = harness.behavior.runService("snapshot-refresh");
     await vi.waitFor(async () => expect(await harness.behavior.callRpc("snapshot", null)).not.toBeNull());
+    expect(bb.storage.database().prepare("SELECT cache_key FROM github_responses WHERE cache_key = 'expired'").get()).toBeUndefined();
     service.controller.abort();
     await service.done;
     expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);

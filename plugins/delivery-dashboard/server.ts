@@ -9,6 +9,7 @@ import { dispatchProduction, productionTarget } from "./production";
 import { githubRepository, repositoriesSettingSchema, splitRepositories, uniqueRepositories } from "./repositories";
 import { cardDetailsInput, cardDetailsOutput, loadCardDetails } from "./card-details";
 import { createGitHubCache } from "./github-cache";
+import { cleanupCache } from "./cache-cleanup";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -56,7 +57,11 @@ export default function plugin(bb: BbPluginApi) {
     "ALTER TABLE dashboard_snapshots ADD COLUMN history TEXT",
     "CREATE TABLE repository_history (repository TEXT NOT NULL, configuration TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(repository, configuration))",
     "CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)",
+    "ALTER TABLE github_responses ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE repository_history ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
   ]);
+  database.prepare("UPDATE github_responses SET last_used_at = checked_at WHERE last_used_at = 0").run();
+  database.prepare("UPDATE repository_history SET last_used_at = ? WHERE last_used_at = 0").run(Date.now());
   const cachedRequest = createGitHubCache(database);
   const repositoryPending = new Map<string, Promise<Metrics>>();
   const historySchema = z.object({ metrics: metricsSchema, records: historicalRecordsSchema, coverage: rangeSchema, checkedAt: z.number(), authSource: dashboardSchema.shape.authSource.optional(), projectName: z.string().nullable().optional() });
@@ -65,6 +70,20 @@ export default function plugin(bb: BbPluginApi) {
   let repositoryList: { configuration: string; names: string[] } | null = null;
   let generation = 0;
   const pending = new Map<string, Promise<DashboardData>>();
+  let nextCleanup = 0;
+  function clean(compact = false) {
+    if (compact) nextCleanup = Date.now() + 3_600_000;
+    try {
+      const result = cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0);
+      if (result.removed) bb.log.info(`Cache cleanup removed ${result.removed} entries; ${result.bytes} payload bytes retained.`);
+    } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
+  }
+  function touchSnapshot(result: DashboardData, selection: string, config: string) {
+    database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ? AND configuration = ?").run(Date.now(), selection, config);
+    for (const repo of result.repositories) database.prepare("UPDATE repository_history SET last_used_at = ? WHERE repository = ? AND configuration = ?").run(Date.now(), repo.repository, config);
+    return result;
+  }
+  clean(true);
   function selectionKey(input: RangeInput) {
     const selection = rangeInputSchema.parse(input) ?? { days: 7 };
     return JSON.stringify("days" in selection && selection.days === 1 ? ["calendar-day-v1", selection]
@@ -95,7 +114,7 @@ export default function plugin(bb: BbPluginApi) {
         database.prepare("INSERT INTO dashboard_snapshots (selection, configuration, data, refreshed_at, history) VALUES (?, ?, ?, ?, ?) ON CONFLICT(selection) DO UPDATE SET configuration = excluded.configuration, data = excluded.data, refreshed_at = excluded.refreshed_at, history = excluded.history")
           .run(selection, config, JSON.stringify(result), Date.now(), JSON.stringify(histories));
         // shortcut: retain eight recent ranges; increase if revisiting more ranges becomes common.
-        database.prepare("DELETE FROM dashboard_snapshots WHERE selection NOT IN (SELECT selection FROM dashboard_snapshots ORDER BY refreshed_at DESC LIMIT 8)").run();
+        clean();
       }
       return result;
     });
@@ -126,7 +145,10 @@ export default function plugin(bb: BbPluginApi) {
     }
     const { token, source } = await resolveGithubToken(override, controller.signal);
     const names = uniqueRepositories(repositories);
-    if (version === generation) repositoryList = { configuration: configuration(values), names };
+    if (version === generation && !discoveryError) {
+      repositoryList = { configuration: configuration(values), names };
+      clean();
+    }
     return {
       repositories: await Promise.all(names.map(async (repo) => ({
         ...await collectRepository(repo, input, range, values, token, force, version, projectNames.get(repo.toLowerCase()) ?? null, source, (records) => { histories[repo] = records; }),
@@ -138,7 +160,11 @@ export default function plugin(bb: BbPluginApi) {
   }
   function readHistory(repository: string, config: string): RepositoryHistory | undefined {
     const row = database.prepare("SELECT data FROM repository_history WHERE repository = ? AND configuration = ?").get(repository, config) as { data: string } | undefined;
-    if (row) { try { return historySchema.parse(JSON.parse(row.data)); } catch { /* Fall back to validated snapshots. */ } }
+    if (row) { try {
+      const result = historySchema.parse(JSON.parse(row.data));
+      database.prepare("UPDATE repository_history SET last_used_at = ? WHERE repository = ? AND configuration = ?").run(Date.now(), repository, config);
+      return result;
+    } catch { /* Fall back to validated snapshots. */ } }
     const snapshots = database.prepare("SELECT data, history FROM dashboard_snapshots WHERE configuration = ? AND history IS NOT NULL ORDER BY refreshed_at DESC LIMIT 8").all(config) as { data: string; history: string }[];
     let best: RepositoryHistory | undefined;
     for (const snapshot of snapshots) {
@@ -151,7 +177,7 @@ export default function plugin(bb: BbPluginApi) {
         }
       } catch { /* Ignore incomplete legacy history. */ }
     }
-    if (best && !controller.signal.aborted) database.prepare("INSERT INTO repository_history (repository, configuration, data) VALUES (?, ?, ?) ON CONFLICT(repository, configuration) DO NOTHING").run(repository, config, JSON.stringify(best));
+    if (best && !controller.signal.aborted) database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO NOTHING").run(repository, config, JSON.stringify(best), Date.now());
     return best;
   }
   async function collectRepository(repository: string, input: RangeInput, range: DateRange, values: Awaited<ReturnType<typeof settings.get>>, token: string | undefined, force: boolean, version: number, projectName: string | null, authSource: DashboardData["authSource"], onHistory: (records: HistoricalRecords) => void): Promise<Metrics> {
@@ -185,7 +211,7 @@ export default function plugin(bb: BbPluginApi) {
     const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, historyRange: coverage, previous: source?.records, partitionCi: true, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
       if (records && canWrite()) {
         const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
-        database.prepare("INSERT INTO repository_history (repository, configuration, data) VALUES (?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data").run(repository, config, JSON.stringify(result));
+        database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, JSON.stringify(result), Date.now());
         // Range snapshots store only records covered by their own captions.
         onHistory({ ...records, deployments: records.deployments.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), runs: records.runs.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), commits: records.commits.filter((row) => Date.parse(row.committedDate) >= Date.parse(range.since) && Date.parse(row.committedDate) <= Date.parse(range.until)) });
       }
@@ -201,6 +227,7 @@ export default function plugin(bb: BbPluginApi) {
       signal.addEventListener("abort", stop, { once: true });
       try {
         while (!signal.aborted) {
+          if (Date.now() >= nextCleanup && pending.size === 0 && repositoryPending.size === 0) clean(true);
           try { await metrics(null); }
           catch { if (!signal.aborted) bb.log.warn("Dashboard background refresh failed."); }
           const { refreshSeconds } = await settings.get();
@@ -251,7 +278,7 @@ export default function plugin(bb: BbPluginApi) {
       const config = configuration(values);
       const row = database.prepare("SELECT data FROM dashboard_snapshots WHERE selection = ? AND configuration = ?")
         .get(selectionKey(input), config) as { data: string } | undefined;
-      if (row) return dashboardSchema.parse(JSON.parse(row.data));
+      if (row) return touchSnapshot(dashboardSchema.parse(JSON.parse(row.data)), selectionKey(input), config);
       const candidates = database.prepare("SELECT selection, data, history FROM dashboard_snapshots WHERE configuration = ? AND history IS NOT NULL ORDER BY refreshed_at DESC LIMIT 8")
         .all(config) as { selection: string; data: string; history: string }[];
       const common = database.prepare("SELECT data FROM repository_history WHERE configuration = ?").all(config) as { data: string }[];
@@ -278,11 +305,12 @@ export default function plugin(bb: BbPluginApi) {
         if (version !== generation || controller.signal.aborted) return null;
         const latest = database.prepare("SELECT data FROM dashboard_snapshots WHERE selection = ? AND configuration = ?")
           .get(selectionKey(input), config) as { data: string } | undefined;
-        if (latest) return dashboardSchema.parse(JSON.parse(latest.data));
+        if (latest) return touchSnapshot(dashboardSchema.parse(JSON.parse(latest.data)), selectionKey(input), config);
         database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ?").run(Date.now(), candidate.selection);
         database.prepare("INSERT INTO dashboard_snapshots (selection, configuration, data, refreshed_at) VALUES (?, ?, ?, ?) ON CONFLICT(selection) DO UPDATE SET configuration = excluded.configuration, data = excluded.data, refreshed_at = excluded.refreshed_at, history = NULL")
           .run(selectionKey(input), config, JSON.stringify(result), Date.now());
-        database.prepare("DELETE FROM dashboard_snapshots WHERE selection NOT IN (SELECT selection FROM dashboard_snapshots ORDER BY refreshed_at DESC LIMIT 8)").run();
+        touchSnapshot(result, selectionKey(input), config);
+        clean();
         return result;
       }
       return null;
