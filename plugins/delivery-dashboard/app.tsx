@@ -7,6 +7,7 @@ import { Card } from "./components/ui/card";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryChart } from "./history-chart";
 import { RepositoryActivity, RepositoryDetails } from "./repository-details";
+import { metricsProgressSchema } from "./metrics";
 
 type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
 // Keep the last view across sidebar navigation within this window; never persist repository data in browser storage.
@@ -55,9 +56,29 @@ export function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const previousRefresh = useRef(refresh);
+  const progressStarted = useRef(new Map<string, number>());
+  useRealtime("metrics-progress", (payload) => {
+    const event = metricsProgressSchema.safeParse(payload);
+    if (!event.success || isLoading || event.data.selection !== selection) return;
+    const { metrics, startedAt } = event.data;
+    const progressKey = JSON.stringify([selection, metrics.repository]);
+    if (startedAt < (progressStarted.current.get(progressKey) ?? 0)) return;
+    progressStarted.current.set(progressKey, startedAt);
+    const key = snapshotKey(configuration, selection);
+    const previous = snapshots.get(key)?.result ?? { repositories: [], authSource: "anonymous" as const, discoveryError: null };
+    const repositories = [...previous.repositories];
+    const index = repositories.findIndex((repo) => repo.repository === metrics.repository);
+    if (index >= 0) repositories[index] = metrics;
+    else repositories.push(metrics);
+    const entry = { configuration, selection, result: { ...previous, repositories } };
+    rememberSnapshot(entry);
+    lastSnapshot = entry;
+    setData(entry);
+  });
   useRealtime("configuration-changed", () => {
     cacheGeneration++;
     snapshots.clear();
+    progressStarted.current.clear();
     lastSnapshot = null;
     setData(null);
     setRefresh((n) => n + 1);
@@ -95,7 +116,7 @@ export function Dashboard() {
         }
         if (disposed) return;
         const available = snapshots.get(key);
-        if (!force && available && available.result.repositories.length > 0) {
+        if (!force && available && available.result.repositories.length > 0 && available.result.repositories.every((repo) => !repo.pending?.length)) {
           const checkedAt = Math.min(...available.result.repositories.map((repo) => Date.parse(repo.updatedAt)));
           const age = Date.now() - checkedAt;
           const sameDay = !range || !("days" in range) || range.days !== 1 || available.result.repositories.every((repo) => repo.range.since === resolveRange(range).since);
@@ -104,7 +125,7 @@ export function Dashboard() {
             return;
           }
         }
-        const result = await rpc.call("metrics", range);
+        const result = await rpc.call("metrics", force ? { selection: range, force: true } : range);
         if (generation === cacheGeneration) {
           const entry = { configuration, selection, result };
           rememberSnapshot(entry);

@@ -258,6 +258,51 @@ test("splits large CI searches and ignores GitHub's truncated 2,500 total", asyn
   expect(result.ci.series?.filter((point) => point.value !== null).length).toBeGreaterThan(1);
 });
 
+test("large CI sibling windows start together within the shared request budget", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  const start = Date.parse("2026-10-13T12:00:00Z");
+  const runs = Array.from({ length: 2000 }, (_, id) => ({ id: id + 1, created_at: new Date(start + id * 300_000).toISOString(), conclusion: "success" }));
+  let children = 0, first = true, release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  fetchMock.mockImplementation(async (input, options) => {
+    const url = new URL(input);
+    if (!url.pathname.endsWith("/actions/runs")) return normal(input, options);
+    const page = Number(url.searchParams.get("page"));
+    const [since, until] = url.searchParams.get("created")!.split("..").map(Date.parse);
+    if (first) first = false;
+    else if (page === 1 && children < 2) {
+      if (++children === 2) release();
+      await gate;
+    }
+    const selected = runs.filter((run) => Date.parse(run.created_at) >= since && Date.parse(run.created_at) <= until);
+    return Response.json({ total_count: selected.length, workflow_runs: selected.slice((page - 1) * 100, page * 100) }, page * 100 < selected.length ? { headers: { link: '<https://api.github.com/next>; rel="next"' } } : undefined);
+  });
+  try {
+    const result = await load();
+    expect(children).toBe(2);
+    expect(result.ciOutcomes).toEqual({ success: 2000 });
+    expect(result.ci.value).toBe(100);
+  } finally { release(); }
+});
+
+test("a CI count change during pagination retries only that window once", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  let changed = false;
+  fetchMock.mockImplementation(async (input, options) => {
+    const url = new URL(input);
+    if (!url.pathname.endsWith("/actions/runs")) return normal(input, options);
+    const page = Number(url.searchParams.get("page"));
+    if (page === 2) changed = true;
+    const count = changed ? 102 : 101;
+    return Response.json({ total_count: count, workflow_runs: Array.from({ length: page === 1 ? 100 : 2 }, (_, index) => ({ id: (page - 1) * 100 + index + 1, created_at: recent, conclusion: "success" })) }, page === 1 ? { headers: { link: '<https://api.github.com/next>; rel="next"' } } : undefined);
+  });
+  const result = await load();
+  expect(result.ciOutcomes).toEqual({ success: 102 });
+  expect(result.ci.error).toBeNull();
+  expect(result.ci.seriesError).toBeNull();
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes("/actions/runs?"))).toHaveLength(4);
+});
+
 test("failed large CI searches never report a pass rate from capped counts", async () => {
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string) => input.includes("actions/runs")
@@ -579,6 +624,62 @@ test("the background service warms the default snapshot and stops on disposal", 
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("repository history survives range-snapshot eviction and is shared by concurrent periods", async () => {
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets acme/other", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 90 });
+    bb.storage.database().prepare("DELETE FROM dashboard_snapshots").run();
+    fetchMock.mockClear();
+    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toMatchObject({ authSource: "gh", repositories: ["acme/widgets", "acme/other"].map((repository) => ({ repository, ci: { value: 80 }, pending: ["pullRequestsCreated"] })) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await Promise.all([harness.behavior.callRpc("metrics", { days: 7 }), harness.behavior.callRpc("metrics", { days: 30 })]);
+    expect(fetchMock.mock.calls.every(([url]) => new URL(url).pathname === "/search/issues")).toBe(true);
+    expect(bb.storage.database().prepare("SELECT COUNT(*) AS count FROM repository_history").get()).toEqual({ count: 2 });
+    bb.storage.database().prepare("DELETE FROM repository_history WHERE repository = ?").run("acme/other");
+    bb.storage.database().prepare("DELETE FROM dashboard_snapshots").run();
+    fetchMock.mockClear();
+    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("legacy history is promoted before refresh so a failed CI update cannot erase usable records", async () => {
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 90 });
+    bb.storage.database().prepare("DELETE FROM repository_history").run();
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, options) => new URL(input).pathname.endsWith("/actions/runs") ? new Response("private error", { status: 403 }) : normal(input, options));
+    expect(await harness.behavior.callRpc("metrics", { selection: { days: 90 }, force: true })).toMatchObject({ repositories: [{ ci: { value: null, error: expect.stringContaining("403") } }] });
+    fetchMock.mockClear();
+    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toMatchObject({ repositories: [{ ci: { value: 80, error: null } }] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ready metrics publish while commits are blocked and settings invalidate all repository caches", async () => {
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  const normal = fetchMock.getMockImplementation()!;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  fetchMock.mockImplementation(async (input, options) => {
+    if (new URL(input).pathname === "/graphql") await gate;
+    return normal(input, options);
+  });
+  try {
+    await plugin(bb);
+    const result = harness.behavior.callRpc("metrics", { days: 7 });
+    await vi.waitFor(() => expect(harness.inspection.realtimeSignals).toEqual(expect.arrayContaining([expect.objectContaining({ channel: "metrics-progress", payload: expect.objectContaining({ metrics: expect.objectContaining({ ci: expect.objectContaining({ value: 80 }), pending: expect.arrayContaining(["commitActivity"]) }) }) })])));
+    release();
+    await result;
+    await harness.behavior.setSettings({ repository: "acme/other" });
+    expect(bb.storage.database().prepare("SELECT COUNT(*) AS count FROM repository_history").get()).toEqual({ count: 0 });
+    expect(bb.storage.database().prepare("SELECT COUNT(*) AS count FROM github_responses").get()).toEqual({ count: 0 });
+  } finally { release(); await harness.lifecycle.dispose(); }
+});
+
 
 test("production dispatch requires Anvil in current settings and accepts no caller-selected target", async () => {
   const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
@@ -654,11 +755,13 @@ test("derives narrower and custom ranges from persisted raw history without down
       deployments: { value: 1 / 30 }, commitActivity: { commits: 2, additions: 120, deletions: 15 },
       ci: { value: 80 }, ciOutcomes: { success: 8, failure: 2 },
     }] });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(narrower).toMatchObject({ repositories: [{ pending: ["pullRequestsCreated"], pullRequestsCreated: { value: null, error: null } }] });
+    expect(await harness.behavior.callRpc("metrics", { days: 30 })).toMatchObject({ repositories: [{ pullRequestsCreated: { value: 9 }, pending: [] }] });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe("/search/issues");
     expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("q")).toContain("created:2026-09-20T12:00:00.000Z..2026-10-20T12:00:00.000Z");
     fetchMock.mockClear();
-    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toEqual(narrower);
+    expect(await harness.behavior.callRpc("snapshot", { days: 30 })).toMatchObject({ repositories: [{ pullRequestsCreated: { value: 9 } }] });
     expect(fetchMock).not.toHaveBeenCalled();
     const threeDays = await harness.behavior.callRpc("snapshot", { days: 3 });
     expect(threeDays).toMatchObject({ repositories: [{

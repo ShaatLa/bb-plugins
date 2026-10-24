@@ -43,7 +43,7 @@ export function HistoryChart({ title, metric, range, onSelect, percent = false }
           {series.map((point, index) => <span key={point.date}>{dateLabel(point.date, index)}</span>)}
         </div>
       </div> : <p role="status" className="flex min-h-48 items-center justify-center text-center text-sm text-muted-foreground">
-        {metric.error || metric.seriesError || "History is unavailable."}
+        {metric.error || metric.seriesError || (metric.detail.startsWith("Loading") ? metric.detail : "History is unavailable.")}
       </p>}
     </figure>
   </Card>;

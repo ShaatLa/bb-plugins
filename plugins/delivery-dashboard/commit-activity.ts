@@ -34,7 +34,7 @@ const nextQuery = `query CommitActivityPage(${parameters},$head:GitObjectID!) {
 
 type Request = (path: string, init?: Pick<RequestInit, "method" | "body">) => Promise<{ body: unknown }>;
 
-export async function loadCommitActivity(repository: string, token: string | undefined, since: string, until: string, request: Request, onHistory?: (rows: z.infer<typeof commitRowSchema>[], branch: string | null) => void): Promise<z.infer<typeof commitActivitySchema>> {
+export async function loadCommitActivity(repository: string, token: string | undefined, since: string, until: string, request: Request, onHistory?: (rows: z.infer<typeof commitRowSchema>[], branch: string | null, head: string | null) => void, previous?: { commits: z.infer<typeof commitRowSchema>[]; branch: string | null; head?: string | null }): Promise<z.infer<typeof commitActivitySchema>> {
   if (!token) throw new Error("GitHub authorization is required for commit and line statistics. Use system gh authorization or a plugin token.");
   const [owner, name] = repository.split("/");
   const variables = { owner, name, since, until, cursor: null as string | null };
@@ -46,11 +46,16 @@ export async function loadCommitActivity(repository: string, token: string | und
   }
   const branch = firstSchema.parse(await query(firstQuery)).repository.defaultBranchRef;
   if (!branch) {
-    onHistory?.([], null);
+    onHistory?.([], null, null);
     return { commits: 0, additions: 0, deletions: 0, branch: null, error: null };
   }
   const head = branch.target.oid;
   const expected = branch.target.history.totalCount;
+  const prior = previous?.branch === branch.name ? previous.commits.filter((row) => Date.parse(row.committedDate) >= Date.parse(since) && Date.parse(row.committedDate) <= Date.parse(until)) : [];
+  if (previous?.head === head && previous.branch === branch.name && prior.length === expected) {
+    onHistory?.(prior, branch.name, head);
+    return summarizeCommitActivity(prior, branch.name);
+  }
   const rows = new Map<string, z.infer<typeof historySchema>["nodes"][number]>();
   let target = branch.target;
   const cursors = new Set<string>();
@@ -61,10 +66,19 @@ export async function loadCommitActivity(repository: string, token: string | und
       if (time < Date.parse(since) || time > Date.parse(until)) throw new Error("GitHub returned a commit outside the selected time window.");
       rows.set(row.oid, row);
     }
+    if (previous?.head && previous.branch === branch.name && rows.has(previous.head)) {
+      const combined = new Map(prior.map((row) => [row.oid, row]));
+      for (const [oid, row] of rows) combined.set(oid, row);
+      if (combined.size === expected) {
+        const commits = [...combined.values()];
+        onHistory?.(commits, branch.name, head);
+        return summarizeCommitActivity(commits, branch.name);
+      }
+    }
     if (!target.history.pageInfo.hasNextPage) {
       if (rows.size !== expected) throw new Error("GitHub returned an incomplete commit history. Retry on the next refresh.");
       const commits = [...rows.values()];
-      onHistory?.(commits, branch.name);
+      onHistory?.(commits, branch.name, head);
       return summarizeCommitActivity(commits, branch.name);
     }
     const cursor = target.history.pageInfo.endCursor;

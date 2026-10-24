@@ -18,6 +18,47 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => vi.useRealTimers());
 
+test("progress renders ready cards before the full RPC and rejects older or other-range events", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  let finish!: (value: typeof data) => void;
+  const metrics = vi.fn(() => new Promise<typeof data>((resolve) => { finish = resolve; }));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
+  try {
+    await act(async () => {});
+    const ready = { ...repo, ci: { ...metric, value: 87 }, pending: ["commitActivity"] };
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 2, metrics: ready });
+    expect(slot.getByText("87.0%")).toBeTruthy();
+    expect(slot.queryByText("Loading GitHub metrics…")).toBeNull();
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 1, metrics: { ...ready, ci: { ...metric, value: 13 } } });
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 90 }), startedAt: 3, metrics: { ...ready, ci: { ...metric, value: 14 } } });
+    expect(slot.getByText("87.0%")).toBeTruthy();
+    expect(slot.queryByText("13.0%")).toBeNull();
+    expect(slot.queryByText("14.0%")).toBeNull();
+    await act(async () => { finish(data); });
+    expect(slot.getByText("12.0%")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a fresh local calculation stays visible while its missing PR count loads", async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(repo.updatedAt));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const partial = { ...data, repositories: [{ ...repo, pending: ["pullRequestsCreated"], pullRequestsCreated: { ...metric, value: null, detail: "Loading created PR count…" } }] };
+  let finish!: (value: typeof data) => void;
+  const metrics = vi.fn(() => new Promise<typeof data>((resolve) => { finish = resolve; }));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => partial, metrics }, settings: {} });
+  try {
+    await act(async () => {});
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    expect(slot.getByText("Updating…")).toBeTruthy();
+    expect(metrics).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(data); });
+    expect(slot.queryByText("Updating…")).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("side-card details load only when expanded, reuse the response and allow retry", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));

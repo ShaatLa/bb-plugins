@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { rangeInputSchema, resolveRange, type RangeInput } from "./date-range";
-import { historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, type HistoricalRecords } from "./metrics";
+import { rangeInputSchema, rangeSchema, resolveRange, type RangeInput, type DateRange } from "./date-range";
+import { historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, type HistoricalRecords, type Metrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { dispatchProduction, productionTarget } from "./production";
 import { githubRepository, repositoriesSettingSchema, splitRepositories, uniqueRepositories } from "./repositories";
 import { cardDetailsInput, cardDetailsOutput, loadCardDetails } from "./card-details";
+import { createGitHubCache } from "./github-cache";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -16,7 +17,7 @@ const dashboardSchema = z.object({
 });
 export type DashboardData = z.infer<typeof dashboardSchema>;
 export const rpcContract = defineRpcContract({
-  metrics: { input: rangeInputSchema, output: dashboardSchema },
+  metrics: { input: z.union([rangeInputSchema, z.object({ selection: rangeInputSchema, force: z.literal(true) }).strict()]), output: dashboardSchema },
   snapshot: { input: rangeInputSchema, output: dashboardSchema.nullable() },
   cardDetails: { input: cardDetailsInput, output: cardDetailsOutput },
   deployProduction: { input: z.null(), output: z.object({ url: z.url() }) },
@@ -53,7 +54,15 @@ export default function plugin(bb: BbPluginApi) {
   bb.storage.migrate(database, [
     "CREATE TABLE dashboard_snapshots (selection TEXT PRIMARY KEY, configuration TEXT NOT NULL, data TEXT NOT NULL, refreshed_at INTEGER NOT NULL)",
     "ALTER TABLE dashboard_snapshots ADD COLUMN history TEXT",
+    "CREATE TABLE repository_history (repository TEXT NOT NULL, configuration TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(repository, configuration))",
+    "CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)",
   ]);
+  const cachedRequest = createGitHubCache(database);
+  const repositoryPending = new Map<string, Promise<Metrics>>();
+  const historySchema = z.object({ metrics: metricsSchema, records: historicalRecordsSchema, coverage: rangeSchema, checkedAt: z.number(), authSource: dashboardSchema.shape.authSource.optional(), projectName: z.string().nullable().optional() });
+  type RepositoryHistory = z.infer<typeof historySchema>;
+  let lastStarted = 0;
+  let repositoryList: { configuration: string; names: string[] } | null = null;
   let generation = 0;
   const pending = new Map<string, Promise<DashboardData>>();
   function selectionKey(input: RangeInput) {
@@ -66,10 +75,13 @@ export default function plugin(bb: BbPluginApi) {
   }
   settings.onChange(() => {
     generation++;
+    repositoryList = null;
     database.prepare("DELETE FROM dashboard_snapshots").run();
+    database.prepare("DELETE FROM repository_history").run();
+    database.prepare("DELETE FROM github_responses").run();
     bb.realtime.publish("configuration-changed", {});
   });
-  async function metrics(input: RangeInput): Promise<DashboardData> {
+  async function metrics(input: RangeInput, force = false): Promise<DashboardData> {
     const version = generation;
     const values = await settings.get();
     const config = configuration(values);
@@ -78,7 +90,7 @@ export default function plugin(bb: BbPluginApi) {
     const existing = pending.get(key);
     if (existing) return existing;
     const histories: Record<string, HistoricalRecords> = {};
-    const request = collect(input, values, histories).then((result) => {
+    const request = collect(input, values, histories, force, version).then((result) => {
       if (!controller.signal.aborted && version === generation) {
         database.prepare("INSERT INTO dashboard_snapshots (selection, configuration, data, refreshed_at, history) VALUES (?, ?, ?, ?, ?) ON CONFLICT(selection) DO UPDATE SET configuration = excluded.configuration, data = excluded.data, refreshed_at = excluded.refreshed_at, history = excluded.history")
           .run(selection, config, JSON.stringify(result), Date.now(), JSON.stringify(histories));
@@ -91,7 +103,7 @@ export default function plugin(bb: BbPluginApi) {
     try { return await request; }
     finally { pending.delete(key); }
   }
-  async function collect(input: RangeInput, values: Awaited<ReturnType<typeof settings.get>>, histories: Record<string, HistoricalRecords>): Promise<DashboardData> {
+  async function collect(input: RangeInput, values: Awaited<ReturnType<typeof settings.get>>, histories: Record<string, HistoricalRecords>, force: boolean, version: number): Promise<DashboardData> {
     const range = resolveRange(input);
     const { repository, token: override, importBbRepositories } = values;
     const repositories = splitRepositories(repositoriesSettingSchema.parse(repository));
@@ -113,14 +125,75 @@ export default function plugin(bb: BbPluginApi) {
       }
     }
     const { token, source } = await resolveGithubToken(override, controller.signal);
+    const names = uniqueRepositories(repositories);
+    if (version === generation) repositoryList = { configuration: configuration(values), names };
     return {
-      repositories: await Promise.all(uniqueRepositories(repositories).map(async (repo) => ({
-        ...await loadMetrics(repo, token, controller.signal, range, undefined, (records) => { histories[repo] = records; }),
+      repositories: await Promise.all(names.map(async (repo) => ({
+        ...await collectRepository(repo, input, range, values, token, force, version, projectNames.get(repo.toLowerCase()) ?? null, source, (records) => { histories[repo] = records; }),
         projectName: projectNames.get(repo.toLowerCase()) ?? null,
       }))),
       authSource: source,
       discoveryError,
     };
+  }
+  function readHistory(repository: string, config: string): RepositoryHistory | undefined {
+    const row = database.prepare("SELECT data FROM repository_history WHERE repository = ? AND configuration = ?").get(repository, config) as { data: string } | undefined;
+    if (row) { try { return historySchema.parse(JSON.parse(row.data)); } catch { /* Fall back to validated snapshots. */ } }
+    const snapshots = database.prepare("SELECT data, history FROM dashboard_snapshots WHERE configuration = ? AND history IS NOT NULL ORDER BY refreshed_at DESC LIMIT 8").all(config) as { data: string; history: string }[];
+    let best: RepositoryHistory | undefined;
+    for (const snapshot of snapshots) {
+      try {
+        const dashboard = dashboardSchema.parse(JSON.parse(snapshot.data));
+        const metrics = dashboard.repositories.find((repo) => repo.repository === repository);
+        const records = z.record(repositorySchema, historicalRecordsSchema).parse(JSON.parse(snapshot.history))[repository];
+        if (metrics && records && (!best || Date.parse(metrics.range.until) - Date.parse(metrics.range.since) > Date.parse(best.coverage.until) - Date.parse(best.coverage.since))) {
+          best = { metrics, records, coverage: metrics.range, checkedAt: Date.parse(metrics.updatedAt), authSource: dashboard.authSource };
+        }
+      } catch { /* Ignore incomplete legacy history. */ }
+    }
+    if (best && !controller.signal.aborted) database.prepare("INSERT INTO repository_history (repository, configuration, data) VALUES (?, ?, ?) ON CONFLICT(repository, configuration) DO NOTHING").run(repository, config, JSON.stringify(best));
+    return best;
+  }
+  async function collectRepository(repository: string, input: RangeInput, range: DateRange, values: Awaited<ReturnType<typeof settings.get>>, token: string | undefined, force: boolean, version: number, projectName: string | null, authSource: DashboardData["authSource"], onHistory: (records: HistoricalRecords) => void): Promise<Metrics> {
+    const config = configuration(values);
+    const key = JSON.stringify([version, config, repository]);
+    const running = repositoryPending.get(key);
+    if (running) await running;
+    const source = readHistory(repository, config);
+    const ttl = values.refreshSeconds * 1000;
+    const canWrite = () => version === generation && !controller.signal.aborted;
+    const request = cachedRequest(JSON.stringify([config, createHash("sha256").update(token ?? "").digest("hex")]), token, controller.signal, ttl, force, canWrite);
+    const startedAt = lastStarted = Math.max(Date.now(), lastStarted + 1);
+    const progress = (metrics: Metrics) => {
+      if (canWrite()) bb.realtime.publish("metrics-progress", { selection: JSON.stringify(input ?? { days: 7 }), startedAt, metrics: { ...metrics, projectName } });
+    };
+    let asOf = range;
+    if (source) { try { asOf = resolveRange(input, new Date(source.coverage.until)); } catch { /* A newer calendar selection requires fresh coverage. */ } }
+    if (!force && source && Date.now() - Date.parse(source.metrics.updatedAt) >= 0 && Date.now() - Date.parse(source.metrics.updatedAt) < ttl && Date.parse(asOf.since) >= Date.parse(source.coverage.since) && Date.parse(asOf.until) <= Date.parse(source.coverage.until)
+      && (Date.parse(range.until) <= Date.parse(source.coverage.until) || Date.now() - Date.parse(source.coverage.until) < ttl)) {
+      // One repository history serves every contained view; PR creation counts remain range-specific.
+      return loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, onProgress: progress });
+    }
+    let start = Date.parse(range.since), finish = Date.parse(range.until);
+    if (source && start <= Date.parse(source.coverage.until) && finish >= Date.parse(source.coverage.since)) {
+      start = Math.min(start, Date.parse(source.coverage.since));
+      finish = Math.max(finish, Date.parse(source.coverage.until));
+      if (Date.parse(range.since) >= Date.now() - 90 * 86_400_000) start = Math.max(start, Date.now() - 90 * 86_400_000);
+    }
+    const coverage: DateRange = { since: new Date(Math.floor(start / 86_400_000) * 86_400_000).toISOString(), until: new Date(finish).toISOString(), label: "repository history", bucketMs: 86_400_000 };
+    let records: HistoricalRecords | undefined;
+    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, historyRange: coverage, previous: source?.records, partitionCi: true, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
+      if (records && canWrite()) {
+        const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
+        database.prepare("INSERT INTO repository_history (repository, configuration, data) VALUES (?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data").run(repository, config, JSON.stringify(result));
+        // Range snapshots store only records covered by their own captions.
+        onHistory({ ...records, deployments: records.deployments.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), runs: records.runs.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), commits: records.commits.filter((row) => Date.parse(row.committedDate) >= Date.parse(range.since) && Date.parse(row.committedDate) <= Date.parse(range.until)) });
+      }
+      return metrics;
+    });
+    repositoryPending.set(key, operation);
+    try { return await operation; }
+    finally { if (repositoryPending.get(key) === operation) repositoryPending.delete(key); }
   }
   bb.background.service("snapshot-refresh", {
     async start(signal) {
@@ -169,7 +242,7 @@ export default function plugin(bb: BbPluginApi) {
         since, until, label: "selected interval", bucketMs: Math.max(1, end - start),
       });
     },
-    metrics,
+    metrics: (input) => input && "selection" in input ? metrics(input.selection, input.force) : metrics(input),
     async snapshot(input) {
       resolveRange(input);
       const version = generation;
@@ -181,6 +254,10 @@ export default function plugin(bb: BbPluginApi) {
       if (row) return dashboardSchema.parse(JSON.parse(row.data));
       const candidates = database.prepare("SELECT selection, data, history FROM dashboard_snapshots WHERE configuration = ? AND history IS NOT NULL ORDER BY refreshed_at DESC LIMIT 8")
         .all(config) as { selection: string; data: string; history: string }[];
+      const common = database.prepare("SELECT data FROM repository_history WHERE configuration = ?").all(config) as { data: string }[];
+      const known = repositoryList?.configuration === config ? repositoryList.names : null;
+      const shared = common.flatMap((row) => { try { return [historySchema.parse(JSON.parse(row.data))]; } catch { return []; } }).filter((row) => !known || known.includes(row.metrics.repository));
+      if (shared.length && (!known || known.every((name) => shared.some((row) => row.metrics.repository === name)))) candidates.unshift({ selection: "", data: JSON.stringify({ repositories: shared.map((row) => ({ ...row.metrics, range: row.coverage, projectName: row.projectName ?? null })), authSource: shared[0].authSource ?? "anonymous", discoveryError: null }), history: JSON.stringify(Object.fromEntries(shared.map((row) => [row.metrics.repository, row.records]))) });
       for (const candidate of candidates) {
         const source = dashboardSchema.parse(JSON.parse(candidate.data));
         const histories = z.record(repositorySchema, historicalRecordsSchema).parse(JSON.parse(candidate.history));
@@ -191,12 +268,10 @@ export default function plugin(bb: BbPluginApi) {
           const range = ranges[index];
           return !histories[repo.repository] || !range || Date.parse(range.since) < Date.parse(repo.range.since) || Date.parse(range.until) > Date.parse(repo.range.until);
         })) continue;
-        const { token: override } = values;
-        const { token } = await resolveGithubToken(override, controller.signal);
         const result: DashboardData = {
           ...source,
           repositories: await Promise.all(source.repositories.map(async (repo, index) => ({
-            ...await loadMetrics(repo.repository, token, controller.signal, ranges[index]!, { metrics: repo, records: histories[repo.repository] }),
+            ...await loadMetrics(repo.repository, undefined, controller.signal, ranges[index]!, { metrics: repo, records: histories[repo.repository] }, undefined, { localOnly: true }),
             projectName: repo.projectName,
           }))),
         };
