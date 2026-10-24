@@ -15,7 +15,7 @@ const metricSchema = z.object({
   seriesError: z.string().nullable(),
 });
 const timestampSchema = z.iso.datetime({ offset: true });
-const secureUrlSchema = z.url().refine((value) => {
+export const secureUrlSchema = z.url().refine((value) => {
   const url = new URL(value);
   return url.protocol === "https:" && !url.username && !url.password;
 }, "Expected an HTTPS link without embedded credentials");
@@ -72,6 +72,31 @@ async function limitedRequest<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+export async function githubRequest(path: string, token: string | undefined, signal: AbortSignal, init?: Pick<RequestInit, "method" | "body">): Promise<{ body: unknown; hasNext: boolean }> {
+  return limitedRequest(async () => {
+    signal.throwIfAborted();
+    const response = await fetch(`https://api.github.com${path}`, {
+      ...init,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2026-03-10",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      redirect: "error",
+    });
+    if (!response.ok) {
+      const hint = response.status === 401 ? "Check the access token."
+        : response.status === 404 ? "Check the repository and token permissions."
+        : response.status === 403 || response.status === 429 ? "Check token permissions or the GitHub rate limit."
+        : "Try again at the next refresh.";
+      throw new Error(`GitHub returned ${response.status}. ${hint}`);
+    }
+    return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? "") };
+  });
+}
+
 export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void): Promise<Metrics> {
   repositorySchema.parse(repository);
   const now = new Date();
@@ -90,30 +115,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     const time = Date.parse(timestamp);
     return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - cutoff) / range.bucketMs));
   };
-  async function request(path: string, init?: Pick<RequestInit, "method" | "body">): Promise<{ body: unknown; hasNext: boolean }> {
-    return limitedRequest(async () => {
-      signal.throwIfAborted();
-      const response = await fetch(`https://api.github.com${path}`, {
-        ...init,
-        headers: {
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-          "X-GitHub-Api-Version": "2026-03-10",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
-        redirect: "error",
-      });
-      if (!response.ok) {
-        const hint = response.status === 401 ? "Check the access token."
-          : response.status === 404 ? "Check the repository and token permissions."
-          : response.status === 403 || response.status === 429 ? "Check token permissions or the GitHub rate limit."
-          : "Try again at the next refresh.";
-        throw new Error(`GitHub returned ${response.status}. ${hint}`);
-      }
-      return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? "") };
-    });
-  }
+  const request = (path: string, init?: Pick<RequestInit, "method" | "body">) => githubRequest(path, token, signal, init);
   const deploymentPages = new Map<number, ReturnType<typeof request>>();
   const deploymentFingerprints = new Set<string>();
   function deploymentPage(page: number) {

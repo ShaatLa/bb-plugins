@@ -7,6 +7,7 @@ import { historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, 
 import { resolveGithubToken } from "./auth";
 import { dispatchProduction, productionTarget } from "./production";
 import { githubRepository, repositoriesSettingSchema, splitRepositories, uniqueRepositories } from "./repositories";
+import { cardDetailsInput, cardDetailsOutput, loadCardDetails } from "./card-details";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -17,6 +18,7 @@ export type DashboardData = z.infer<typeof dashboardSchema>;
 export const rpcContract = defineRpcContract({
   metrics: { input: rangeInputSchema, output: dashboardSchema },
   snapshot: { input: rangeInputSchema, output: dashboardSchema.nullable() },
+  cardDetails: { input: cardDetailsInput, output: cardDetailsOutput },
   deployProduction: { input: z.null(), output: z.object({ url: z.url() }) },
   interval: {
     input: z.object({ repository: repositorySchema, since: z.iso.datetime(), until: z.iso.datetime() }).strict(),
@@ -137,6 +139,11 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
   bb.rpc.register(rpcContract, {
+    async cardDetails(input) {
+      const { token: override } = await settings.get();
+      const { token } = await resolveGithubToken(override, controller.signal);
+      return loadCardDetails(input, token, controller.signal);
+    },
     async deployProduction() {
       if (deploying) throw new Error("A production deployment request is already in progress.");
       deploying = true;
