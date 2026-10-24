@@ -363,6 +363,31 @@ describe("copying the task title", () => {
       expect(slot.rpcCalls.some((call) => call.method === "updateTask")).toBe(
         false,
       );
+      const back = slot.getByRole("button", {
+        name: surface === "main" ? "Back (Esc)" : "Back to project board",
+      });
+      const heading = back.closest("header")!;
+      expect(heading.getAttribute("aria-label")).toBe("Task heading");
+      expect(
+        heading.parentElement!.contains(
+          slot.getByRole("textbox", { name: "Task title" }),
+        ),
+      ).toBe(true);
+      expect(slot.getAllByText(task.key)).toHaveLength(1);
+      if (surface === "main") {
+        fireEvent.click(back);
+        expect(slot.navigateCalls).toContainEqual({
+          method: "toPluginPanel",
+          path: "tasks",
+          options: { subPath: "all" },
+        });
+      } else {
+        expect(
+          heading.contains(
+            slot.getByRole("button", { name: "Open TSK-5 in Tasks" }),
+          ),
+        ).toBe(true);
+      }
     },
   );
 

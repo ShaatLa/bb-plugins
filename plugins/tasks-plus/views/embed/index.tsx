@@ -309,7 +309,21 @@ function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
 
   let content;
   if (taskKey !== null) {
-    content = <div className="min-h-0 flex-1 overflow-y-auto"><DetailView taskKey={taskKey} /></div>;
+    content = (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <DetailView
+          taskKey={taskKey}
+          onBack={() => setRoute({ kind: "all" })}
+          backLabel="Back to project board"
+          headerActions={
+            <OpenInTasksButton
+              label={`Open ${taskKey} in Tasks`}
+              subPath={taskDetailSubPath(taskKey)}
+            />
+          }
+        />
+      </div>
+    );
   } else if (projects.error || threadProject.error) {
     content = (
       <div className="space-y-3 p-4 text-sm">
@@ -332,19 +346,21 @@ function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
 
   return (
     <TasksNavigationContext.Provider value={navigation}>
-      <section aria-label="Thread tasks" className="flex h-full min-h-0 flex-col">
-        <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-          {taskKey !== null ? (
-            <Button size="icon" variant="ghost" className="size-8 shrink-0" aria-label="Back to project board" onClick={() => setRoute({ kind: "all" })}>
-              <Icon name="ArrowLeft" className="size-4" />
-            </Button>
-          ) : null}
-          <div className="min-w-0 flex-1 truncate text-sm font-medium">{taskKey ?? project?.name ?? "Project board"}</div>
-          <OpenInTasksButton
-            label={taskKey ? `Open ${taskKey} in Tasks` : "Open board in Tasks"}
-            subPath={taskKey ? taskDetailSubPath(taskKey) : boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}
-          />
-        </header>
+      <section
+        aria-label="Thread tasks"
+        className="flex h-full min-h-0 flex-col"
+      >
+        {taskKey === null ? (
+          <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+            <div className="min-w-0 flex-1 truncate text-sm font-medium">
+              {project?.name ?? "Project board"}
+            </div>
+            <OpenInTasksButton
+              label="Open board in Tasks"
+              subPath={boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}
+            />
+          </header>
+        ) : null}
         {content}
       </section>
     </TasksNavigationContext.Provider>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
 import type { Task } from "../../shared/contract.js";
@@ -47,6 +47,9 @@ import {
 interface DetailViewProps {
   taskKey: string;
   onCanonicalKey?: (taskKey: string) => void;
+  onBack: () => void;
+  backLabel?: string;
+  headerActions?: ReactNode;
 }
 
 const DESCRIPTION_SAVE_DELAY_MS = 800;
@@ -262,7 +265,7 @@ function DetailSkeleton() {
   );
 }
 
-function TaskDetail({ task }: { task: Task }) {
+function TaskDetail({ task, header }: { task: Task; header: ReactNode }) {
   const rpc = useTasksRpc();
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
@@ -466,6 +469,7 @@ function TaskDetail({ task }: { task: Task }) {
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
+          {header}
           {task.type === "epic" ||
           epic.data ||
           parentTask ||
@@ -664,7 +668,13 @@ function TaskDetail({ task }: { task: Task }) {
   );
 }
 
-export function DetailView({ taskKey, onCanonicalKey }: DetailViewProps) {
+export function DetailView({
+  taskKey,
+  onCanonicalKey,
+  onBack,
+  backLabel = "Back (Esc)",
+  headerActions,
+}: DetailViewProps) {
   const query = useTasksQuery(
     async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
     ["tasks:changed"],
@@ -675,22 +685,48 @@ export function DetailView({ taskKey, onCanonicalKey }: DetailViewProps) {
     if (canonicalKey) onCanonicalKey?.(canonicalKey);
   }, [canonicalKey, onCanonicalKey]);
 
-  if (query.data === undefined) {
-    return query.error ? (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-destructive">
-        {query.error}
-      </div>
-    ) : (
-      <DetailSkeleton />
-    );
-  }
-  if (query.data === null) {
+  const header = (
+    <header
+      aria-label="Task heading"
+      className="mb-4 flex min-w-0 items-center gap-2"
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+        aria-label={backLabel}
+        onClick={onBack}
+      >
+        <Icon name="ArrowLeft" className="size-4" />
+      </Button>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
+        {canonicalKey ?? taskKey}
+      </span>
+      {headerActions}
+    </header>
+  );
+
+  if (query.data == null) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-        <Icon name="FileQuestion" className="size-5" />
-        Task {taskKey} was not found.
+      <div className="flex min-h-full flex-col p-7">
+        {header}
+        {query.data === undefined ? (
+          query.error ? (
+            <div className="flex flex-1 items-center justify-center p-6 text-sm text-destructive">
+              {query.error}
+            </div>
+          ) : (
+            <DetailSkeleton />
+          )
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+            <Icon name="FileQuestion" className="size-5" />
+            Task {taskKey} was not found.
+          </div>
+        )}
       </div>
     );
   }
-  return <TaskDetail task={query.data} />;
+  return <TaskDetail task={query.data} header={header} />;
 }
