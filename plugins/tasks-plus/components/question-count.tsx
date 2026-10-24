@@ -24,13 +24,16 @@ export function useQuestionCounts(tasks: readonly Task[]) {
 
 export function QuestionCount({ count = 0 }: { count?: number }) {
   if (!count) return null;
+  const label = `${count} unanswered ${count === 1 ? "question" : "questions"}`;
   return (
     <span
-      title={`${count} unanswered questions`}
-      className="inline-flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-px text-xs text-warning"
+      role="img"
+      aria-label={label}
+      title={label}
+      className="inline-flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-px text-xs tabular-nums text-warning"
     >
-      <Icon name="FileQuestion" className="size-3" />
-      Needs answer · {count}
+      <Icon name="FileQuestion" className="size-3" aria-hidden />
+      {count}
     </span>
   );
 }
