@@ -56,7 +56,8 @@ export default function plugin(bb: BbPluginApi) {
   const pending = new Map<string, Promise<DashboardData>>();
   function selectionKey(input: RangeInput) {
     const selection = rangeInputSchema.parse(input) ?? { days: 7 };
-    return JSON.stringify("days" in selection && selection.days === 1 ? ["calendar-day-v1", selection] : selection);
+    return JSON.stringify("days" in selection && selection.days === 1 ? ["calendar-day-v1", selection]
+      : "days" in selection && selection.days === 3 ? ["half-day-buckets-v1", selection] : selection);
   }
   function configuration(values: Awaited<ReturnType<typeof settings.get>>) {
     return createHash("sha256").update(JSON.stringify(["ci-exclude-cancelled-skipped-v1", "review:none", values.repository, values.importBbRepositories, values.token ?? ""])).digest("hex");
