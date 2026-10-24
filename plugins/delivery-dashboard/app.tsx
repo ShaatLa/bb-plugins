@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { presets, resolveRange, type RangeInput } from "./date-range";
-import { definePluginApp, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { DashboardData, rpcContract } from "./server";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -117,7 +117,11 @@ export function Dashboard() {
         const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
           .formatRange(new Date(repo.range.since), new Date(repo.range.until));
         return <section key={repo.repository} aria-label={repo.repository} className="space-y-3">
-          <h3 className="break-words text-base font-semibold" title={repo.repository}>{projectTitle}</h3>
+          <h3 className="break-words text-base font-semibold">
+            <UrlLink href={`https://github.com/${repo.repository}`} title={`Open ${repo.repository} on GitHub`} className="inline-flex items-center gap-1.5 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {projectTitle}<span aria-hidden="true" className="text-sm text-muted-foreground">↗</span>
+            </UrlLink>
+          </h3>
           <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(repo.range.since).toUTCString()} – ${new Date(repo.range.until).toUTCString()}`}>
             <span className="font-medium text-foreground">{rangeTitle}</span><span aria-hidden="true">·</span><span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
           </p>
@@ -153,6 +157,6 @@ function DashboardPage() {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({
-    id: "delivery-dashboard", title: "Delivery dashboard", icon: "BarChart3", path: "dashboard", component: DashboardPage,
+    id: "delivery-dashboard", title: "Delivery dashboard", icon: "Package", path: "dashboard", component: DashboardPage,
   });
 });
