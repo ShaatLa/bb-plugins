@@ -98,18 +98,22 @@ async function reconcile(
           b.attachedAt.localeCompare(a.attachedAt) || b.id.localeCompare(a.id),
       )[0]!;
       const source = snapshots.get(latest.threadId);
-      if (
-        source?.parentThreadId &&
-        !isSideChatShapedThread(source) &&
-        !inherited.has(latest.threadId)
-      ) {
-        const candidate = await get(source.parentThreadId);
-        if (
-          candidate &&
-          !threadUnavailable(candidate) &&
-          candidate.status !== "stopping"
-        )
-          parent = candidate;
+      if (source && !isSideChatShapedThread(source)) {
+        const visited = new Set([source.id]);
+        let ancestorId = source.parentThreadId;
+        while (ancestorId && !visited.has(ancestorId)) {
+          visited.add(ancestorId);
+          const candidate = await get(ancestorId);
+          if (!candidate || isSideChatShapedThread(candidate)) break;
+          if (
+            !threadUnavailable(candidate) &&
+            candidate.status !== "stopping"
+          ) {
+            parent = candidate;
+            break;
+          }
+          ancestorId = candidate.parentThreadId;
+        }
       }
     }
     let changed = false;
