@@ -41,6 +41,10 @@ export function useListTaskEdits(
       void rpc.call("updateTask", { taskId: task.id, ...patch }).then(
         (result) => {
           if (result.ok) {
+            if (result.notification === "not_sent")
+              onErrorRef.current(
+                "Saved as Done, but the requester thread could not be notified. Notify it manually.",
+              );
             setEntries((prev) =>
               settleSuccess(prev, task.id, patch, gen, result.task),
             );

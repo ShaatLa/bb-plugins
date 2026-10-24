@@ -29,7 +29,7 @@ export function listScrollScopeKey(params: {
   const statuses = JSON.stringify([...params.filters.statuses].sort());
   const priorities = JSON.stringify([...params.filters.priorities].sort());
   const labels = JSON.stringify([...params.filters.labelNames].sort());
-  return `${list}|s=${statuses}|p=${priorities}|l=${labels}|sort=${params.sort}${params.filters.unansweredOnly ? "|unanswered" : ""}`;
+  return `${list}|s=${statuses}|p=${priorities}|l=${labels}|sort=${params.sort}${params.filters.unansweredOnly ? "|unanswered" : ""}${params.filters.executionTarget ? `|executor=${params.filters.executionTarget}` : ""}`;
 }
 
 export function readListScroll(scopeKey: string): number | null {

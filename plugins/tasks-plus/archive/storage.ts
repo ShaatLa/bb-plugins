@@ -42,7 +42,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-tasks-plus",
-      version: 4,
+      version: 5,
       project,
       folders,
       labels: store.tasks

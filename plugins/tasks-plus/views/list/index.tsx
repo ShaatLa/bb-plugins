@@ -124,6 +124,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
 
   const tasksQuery = useListTasks(projectId, activeOnly, {
     type: filters.type,
+    executionTarget: filters.executionTarget,
     statuses: filters.statuses,
     priorities: filters.priorities,
     labelIds,
@@ -169,14 +170,16 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
 
   const displayTasks = useMemo(() => {
     if (tasksQuery.data === undefined) return undefined;
-    return editedTasks(tasksQuery.data, edits.entries).filter((task) =>
-      (!filters.unansweredOnly || (questionCounts.data?.get(task.id) ?? 0) > 0) &&
-      matchesFilters(
-        task,
-        filters.statuses,
-        filters.priorities,
-        labelIds ?? [],
-      ),
+    return editedTasks(tasksQuery.data, edits.entries).filter(
+      (task) =>
+        (!filters.unansweredOnly ||
+          (questionCounts.data?.get(task.id) ?? 0) > 0) &&
+        matchesFilters(
+          task,
+          filters.statuses,
+          filters.priorities,
+          labelIds ?? [],
+        ),
     );
   }, [
     tasksQuery.data,
@@ -341,7 +344,12 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
         taskCount={displayTasks?.length}
       />
       {filters.unansweredOnly && questionCounts.error ? (
-        <p role="alert" className="px-4 py-2 text-sm text-destructive">Couldn't load question counts. <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>Retry questions</Button></p>
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">
+          Couldn't load question counts.{" "}
+          <Button size="sm" variant="ghost" onClick={questionCounts.refresh}>
+            Retry questions
+          </Button>
+        </p>
       ) : null}
       <div
         ref={scrollRef}

@@ -751,3 +751,37 @@ describe("project archives", () => {
     });
   });
 });
+
+it("round-trips owner execution and requester by ID in v5 and defaults old archives to agent", async () => {
+  const source = await seed();
+  source.store.tasks.updateTask(source.task.id, {
+    executionTarget: "owner",
+    requesterThreadId: "thr_archive_requester",
+  });
+  const out = join(await directory(), "owner-v5");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  expect(manifest.version).toBe(5);
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getTask(source.task.id)).toEqual(
+    source.store.tasks.getTask(source.task.id),
+  );
+  expect(target.harness.sdk.callsTo("threads.send")).toHaveLength(0);
+  manifest.version = 4;
+  await writeFile(manifestPath, jsonText(manifest));
+  for (const id of manifest.taskIds) {
+    const path = join(out, "tasks", `${id}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    delete record.task.executionTarget;
+    delete record.task.requesterThreadId;
+    await writeFile(path, jsonText(record));
+  }
+  const legacy = setup();
+  await importProject(legacy.bb, legacy.store, out, false);
+  expect(legacy.store.tasks.getTask(source.task.id)).toMatchObject({
+    executionTarget: "agent",
+    requesterThreadId: null,
+  });
+});

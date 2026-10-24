@@ -91,6 +91,8 @@ interface TaskRow {
   parent_task_id: string | null;
   type: Task["type"];
   epic_id: string | null;
+  execution_target: Task["executionTarget"];
+  requester_thread_id: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -227,6 +229,7 @@ function taskQueryFingerprint(
         ? { specified: false, value: null }
         : { specified: true, value: filters.parentTaskId },
     type: filters.type ?? null,
+    executionTarget: filters.executionTarget ?? null,
     epicId:
       filters.epicId === undefined
         ? { specified: false }
@@ -380,6 +383,8 @@ function taskFromRow(row: TaskRow): Task {
     parentTaskId: row.parent_task_id,
     type: row.type,
     epicId: row.epic_id,
+    executionTarget: row.execution_target,
+    requesterThreadId: row.requester_thread_id,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -894,6 +899,8 @@ export function createTasksStore(db: PluginDatabase) {
           string | null,
           Task["type"],
           string | null,
+          Task["executionTarget"],
+          string | null,
           number,
           string,
           string,
@@ -902,8 +909,8 @@ export function createTasksStore(db: PluginDatabase) {
         `
       INSERT INTO tasks (
         id, project_id, number, title, description, status, priority, due_date,
-        parent_task_id, type, epic_id, position, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_task_id, type, epic_id, execution_target, requester_thread_id, position, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       ).run(
         id,
@@ -917,6 +924,8 @@ export function createTasksStore(db: PluginDatabase) {
         parentTaskId,
         type,
         epicId,
+        input.executionTarget ?? "agent",
+        input.requesterThreadId ?? null,
         position,
         createdAt,
         createdAt,
@@ -928,6 +937,16 @@ export function createTasksStore(db: PluginDatabase) {
   function createTask(input: CreateTaskInput): Task {
     assertNoSecrets(input.title, "title");
     assertNoSecrets(input.description, "description");
+    if (
+      input.executionTarget !== undefined &&
+      !["agent", "owner"].includes(input.executionTarget)
+    )
+      throw new Error("Invalid execution target");
+    if (
+      input.requesterThreadId != null &&
+      !/^thr_[A-Za-z0-9_-]+$/.test(input.requesterThreadId)
+    )
+      throw new Error("Invalid requester thread id");
     return createTaskTransaction(input);
   }
 
@@ -991,6 +1010,10 @@ export function createTasksStore(db: PluginDatabase) {
         clauses.push("t.parent_task_id = @parentTaskId");
         parameters.parentTaskId = filters.parentTaskId;
       }
+    }
+    if (filters.executionTarget !== undefined) {
+      clauses.push("t.execution_target = @executionTarget");
+      parameters.executionTarget = filters.executionTarget;
     }
     if (filters.type !== undefined) {
       clauses.push("t.type = @type");
@@ -1218,6 +1241,8 @@ export function createTasksStore(db: PluginDatabase) {
           string | null,
           Task["type"],
           string | null,
+          Task["executionTarget"],
+          string | null,
           number,
           string,
           string,
@@ -1226,7 +1251,7 @@ export function createTasksStore(db: PluginDatabase) {
         `
         UPDATE tasks SET
           title = ?, description = ?, status = ?, priority = ?, due_date = ?,
-          parent_task_id = ?, type = ?, epic_id = ?, position = ?, updated_at = ?
+          parent_task_id = ?, type = ?, epic_id = ?, execution_target = ?, requester_thread_id = ?, position = ?, updated_at = ?
         WHERE id = ?
       `,
       ).run(
@@ -1242,6 +1267,10 @@ export function createTasksStore(db: PluginDatabase) {
         parentTaskId,
         type,
         epicId,
+        input.executionTarget ?? current.executionTarget,
+        input.requesterThreadId === undefined
+          ? current.requesterThreadId
+          : input.requesterThreadId,
         position,
         nowIso(),
         id,
@@ -1253,6 +1282,16 @@ export function createTasksStore(db: PluginDatabase) {
   function updateTask(id: string, input: UpdateTaskInput): Task {
     assertNoSecrets(input.title, "title");
     assertNoSecrets(input.description, "description");
+    if (
+      input.executionTarget !== undefined &&
+      !["agent", "owner"].includes(input.executionTarget)
+    )
+      throw new Error("Invalid execution target");
+    if (
+      input.requesterThreadId != null &&
+      !/^thr_[A-Za-z0-9_-]+$/.test(input.requesterThreadId)
+    )
+      throw new Error("Invalid requester thread id");
     return updateTaskTransaction(id, input);
   }
 

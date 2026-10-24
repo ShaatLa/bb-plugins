@@ -93,7 +93,7 @@ function formatSubtasks(subtasks: readonly Task[]): string {
   return subtasks
     .map(
       (subtask) =>
-        `- ${subtask.key} · ${subtask.title} — ${displayName(subtask.status)}`,
+        `- ${subtask.key} · ${subtask.title} — ${displayName(subtask.status)}${subtask.executionTarget === "owner" ? " · Owner action" : ""}`,
     )
     .join("\n");
 }
@@ -158,6 +158,8 @@ function buildTaskContext(
 ## Task details
 
 - Status: ${displayName(task.status)}
+- Executor: ${task.executionTarget}${task.executionTarget === "owner" ? " (the owner performs this action; agents may add context and track it)" : ""}
+- Requester thread: ${task.requesterThreadId ? `@thread:${task.requesterThreadId}` : "None"}
 - Priority: ${displayName(task.priority)}
 - Labels: ${labels.length > 0 ? labels.map((label) => label.name).join(", ") : "None"}
 - Due: ${task.dueDate ?? "None"}

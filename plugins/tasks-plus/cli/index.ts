@@ -29,6 +29,7 @@ import {
   TASK_PRIORITIES,
   TASK_STATUSES,
   TASK_TYPES,
+  EXECUTION_TARGETS,
   ULID_PATTERN,
   EVIDENCE_KINDS,
   evidenceSchema,
@@ -1796,6 +1797,15 @@ export function registerTasksCli(
           unexpectedPositionalHint:
             "the task title belongs in --title <title>.",
           options: {
+            "requester-thread": {
+              type: "string",
+              description: "BB thread to notify when an Owner action is done",
+            },
+            executor: {
+              type: "enum",
+              values: EXECUTION_TARGETS,
+              description: "Who performs the action: agent or owner",
+            },
             type: {
               type: "enum",
               values: TASK_TYPES,
@@ -1923,7 +1933,13 @@ export function registerTasksCli(
                 projectId: project.id,
                 title: input.options.title,
                 template: input.options.template,
+                requesterThreadId:
+                  input.options["requester-thread"] ??
+                  (input.options.executor === "owner"
+                    ? (ctx.threadId ?? process.env.BB_THREAD_ID ?? null)
+                    : null),
                 type: input.options.type,
+                executionTarget: input.options.executor,
                 epicId: input.options.epic
                   ? (await resolveTask(domain, input.options.epic)).id
                   : null,
@@ -1997,6 +2013,11 @@ export function registerTasksCli(
         list: cliCommand({
           summary: "List and filter tasks",
           options: {
+            executor: {
+              type: "enum",
+              values: EXECUTION_TARGETS,
+              description: "Who performs the action: agent or owner",
+            },
             type: {
               type: "enum",
               values: TASK_TYPES,
@@ -2100,6 +2121,7 @@ export function registerTasksCli(
                   tasksRpcContract.listTasks.input.parse({
                     projectId: project?.id,
                     type: input.options.type,
+                    executionTarget: input.options.executor,
                     epicId: input.options.epic
                       ? (await resolveTask(domain, input.options.epic)).id
                       : undefined,
@@ -2151,6 +2173,7 @@ export function registerTasksCli(
                 [
                   "KEY",
                   "STATUS",
+                  "EXECUTOR",
                   "PRIORITY",
                   "DUE",
                   "TITLE",
@@ -2160,6 +2183,7 @@ export function registerTasksCli(
                 tasks.map((task) => [
                   task.key,
                   task.status,
+                  task.executionTarget,
                   task.priority,
                   task.dueDate ?? "-",
                   task.title,
@@ -2261,6 +2285,13 @@ export function registerTasksCli(
                       ? (await resolveTask(domain, task.epicId)).key
                       : "-",
                   ],
+                  ["Executor", task.executionTarget],
+                  [
+                    "Requester",
+                    task.requesterThreadId
+                      ? `@thread:${task.requesterThreadId}`
+                      : "-",
+                  ],
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
@@ -2340,6 +2371,15 @@ export function registerTasksCli(
           summary: "Update task fields and labels",
           positionals: [KEY_POSITIONAL],
           options: {
+            "requester-thread": {
+              type: "string",
+              description: "BB thread to notify when an Owner action is done",
+            },
+            executor: {
+              type: "enum",
+              values: EXECUTION_TARGETS,
+              description: "Who performs the action: agent or owner",
+            },
             type: {
               type: "enum",
               values: TASK_TYPES,
@@ -2485,6 +2525,8 @@ export function registerTasksCli(
                 parentAddress === undefined &&
                 !noParent &&
                 !labelsChanged &&
+                input.options.executor === undefined &&
+                input.options["requester-thread"] === undefined &&
                 input.options.type === undefined &&
                 input.options.epic === undefined &&
                 !input.options["no-epic"]
@@ -2497,7 +2539,14 @@ export function registerTasksCli(
                 await domain.updateTask(
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
+                    requesterThreadId:
+                      input.options["requester-thread"] ??
+                      (input.options.executor === "owner" &&
+                      !task.requesterThreadId
+                        ? (ctx.threadId ?? process.env.BB_THREAD_ID)
+                        : undefined),
                     type: input.options.type,
+                    executionTarget: input.options.executor,
                     epicId: input.options["no-epic"]
                       ? null
                       : input.options.epic
@@ -2519,8 +2568,13 @@ export function registerTasksCli(
               );
               const updated = unwrapTask(result);
               return input.options.json
-                ? JSON.stringify({ task: updated })
-                : `Updated ${updated.key}  ${updated.title}`;
+                ? JSON.stringify({
+                    task: updated,
+                    ...(result.ok && result.notification
+                      ? { notification: result.notification }
+                      : {}),
+                  })
+                : `Updated ${updated.key}  ${updated.title}${result.ok && result.notification === "not_sent" ? "\nWarning: requester thread could not be notified; notify it manually." : ""}`;
             });
           },
         }),

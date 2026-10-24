@@ -268,6 +268,12 @@ const MIGRATIONS = [
       UNIQUE(label_id)
     );
   `,
+  `
+    ALTER TABLE tasks ADD COLUMN execution_target TEXT NOT NULL DEFAULT 'agent'
+      CHECK (execution_target IN ('agent', 'owner'));
+    ALTER TABLE tasks ADD COLUMN requester_thread_id TEXT
+      CHECK (requester_thread_id IS NULL OR requester_thread_id GLOB 'thr_*');
+  `,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

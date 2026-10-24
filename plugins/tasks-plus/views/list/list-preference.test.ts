@@ -175,3 +175,22 @@ describe("loadListPreference / storeListPreference", () => {
     });
   });
 });
+
+it("persists the executor filter and drops unsupported values", () => {
+  storeListPreference("project:owner", {
+    filters: {
+      statuses: [],
+      priorities: [],
+      labelNames: [],
+      executionTarget: "owner",
+    },
+    sort: "manual",
+  });
+  expect(loadListPreference("project:owner").filters.executionTarget).toBe(
+    "owner",
+  );
+  expect(
+    sanitizeListPreference({ executionTarget: "invalid" }).filters
+      .executionTarget,
+  ).toBeUndefined();
+});

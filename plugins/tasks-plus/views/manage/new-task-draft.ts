@@ -20,6 +20,7 @@ export interface NewTaskDraft {
   labelIds: string[];
   dueDate: string;
   type: TaskType;
+  executionTarget?: "agent" | "owner";
   epicId: string | null;
 }
 
@@ -33,6 +34,7 @@ const storedDraftSchema = z.object({
   labelIds: z.array(z.string()),
   dueDate: z.string(),
   type: z.enum(TASK_TYPES).default("task"),
+  executionTarget: z.enum(["agent", "owner"]).default("agent"),
   epicId: z.string().nullable().default(null),
 });
 

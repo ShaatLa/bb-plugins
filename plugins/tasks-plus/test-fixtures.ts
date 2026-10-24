@@ -13,6 +13,8 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     dueDate: null,
     parentTaskId: null,
     type: "task",
+    executionTarget: "agent",
+    requesterThreadId: null,
     epicId: null,
     position: 0,
     createdAt: "2026-07-15T00:00:00.000Z",
