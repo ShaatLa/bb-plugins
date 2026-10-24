@@ -5,7 +5,7 @@ description: Configure or explain the Delivery Dashboard sidebar dashboard plugi
 
 # Delivery Dashboard
 
-Open **Delivery dashboard** in the navigation sidebar (bar-chart icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
+Open **Delivery dashboard** in the navigation sidebar (package icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
 
 Configure in Settings → Plugins → Delivery Dashboard:
 - `repository`: additional GitHub `owner/repo` entries, comma-, whitespace-, or newline-separated. Existing single entries remain valid.
@@ -48,3 +48,5 @@ Opening the dashboard reads a persisted server snapshot before refreshing from G
 
 
 The Anvil production card includes **Deploy production**. Confirming starts `simple-life-app/anvil`'s `production.yaml` workflow on `main`, preserving its verification, Development-delivery check, and GitHub approvals. The target is fixed; arbitrary repositories, refs, and workflow paths cannot be supplied. The backend checks that Anvil is still configured/imported and blocks overlapping dispatch requests. The existing GitHub authorization must have [Actions write permission](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event). Success means the workflow was requested, not that production has deployed; use View workflow to follow it. Requests are never retried automatically; after an unconfirmed request, check GitHub before trying again.
+
+Repository headings link directly to their GitHub repository using BB’s standard URL opener (the right Browser pane when the built-in browser is selected). Normal link modifiers and copy-link behavior remain available. The dashboard uses a package icon in the sidebar and plugin branding.

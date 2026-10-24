@@ -53,8 +53,9 @@ test("refreshes on interval, keeps stale data on failure, supports retry, and st
 
 
 test("renders imported and additional repositories independently", async () => {
+  const openUrl = vi.fn(() => true);
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [repo, { ...repo, repository: "acme/other", projectName: "release platform", pullRequests: { ...metric, value: 7 } }] }) }, settings: {},
+    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [repo, { ...repo, repository: "acme/other", projectName: "release platform", pullRequests: { ...metric, value: 7 } }] }) }, settings: {}, openUrl,
   });
   try {
     expect(await slot.findByRole("region", { name: "acme/widgets" })).toBeTruthy();
@@ -63,6 +64,12 @@ test("renders imported and additional repositories independently", async () => {
     expect(slot.queryByText("GitHub CLI authorization")).toBeNull();
     expect(slot.getByRole("heading", { name: "Widgets" })).toBeTruthy();
     expect(slot.getByRole("heading", { name: "Release platform" })).toBeTruthy();
+    const repositoryLink = slot.getByRole("link", { name: "Widgets" });
+    expect(repositoryLink.getAttribute("href")).toBe("https://github.com/acme/widgets");
+    fireEvent.click(repositoryLink);
+    expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/widgets");
+    fireEvent.click(slot.getByRole("link", { name: "Release platform" }));
+    expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/other");
     expect(slot.getAllByText("Last 7 days")).toHaveLength(2);
     expect(slot.getAllByText(/13.*20 Oct 2026/)).toHaveLength(2);
     expect(slot.queryByText("Date range")).toBeNull();
@@ -72,7 +79,7 @@ test("renders imported and additional repositories independently", async () => {
 
 test("registers only a sidebar page and renders accessible charts from real series", async () => {
   expect(app.homepageSections).toHaveLength(0);
-  expect(app.navPanels[0]).toMatchObject({ title: "Delivery dashboard", path: "dashboard", icon: "BarChart3" });
+  expect(app.navPanels[0]).toMatchObject({ title: "Delivery dashboard", path: "dashboard", icon: "Package" });
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
