@@ -143,7 +143,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     return { value: result.total_count, detail: created ? `Created · ${range.label} · all states, includes drafts` : "Open now · includes drafts", error: null, series: null, seriesError: null };
   }
   async function reviews() {
-    const query = encodeURIComponent(`repo:${repository} is:pr is:open draft:false review:required`);
+    const query = encodeURIComponent(`repo:${repository} is:pr is:open draft:false review:none`);
     const { body } = await request(`/search/issues?q=${query}&sort=created&order=asc&per_page=5`);
     const result = reviewSearchSchema.parse(body);
     if (result.incomplete_results) throw new Error("GitHub returned an incomplete review queue; try again.");

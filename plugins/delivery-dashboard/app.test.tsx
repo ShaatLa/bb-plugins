@@ -110,6 +110,9 @@ test("renders CI outcomes, review ages, and a linked production deployment", asy
     expect(slot.getByRole("link", { name: "#17 Needs review" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/17");
     expect(slot.getByRole("link", { name: "View deployment ↗" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/1");
     expect(slot.getByText("Created 2h ago")).toBeTruthy();
+    expect(slot.getByText("No reviews yet · excludes drafts · oldest 5")).toBeTruthy();
+    const reviewLink = new URL(slot.getByRole("link", { name: "View review queue ↗" }).getAttribute("href")!);
+    expect(reviewLink.searchParams.get("q")).toBe("is:pr is:open draft:false review:none");
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -119,7 +122,7 @@ test("empty review and production sections do not claim data is unavailable", as
   });
   try {
     expect(await slot.findByText("No production deployment found.")).toBeTruthy();
-    expect(slot.getByText("No PRs awaiting required review.")).toBeTruthy();
+    expect(slot.getByText("No unreviewed PRs.")).toBeTruthy();
     expect(slot.queryByRole("alert")).toBeNull();
   } finally { slot.lifecycle.unmount(); }
 });

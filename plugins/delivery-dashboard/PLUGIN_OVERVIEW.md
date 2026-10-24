@@ -8,7 +8,7 @@ Deploy frequency counts all deployment records over the selected date range, ave
 
 Deployment-throughput and CI-pass-rate charts use actual GitHub data, grouped into hourly, daily, or larger intervals according to the range, with UTC labels and hover details. Incomplete histories are clearly marked. Open the dashboard from the package icon in the navigation sidebar.
 
-Each repository also shows completed CI outcomes (including failures, cancellations, and skips), the five oldest non-draft PRs requiring review with their age and links, and the newest production deployment with its status, environment, ref, times, and a log link. CI cards and charts use one complete dataset to keep the figures consistent.
+Each repository also shows completed CI outcomes (including failures, cancellations, and skips), the five oldest unreviewed non-draft PRs with their age and links, and the newest production deployment with its status, environment, ref, times, and a log link. CI cards and charts use one complete dataset to keep the figures consistent.
 
 The activity block counts PRs created in the selected date range, commits in the default branch, and cumulative lines added/deleted across those commits. Commit statistics use existing GitHub authorization, and unavailable data is clearly marked.
 

@@ -28,14 +28,14 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
         <h4 className="text-sm font-medium">PRs awaiting review</h4>
         {reviewQueue.total !== null && <span className="text-xs text-muted-foreground">{reviewQueue.total} total</span>}
       </div>
-      <p className="text-xs text-muted-foreground">Required reviews · oldest 5 · age since opened</p>
+      <p className="text-xs text-muted-foreground">No reviews yet · excludes drafts · oldest 5</p>
       {reviewQueue.error ? <p role="alert" className="text-sm text-destructive">{reviewQueue.error}</p>
-        : reviewQueue.total === 0 ? <p className="text-sm text-muted-foreground">No PRs awaiting required review.</p>
+        : reviewQueue.total === 0 ? <p className="text-sm text-muted-foreground">No unreviewed PRs.</p>
         : <ul className="divide-y divide-border">{reviewQueue.items.map((pr) => <li key={pr.number} className="flex items-start justify-between gap-3 py-2 first:pt-0">
           <UrlLink href={pr.url} className="min-w-0 break-words text-sm hover:underline">#{pr.number} {pr.title}</UrlLink>
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground" title={`Opened ${new Date(pr.createdAt).toLocaleString()}`}>{ageLabel(pr.createdAt, repo.updatedAt)} open</span>
         </li>)}</ul>}
-      <UrlLink href={`https://github.com/${repo.repository}/pulls?q=${encodeURIComponent("is:pr is:open draft:false review:required")}`} className="inline-block text-xs text-muted-foreground hover:underline">View review queue ↗</UrlLink>
+      <UrlLink href={`https://github.com/${repo.repository}/pulls?q=${encodeURIComponent("is:pr is:open draft:false review:none")}`} className="inline-block text-xs text-muted-foreground hover:underline">View review queue ↗</UrlLink>
     </Card>
     <Card role="region" aria-label="Latest production deployment" className="space-y-3 p-4">
       <h4 className="text-sm font-medium">Latest production deployment</h4>
