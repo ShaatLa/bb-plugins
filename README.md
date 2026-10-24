@@ -6,9 +6,9 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | --- | --- | --- | --- |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
 | **Tasks Plus** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `tasks-plus` | [README](plugins/tasks-plus/README.md) |
-| **Delivery Dashboard** | GitHub delivery, CI, pull-request and commit metrics across repositories, with date filters, charts and cached history. | `delivery-dashboard` | [README](plugins/delivery-dashboard/README.md) |
+| **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 
-The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Package names, plugin IDs and data directories remain unchanged when using this collection.
+The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Package names, plugin IDs and data directories remain unchanged when using this collection. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Additional requirements depend on the plugin:
 
 - **Antigravity:** an installed, signed-in **`agy` 1.4.6 or newer on each execution machine**. Login and the CLI installation remain managed by Antigravity.
 - **Tasks Plus:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Tasks Plus installation**, as described below.
-- **Delivery Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
+- **CI Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
 ## Install from GitHub
 
@@ -30,7 +30,7 @@ Install the plugins you need:
 
 ```sh
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin delivery-dashboard
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 ```
 
 For **Tasks Plus**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
@@ -104,9 +104,9 @@ Exports do not commit or push Git changes; scheduled synchronization is a separa
 
 [Setup, CLI reference, archive behavior and migration →](plugins/tasks-plus/README.md)
 
-### Delivery Dashboard
+### CI Dashboard
 
-Open **Delivery dashboard** in BB's navigation sidebar. Repositories are discovered from BB projects' GitHub remotes; add more in plugin settings or disable automatic discovery.
+Open **CI Dashboard** in BB's navigation sidebar. Agents can use `ci_dashboard_metrics` for read-only CI summaries, timings and health signals; see the plugin documentation for cached/fresh query examples. Repositories are discovered from BB projects' GitHub remotes; add more in plugin settings or disable automatic discovery.
 
 - Deployment frequency, created/open PRs, PRs with no submitted reviews, CI pass rates/outcomes, default-branch commits and added/deleted lines.
 - Deployment and CI charts with clickable interval statistics, rolling presets and custom inclusive UTC date ranges.
@@ -118,7 +118,7 @@ CI pass rates exclude cancelled and skipped runs; outcome counts still show them
 
 The Anvil production card also has a project-specific **Deploy production** action: after confirmation it requests `simple-life-app/anvil`'s `production.yaml` workflow on `main`. This requires existing GitHub Actions write access and is not a general-purpose deploy button for other repositories.
 
-[Configuration, metric definitions and deployment behavior →](plugins/delivery-dashboard/README.md)
+[Configuration, metric definitions and deployment behavior →](plugins/ci-dashboard/README.md)
 
 ## Migrate built-in Tasks data
 
@@ -146,7 +146,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | --- | --- | --- |
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
 | `plugins/tasks-plus` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
-| `plugins/delivery-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
+| `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 
 From the chosen plugin directory, after installing its dependencies:
 
@@ -172,4 +172,4 @@ All three plugins retain MIT licenses and their upstream acknowledgements:
 
 - **Antigravity provider:** inspired by [amrtawfik160/bb-plugin-antigravity](https://github.com/amrtawfik160/bb-plugin-antigravity); original [MIT license](plugins/provider-antigravity/LICENSE) and vendored BB component attribution are retained in the plugin directory.
 - **Tasks Plus:** forked from BB Tasks and required shared UI sources at `desktop-v0.46.1`; [MIT license](plugins/tasks-plus/LICENSE), [upstream source details](plugins/tasks-plus/UPSTREAM.md).
-- **Delivery Dashboard:** imported from the existing standalone dashboard repository and uses BB shared UI sources; [MIT license](plugins/delivery-dashboard/LICENSE), [upstream source details](plugins/delivery-dashboard/UPSTREAM.md).
+- **CI Dashboard:** imported from the existing standalone dashboard repository and uses BB shared UI sources; [MIT license](plugins/ci-dashboard/LICENSE), [upstream source details](plugins/ci-dashboard/UPSTREAM.md).

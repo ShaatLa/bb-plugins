@@ -1,4 +1,4 @@
-# Delivery Dashboard
+# CI Dashboard
 
 See GitHub deployment frequency, current open pull requests, and GitHub Actions pass rate in a dedicated BB sidebar page.
 
@@ -17,3 +17,6 @@ Choose today from 00:00 UTC (1 day), 3 days, 1 week, 2 weeks, 1 month (30 days),
 Click either chart’s bars for a popup with statistics for the exact UTC interval: deployments, created PRs, commits, added/deleted lines, CI pass rate, and outcomes. The dashboard stays visible while details load; keyboard activation, Escape, and retries are supported.
 
 Use repository headings to open GitHub in BB’s configured browser while keeping the dashboard available.
+
+
+Agents can read cached or freshly collected CI metrics with ci_dashboard_metrics: pass rates, outcomes, branch/workflow problem signals and elapsed timings, with explicit timestamps, staleness and missing-data errors. CI access is read-only.

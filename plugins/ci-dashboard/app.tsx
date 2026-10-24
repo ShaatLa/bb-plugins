@@ -159,7 +159,7 @@ export function Dashboard() {
   const current = data && (isLoading || data.configuration === configuration) ? data.result : null;
   if (isLoading && !current) return <p role="status" className="text-sm text-muted-foreground">Loading dashboard settings…</p>;
   return (
-    <section aria-label="GitHub delivery metrics" aria-busy={busy && !current} className="space-y-6">
+    <section aria-label="GitHub CI metrics" aria-busy={busy && !current} className="space-y-6">
       <div className="flex items-center gap-3" aria-label="Date range filters">
         <span className="relative inline-block">
           <select aria-label="Date range" value={mode} className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground" onChange={(event) => {
@@ -189,7 +189,7 @@ export function Dashboard() {
       {!current && !error && <DashboardSkeleton />}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {current?.discoveryError && <p role="alert" className="text-sm text-destructive">{current.discoveryError}</p>}
-      {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → Delivery Dashboard.</p>}
+      {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → CI Dashboard.</p>}
       {current?.repositories.map((repo) => {
         const cards = [
           { title: "CI pass rate", pending: "ci", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
@@ -239,13 +239,13 @@ export function Dashboard() {
 }
 
 function DashboardPage() {
-  return <div data-delivery-dashboard-viewport className="h-full min-h-0 flex-1 overflow-y-auto">
+  return <div data-ci-dashboard-viewport className="h-full min-h-0 flex-1 overflow-y-auto">
     <div className="mx-auto w-full max-w-6xl p-4 md:p-6"><Dashboard /></div>
   </div>;
 }
 
 export default definePluginApp((app) => {
   app.slots.navPanel({
-    id: "delivery-dashboard", title: "Delivery dashboard", icon: "Package", path: "dashboard", component: DashboardPage,
+    id: "ci-dashboard", title: "CI Dashboard", icon: "Package", path: "dashboard", component: DashboardPage,
   });
 });

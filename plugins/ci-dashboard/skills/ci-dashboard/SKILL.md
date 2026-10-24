@@ -1,13 +1,13 @@
 ---
-name: delivery-dashboard
-description: Configure or explain the Delivery Dashboard sidebar dashboard plugin and its GitHub metrics.
+name: ci-dashboard
+description: Read GitHub Actions CI metrics, health signals and run timings for agents; configure or explain the CI Dashboard sidebar plugin.
 ---
 
-# Delivery Dashboard
+# CI Dashboard
 
-Open **Delivery dashboard** in the navigation sidebar (package icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
+Open **CI Dashboard** in the navigation sidebar (package icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
 
-Configure in Settings → Plugins → Delivery Dashboard:
+Configure in Settings → Plugins → CI Dashboard:
 - `repository`: additional GitHub `owner/repo` entries, comma-, whitespace-, or newline-separated. Existing single entries remain valid.
 - `importBbRepositories`: enabled by default. Imports GitHub `gitRemoteUrl` values from all BB projects on each refresh, skipping non-GitHub hosts and missing remotes. SSH/SCP, HTTPS, and Git formats work. Entries are de-duplicated case-insensitively. Disable to use only the manual list.
 - `token`: optional secret override. Blank uses `GH_TOKEN`, then `GITHUB_TOKEN`, then the active GitHub.com account from `gh auth token --hostname github.com` on the BB server machine. Never print credentials or pass them in chat. The token is not copied to settings or sent to the frontend. Without credentials, public-repo access is anonymous.
@@ -21,7 +21,7 @@ For private repositories use a fine-grained token scoped to the repository with 
 
 BB project discovery failures appear in the UI while manual repositories still load. Projects without a recorded remote need a manual entry. The same repository list appears on the dashboard page.
 
-There is no plugin-specific CLI. Use `bb plugin config delivery-dashboard` for non-secret settings, and the settings UI for credentials. Build with `bb plugin build <plugin-path>` before install or release.
+No custom CLI is needed: native ci_dashboard_metrics and the discoverable read-only ci RPC provide agent access. Use `bb plugin config delivery-dashboard` for non-secret settings, and the settings UI for credentials. Build with `bb plugin build <plugin-path>` before install or release.
 
 The 1-day preset means today from 00:00 UTC through refresh time for all historical cards. Its charts show six four-hour intervals starting at 00:00, 04:00, 08:00, 12:00, 16:00 and 20:00 UTC. Future intervals show “—” and are disabled; the current interval ends at refresh time. Today’s deployment frequency is the count since midnight. Custom single-day charts keep hourly buckets. The rolling three-day preset uses six 12-hour buckets. Other charts show daily buckets up to two weeks, and at most 14 larger whole-day buckets for longer ranges, with UTC labels. The final bucket may be shorter; hover details show its actual boundaries. Deployment counts and CI success percentages come from GitHub records. CI days without runs show “—”. Large CI histories are split into disjoint UTC time searches of at most 1,000 runs each. Failed pagination or inconsistent counts are unavailable; capped large-search counts never produce a precise summary.
 
@@ -95,3 +95,22 @@ Loading states use theme-aware neutral skeletons shaped like KPI values, timing 
 
 
 Expanded timing lists use compact inset rows with aligned duration values. Workflows sort by average duration descending (missing averages last); average is the prominent value, with P95, measured-run coverage and cumulative total in secondary metadata. Longest-run links separate workflow, duration, branch and run ID; long branch names truncate visually with their full name in the tooltip and accessible link label.
+
+
+## Agent access
+
+Use the native **ci_dashboard_metrics** tool to read CI data. For example:
+
+```json
+{"repository":"owner/repo","selection":{"days":7},"refresh":false}
+```
+
+Omit repository for all configured dashboard repositories. Selection defaults to seven days and accepts the same presets or inclusive UTC custom dates as the UI, limited to the past year. Cached local snapshots are returned immediately when available, even if stale; inspect source, updatedAt, ageSeconds, stale and pending before drawing conclusions. Set refresh to true for a forced GitHub collection. A cold range also collects automatically and can take time. The report includes pass rate, CI history errors, conclusion counts, default-branch/PR health, workflow failure signals, elapsed timing statistics in milliseconds and slow-run IDs. Diagnostic IDs link to https://github.com/OWNER/REPO/actions/runs/ID or /actions/workflows/ID. Unavailable/partial data stays explicitly unavailable; it is never converted to a passing result. Cancelled/skipped are excluded from pass rates but can contribute valid timing estimates. Timing caveats are the same as in the UI.
+
+The read-only `ci` RPC is discoverable via `bb plugin rpc inspect delivery-dashboard ci`. It accepts the same JSON input and can be called by other plugins or agents with `bb plugin rpc call delivery-dashboard ci --input-file query.json --json`. No custom CLI is required. This interface does not dispatch deployments or expose authorization tokens, settings, raw commit history or unused API payloads. Existing UI RPC methods remain private to discovery.
+
+New native tools become available when BB next constructs the provider session; an existing agent can use the CLI/RPC immediately after reload.
+
+## Rename compatibility
+
+The visible name, navigation label, documentation, skill and repository directory are CI Dashboard / ci-dashboard. The package name bb-plugin-delivery-dashboard and internal plugin ID delivery-dashboard intentionally stay stable because BB namespaces settings, secrets and SQLite data by that ID. Existing routes under /plugins/delivery-dashboard/dashboard and old collection installs continue to work. New installs use --plugin ci-dashboard; updates continue to use bb plugin update delivery-dashboard. The delivery-dashboard collection entry is a compatibility alias pointing to the same renamed package, not a second installed plugin.

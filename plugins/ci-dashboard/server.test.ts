@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createFakePluginHost, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
+import { ciReportSchema } from "./agent-ci";
 import { loadMetrics, type Metrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
@@ -78,6 +79,35 @@ test("workflow metadata survives persistence and powers contained ranges without
     expect(fetchMock).not.toHaveBeenCalled();
     const stored = JSON.parse((bb.storage.database().prepare("SELECT data FROM repository_history").get() as { data: string }).data);
     expect(stored.records.runs[0]).toMatchObject({ workflow_id: 42, run_started_at: recent });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("agent CI access is read-only, uses the local cache, marks stale data and supports explicit refresh", async () => {
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    const cold = ciReportSchema.parse(JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_metrics", {}) as string));
+    expect(cold).toMatchObject({ source: "collection", repositories: [{ repository: "acme/widgets", stale: false, ageSeconds: 0, passRate: { value: 80 }, ciOutcomes: { success: 8, failure: 2 } }] });
+    fetchMock.mockClear();
+    vi.mocked(resolveGithubToken).mockClear();
+    vi.setSystemTime(new Date("2026-10-20T12:10:00Z"));
+    const cached = ciReportSchema.parse(JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_metrics", { repository: "ACME/WIDGETS" }) as string));
+    expect(cached).toMatchObject({ source: "cache", repositories: [{ stale: true, ageSeconds: 600, updatedAt: "2026-10-20T12:00:00.000Z" }] });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resolveGithubToken).not.toHaveBeenCalled();
+    expect(await harness.behavior.callRpc("ci", { repository: "acme/widgets" })).toEqual(cached);
+    expect(JSON.stringify(cached)).not.toContain("private-token");
+    expect(JSON.stringify(cached)).not.toContain("authSource");
+    expect(JSON.stringify(cached)).not.toContain("commitActivity");
+    for (const input of [{ repository: "acme/unknown" }, { selection: { start: "2025-10-19", end: "2026-10-20" } }, { selection: { days: 365 } }, { refresh: "true" }]) {
+      await expect(harness.behavior.callAgentTool("ci_dashboard_metrics", input)).rejects.toThrow();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(harness.behavior.callAgentTool("ci_dashboard_metrics", {}, { signal: AbortSignal.abort() })).rejects.toThrow();
+    const fresh = ciReportSchema.parse(JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_metrics", { refresh: true }) as string));
+    expect(fresh).toMatchObject({ source: "collection", repositories: [{ stale: false, updatedAt: "2026-10-20T12:10:00.000Z" }] });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.some(([url]) => url.includes("/dispatches"))).toBe(false);
   } finally { await harness.lifecycle.dispose(); }
 });
 

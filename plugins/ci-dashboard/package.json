@@ -1,14 +1,14 @@
 {
   "name": "bb-plugin-delivery-dashboard",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "type": "module",
   "engines": {
     "bb": ">=0.46",
     "bbPluginSdk": ">=0.6.49"
   },
   "bb": {
-    "name": "Delivery Dashboard",
-    "description": "GitHub deploy frequency, open pull requests, and CI pass rate with daily charts in your sidebar, refreshed automatically.",
+    "name": "CI Dashboard",
+    "description": "GitHub Actions health, pass rates, run timings and agent-readable CI metrics, with cached history, PR and deployment context.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

@@ -1,15 +1,15 @@
-# Delivery Dashboard for BB
+# CI Dashboard for BB
 
-Adds a responsive **Delivery dashboard** page in BB's sidebar with GitHub deployment frequency, open PR count, and CI pass rate for multiple repositories. Refreshes every five minutes by default, with an immediate Refresh icon button. The same reload icon spins while loading, keeping its size and respecting reduced-motion preferences. External links use compact icons.
+Adds a responsive **CI Dashboard** page in BB's sidebar with GitHub deployment frequency, open PR count, and CI pass rate for multiple repositories. Refreshes every five minutes by default, with an immediate Refresh icon button. The same reload icon spins while loading, keeping its size and respecting reduced-motion preferences. External links use compact icons.
 
-Open **Delivery dashboard** using the package icon in BB’s navigation sidebar. The page route is `/plugins/delivery-dashboard/dashboard`; the old homepage section is removed.
+Open **CI Dashboard** using the package icon in BB’s navigation sidebar. The page route is `/plugins/delivery-dashboard/dashboard`; the old homepage section is removed.
 
 ## Setup
 
 Install from the collection:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin delivery-dashboard
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 ```
 
 For local development:
@@ -22,7 +22,7 @@ bb plugin install . --yes
 
 GitHub repositories are discovered automatically from BB projects' `gitRemoteUrl` fields on each refresh. HTTPS, SSH, SCP-style (`git@github.com:owner/repo.git`), and Git URLs are supported. Other Git hosts and projects without a recorded remote are skipped. Each repository has summary cards, green history charts, CI outcome counts, a review queue, the latest production deployment, and a repository activity block for the selected range.
 
-Open **Settings → Plugins → Delivery Dashboard** to adjust:
+Open **Settings → Plugins → CI Dashboard** to adjust:
 
 - **Additional GitHub repositories** (`repository`): comma-, whitespace-, or newline-separated `owner/repo` entries. Existing single-repository settings continue to work. Automatic and manual entries are de-duplicated case-insensitively.
 - **Include GitHub repositories from BB projects** (`importBbRepositories`): enabled by default; disable to track only the manual list.
@@ -126,3 +126,22 @@ Loading states use theme-aware neutral skeletons shaped like KPI values, timing 
 
 
 Expanded timing lists use compact inset rows with aligned duration values. Workflows sort by average duration descending (missing averages last); average is the prominent value, with P95, measured-run coverage and cumulative total in secondary metadata. Longest-run links separate workflow, duration, branch and run ID; long branch names truncate visually with their full name in the tooltip and accessible link label.
+
+
+## Agent access
+
+Use the native **ci_dashboard_metrics** tool to read CI data. For example:
+
+```json
+{"repository":"owner/repo","selection":{"days":7},"refresh":false}
+```
+
+Omit repository for all configured dashboard repositories. Selection defaults to seven days and accepts the same presets or inclusive UTC custom dates as the UI, limited to the past year. Cached local snapshots are returned immediately when available, even if stale; inspect source, updatedAt, ageSeconds, stale and pending before drawing conclusions. Set refresh to true for a forced GitHub collection. A cold range also collects automatically and can take time. The report includes pass rate, CI history errors, conclusion counts, default-branch/PR health, workflow failure signals, elapsed timing statistics in milliseconds and slow-run IDs. Diagnostic IDs link to https://github.com/OWNER/REPO/actions/runs/ID or /actions/workflows/ID. Unavailable/partial data stays explicitly unavailable; it is never converted to a passing result. Cancelled/skipped are excluded from pass rates but can contribute valid timing estimates. Timing caveats are the same as in the UI.
+
+The read-only `ci` RPC is discoverable via `bb plugin rpc inspect delivery-dashboard ci`. It accepts the same JSON input and can be called by other plugins or agents with `bb plugin rpc call delivery-dashboard ci --input-file query.json --json`. No custom CLI is required. This interface does not dispatch deployments or expose authorization tokens, settings, raw commit history or unused API payloads. Existing UI RPC methods remain private to discovery.
+
+New native tools become available when BB next constructs the provider session; an existing agent can use the CLI/RPC immediately after reload.
+
+## Rename compatibility
+
+The visible name, navigation label, documentation, skill and repository directory are CI Dashboard / ci-dashboard. The package name bb-plugin-delivery-dashboard and internal plugin ID delivery-dashboard intentionally stay stable because BB namespaces settings, secrets and SQLite data by that ID. Existing routes under /plugins/delivery-dashboard/dashboard and old collection installs continue to work. New installs use --plugin ci-dashboard; updates continue to use bb plugin update delivery-dashboard. The delivery-dashboard collection entry is a compatibility alias pointing to the same renamed package, not a second installed plugin.
