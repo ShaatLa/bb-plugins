@@ -1,3 +1,4 @@
+import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createStructuredStore } from "../structured/store";
@@ -453,7 +454,7 @@ export function handlers(
             taskId: task.id,
             presetName: preset.name,
             threadId: thread.id,
-            body: `Status changed to In Progress · dispatched to ${preset.name}`,
+            body: `Status changed to ${statusLabel("in_progress", store.tasks.getProject(task.projectId)?.statuses)} · dispatched to ${preset.name}`,
           });
         }
 

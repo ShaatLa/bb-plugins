@@ -1,4 +1,4 @@
-import { TASK_STATUSES, type TaskStatus } from "../../shared/contract.js";
+import { type TaskStatus } from "../../shared/contract.js";
 
 export const BOARD_STATUSES = [
   "backlog",
@@ -12,8 +12,8 @@ export function visibleBoardStatuses(
   columns: Readonly<Record<TaskStatus, readonly unknown[]>>,
 ): TaskStatus[] {
   return [
-    ...BOARD_STATUSES,
-    ...(columns.canceled.length > 0 ? (["canceled"] as const) : []),
+    ...Object.keys(columns).filter((status) => status !== "canceled"),
+    ...((columns.canceled?.length ?? 0) > 0 ? ["canceled"] : []),
   ];
 }
 
@@ -53,23 +53,16 @@ export function applyBoardMove<T extends { id: string; status: TaskStatus }>(
   dropIndex: number,
 ): Record<TaskStatus, T[]> {
   let moved: T | undefined;
-  const next: Record<TaskStatus, T[]> = {
-    backlog: [],
-    todo: [],
-    in_progress: [],
-    in_review: [],
-    done: [],
-    canceled: [],
-  };
-  for (const status of TASK_STATUSES) {
-    next[status] = columns[status].filter((task) => {
+  const next: Record<TaskStatus, T[]> = {};
+  for (const [status, tasks] of Object.entries(columns)) {
+    next[status] = tasks.filter((task) => {
       if (task.id !== taskId) return true;
       moved = task;
       return false;
     });
   }
   if (!moved) return next;
-  const destination = next[toStatus];
+  const destination = next[toStatus] ?? (next[toStatus] = []);
   const index = Math.max(0, Math.min(dropIndex, destination.length));
   destination.splice(index, 0, { ...moved, status: toStatus });
   return next;

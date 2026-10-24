@@ -274,6 +274,35 @@ const MIGRATIONS = [
     ALTER TABLE tasks ADD COLUMN requester_thread_id TEXT
       CHECK (requester_thread_id IS NULL OR requester_thread_id GLOB 'thr_*');
   `,
+  (db: PluginDatabase) => {
+    db.exec("ALTER TABLE projects ADD COLUMN statuses TEXT");
+    const table = db
+      .prepare<
+        [],
+        { sql: string }
+      >("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+      .get()!;
+    const objects = db
+      .prepare<
+        [],
+        { sql: string }
+      >("SELECT sql FROM sqlite_master WHERE tbl_name = 'tasks' AND type IN ('index', 'trigger') AND sql IS NOT NULL")
+      .all();
+    const sql = table.sql.replace(
+      "CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled'))",
+      "CHECK (length(status) BETWEEN 1 AND 64)",
+    );
+    if (sql === table.sql)
+      throw new Error("Could not migrate the task status constraint");
+    db.exec("CREATE TEMP TABLE tasks_status_backup AS SELECT * FROM tasks");
+    db.exec("DROP TABLE tasks");
+    db.exec(sql);
+    db.exec("INSERT INTO tasks SELECT * FROM tasks_status_backup");
+    db.exec("DROP TABLE tasks_status_backup");
+    for (const object of objects) db.exec(object.sql);
+    if (db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Foreign key check failed during status migration");
+  },
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
@@ -296,10 +325,18 @@ export function initializeTasksSchema(db: PluginDatabase): void {
     for (const [index, sql] of MIGRATIONS.entries()) {
       const version = index + 1;
       if (hasVersion.get(version)) continue;
-      db.exec(sql);
+      if (typeof sql === "string") db.exec(sql);
+      else sql(db);
       recordVersion.run(version, new Date().toISOString());
     }
   });
 
-  migrate();
+  // Rebuilding tasks must preserve the rows referenced by comments, threads and attachments.
+  const rebuildingTasks = !hasVersion.get(12);
+  if (rebuildingTasks) db.pragma("foreign_keys = OFF");
+  try {
+    migrate();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
 }

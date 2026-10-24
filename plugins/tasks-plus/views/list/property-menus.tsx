@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import type { ReactNode } from "react";
 import {
   TASK_STATUSES,
@@ -35,7 +36,6 @@ import {
   formatDueDate,
   localIsoDate,
   PRIORITY_LABELS,
-  STATUS_LABELS,
 } from "./lib.js";
 
 export type EditFn = (task: Task, patch: TaskEdit) => void;
@@ -48,11 +48,11 @@ export const PRIORITY_MENU_ORDER: readonly TaskPriority[] = [
   "low",
 ];
 
-export function statusForShortcut(key: string): TaskStatus | null {
+export function statusForShortcut(key: string, statuses: readonly string[] = TASK_STATUSES): TaskStatus | null {
   if (!/^[0-9]$/.test(key)) return null;
   const index = Number(key) - 1;
-  return index >= 0 && index < TASK_STATUSES.length
-    ? (TASK_STATUSES[index] ?? null)
+  return index >= 0 && index < statuses.length
+    ? (statuses[index] ?? null)
     : null;
 }
 
@@ -93,7 +93,7 @@ function PickerOption({
   icon: ReactNode;
   label: string;
   active: boolean;
-  shortcut: number;
+  shortcut?: number;
 }) {
   return (
     <>
@@ -134,6 +134,7 @@ export function StatusEditor({
   onOpenChange: (open: boolean) => void;
   className?: string;
 }) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(task.projectId);
   const select = (status: TaskStatus) => {
     if (status !== task.status) onEdit(task, { status });
   };
@@ -142,7 +143,7 @@ export function StatusEditor({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label={`Change status, currently ${STATUS_LABELS[task.status]}`}
+          aria-label={`Change status, currently ${statusLabel(task.status)}`}
           className={cn(TRIGGER_CLASS, className)}
         >
           <StatusIcon status={task.status} />
@@ -153,7 +154,7 @@ export function StatusEditor({
         className="min-w-56"
         mobileTitle="Change status"
         onKeyDown={(event) => {
-          const status = statusForShortcut(event.key);
+          const status = statusForShortcut(event.key, statusIds);
           if (status !== null && isBareKey(event)) {
             event.preventDefault();
             select(status);
@@ -162,7 +163,7 @@ export function StatusEditor({
         }}
       >
         <MenuHeading label="Change status…" shortcut="S" />
-        {TASK_STATUSES.map((status, index) => (
+        {statusIds.map((status, index) => (
           <DropdownMenuItem
             key={status}
             aria-current={status === task.status ? "true" : undefined}
@@ -170,9 +171,9 @@ export function StatusEditor({
           >
             <PickerOption
               icon={<StatusIcon status={status} />}
-              label={STATUS_LABELS[status]}
+              label={statusLabel(status)}
               active={status === task.status}
-              shortcut={index + 1}
+              shortcut={index < 9 ? index + 1 : undefined}
             />
           </DropdownMenuItem>
         ))}
@@ -256,6 +257,7 @@ export function TaskContextMenu({
   onMoveToProject: (task: Task, projectId: string) => void;
   children: ReactNode;
 }) {
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(task.projectId);
   const toggleLabel = (labelId: string) => {
     const labelIds = task.labelIds.includes(labelId)
       ? task.labelIds.filter((id) => id !== labelId)
@@ -273,7 +275,7 @@ export function TaskContextMenu({
             <ContextMenuShortcut>S</ContextMenuShortcut>
           </ContextMenuSubTrigger>
           <ContextMenuSubContent className="min-w-48">
-            {TASK_STATUSES.map((status) => (
+            {statusIds.map((status) => (
               <ContextMenuItem
                 key={status}
                 aria-current={status === task.status ? "true" : undefined}
@@ -283,7 +285,7 @@ export function TaskContextMenu({
               >
                 <span className="flex flex-1 items-center gap-2">
                   <StatusIcon status={status} />
-                  {STATUS_LABELS[status]}
+                  {statusLabel(status)}
                   {status === task.status ? (
                     <span className="sr-only"> (current)</span>
                   ) : null}

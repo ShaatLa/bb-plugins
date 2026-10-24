@@ -38,6 +38,7 @@ function cursorForEmptyArrayFilter(
   const normalized = JSON.stringify({
     projectId,
     statuses: filter === "statuses" ? [] : null,
+    excludeStatuses: null,
     priorities: filter === "priorities" ? [] : null,
     labelIds: filter === "labelIds" ? [] : null,
     activeOnly: false,
@@ -65,7 +66,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(11);
+      ).toBe(12);
     } finally {
       await harness.dispose();
     }

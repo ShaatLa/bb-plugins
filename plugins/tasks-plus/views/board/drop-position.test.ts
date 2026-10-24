@@ -139,3 +139,12 @@ describe("applyBoardMove", () => {
     expect(next.todo.map((t) => t.id)).toEqual(["c"]);
   });
 });
+
+
+it("keeps configured custom columns and moves cards into and out of them", () => {
+  const columns = { backlog: [{ id: "a", status: "backlog" }], in_testing: [], todo: [], in_progress: [], in_review: [], done: [], canceled: [] };
+  expect(visibleBoardStatuses(columns)).toEqual(["backlog", "in_testing", "todo", "in_progress", "in_review", "done"]);
+  const moved = applyBoardMove(columns, "a", "in_testing", 0);
+  expect(moved.in_testing).toEqual([{ id: "a", status: "in_testing" }]);
+  expect(applyBoardMove(moved, "a", "done", 0).in_testing).toEqual([]);
+});

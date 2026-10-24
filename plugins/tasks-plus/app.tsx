@@ -1,25 +1,10 @@
-import { definePluginApp, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { Button } from "@/components/ui/button";
+import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { TasksSettings } from "./views/settings.js";
 import { TasksAppShell } from "./shell/app-shell.js";
 import { TasksSidebarAccessory } from "./shell/sidebar-accessory.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
-
-function TasksSettings() {
-  const navigate = useBbNavigate();
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">
-        Send tasks to existing threads from the task card. Busy threads receive the task in their queue using their current settings.
-      </p>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => navigate.toPluginPanel("tasks")}>Open Tasks</Button>
-        <Button variant="outline" onClick={() => navigate.toPluginPanel("tasks", { subPath: "manage" })}>Manage projects and presets</Button>
-      </div>
-    </div>
-  );
-}
 
 export default definePluginApp((app) => {
   app.slots.settingsSection({

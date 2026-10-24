@@ -1,3 +1,4 @@
+import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
   createTasksStore,
@@ -859,7 +860,7 @@ export function registerHandlers(
           }
           if (updated.status !== current.status) {
             bodies.push(
-              `Status changed to ${displayName(updated.status)} by ${input.authorName}`,
+              `Status changed to ${statusLabel(updated.status, store.tasks.getProject(updated.projectId)?.statuses)} by ${input.authorName}`,
             );
           }
           if (updated.priority !== current.priority) {
@@ -936,6 +937,7 @@ export function registerHandlers(
       const page = store.tasks.listTasksPage({
         projectId: input.projectId,
         statuses: input.statuses,
+        excludeStatuses: input.excludeStatuses,
         priorities: input.priorities,
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
@@ -965,7 +967,7 @@ export function registerHandlers(
         const statusChanged = moved.status !== current.status;
         if (statusChanged) {
           writeSystemComments(store, current.id, input.authorName, [
-            `Status changed to ${displayName(moved.status)} by ${input.authorName}`,
+            `Status changed to ${statusLabel(moved.status, store.tasks.getProject(moved.projectId)?.statuses)} by ${input.authorName}`,
           ]);
         }
         const completion = recordOwnerCompletion(

@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
   PluginCliError,
@@ -27,7 +28,6 @@ import {
   tasksRpcContract,
   PRESET_PERMISSION_MODES,
   TASK_PRIORITIES,
-  TASK_STATUSES,
   TASK_TYPES,
   EXECUTION_TARGETS,
   ULID_PATTERN,
@@ -1485,6 +1485,8 @@ export function registerTasksCli(
             },
           ],
           options: {
+            "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
+            machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
             folder: {
@@ -1521,7 +1523,7 @@ export function registerTasksCli(
               options: ["link-bb-project", "unlink-bb-project"],
             },
           ],
-          run(input) {
+          run(input, ctx) {
             return guard(async () => {
               const project = await resolveProject(
                 domain,
@@ -1531,7 +1533,15 @@ export function registerTasksCli(
               const folder = folderAddress
                 ? await resolveFolder(domain, folderAddress)
                 : undefined;
+              let statuses;
+              if (input.options["statuses-file"]) {
+                const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
+                const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
+                try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
+                catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
+              } else if (input.options.machine) throw new CliError("--machine requires --statuses-file");
               const changes = {
+                statuses,
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -1545,6 +1555,7 @@ export function registerTasksCli(
                 changes.name === undefined &&
                 changes.color === undefined &&
                 changes.folderId === undefined &&
+                changes.statuses === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -1562,6 +1573,7 @@ export function registerTasksCli(
                 changes.name !== undefined ||
                 changes.color !== undefined ||
                 changes.folderId !== undefined ||
+                changes.statuses !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -1580,6 +1592,7 @@ export function registerTasksCli(
               const updated = store.transaction(() =>
                 store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
+                  statuses: updateInput?.statuses,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -1842,6 +1855,7 @@ export function registerTasksCli(
               description:
                 "Read the description from this UTF-8 file on the invoking machine",
             },
+            status: { type: "string", placeholder: "status-id", description: "Project workflow status ID (default: backlog)" },
             priority: {
               type: "enum",
               values: TASK_PRIORITIES,
@@ -1932,6 +1946,7 @@ export function registerTasksCli(
               const created = tasksRpcContract.createTask.input.parse({
                 projectId: project.id,
                 title: input.options.title,
+                status: input.options.status,
                 template: input.options.template,
                 requesterThreadId:
                   input.options["requester-thread"] ??
@@ -2030,8 +2045,8 @@ export function registerTasksCli(
             },
             project: PROJECT_OPTION,
             status: {
-              type: "enum",
-              values: TASK_STATUSES,
+              type: "string",
+              placeholder: "status-id",
               repeatable: true,
               split: ",",
               aliases: ["statuses", "state"],
@@ -2039,8 +2054,8 @@ export function registerTasksCli(
                 "Keep only these workflow statuses; repeat the flag or pass a comma-separated list",
             },
             "exclude-status": {
-              type: "enum",
-              values: TASK_STATUSES,
+              type: "string",
+              placeholder: "status-id",
               repeatable: true,
               split: ",",
               description:
@@ -2124,10 +2139,12 @@ export function registerTasksCli(
                 return matches[0]!.id;
               });
               const excludedStatuses = new Set(input.options["exclude-status"]);
+              const knownStatuses = new Set([...DEFAULT_TASK_STATUSES.map((status) => status.id), ...projects.flatMap((entry) => (entry.statuses ?? DEFAULT_TASK_STATUSES).map((status) => status.id))]);
+              for (const value of [...input.options.status, ...excludedStatuses]) if (!knownStatuses.has(value)) throw new CliError(`Unknown task status: ${value}`, { code: "invalid_value" });
               const statuses = (
                 input.options.status.length > 0
                   ? input.options.status
-                  : TASK_STATUSES
+                  : [...new Set(projects.flatMap((entry) => (entry.statuses ?? DEFAULT_TASK_STATUSES).map((status) => status.id)))]
               ).filter((status) => !excludedStatuses.has(status));
               const limit = input.options.limit;
               const result = tasksRpcContract.listTasks.output.parse(
@@ -2406,8 +2423,8 @@ export function registerTasksCli(
               description: "Epic from the same project",
             },
             status: {
-              type: "enum",
-              values: TASK_STATUSES,
+              type: "string",
+              placeholder: "status-id",
               aliases: ["state"],
               description:
                 "New workflow status; in_review when implementation needs review, done when the criteria are met",

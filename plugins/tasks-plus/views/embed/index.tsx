@@ -1,3 +1,5 @@
+import { TaskStatusesProvider, useTaskStatuses } from "../../shell/task-statuses.js";
+import { statusLabel } from "../../shared/statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   PluginMessageDirectiveProps,
@@ -19,7 +21,7 @@ import {
 } from "../../shell/routes.js";
 import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
-import { PRIORITY_LABELS, STATUS_LABELS } from "../list/lib.js";
+import { PRIORITY_LABELS } from "../list/lib.js";
 import { StatusIcon } from "../list/icons.js";
 
 const TASK_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
@@ -135,10 +137,10 @@ function CardShell({
   );
 }
 
-function embedAriaLabel(task: Task): string {
+function embedAriaLabel(task: Task, label = statusLabel(task.status)): string {
   const parts = [
     `${task.key} — ${task.title}`,
-    STATUS_LABELS[task.status].toLowerCase(),
+    label.toLowerCase(),
   ];
   if (task.priority !== "none") {
     parts.push(`${PRIORITY_LABELS[task.priority].toLowerCase()} priority`);
@@ -146,7 +148,8 @@ function embedAriaLabel(task: Task): string {
   return `${parts.join(", ")} — open in side panel`;
 }
 
-export function TaskDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
+function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
+  const { label: taskStatusLabel } = useTaskStatuses();
   const navigate = useBbNavigate();
   const taskKey = attributes.key?.trim() ?? "";
   const fallbackTitle = attributes.title?.trim() || null;
@@ -246,7 +249,7 @@ export function TaskDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
         type="button"
         className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         title={`${task.key} · ${task.title}`}
-        aria-label={embedAriaLabel(task)}
+        aria-label={embedAriaLabel(task, taskStatusLabel(task.status, task.projectId))}
         onClick={openInSidePanel}
       >
         <span aria-hidden>
@@ -370,7 +373,12 @@ function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
 export function TaskEmbedPanel(props: PluginThreadPanelProps) {
   return (
     <TasksRefreshProvider>
-      <TaskEmbedPanelContent key={`${props.threadId}:${JSON.stringify(props.params)}`} {...props} />
+      <TaskStatusesProvider><TaskEmbedPanelContent key={`${props.threadId}:${JSON.stringify(props.params)}`} {...props} /></TaskStatusesProvider>
     </TasksRefreshProvider>
   );
+}
+
+export function TaskDirectiveCard(props: PluginMessageDirectiveProps) {
+  const content = <TaskDirectiveCardContent {...props} />;
+  return <TasksRefreshProvider>{TASK_KEY_PATTERN.test(props.attributes.key?.trim() ?? "") ? <TaskStatusesProvider>{content}</TaskStatusesProvider> : content}</TasksRefreshProvider>;
 }

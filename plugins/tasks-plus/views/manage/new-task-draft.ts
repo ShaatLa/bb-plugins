@@ -1,7 +1,7 @@
+import { taskStatusSchema } from "../../shared/statuses.js";
 import { z } from "zod";
 import {
   TASK_PRIORITIES,
-  TASK_STATUSES,
   TASK_TYPES,
   type TaskType,
   type TaskPriority,
@@ -29,7 +29,7 @@ const storedDraftSchema = z.object({
   projectId: z.string().nullable(),
   title: z.string(),
   description: z.string(),
-  status: z.enum(TASK_STATUSES),
+  status: taskStatusSchema,
   priority: z.enum(TASK_PRIORITIES),
   labelIds: z.array(z.string()),
   dueDate: z.string(),

@@ -1,8 +1,8 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useBbContext } from "@get-bb/plugin-sdk/app";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
-  TASK_STATUSES,
   TASK_TYPES,
   type TaskType,
   type Task,
@@ -53,7 +53,7 @@ import {
   storeNewTaskDraft,
   type NewTaskDraft,
 } from "./new-task-draft.js";
-import { PRIORITY_LABELS, STATUS_LABELS } from "../list/lib.js";
+import { PRIORITY_LABELS } from "../list/lib.js";
 
 const CHIP_TRIGGER =
   "h-7 w-auto gap-1.5 rounded-md px-2 text-xs text-muted-foreground";
@@ -219,6 +219,7 @@ export function NewTaskDialog({
     projectList[0] ??
     null;
   const effectiveProjectId = project?.id ?? null;
+  const { ids: statusIds, label: statusLabel } = useTaskStatuses(effectiveProjectId);
 
   useEffect(() => {
     if (!open || draft.projectId !== null || effectiveProjectId === null)
@@ -254,7 +255,7 @@ export function NewTaskDialog({
   );
 
   const changeProject = (id: string) =>
-    updateDraft(() => ({ projectId: id, labelIds: [], epicId: null }));
+    updateDraft((current) => ({ projectId: id, labelIds: [], epicId: null, status: (projectList.find((project) => project.id === id)?.statuses ?? []).some((status) => status.id === current.status) || ["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(current.status) ? current.status : "backlog" }));
 
   const toggleLabel = (labelId: string) =>
     updateDraft((current) => ({
@@ -327,6 +328,7 @@ export function NewTaskDialog({
     effectiveProjectId !== null &&
     title.trim().length > 0 &&
     !submitting &&
+    statusIds.includes(status) &&
     !labels.isLoading &&
     labels.data !== undefined &&
     labels.error === null &&
@@ -567,9 +569,9 @@ export function NewTaskDialog({
               dialogOpen={open}
               label="Status"
               value={status}
-              options={TASK_STATUSES.map((value) => ({
+              options={statusIds.map((value) => ({
                 value,
-                label: STATUS_LABELS[value],
+                label: statusLabel(value),
               }))}
               onValueChange={(status) => updateDraft(() => ({ status }))}
             />

@@ -1,3 +1,4 @@
+import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { useSettings } from "@get-bb/plugin-sdk/app";
@@ -246,7 +247,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
 export function TasksAppShell(props: PluginNavPanelProps) {
   return (
     <TasksRefreshProvider>
-      <TasksAppShellContent {...props} />
+      <TaskStatusesProvider><TasksAppShellContent {...props} /></TaskStatusesProvider>
     </TasksRefreshProvider>
   );
 }

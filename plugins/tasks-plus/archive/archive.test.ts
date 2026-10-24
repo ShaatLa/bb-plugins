@@ -24,6 +24,7 @@ import {
 } from "../attachments";
 import { exportProject, importProject, readProjectArchive } from ".";
 import { jsonText } from "./contract";
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
 
 const harnesses: FakePluginHarness[] = [];
@@ -364,6 +365,7 @@ describe("project archives", () => {
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     manifest.version = 1;
+    delete manifest.project.statuses;
     delete manifest.templates;
     await writeFile(manifestPath, jsonText(manifest));
     for (const id of manifest.taskIds) {
@@ -395,6 +397,7 @@ describe("project archives", () => {
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
     manifest.version = 2;
+    delete manifest.project.statuses;
     await writeFile(path, jsonText(manifest));
     const taskPath = join(out, "tasks", `${source.task.id}.json`);
     const record = JSON.parse(await readFile(taskPath, "utf8"));
@@ -752,7 +755,7 @@ describe("project archives", () => {
   });
 });
 
-it("round-trips owner execution and requester by ID in v5 and defaults old archives to agent", async () => {
+it("round-trips owner execution and requester by ID in the latest format and defaults old archives to agent", async () => {
   const source = await seed();
   source.store.tasks.updateTask(source.task.id, {
     executionTarget: "owner",
@@ -762,7 +765,7 @@ it("round-trips owner execution and requester by ID in v5 and defaults old archi
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(5);
+  expect(manifest.version).toBe(6);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -770,6 +773,7 @@ it("round-trips owner execution and requester by ID in v5 and defaults old archi
   );
   expect(target.harness.sdk.callsTo("threads.send")).toHaveLength(0);
   manifest.version = 4;
+  delete manifest.project.statuses;
   await writeFile(manifestPath, jsonText(manifest));
   for (const id of manifest.taskIds) {
     const path = join(out, "tasks", `${id}.json`);
@@ -784,4 +788,33 @@ it("round-trips owner execution and requester by ID in v5 and defaults old archi
     executionTarget: "agent",
     requesterThreadId: null,
   });
+});
+
+
+it("round-trips configurable project statuses, their order and custom task stages in v6", async () => {
+  const source = await seed();
+  const statuses = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
+  statuses[2]!.name = "Development";
+  statuses.splice(4, 0, { id: "in_testing", name: "In testing" });
+  source.store.tasks.updateProject(source.project.id, { statuses });
+  source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
+  const out = join(await directory(), "statuses-v6");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
+  expect(manifest.version).toBe(6);
+  expect(manifest.project.statuses).toEqual(statuses);
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
+  const again = join(await directory(), "again");
+  await exportProject(target.bb, target.store, source.project.id, again);
+  expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
+  for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
+  const prior = target.store.tasks.getProject(source.project.id);
+  manifest.project.statuses = DEFAULT_TASK_STATUSES;
+  await writeFile(join(out, "project.json"), jsonText(manifest));
+  await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow(/status not defined/);
+  expect(target.store.tasks.getProject(source.project.id)).toEqual(prior);
+  if (process.env.TASKS_PLUS_SAMPLE_DIR) await exportProject(source.bb, source.store, source.project.id, process.env.TASKS_PLUS_SAMPLE_DIR);
 });

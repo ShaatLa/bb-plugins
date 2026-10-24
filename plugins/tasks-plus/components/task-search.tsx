@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../shell/task-statuses.js";
 import { useState } from "react";
 import { listAllTasks, useTasksQuery } from "../shell/data.js";
 import { useTasksNavigation } from "../shell/routes.js";
@@ -15,9 +16,9 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { StatusIcon } from "../views/list/icons.js";
-import { STATUS_LABELS } from "../views/list/lib.js";
 
 export function TaskSearch({ projectId }: { projectId: string | null }) {
+  const { label: statusLabel } = useTaskStatuses(projectId);
   const navigation = useTasksNavigation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -110,7 +111,7 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
                         : task.parentTaskId
                           ? "Sub-task"
                           : "Task"}{" "}
-                      · {STATUS_LABELS[task.status]}
+                      · {statusLabel(task.status, task.projectId)}
                     </span>
                   </span>
                 </CommandItem>

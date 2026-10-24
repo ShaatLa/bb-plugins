@@ -23,13 +23,14 @@ export function StatusIcon({
   status: TaskStatus;
   className?: string;
 }) {
-  const color = STATUS_COLORS[status];
+  const color = STATUS_COLORS[status] ?? "var(--timeline-accent)";
   return (
     <svg
       viewBox="0 0 14 14"
       aria-hidden
       className={cn("size-3.5 shrink-0", className)}
     >
+      {!["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(status) ? <circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.6" /> : null}
       {status === "backlog" ? (
         <circle
           cx="7"

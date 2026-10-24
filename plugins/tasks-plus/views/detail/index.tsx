@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
@@ -25,7 +26,6 @@ import {
   type DescriptionSaver,
 } from "./description-save.js";
 import { StatusIcon } from "./meta.js";
-import { STATUS_LABELS } from "../list/lib.js";
 import {
   InlineProperties,
   PropertiesRail,
@@ -185,6 +185,7 @@ function SubTasksSection({
   onCreate: (title: string) => Promise<boolean>;
 }) {
   const navigation = useTasksNavigation();
+  const { label: statusLabel } = useTaskStatuses(task.projectId);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -208,7 +209,7 @@ function SubTasksSection({
           key={subtask.id}
           type="button"
           className="flex h-8 w-full items-center gap-2 border-b border-border-hairline px-0.5 text-left text-sm hover:bg-state-hover"
-          title={STATUS_LABELS[subtask.status]}
+          title={statusLabel(subtask.status)}
           onClick={() => navigation.go({ kind: "task", taskKey: subtask.key })}
         >
           <StatusIcon status={subtask.status} />

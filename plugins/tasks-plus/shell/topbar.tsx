@@ -1,3 +1,4 @@
+import { useTaskStatuses } from "./task-statuses.js";
 import { useCallback, useMemo } from "react";
 import { experimental_useAppPanel } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
@@ -29,8 +30,9 @@ interface PagerPosition {
 export function pagerPosition(
   tasks: readonly Task[],
   taskKey: string,
+  statuses?: readonly string[],
 ): PagerPosition | null {
-  const ordered = groupTasksByStatus(tasks).flatMap((group) => group.tasks);
+  const ordered = groupTasksByStatus(tasks, statuses).flatMap((group) => group.tasks);
   const wanted = taskKey.toUpperCase();
   const index = ordered.findIndex((task) => task.key.toUpperCase() === wanted);
   if (index === -1) return null;
@@ -51,6 +53,7 @@ function TaskPager({
   projectId: string | null;
   onNavigate: (route: TasksRoute) => void;
 }) {
+  const { ids: statusIds } = useTaskStatuses(projectId);
   const siblings = useTasksQuery(
     async (rpc) =>
       listAllTasks(rpc, {
@@ -61,8 +64,8 @@ function TaskPager({
     [projectId],
   );
   const position = useMemo(
-    () => (siblings.data ? pagerPosition(siblings.data, taskKey) : null),
-    [siblings.data, taskKey],
+    () => (siblings.data ? pagerPosition(siblings.data, taskKey, statusIds) : null),
+    [siblings.data, taskKey, statusIds],
   );
   if (!position) return null;
   const step = (key: string | null) => {

@@ -6,14 +6,9 @@ import {
   TASKS_PAGE_MAX_LIMIT,
 } from "./pagination.js";
 
-export const TASK_STATUSES = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "in_review",
-  "done",
-  "canceled",
-] as const;
+import { taskStatusSchema, taskStatusesSchema } from "./statuses.js";
+export { TASK_STATUSES } from "./statuses.js";
+export type { TaskStatusDefinition } from "./statuses.js";
 
 export const EXECUTION_TARGETS = ["agent", "owner"] as const;
 export type ExecutionTarget = (typeof EXECUTION_TARGETS)[number];
@@ -77,7 +72,6 @@ const dueDateSchema = z
       parsed.toISOString().slice(0, 10) === value
     );
   }, "must be a valid calendar date in YYYY-MM-DD format");
-const taskStatusSchema = z.enum(TASK_STATUSES);
 const shaSchema = z
   .string()
   .regex(/^[a-fA-F0-9]{40}$/, "must be a full 40-character git SHA")
@@ -290,6 +284,7 @@ export const projectSchema = z
     name: z.string(),
     prefix: projectPrefixSchema,
     nextTaskNumber: z.number().int().positive(),
+    statuses: taskStatusesSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -525,6 +520,7 @@ const updateProjectInputSchema = z
   .object({
     projectId: idSchema,
     name: nonBlankStringSchema.optional(),
+    statuses: taskStatusesSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -532,6 +528,7 @@ const updateProjectInputSchema = z
   .strict()
   .refine(
     (input) =>
+      input.statuses !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||
@@ -815,6 +812,7 @@ export const tasksRpcContract = {
       .object({
         projectId: idSchema.optional(),
         statuses: z.array(taskStatusSchema).optional(),
+        excludeStatuses: z.array(taskStatusSchema).optional(),
         priorities: z.array(taskPrioritySchema).optional(),
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
@@ -1056,7 +1054,7 @@ export type TasksRpcContract = typeof tasksRpcContract;
 export type Folder = z.infer<typeof folderSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
-export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export type Label = z.infer<typeof labelSchema>;
 export type Comment = z.infer<typeof commentSchema>;
