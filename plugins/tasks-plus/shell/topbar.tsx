@@ -167,7 +167,6 @@ interface TasksTopbarProps {
   pagerScope: { projectId: string | null } | null;
   onNavigate: (route: TasksRoute) => void;
   onNewTask: () => void;
-  onBack: () => void;
 }
 
 export function TasksTopbar({
@@ -176,7 +175,6 @@ export function TasksTopbar({
   pagerScope,
   onNavigate,
   onNewTask,
-  onBack,
 }: TasksTopbarProps) {
   const appPanel = experimental_useAppPanel();
   const project = useMemo(() => {
@@ -232,15 +230,6 @@ export function TasksTopbar({
       case "task":
         return (
           <span className="flex min-w-0 items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-6 shrink-0 max-md:pointer-coarse:size-9"
-              aria-label="Back (Esc)"
-              onClick={onBack}
-            >
-              <Icon name="ChevronLeft" className="size-4" />
-            </Button>
             {project ? (
               <button
                 type="button"
@@ -261,15 +250,6 @@ export function TasksTopbar({
                 <span className="truncate font-medium">{project.name}</span>
               </button>
             ) : null}
-            {project ? (
-              <Icon
-                name="ChevronRight"
-                className="hidden size-3 shrink-0 text-muted-foreground @md:block"
-              />
-            ) : null}
-            <span className="min-w-0 truncate font-medium text-muted-foreground">
-              {route.taskKey}
-            </span>
           </span>
         );
     }

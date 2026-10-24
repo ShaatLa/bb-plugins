@@ -46,9 +46,11 @@ function hasOpenOverlay(): boolean {
 function RouteOutlet({
   route,
   boardUsable,
+  onBack,
 }: {
   route: ResolvedTasksRoute;
   boardUsable: boolean;
+  onBack: () => void;
 }) {
   switch (route.kind) {
     case "all":
@@ -58,7 +60,7 @@ function RouteOutlet({
     case "manage":
       return <ManagePanel />;
     case "task":
-      return <TaskRouteView taskKey={route.taskKey} />;
+      return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
     case "project":
       return route.view === "board" && boardUsable ? (
         <BoardView projectId={route.projectId} />
@@ -68,7 +70,13 @@ function RouteOutlet({
   }
 }
 
-function TaskRouteView({ taskKey }: { taskKey: string }) {
+function TaskRouteView({
+  taskKey,
+  onBack,
+}: {
+  taskKey: string;
+  onBack: () => void;
+}) {
   const navigation = useTasksNavigation();
   const onCanonicalKey = useCallback(
     (canonicalKey: string) => {
@@ -86,6 +94,7 @@ function TaskRouteView({ taskKey }: { taskKey: string }) {
       key={taskKey}
       taskKey={taskKey}
       onCanonicalKey={onCanonicalKey}
+      onBack={onBack}
     />
   );
 }
@@ -202,7 +211,6 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
           }
           onNavigate={navigation.go}
           onNewTask={() => setNewTaskOpen(true)}
-          onBack={backFromTask}
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "manage" ? (
@@ -218,7 +226,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
               }
             />
           ) : (
-            <RouteOutlet route={route} boardUsable={boardUsable} />
+            <RouteOutlet route={route} boardUsable={boardUsable} onBack={backFromTask} />
           )}
         </div>
       </main>
