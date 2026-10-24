@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
@@ -21,6 +21,9 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 };
 Element.prototype.scrollIntoView ??= () => {};
+window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
+Element.prototype.setPointerCapture ??= () => {};
+
 const app = await loadPluginApp(() => import("../app"));
 afterEach(() => {
   cleanup();
@@ -104,13 +107,28 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     await waitFor(() =>
       expect(
         settings
-          .getByRole("button", { name: "Move In testing up" })
+          .getByRole("button", { name: "Move In testing" })
           .hasAttribute("disabled"),
       ).toBe(false),
     );
-    fireEvent.click(
-      settings.getByRole("button", { name: "Move In testing up" }),
+    const handle = settings.getByRole("button", { name: "Move In testing" });
+    const fieldset = handle.closest("fieldset")!;
+    for (const [index, row] of Array.from(
+      fieldset.querySelectorAll<HTMLElement>("[data-status-id]"),
+    ).entries()) {
+      vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
+        const currentIndex = Array.from(
+          fieldset.querySelectorAll("[data-status-id]"),
+        ).indexOf(row);
+        return { top: currentIndex * 40, height: 28 } as DOMRect;
+      });
+    }
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1 });
+    fireEvent.pointerMove(fieldset, { clientY: 134, pointerId: 1 });
+    expect(store.tasks.getProject(project.id)?.statuses?.[3]?.id).toBe(
+      "in_review",
     );
+    fireEvent.pointerUp(fieldset, { pointerId: 1 });
     await waitFor(() =>
       expect(
         store.tasks
@@ -214,21 +232,38 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
     expect(
       settings.queryByRole("button", { name: "Remove Backlog" }),
     ).toBeNull();
+    const moveBacklog = settings.getByRole("button", { name: "Move Backlog" });
+    moveBacklog.focus();
+    fireEvent.keyDown(moveBacklog, { key: " " });
+    fireEvent.keyDown(moveBacklog, { key: "ArrowUp" });
+    fireEvent.keyDown(moveBacklog, { key: "ArrowDown" });
+    expect(store.tasks.getProject(project.id)?.statuses?.[0]?.id).toBe(
+      "backlog",
+    );
+    fireEvent.keyDown(moveBacklog, { key: "Escape" });
     expect(
-      settings
-        .getByRole("button", { name: "Move Backlog up" })
-        .hasAttribute("disabled"),
-    ).toBe(true);
-    expect(
-      settings
-        .getByRole("button", { name: "Move Canceled down" })
-        .hasAttribute("disabled"),
-    ).toBe(true);
-    backlog.focus();
-    fireEvent.change(backlog, { target: { value: "Incoming" } });
-    fireEvent.keyDown(backlog, { key: "Enter" });
+      settings.getAllByRole("textbox")[0]?.getAttribute("aria-label"),
+    ).toBe("Status name backlog");
+    fireEvent.keyDown(moveBacklog, { key: " " });
+    fireEvent.keyDown(moveBacklog, { key: "ArrowDown" });
+    fireEvent.keyDown(moveBacklog, { key: "Enter" });
     await waitFor(() =>
-      expect(store.tasks.getProject(project.id)?.statuses?.[0]).toEqual({
+      expect(store.tasks.getProject(project.id)?.statuses?.[0]?.id).toBe(
+        "todo",
+      ),
+    );
+    const renamedBacklog = settings.getByRole("textbox", {
+      name: "Status name backlog",
+    });
+    renamedBacklog.focus();
+    fireEvent.change(renamedBacklog, { target: { value: "Incoming" } });
+    fireEvent.keyDown(renamedBacklog, { key: "Enter" });
+    await waitFor(() =>
+      expect(
+        store.tasks
+          .getProject(project.id)
+          ?.statuses?.find((status) => status.id === "backlog"),
+      ).toEqual({
         id: "backlog",
         name: "Incoming",
       }),
