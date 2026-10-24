@@ -246,6 +246,6 @@ function DashboardPage() {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({
-    id: "ci-dashboard", title: "CI Dashboard", icon: "Package", path: "dashboard", component: DashboardPage,
+    id: "ci-dashboard", title: "CI Dashboard", icon: "delivery-dashboard/pipeline", path: "dashboard", component: DashboardPage,
   });
 });
