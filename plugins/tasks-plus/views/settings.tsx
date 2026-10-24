@@ -91,7 +91,7 @@ function ProjectStatuses({ project }: { project: Project }) {
         Changes save automatically. System statuses stay; statuses used by tasks
         cannot be deleted.
       </p>
-      <fieldset disabled={saving} className="space-y-1.5">
+      <fieldset disabled={saving} className="w-80 min-w-0 max-w-full space-y-1.5">
         {statuses.map((status) => (
           <div key={status.id} className="flex items-center gap-1.5">
             <Input
