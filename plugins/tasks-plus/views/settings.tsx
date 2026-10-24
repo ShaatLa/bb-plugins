@@ -6,7 +6,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +32,23 @@ function ProjectStatuses({ project }: { project: Project }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [didSave, setDidSave] = useState(false);
+  const drag = useRef<{
+    id: string;
+    initial: TaskStatusDefinition[];
+    current: TaskStatusDefinition[];
+    pointerId: number | null;
+  } | null>(null);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const dragInstructions = useId();
+  const fieldset = useRef<HTMLFieldSetElement>(null);
+  useLayoutEffect(() => {
+    if (draggedId)
+      fieldset.current
+        ?.querySelector<HTMLButtonElement>(
+          `[data-status-id="${draggedId}"] button`,
+        )
+        ?.focus({ preventScroll: true });
+  }, [draggedId, statuses]);
   const save = async (next: TaskStatusDefinition[]) => {
     if (JSON.stringify(next) === JSON.stringify(saved)) return;
     setSaving(true);
@@ -85,10 +102,27 @@ function ProjectStatuses({ project }: { project: Project }) {
     );
     void save(next);
   };
-  const move = (index: number, delta: number) => {
-    const next = [...statuses];
-    [next[index], next[index + delta]] = [next[index + delta]!, next[index]!];
-    void save(next);
+  const startDrag = (id: string, pointerId: number | null) => {
+    drag.current = { id, initial: statuses, current: statuses, pointerId };
+    setDraggedId(id);
+  };
+  const moveDrag = (target: number) => {
+    const current = drag.current;
+    if (!current || target < 0 || target >= current.current.length) return;
+    const next = [...current.current];
+    const index = next.findIndex((status) => status.id === current.id);
+    if (index === target) return;
+    next.splice(target, 0, next.splice(index, 1)[0]!);
+    current.current = next;
+    setStatuses(next);
+  };
+  const finishDrag = (commit: boolean) => {
+    const current = drag.current;
+    if (!current) return;
+    drag.current = null;
+    setDraggedId(null);
+    setStatuses(current.initial);
+    if (commit) void save(current.current);
   };
   return (
     <div className="max-w-2xl space-y-2">
@@ -96,12 +130,92 @@ function ProjectStatuses({ project }: { project: Project }) {
         Changes save automatically. System statuses stay; statuses used by tasks
         cannot be deleted.
       </p>
+      <p id={dragInstructions} className="sr-only">
+        Drag to reorder. With the keyboard, press Space to pick up, use arrow
+        keys, then Space or Enter to save. Escape cancels.
+      </p>
+      <p className="sr-only" role="status">
+        {draggedId
+          ? `${statuses.find((status) => status.id === draggedId)?.name}, position ${statuses.findIndex((status) => status.id === draggedId) + 1} of ${statuses.length}`
+          : ""}
+      </p>
       <fieldset
+        ref={fieldset}
+        onPointerMove={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          const rows = Array.from(
+            event.currentTarget.querySelectorAll<HTMLElement>(
+              "[data-status-id]",
+            ),
+          );
+          let target = 0;
+          let distance = Infinity;
+          rows.forEach((row, rowIndex) => {
+            const rect = row.getBoundingClientRect();
+            const nextDistance = Math.abs(
+              event.clientY - (rect.top + rect.height / 2),
+            );
+            if (nextDistance < distance) {
+              distance = nextDistance;
+              target = rowIndex;
+            }
+          });
+          moveDrag(target);
+        }}
+        onPointerUp={(event) => {
+          if (drag.current?.pointerId === event.pointerId) finishDrag(true);
+        }}
+        onPointerCancel={() => finishDrag(false)}
+        onLostPointerCapture={() => finishDrag(false)}
         disabled={saving}
         className="w-80 min-w-0 max-w-full space-y-1.5"
       >
         {statuses.map((status, index) => (
-          <div key={status.id} className="flex items-center gap-1.5">
+          <div
+            key={status.id}
+            data-status-id={status.id}
+            className={`flex items-center gap-1.5 rounded ${draggedId === status.id ? "bg-state-hover ring-1 ring-border" : ""}`}
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 touch-none cursor-grab active:cursor-grabbing"
+              aria-label={`Move ${status.name}`}
+              aria-describedby={dragInstructions}
+              aria-pressed={draggedId === status.id}
+              disabled={adding}
+              onPointerDown={(event) => {
+                if (event.button !== 0 || drag.current) return;
+                event.preventDefault();
+                fieldset.current!.setPointerCapture(event.pointerId);
+                startDrag(status.id, event.pointerId);
+              }}
+              onBlur={() => {
+                if (drag.current?.pointerId === null) finishDrag(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  finishDrag(false);
+                } else if (event.key === " " || event.key === "Enter") {
+                  event.preventDefault();
+                  if (drag.current) finishDrag(true);
+                  else startDrag(status.id, null);
+                } else if (
+                  drag.current?.pointerId === null &&
+                  (event.key === "ArrowUp" || event.key === "ArrowDown")
+                ) {
+                  event.preventDefault();
+                  moveDrag(index + (event.key === "ArrowUp" ? -1 : 1));
+                }
+              }}
+            >
+              <Icon
+                name="GripVertical"
+                className="size-3.5 text-muted-foreground"
+              />
+            </Button>
             <Input
               aria-label={`Status name ${status.id}`}
               className="h-7 min-w-0 flex-1 text-xs"
@@ -115,7 +229,9 @@ function ProjectStatuses({ project }: { project: Project }) {
                   ),
                 )
               }
-              onBlur={() => void save(statuses)}
+              onBlur={() => {
+                if (!drag.current) void save(statuses);
+              }}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key === "Enter") event.currentTarget.blur();
@@ -125,30 +241,6 @@ function ProjectStatuses({ project }: { project: Project }) {
                 }
               }}
             />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0"
-              aria-label={`Move ${status.name} up`}
-              disabled={index === 0}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => move(index, -1)}
-            >
-              <Icon name="ChevronUp" className="size-3.5" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0"
-              aria-label={`Move ${status.name} down`}
-              disabled={index === statuses.length - 1}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => move(index, 1)}
-            >
-              <Icon name="ChevronDown" className="size-3.5" />
-            </Button>
             {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
               <span className="size-7 shrink-0" />
             ) : (
@@ -174,7 +266,7 @@ function ProjectStatuses({ project }: { project: Project }) {
               autoFocus
               aria-label="New status name"
               placeholder="Status name"
-              className="h-7 min-w-0 flex-1 text-xs"
+              className="ml-[34px] h-7 min-w-0 flex-1 text-xs"
               value={name}
               onChange={(event) => setName(event.target.value)}
               onBlur={add}
