@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { presets, resolveRange, type RangeInput } from "./date-range";
+import { minimumDate, presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { DashboardData, rpcContract } from "./server";
 import { Button } from "./components/ui/button";
@@ -16,6 +16,10 @@ const snapshots = new Map<string, DashboardSnapshot>();
 let cacheGeneration = 0;
 const snapshotKey = (configuration: string, selection: string) => JSON.stringify([configuration, selection]);
 function rememberSnapshot(snapshot: DashboardSnapshot) {
+  const earliest = minimumDate();
+  for (const [key, cached] of snapshots) {
+    if (cached.result.repositories.some((repo) => repo.range.since.slice(0, 10) < earliest)) snapshots.delete(key);
+  }
   const key = snapshotKey(snapshot.configuration, snapshot.selection);
   snapshots.delete(key);
   snapshots.set(key, snapshot);
@@ -34,12 +38,13 @@ export function Dashboard() {
   const selection = JSON.stringify(range);
   const [mode, setMode] = useState(() => range && "days" in range ? String(range.days) : "custom");
   const today = new Date().toISOString().slice(0, 10);
+  const earliest = minimumDate();
   const [start, setStart] = useState(() => range && "start" in range ? range.start : today);
   const [end, setEnd] = useState(() => range && "end" in range ? range.end : today);
   const [rangeError, setRangeError] = useState<string | null>(null);
   function applyRange(next: RangeInput) {
     try { resolveRange(next); }
-    catch { setRangeError("Choose valid dates from 1970 through today, with the start on or before the end."); return; }
+    catch { setRangeError("Choose valid dates within the past year through today, with the start on or before the end."); return; }
     lastSelection = next;
     const cached = snapshots.get(snapshotKey(configuration, JSON.stringify(next)));
     if (cached) {
@@ -173,8 +178,8 @@ export function Dashboard() {
         </Button>
       </div>
       {mode === "custom" && <div className="flex flex-wrap items-end gap-3">
-        <label className="space-y-1 text-xs text-muted-foreground"><span className="block">From (UTC)</span><input aria-label="From date" type="date" min="1970-01-01" max={end || today} value={start} onChange={(event) => setStart(event.target.value)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>
-        <label className="space-y-1 text-xs text-muted-foreground"><span className="block">Through (UTC)</span><input aria-label="Through date" type="date" min={start || "1970-01-01"} max={today} value={end} onChange={(event) => setEnd(event.target.value)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>
+        <label className="space-y-1 text-xs text-muted-foreground"><span className="block">From (UTC)</span><input aria-label="From date" type="date" min={earliest} max={end && end < today ? end : today} value={start} onChange={(event) => setStart(event.target.value)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>
+        <label className="space-y-1 text-xs text-muted-foreground"><span className="block">Through (UTC)</span><input aria-label="Through date" type="date" min={start > earliest ? start : earliest} max={today} value={end} onChange={(event) => setEnd(event.target.value)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>
         <Button variant="outline" size="sm" onClick={() => applyRange({ start, end })}>Apply dates</Button>
       </div>}
       {rangeError && <p role="alert" className="text-sm text-destructive">{rangeError}</p>}

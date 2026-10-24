@@ -42,6 +42,7 @@ test("empty history remains empty and invalid intervals never make requests", as
   expect((await loadCardDetails(range, undefined, signal())).items).toEqual([]);
   fetchMock.mockClear();
   await expect(loadCardDetails({ ...range, since: range.until, until: range.since }, undefined, signal())).rejects.toThrow("Invalid statistics");
+  await expect(loadCardDetails({ ...range, since: "2025-10-19T23:59:59.999Z" }, undefined, signal())).rejects.toThrow("Invalid statistics");
   expect(fetchMock).not.toHaveBeenCalled();
 });
 

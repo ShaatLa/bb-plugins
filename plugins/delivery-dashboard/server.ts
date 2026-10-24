@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { rangeInputSchema, rangeSchema, resolveRange, type RangeInput, type DateRange } from "./date-range";
+import { minimumDate, rangeInputSchema, rangeSchema, resolveRange, type RangeInput, type DateRange } from "./date-range";
 import { historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, type HistoricalRecords, type Metrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { dispatchProduction, productionTarget } from "./production";
@@ -206,6 +206,7 @@ export default function plugin(bb: BbPluginApi) {
       finish = Math.max(finish, Date.parse(source.coverage.until));
       if (Date.parse(range.since) >= Date.now() - 90 * 86_400_000) start = Math.max(start, Date.now() - 90 * 86_400_000);
     }
+    start = Math.max(start, Date.parse(minimumDate()));
     const coverage: DateRange = { since: new Date(Math.floor(start / 86_400_000) * 86_400_000).toISOString(), until: new Date(finish).toISOString(), label: "repository history", bucketMs: 86_400_000 };
     let records: HistoricalRecords | undefined;
     const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, historyRange: coverage, previous: source?.records, partitionCi: true, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
@@ -262,7 +263,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     async interval({ repository, since, until }) {
       const start = Date.parse(since), end = Date.parse(until);
-      if (start < 0 || start > end || end > Date.now()) throw new Error("Invalid statistics interval.");
+      if (start < Date.parse(minimumDate()) || start > end || end > Date.now()) throw new Error("Invalid statistics interval.");
       const { token: override } = await settings.get();
       const { token } = await resolveGithubToken(override, controller.signal);
       return loadMetrics(repository, token, controller.signal, {
