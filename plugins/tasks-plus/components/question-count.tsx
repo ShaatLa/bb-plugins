@@ -22,14 +22,20 @@ export function useQuestionCounts(tasks: readonly Task[]) {
   );
 }
 
-export function QuestionCount({ count = 0 }: { count?: number }) {
+export function QuestionCount({
+  count = 0,
+  title,
+}: {
+  count?: number;
+  title?: string;
+}) {
   if (!count) return null;
   const label = `${count} unanswered ${count === 1 ? "question" : "questions"}`;
   return (
     <span
       role="img"
       aria-label={label}
-      title={label}
+      title={title ?? label}
       className="inline-flex shrink-0 items-center gap-1 px-1.5 py-px text-xs tabular-nums text-warning"
     >
       <Icon name="FileQuestion" className="size-3" aria-hidden />
