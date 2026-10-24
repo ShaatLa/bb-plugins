@@ -125,7 +125,10 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         prompt: input.prompt,
         mode: input.mode,
         allowOther: input.allowOther ?? false,
-        options: input.options.map((label) => ({ id: createUlid(), label })),
+        options: input.options.map((option) => ({
+          ...(typeof option === "string" ? { label: option } : option),
+          id: createUlid(),
+        })),
         selectedOptionIds: [],
         answeredBy: null,
         revision: 1,
@@ -218,6 +221,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         )
           throw new Error("Option ID does not belong to this question");
         const options = input.options.map((option) => ({
+          ...option,
           id: option.id ?? createUlid(),
           label: option.label.trim(),
         }));

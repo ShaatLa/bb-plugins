@@ -56,6 +56,141 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("sets and clears recommendations through stable IDs without selecting an answer", async () => {
+    const { cli, task, structured, harness } = setup();
+    const { question } = await cli(
+      "question",
+      "add",
+      task.key,
+      "--prompt",
+      "Choose?",
+      "--option",
+      "A",
+      "--option",
+      "B",
+      "--recommend",
+      "2",
+      "--recommendation-reason",
+      "Less work",
+      "--json",
+    );
+    expect(question.options[1]).toMatchObject({
+      recommended: true,
+      recommendationReason: "Less work",
+    });
+    expect(question.selectedOptionIds).toEqual([]);
+    expect(question.answeredBy).toBeNull();
+    const { question: edited } = await cli(
+      "question",
+      "update",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "1",
+      "--recommend",
+      question.options[0].id,
+      "--recommendation-reason",
+      "Safer",
+      "--json",
+    );
+    expect(edited.options[0]).toMatchObject({
+      id: question.options[0].id,
+      recommended: true,
+      recommendationReason: "Safer",
+    });
+    expect(edited.options[1].recommended).toBeUndefined();
+    expect(edited.options[1].recommendationReason).toBeUndefined();
+    expect(edited.history[0].options[1]).toMatchObject({
+      recommended: true,
+      recommendationReason: "Less work",
+    });
+    const { question: cleared } = await cli(
+      "question",
+      "update",
+      task.key,
+      "--question",
+      question.id,
+      "--revision",
+      "2",
+      "--no-recommendation",
+      "--json",
+    );
+    expect(
+      cleared.options.every(
+        (option: { recommended?: boolean }) => !option.recommended,
+      ),
+    ).toBe(true);
+    for (const args of [
+      ["--recommend", "3"],
+      ["--recommend", "1", "--recommend", "2"],
+      ["--recommendation-reason", "No choice"],
+    ]) {
+      expect(
+        (
+          await harness.runCli([
+            "question",
+            "add",
+            task.key,
+            "--prompt",
+            "Invalid?",
+            "--option",
+            "A",
+            "--option",
+            "B",
+            ...args,
+          ])
+        ).exitCode,
+      ).not.toBe(0);
+    }
+    const invalid = {
+      taskId: task.id,
+      prompt: "Invalid?",
+      mode: "single",
+      options: [{ label: "A", recommendationReason: "Unmarked" }, "B"],
+    };
+    await expect(harness.callRpc("createQuestion", invalid)).rejects.toThrow(
+      "requires recommended=true",
+    );
+    await expect(
+      harness.callRpc("createQuestion", {
+        ...invalid,
+        options: [
+          {
+            label: "A",
+            recommended: true,
+            recommendationReason: "ghp_" + "a".repeat(36),
+          },
+          "B",
+        ],
+      }),
+    ).rejects.toThrow("question");
+    expect(structured.listQuestions(task.id)).toHaveLength(1);
+    const { question: multi } = await cli(
+      "question",
+      "add",
+      task.key,
+      "--prompt",
+      "Platforms?",
+      "--option",
+      "A",
+      "--option",
+      "B",
+      "--multiple",
+      "--recommend",
+      "1",
+      "--recommend",
+      "2",
+      "--json",
+    );
+    expect(
+      multi.options.every(
+        (option: { recommended?: boolean }) => option.recommended,
+      ),
+    ).toBe(true);
+    expect(multi.selectedOptionIds).toEqual([]);
+  });
+
   it("reads replacement options on the CLI host and keeps existing option IDs", async () => {
     const { cli, harness, task, structured } = setup();
     const { question } = await structured.handlers.createQuestion({

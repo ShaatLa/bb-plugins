@@ -159,16 +159,20 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
 ]);
 export type Evidence = z.infer<typeof evidenceSchema>;
 
+const questionOptionInputSchema = z
+  .object({
+    label: nonBlankStringSchema.max(500),
+    recommended: z.boolean().optional(),
+    recommendationReason: nonBlankStringSchema.max(2000).optional(),
+  })
+  .strict();
+
 const questionStateSchema = z
   .object({
     prompt: nonBlankStringSchema.max(10_000),
     mode: z.enum(["single", "multiple"]),
     options: z
-      .array(
-        z
-          .object({ id: idSchema, label: nonBlankStringSchema.max(500) })
-          .strict(),
-      )
+      .array(questionOptionInputSchema.extend({ id: idSchema }))
       .min(2)
       .max(20),
     allowOther: z.boolean().default(false),
@@ -181,6 +185,23 @@ const questionStateSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const ids = value.options.map((option) => option.id);
+    if (
+      value.options.some(
+        (option) => option.recommendationReason && !option.recommended,
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "A recommendation reason requires recommended=true",
+      });
+    if (
+      value.mode === "single" &&
+      value.options.filter((option) => option.recommended).length > 1
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Single-choice questions allow only one recommended option",
+      });
     if (
       new Set(ids).size !== ids.length ||
       new Set(value.options.map((option) => option.label)).size !== ids.length
@@ -683,7 +704,12 @@ export const tasksRpcContract = defineRpcContract({
         prompt: nonBlankStringSchema.max(10_000),
         mode: z.enum(["single", "multiple"]).default("single"),
         allowOther: z.boolean().optional(),
-        options: z.array(nonBlankStringSchema.max(500)).min(2).max(20),
+        options: z
+          .array(
+            z.union([nonBlankStringSchema.max(500), questionOptionInputSchema]),
+          )
+          .min(2)
+          .max(20),
       })
       .strict(),
     output: z.object({ question: questionSchema }).strict(),
@@ -715,14 +741,7 @@ export const tasksRpcContract = defineRpcContract({
         prompt: nonBlankStringSchema.max(10_000),
         mode: z.enum(["single", "multiple"]),
         options: z
-          .array(
-            z
-              .object({
-                id: idSchema.optional(),
-                label: nonBlankStringSchema.max(500),
-              })
-              .strict(),
-          )
+          .array(questionOptionInputSchema.extend({ id: idSchema.optional() }))
           .min(2)
           .max(20),
         allowOther: z.boolean().optional(),
