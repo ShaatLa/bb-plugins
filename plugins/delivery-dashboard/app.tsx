@@ -6,7 +6,8 @@ import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryChart } from "./history-chart";
-import { RepositoryActivity, RepositoryDetails } from "./repository-details";
+import { CiTiming } from "./ci-cards";
+import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
 import { metricsProgressSchema } from "./metrics";
 
 type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
@@ -189,9 +190,9 @@ export function Dashboard() {
       {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → Delivery Dashboard.</p>}
       {current?.repositories.map((repo) => {
         const cards = [
+          { title: "CI pass rate", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
           { title: "Deploy frequency", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
           { title: "Open pull requests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
-          { title: "CI pass rate", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
         ];
         const name = repo.projectName?.trim() || repo.repository.split("/")[1].replace(/[-_]+/g, " ");
         const projectTitle = name.charAt(0).toUpperCase() + name.slice(1);
@@ -217,11 +218,13 @@ export function Dashboard() {
               </Card>
             ))}
           </div>
-          <RepositoryActivity repo={repo} />
+          <CiTiming repo={repo} />
+          <CiOutcomes repo={repo} showDetails />
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <HistoryChart title="Deployment throughput" metric={repo.deployments} range={repo.range} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
             <HistoryChart title="CI pass rate over time" metric={repo.ci} range={repo.range} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} percent />
+            <HistoryChart title="Deployment throughput" metric={repo.deployments} range={repo.range} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           </div>
+          <RepositoryActivity repo={repo} />
           <RepositoryDetails repo={repo} />
           <p className="text-xs text-muted-foreground">Last checked {new Date(repo.updatedAt).toLocaleString()}</p>
         </section>;
