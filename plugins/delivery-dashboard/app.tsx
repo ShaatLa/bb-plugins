@@ -4,6 +4,8 @@ import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRp
 import type { DashboardData, rpcContract } from "./server";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
+import { LoadingSkeleton } from "./components/ui/skeleton";
+import { DashboardSkeleton } from "./dashboard-skeleton";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryChart } from "./history-chart";
 import { CiTiming } from "./ci-cards";
@@ -184,15 +186,15 @@ export function Dashboard() {
         <Button variant="outline" size="sm" onClick={() => applyRange({ start, end })}>Apply dates</Button>
       </div>}
       {rangeError && <p role="alert" className="text-sm text-destructive">{rangeError}</p>}
-      {!current && !error && <p role="status" className="text-sm text-muted-foreground">Loading GitHub metrics…</p>}
+      {!current && !error && <DashboardSkeleton />}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {current?.discoveryError && <p role="alert" className="text-sm text-destructive">{current.discoveryError}</p>}
       {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → Delivery Dashboard.</p>}
       {current?.repositories.map((repo) => {
         const cards = [
-          { title: "CI pass rate", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
-          { title: "Deploy frequency", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
-          { title: "Open pull requests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
+          { title: "CI pass rate", pending: "ci", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
+          { title: "Deploy frequency", pending: "deployments", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
+          { title: "Open pull requests", pending: "pullRequests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
         ];
         const name = repo.projectName?.trim() || repo.repository.split("/")[1].replace(/[-_]+/g, " ");
         const projectTitle = name.charAt(0).toUpperCase() + name.slice(1);
@@ -209,11 +211,13 @@ export function Dashboard() {
             <span className="font-medium text-foreground">{rangeTitle}</span><span aria-hidden="true">·</span><span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {cards.map(({ title, metric, format }) => (
+            {cards.map(({ title, pending, metric, format }) => (
               <Card key={title} className={`space-y-2 p-4 ${title === "CI pass rate" ? "border-primary/30 bg-primary/5" : ""}`}>
                 <h4 className="text-sm text-muted-foreground">{title}</h4>
-                <p className="text-2xl font-semibold tabular-nums">{metric.value == null ? "—" : format(metric.value)}</p>
-                <p className="text-xs text-muted-foreground">{metric.detail}</p>
+                {metric.value === null && repo.pending?.includes(pending) ? <LoadingSkeleton label={`Loading ${title}`} /> : <>
+                  <p className="text-2xl font-semibold tabular-nums">{metric.value == null ? "—" : format(metric.value)}</p>
+                  <p className="text-xs text-muted-foreground">{metric.detail}</p>
+                </>}
                 {metric.error && <p role="alert" className="text-xs text-destructive">{metric.error}</p>}
               </Card>
             ))}

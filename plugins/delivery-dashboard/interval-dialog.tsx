@@ -4,6 +4,7 @@ import type { rpcContract } from "./server";
 import type { Metrics } from "./metrics";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
+import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { CiOutcomes, RepositoryActivity } from "./repository-details";
 
 export type IntervalSelection = Pick<Metrics, "repository"> & Pick<Metrics["range"], "since" | "until">;
@@ -80,9 +81,10 @@ export function IntervalDialog({ selection, onClose }: { selection: IntervalSele
     <p id={description} className="my-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(selection.since).toUTCString()} – ${new Date(selection.until).toUTCString()}`}>
       <span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
     </p>
-    {!data && !error && <div role="status" aria-label="Loading interval statistics" className="flex justify-center py-8 text-muted-foreground">
-      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-6 animate-spin motion-reduce:animate-none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-    </div>}
+    {!data && !error && <LoadingSkeleton label="Loading interval statistics" className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{[0, 1].map((key) => <Card key={key} className="space-y-3 p-4"><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-20" /><Skeleton className="h-3 w-3/4" /></Card>)}</div>
+      <Card className="space-y-4 p-4"><Skeleton className="h-4 w-32" /><Skeleton className="h-16 w-full" /></Card>
+    </LoadingSkeleton>}
     {error && <div role="alert" className="space-y-3"><p className="text-sm text-destructive">Unable to load interval statistics. Please retry.</p><Button variant="outline" size="sm" onClick={() => setRetry((n) => n + 1)}>Retry</Button></div>}
     {data && <div className="space-y-3">
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))" }}>

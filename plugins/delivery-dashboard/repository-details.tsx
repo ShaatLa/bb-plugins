@@ -5,6 +5,7 @@ import { Button } from "./components/ui/button";
 import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { CiSignals, passRate } from "./ci-cards";
 import { CardDetailsView } from "./card-details-view";
 
@@ -30,7 +31,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
         {reviewQueue.total !== null && <span className="text-xs text-muted-foreground">{reviewQueue.total} total</span>}
       </div>
       <p className="text-xs text-muted-foreground">No reviews yet · excludes drafts · oldest 5</p>
-      {repo.pending?.includes("reviewQueue") ? <p role="status" className="text-xs text-muted-foreground">Loading review queue…</p> : reviewQueue.error ? <p role="alert" className="text-sm text-destructive">{reviewQueue.error}</p>
+      {repo.pending?.includes("reviewQueue") && reviewQueue.total === null ? <LoadingSkeleton label="Loading review queue…" /> : reviewQueue.error ? <p role="alert" className="text-sm text-destructive">{reviewQueue.error}</p>
         : reviewQueue.total === 0 ? <p className="text-sm text-muted-foreground">No unreviewed PRs.</p>
         : <ul className="divide-y divide-border">{reviewQueue.items.map((pr) => <li key={pr.number} className="flex items-start justify-between gap-3 py-2 first:pt-0">
           <UrlLink href={pr.url} className="min-w-0 break-words text-sm hover:underline">#{pr.number} {pr.title}</UrlLink>
@@ -40,7 +41,7 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
     </Card>
     <Card role="region" aria-label="Latest production deployment" className="space-y-3 p-4">
       <h4 className="text-sm font-medium">Latest production deployment</h4>
-      {repo.pending?.includes("production") ? <p role="status" className="text-xs text-muted-foreground">Loading production deployment…</p> : production.error ? <p role="alert" className="text-sm text-destructive">{production.error}</p>
+      {repo.pending?.includes("production") && !deployment ? <LoadingSkeleton label="Loading production deployment…" /> : production.error ? <p role="alert" className="text-sm text-destructive">{production.error}</p>
         : deployment ? <>
           <span className={`inline-block rounded-md border px-2 py-1 text-xs ${deployment.state === "success" ? "border-emerald-500/30 text-emerald-500" : ["failure", "error"].includes(deployment.state) ? "border-destructive/30 text-destructive" : "border-border text-muted-foreground"}`}>{deployment.state.replaceAll("_", " ")}</span>
           <p className="break-all text-sm">{deployment.environment} · {deployment.ref}</p>
@@ -102,8 +103,8 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
       {statistics.map((stat) => <div key={stat.label} className="min-w-0">
         <dt className="text-xs text-muted-foreground">{stat.label}</dt>
         <dd className="mt-1">
-          <span className={`text-2xl font-semibold tabular-nums ${stat.tone}`}>{stat.value === null ? "—" : `${stat.prefix}${stat.value.toLocaleString()}`}</span>
-          <p className="mt-1 break-words text-xs text-muted-foreground">{repo.pending?.includes(stat.label === "PRs created" ? "pullRequestsCreated" : "commitActivity") ? "Updating…" : stat.detail}</p>
+          {stat.value === null && repo.pending?.includes(stat.label === "PRs created" ? "pullRequestsCreated" : "commitActivity") ? <LoadingSkeleton label={`Loading ${stat.label}`} /> : <><span className={`text-2xl font-semibold tabular-nums ${stat.tone}`}>{stat.value === null ? "—" : `${stat.prefix}${stat.value.toLocaleString()}`}</span>
+          <p className="mt-1 break-words text-xs text-muted-foreground">{repo.pending?.includes(stat.label === "PRs created" ? "pullRequestsCreated" : "commitActivity") ? "Updating…" : stat.detail}</p></>}
         </dd>
       </div>)}
     </dl>
@@ -118,7 +119,7 @@ export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showD
       <div className={showDetails ? "grid grid-cols-1 items-start gap-5 lg:grid-cols-2" : undefined}>
       {showDetails && <CiSignals repo={repo} />}
       <div className="min-w-0 space-y-3">
-      {repo.pending?.includes("ci") ? <p role="status" className="text-xs text-muted-foreground">Loading CI outcomes…</p> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
+      {repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
         {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
           <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
           <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
