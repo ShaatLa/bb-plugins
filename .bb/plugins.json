@@ -8,8 +8,8 @@
       "source": "./plugins/provider-antigravity"
     },
     {
-      "name": "tasks-plus",
-      "source": "./plugins/tasks-plus"
+      "name": "agent-board",
+      "source": "./plugins/agent-board"
     },
     {
       "name": "ci-dashboard",
