@@ -25,6 +25,7 @@ export const archiveProjectSchema = z
       z.literal(4),
       z.literal(5),
       z.literal(6),
+      z.literal(7),
     ]),
     project: projectSchema,
     folders: z.array(folderSchema),
@@ -99,7 +100,13 @@ function unique(ids: readonly string[], label: string) {
 
 export function validateArchive({ manifest, records }: ProjectArchive): void {
   const projectId = manifest.project.id;
-  if (manifest.version === 6 && !manifest.project.statuses)
+  for (const record of records) {
+    if (manifest.version >= 7 && record.task.archivedAt === undefined)
+      throw new Error("Archive v7 requires task.archivedAt");
+    if (manifest.version < 7 && record.task.archivedAt != null)
+      throw new Error("Task archival requires archive v7");
+  }
+  if (manifest.version >= 6 && !manifest.project.statuses)
     throw new Error("Archive v6 requires project statuses");
   if (manifest.version < 6 && manifest.project.statuses)
     throw new Error("Project statuses require archive v6");

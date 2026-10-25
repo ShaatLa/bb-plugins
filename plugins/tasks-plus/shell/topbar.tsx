@@ -206,6 +206,8 @@ export function TasksTopbar({
             </span>
           </span>
         );
+      case "archive":
+        return <span className="font-semibold">Archive</span>;
       case "manage":
         return (
           <span className="flex items-center gap-2">
@@ -306,7 +308,7 @@ export function TasksTopbar({
         </TooltipProvider>
       ) : null}
       <RefreshTasksButton />
-      {route.kind !== "task" && route.kind !== "manage" ? (
+      {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" ? (
         <Button
           size="sm"
           className="h-7 gap-1.5 max-md:pointer-coarse:h-9"

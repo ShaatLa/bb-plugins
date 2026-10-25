@@ -765,7 +765,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(6);
+  expect(manifest.version).toBe(7);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -801,7 +801,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(6);
+  expect(manifest.version).toBe(7);
   expect(manifest.project.statuses).toEqual(statuses);
   const target = setup();
   await importProject(target.bb, target.store, out, false);

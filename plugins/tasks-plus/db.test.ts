@@ -36,6 +36,7 @@ function cursorForEmptyArrayFilter(
     throw new Error("expected an object cursor fixture");
   }
   const normalized = JSON.stringify({
+    archive: "all",
     projectId,
     statuses: filter === "statuses" ? [] : null,
     excludeStatuses: null,
@@ -66,7 +67,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(12);
+      ).toBe(13);
     } finally {
       await harness.dispose();
     }

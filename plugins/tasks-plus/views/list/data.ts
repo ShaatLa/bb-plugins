@@ -31,7 +31,7 @@ function belongsToList(
   projectId: string | null,
   filters: ListTaskFilters,
 ): boolean {
-  if (task.parentTaskId !== null) return false;
+  if (task.parentTaskId !== null || task.archivedAt) return false;
   if (
     filters.executionTarget !== undefined &&
     task.executionTarget !== filters.executionTarget

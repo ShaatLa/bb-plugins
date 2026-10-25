@@ -29,6 +29,7 @@ export function useTasksRpc() {
 export type TasksRpc = ReturnType<typeof useTasksRpc>;
 
 interface TaskListQuery {
+  archive?: "active" | "archived" | "all";
   projectId?: string;
   statuses?: TaskStatus[];
   excludeStatuses?: TaskStatus[];

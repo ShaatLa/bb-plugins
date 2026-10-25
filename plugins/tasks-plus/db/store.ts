@@ -84,6 +84,7 @@ interface ProjectRow {
 }
 
 interface TaskRow {
+  archived_at: string | null;
   id: string;
   project_id: string;
   number: number;
@@ -224,6 +225,7 @@ function taskQueryFingerprint(
   sort: TaskSort,
 ): string {
   const normalized = JSON.stringify({
+    archive: filters.archive ?? "all",
     projectId: filters.projectId ?? null,
     statuses: normalizedFilterValues(filters.statuses),
     excludeStatuses: normalizedFilterValues(filters.excludeStatuses),
@@ -382,6 +384,7 @@ function projectFromRow(row: ProjectRow): Project {
 function taskFromRow(row: TaskRow): Task {
   return {
     id: row.id,
+    archivedAt: row.archived_at,
     projectId: row.project_id,
     number: row.number,
     key: `${row.project_prefix}-${row.number}`,
@@ -812,6 +815,7 @@ export function createTasksStore(db: PluginDatabase) {
     if (parentTaskId === ownId)
       throw new Error("A task cannot be its own parent");
     const parent = requireTask(parentTaskId);
+    if (parent.archivedAt) throw new Error("Restore the parent task before adding sub-tasks");
     if (parent.projectId !== projectId) {
       throw new Error(
         "A sub-task must belong to the same project as its parent",
@@ -854,6 +858,7 @@ export function createTasksStore(db: PluginDatabase) {
       const epic = getTask(epicId);
       if (
         !epic ||
+        epic.archivedAt ||
         epic.type !== "epic" ||
         epic.projectId !== projectId ||
         epicId === ownId
@@ -1015,6 +1020,8 @@ export function createTasksStore(db: PluginDatabase) {
           throw new Error(`Unknown task status: ${status}`);
     }
     const clauses: string[] = [];
+    if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
+    if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
     const parameters: Record<string, SqlParameter> = {};
 
     if (filters.projectId !== undefined) {
@@ -1573,6 +1580,38 @@ export function createTasksStore(db: PluginDatabase) {
   function updatePosition(id: string, input: UpdateTaskPositionInput): Task {
     return updatePositionTransaction(id, input);
   }
+
+  function archiveFamily(id: string): Task[] {
+    const root = requireTask(id);
+    const members = root.type === "epic" ? listTasks({ epicId: root.id }) : [];
+    return [root, ...members, ...[root, ...members].flatMap(task => listSubtasks(task.id))];
+  }
+
+  const setTaskArchived = db.transaction((id: string, archived: boolean): Task[] => {
+    const root = requireTask(id);
+    if (archived && root.archivedAt || !archived && !root.archivedAt) return [];
+    const parentId = root.parentTaskId ?? root.epicId;
+    if (!archived && parentId && requireTask(parentId).archivedAt)
+      throw new Error(`Restore parent ${requireTask(parentId).key} first`);
+    const family = archiveFamily(id);
+    if (archived && family.some(task => !["done", "canceled"].includes(task.status)))
+      throw new Error("Complete or cancel the task and its children before archiving");
+    const timestamp = nowIso();
+    const changed = family.filter(task => archived ? !task.archivedAt : Boolean(task.archivedAt));
+    const update = db.prepare<[string | null, string, string]>("UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?");
+    for (const task of changed) update.run(archived ? timestamp : null, timestamp, task.id);
+    return changed.map(task => requireTask(task.id));
+  });
+
+  const archiveCompletedTasks = db.transaction((projectId: string): Task[] => {
+    requireProject(projectId);
+    const changed: Task[] = [];
+    for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
+      if (archiveFamily(task.id).every(member => ["done", "canceled"].includes(member.status)))
+        changed.push(...setTaskArchived(task.id, true));
+    }
+    return changed;
+  });
 
   function deleteTask(id: string): boolean {
     return (
@@ -2156,6 +2195,8 @@ export function createTasksStore(db: PluginDatabase) {
     moveTaskToProject,
     updatePosition,
     deleteTask,
+    setTaskArchived,
+    archiveCompletedTasks,
     createLabel,
     getLabel,
     listLabels,

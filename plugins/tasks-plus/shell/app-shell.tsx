@@ -1,3 +1,4 @@
+import { ArchiveView } from "../views/archive/index";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
@@ -60,6 +61,8 @@ function RouteOutlet({
       return <ListView projectId={null} activeOnly />;
     case "manage":
       return <ManagePanel />;
+    case "archive":
+      return <ArchiveView />;
     case "task":
       return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
     case "project":

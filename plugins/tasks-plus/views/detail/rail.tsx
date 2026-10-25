@@ -711,7 +711,7 @@ export function PropertiesRail({
         triggerClassName={RAIL_ROW_CLASS}
       />
 
-      {task.executionTarget !== "owner" ? (
+      {task.executionTarget !== "owner" && !task.archivedAt ? (
         <>
           <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
             Dispatch target
@@ -853,7 +853,7 @@ export function InlineProperties({
           <Icon name="Plus" className="size-3" />
         </button>
       </LabelsMenu>
-      {task.executionTarget !== "owner" ? (
+      {task.executionTarget !== "owner" && !task.archivedAt ? (
         <DispatchControl
           taskId={task.id}
           projectId={task.projectId}

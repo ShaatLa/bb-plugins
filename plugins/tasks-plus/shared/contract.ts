@@ -301,6 +301,7 @@ export const taskSchema = z
     title: z.string(),
     description: z.string(),
     status: taskStatusSchema,
+    archivedAt: z.iso.datetime({ precision: 3 }).nullable().optional(),
     priority: taskPrioritySchema,
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),
@@ -807,9 +808,18 @@ export const tasksRpcContract = {
     input: z.object({ taskId: idSchema }).strict(),
     output: z.object({ deleted: z.boolean() }).strict(),
   },
+  archiveTask: {
+    input: z.object({ taskId: idSchema, archived: z.boolean(), authorName: nonBlankStringSchema.default("You") }).strict(),
+    output: taskMutationResultSchema,
+  },
+  archiveCompleted: {
+    input: z.object({ projectId: idSchema, authorName: nonBlankStringSchema.default("You") }).strict(),
+    output: z.object({ archivedCount: z.number().int().nonnegative() }).strict(),
+  },
   listTasks: {
     input: z
       .object({
+        archive: z.enum(["active", "archived", "all"]).default("active"),
         projectId: idSchema.optional(),
         statuses: z.array(taskStatusSchema).optional(),
         excludeStatuses: z.array(taskStatusSchema).optional(),
