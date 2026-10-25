@@ -11,7 +11,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const TASKS_PLUGIN_NAME = "Tasks Plus";
-export const TASKS_PLUGIN_VERSION = "0.9.2";
+export const TASKS_PLUGIN_VERSION = "0.9.3";
 
 const tasksRpcContract = defineRpcContract({
   ping: {

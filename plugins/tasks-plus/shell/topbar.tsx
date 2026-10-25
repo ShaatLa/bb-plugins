@@ -308,6 +308,23 @@ export function TasksTopbar({
         </TooltipProvider>
       ) : null}
       <RefreshTasksButton />
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              asChild
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+            >
+              <a href="/settings/plugins/tasks-plus" aria-label="Tasks Plus settings">
+                <Icon name="Settings" className="size-3.5" />
+              </a>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Tasks Plus settings</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" ? (
         <Button
           size="sm"
