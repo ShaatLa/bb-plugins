@@ -1,3 +1,4 @@
+import { UrlLink } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
@@ -73,15 +74,13 @@ export function PullRequestsSection({
         />
         <span className="min-w-0 flex-1 space-y-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
-            <a
+            <UrlLink
               href={link.url}
-              target="_blank"
-              rel="noreferrer"
               title={link.url}
               className="min-w-0 truncate font-medium hover:underline"
             >
               {link.repository.split("/")[1]}#{link.number}
-            </a>
+            </UrlLink>
             <span className="shrink-0 text-2xs text-muted-foreground">
               {link.excluded ? "Excluded" : (snapshot?.state ?? "Not checked")}
             </span>
@@ -154,14 +153,9 @@ export function PullRequestsSection({
                   {snapshot.checks.map((check, index) => (
                     <li key={index}>
                       {check.url ? (
-                        <a
-                          className="hover:underline"
-                          href={check.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
+                        <UrlLink className="hover:underline" href={check.url}>
                           {check.name}
-                        </a>
+                        </UrlLink>
                       ) : (
                         check.name
                       )}{" "}
@@ -183,14 +177,9 @@ export function PullRequestsSection({
                   ? ` · Superseded${coverage.originalRunId ? ` #${coverage.originalRunId}` : ""}, covered by `
                   : " · "}
                 {coverage.url ? (
-                  <a
-                    href={coverage.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:underline"
-                  >
+                  <UrlLink href={coverage.url} className="hover:underline">
                     run {coverage.runId}
-                  </a>
+                  </UrlLink>
                 ) : (
                   "awaiting run"
                 )}

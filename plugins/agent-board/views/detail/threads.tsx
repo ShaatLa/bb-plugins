@@ -45,7 +45,6 @@ function ThreadPullRequestPill({
     return (
       <UrlLink
         href={pullRequest.url}
-        target="_blank"
         rel="noopener noreferrer"
         title={`${pullRequest.title} (${meta.label})`}
         aria-label={`Pull request #${pullRequest.number}: ${pullRequest.title} (${meta.label})`}

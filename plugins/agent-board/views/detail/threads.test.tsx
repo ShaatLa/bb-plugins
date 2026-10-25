@@ -196,11 +196,10 @@ describe("task detail pull request pills", () => {
       name: "Pull request #12: Ship the PR pill (Merged)",
     })) as HTMLAnchorElement;
     expect(link.href).toBe("https://github.com/acme/bb/pull/12");
-    expect(link.target).toBe("_blank");
-    expect(link.rel).toContain("noopener");
+    expect(link.hasAttribute("target")).toBe(false);
     expect(link.textContent).toContain("#12");
     fireEvent.click(link);
-    expect(slot.navigateCalls).toEqual([]);
+    expect(slot.navigateCalls).toContainEqual({ method: "openUrl", url: "https://github.com/acme/bb/pull/12" });
   });
 
   it("marks threads whose PR lookup failed and stays quiet otherwise", async () => {

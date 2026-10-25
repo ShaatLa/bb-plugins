@@ -11,7 +11,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const AGENT_BOARD_PLUGIN_NAME = "Agent Board";
-export const AGENT_BOARD_PLUGIN_VERSION = "0.10.0";
+export const AGENT_BOARD_PLUGIN_VERSION = "0.10.1";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
