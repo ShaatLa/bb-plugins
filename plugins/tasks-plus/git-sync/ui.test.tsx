@@ -154,16 +154,30 @@ it.each(["main", "side"])(
             { threadId: "thr_example", params: { taskKey: f.task.key } },
             { rpc: f.rpc },
           );
-    const section = within(
-      await slot.findByRole("region", { name: "Task pull requests" }),
+    const region = await slot.findByRole("region", {
+      name: "Task pull requests",
+    });
+    expect(region.closest("aside")?.getAttribute("aria-label")).toBe(
+      "Task details",
     );
+    expect(
+      slot.getAllByRole("region", { name: "Task pull requests" }),
+    ).toHaveLength(1);
+    const section = within(region);
     fireEvent.click(section.getByRole("button", { name: "Link PR" }));
     fireEvent.change(section.getByRole("textbox", { name: "PR URL" }), {
       target: { value: "https://github.com/example/service/pull/42" },
     });
     fireEvent.click(section.getByRole("button", { name: "Save link" }));
-    await section.findByText("Confirmed");
+    const summary = await section.findByLabelText(
+      "PR details example/service#42",
+    );
+    const details = summary.closest("details")!;
+    expect(details.open).toBe(false);
     fireEvent.click(section.getByRole("button", { name: "Sync PRs" }));
+    await section.findByRole("img", { name: "CI passing" });
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
     await section.findByText(/merged · CI passing/);
     fireEvent.click(section.getByRole("button", { name: "Exclude" }));
     await waitFor(() =>
