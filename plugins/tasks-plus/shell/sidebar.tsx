@@ -266,6 +266,10 @@ export function TasksSidebar({
             {activeTasks && activeTasks.length > 0 ? <WorkingDot /> : null}
             {activeTasks ? <RowCount value={activeTasks.length} /> : null}
           </SidebarRow>
+          <SidebarRow active={route.kind === "archive"} onClick={() => onNavigate({ kind: "archive" })}>
+            <Icon name="Archive" className="size-3.5 shrink-0" />
+            <span className="flex-1">Archive</span>
+          </SidebarRow>
         </div>
         {isLoading ? (
           <SidebarSkeleton />

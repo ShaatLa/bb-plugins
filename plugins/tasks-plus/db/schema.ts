@@ -303,6 +303,8 @@ const MIGRATIONS = [
     if (db.prepare("PRAGMA foreign_key_check").all().length)
       throw new Error("Foreign key check failed during status migration");
   },
+  `ALTER TABLE tasks ADD COLUMN archived_at TEXT;
+   CREATE INDEX idx_tasks_archive ON tasks(project_id, archived_at, status);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

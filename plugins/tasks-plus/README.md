@@ -377,3 +377,12 @@ bb tasks list --project ANV --status todo,done --exclude-status done --json
 Tasks keep multiple worker links. Opening a task's thread list, notifying a worker, and BB's archive event check actual thread state. Archived, deleted and missing workers are detached; an available replacement stays attached. If none remains, follow the latest worker's `parentThreadId` chain to the nearest available ancestor, up to the root. If that ancestor is later archived, continue up its parent chain. The task becomes unassigned only when the chain has no available ancestor. Cycles, missing threads and private side-chat boundaries stop traversal. Transient lookup failures preserve the links for a later check.
 
 New and replacement workers should run `bb tasks attach KEY`; this preserves other current workers. `bb tasks detach KEY --thread thr_old` detaches explicitly, without automatic parent fallback. Attachments and detachments are recorded as system events in Activity with thread links; these comments also survive export/import in the unchanged archive v6. Unarchiving a detached worker does not reattach it automatically. Notifications never retry a failed send to another worker, avoiding duplicate deliveries.
+
+
+### Task archive (0.8.0)
+
+The **Archive** section keeps completed cards off working lists and both boards. Archiving is manual: open a Done/Canceled card and click **Archive task**, or select a project in **Archive** and click **Archive completed**. A family with unfinished children stays on the board. Archiving a task or epic archives its completed children too; restoring it restores the family. Individually archived sub-tasks whose parent is archived require restoring that parent first. Status, IDs, descriptions, questions, evidence, comments, attachments and worker history are preserved. There is no automatic archiving on Done.
+
+The archive has project filtering, search, card links and **Restore**. Archived cards remain directly accessible by key. Agents use `bb tasks archive KEY`, `bb tasks restore KEY`, `bb tasks archive-completed --project PREFIX`, and `bb tasks list --project PREFIX --archived [--search TEXT] --json`. `--include-archived` lists both scopes; the two flags are mutually exclusive. `bb tasks show KEY` also works for archived cards. Dispatch requires restoring the card first.
+
+Export v7 always includes both archived and live cards, with required `task.archivedAt` (`null` or a UTC ISO timestamp with milliseconds). Import v1–v6 defaults an absent timestamp to null. No task is deleted by archiving or restoration.

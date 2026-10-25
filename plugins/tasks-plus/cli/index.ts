@@ -742,6 +742,28 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        ...Object.fromEntries(["archive", "restore"].map(action => [action, cliCommand({
+          summary: action === "archive" ? "Archive a completed task and its children" : "Restore a task and its children from the archive",
+          positionals: [KEY_POSITIONAL],
+          options: { json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const result = tasksRpcContract.archiveTask.output.parse(await domain.archiveTask({ taskId: task.id, archived: action === "archive", authorName: taskAuthor(ctx) }));
+              const updated = unwrapTask(result);
+              return input.options.json ? JSON.stringify({ task: updated }) : `${updated.key} ${action === "archive" ? "archived" : "restored"}`;
+            });
+          },
+        })])),
+        "archive-completed": cliCommand({
+          summary: "Archive completed tasks in a project",
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) { return guard(async () => {
+            const project = await requiredProject(domain, ctx, input.options.project);
+            const result = await domain.archiveCompleted({ projectId: project.id, authorName: taskAuthor(ctx) });
+            return input.options.json ? JSON.stringify(result) : `Archived ${result.archivedCount} tasks`;
+          }); },
+        }),
         ...templateReadCommands,
         template: groupCommand(
           "template",
@@ -2028,6 +2050,8 @@ export function registerTasksCli(
         list: cliCommand({
           summary: "List and filter tasks",
           options: {
+            archived: { type: "boolean", description: "List only archived tasks" },
+            "include-archived": { type: "boolean", description: "Include archived and unarchived tasks" },
             executor: {
               type: "enum",
               values: EXECUTION_TARGETS,
@@ -2138,6 +2162,7 @@ export function registerTasksCli(
                 }
                 return matches[0]!.id;
               });
+              if (input.options.archived && input.options["include-archived"]) throw new CliError("Use only one of --archived or --include-archived", { code: "invalid_value" });
               const excludedStatuses = new Set(input.options["exclude-status"]);
               const knownStatuses = new Set([...DEFAULT_TASK_STATUSES.map((status) => status.id), ...projects.flatMap((entry) => (entry.statuses ?? DEFAULT_TASK_STATUSES).map((status) => status.id))]);
               for (const value of [...input.options.status, ...excludedStatuses]) if (!knownStatuses.has(value)) throw new CliError(`Unknown task status: ${value}`, { code: "invalid_value" });
@@ -2150,6 +2175,7 @@ export function registerTasksCli(
               const result = tasksRpcContract.listTasks.output.parse(
                 await domain.listTasks(
                   tasksRpcContract.listTasks.input.parse({
+                    archive: input.options.archived ? "archived" : input.options["include-archived"] ? "all" : "active",
                     projectId: project?.id,
                     type: input.options.type,
                     executionTarget: input.options.executor,
@@ -2254,6 +2280,7 @@ export function registerTasksCli(
               const subtasks = await listAllTasks(
                 domain,
                 tasksRpcContract.listTasks.input.parse({
+                  archive: "all",
                   ...(task.type === "epic"
                     ? { epicId: task.id }
                     : { parentTaskId: task.id }),
@@ -2327,6 +2354,7 @@ export function registerTasksCli(
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
+                  ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),
                   ["Priority", task.priority],
                   ["Due", task.dueDate ?? "-"],
                   ["Parent", task.parentTaskId ?? "-"],

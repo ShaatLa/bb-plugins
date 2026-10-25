@@ -1,3 +1,4 @@
+import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
   useEffect,
@@ -232,6 +233,7 @@ function SubTasksSection({
             {subtask.key}
           </span>
           <span className="min-w-0 flex-1 truncate">{subtask.title}</span>
+          {subtask.archivedAt ? <span className="text-xs text-muted-foreground">Archived</span> : null}
           <QuestionCount count={questionCounts.data?.get(subtask.id)} />
         </button>
       ))}
@@ -260,6 +262,7 @@ function SubTasksSection({
       <button
         type="button"
         className="flex items-center gap-1.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+        hidden={Boolean(task.archivedAt)}
         onClick={() => setAdding(true)}
       >
         <Icon name="Plus" className="size-3" />
@@ -343,7 +346,7 @@ function TaskDetail({
     async (query) =>
       listAllTasks(
         query,
-        task.type === "epic" ? { epicId: task.id } : { parentTaskId: task.id },
+        task.type === "epic" ? { epicId: task.id, archive: "all" } : { parentTaskId: task.id, archive: "all" },
       ),
     ["tasks:changed"],
     [task.id, task.type],
@@ -552,6 +555,7 @@ function TaskDetail({
             </div>
           ) : null}
 
+          <ArchiveTaskControl task={task} onError={push} />
           <EditableTitle
             task={task}
             onSave={(title) => void updateTask({ title })}

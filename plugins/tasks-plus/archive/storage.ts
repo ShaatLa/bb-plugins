@@ -43,7 +43,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-tasks-plus",
-      version: 6,
+      version: 7,
       project,
       folders,
       labels: store.tasks
@@ -281,7 +281,7 @@ export function restoreProject(
         throw new Error(
           `Import conflict: task labels ${task.id}; use --overwrite`,
         );
-      plan("tasks", dbRow(task), ["id"], ["project_id"]);
+      plan("tasks", dbRow({ ...task, archivedAt: task.archivedAt ?? null }), ["id"], ["project_id"]);
       for (const comment of record.comments)
         plan(
           "comments",

@@ -32,7 +32,7 @@ export async function fetchBoard(
   projectId: string,
 ): Promise<BoardData> {
   const tasks = await listAllTasks(rpc, { projectId });
-  const topLevel = tasks.filter((task) => task.parentTaskId === null);
+  const topLevel = tasks.filter((task) => task.parentTaskId === null && !task.archivedAt);
 
   const labels = await rpc.call("listLabels", { projectId }).then(
     (result) => result.labels,
@@ -131,7 +131,7 @@ export async function patchBoard(
   for (const taskId of changed.keys()) metaByTaskId.delete(taskId);
   const refreshedCards: Task[] = [];
   for (const task of changed.values()) {
-    if (task === null || task.projectId !== projectId) continue;
+    if (task === null || task.archivedAt || task.projectId !== projectId) continue;
     if (task.parentTaskId === null) {
       tasks.push(task);
       refreshedCards.push(task);

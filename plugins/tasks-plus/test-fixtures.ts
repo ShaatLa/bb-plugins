@@ -9,6 +9,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     title: "Test task",
     description: "",
     status: "todo",
+    archivedAt: null,
     priority: "none",
     dueDate: null,
     parentTaskId: null,

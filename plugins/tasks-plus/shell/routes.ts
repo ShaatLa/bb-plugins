@@ -9,6 +9,7 @@ export type TaskViewMode = "list" | "board";
 export type TasksRoute =
   | { kind: "all" }
   | { kind: "active" }
+  | { kind: "archive" }
   | { kind: "manage" }
   | { kind: "project"; projectId: string; view: TaskViewMode | null }
   | { kind: "task"; taskKey: string };
@@ -33,6 +34,7 @@ export function parseTasksRoute(rawSubPath: string): TasksRoute {
   const segments = path.split("/").filter((segment) => segment.length > 0);
   const head = segments[0];
   if (head === undefined || head === "all") return { kind: "all" };
+  if (head === "archive") return { kind: "archive" };
   if (head === "active") return { kind: "active" };
   if (head === "manage") return { kind: "manage" };
   if (head === "task") {
@@ -52,6 +54,8 @@ export function tasksRouteToSubPath(route: TasksRoute): string {
   switch (route.kind) {
     case "all":
       return "all";
+    case "archive":
+      return "archive";
     case "active":
       return "active";
     case "manage":

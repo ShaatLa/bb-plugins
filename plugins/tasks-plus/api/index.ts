@@ -127,7 +127,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
             `
               SELECT COUNT(*) AS count
               FROM tasks
-              WHERE status NOT IN ('done', 'canceled')
+              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled')
             `,
           )
           .get()?.count ?? 0
@@ -145,7 +145,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
               END) AS active_agent_count
             FROM projects p
             LEFT JOIN tasks t
-              ON t.project_id = p.id
+              ON t.project_id = p.id AND t.archived_at IS NULL
               AND t.parent_task_id IS NULL
             LEFT JOIN task_threads tt ON tt.task_id = t.id
             GROUP BY p.id
@@ -936,6 +936,7 @@ export function registerHandlers(
     },
     listTasks(input) {
       const page = store.tasks.listTasksPage({
+        archive: input.archive,
         projectId: input.projectId,
         statuses: input.statuses,
         excludeStatuses: input.excludeStatuses,
@@ -1121,6 +1122,30 @@ export function registerHandlers(
         }
         throw error;
       }
+    },
+    archiveTask(input) {
+      const changed = store.transaction(() => {
+        const changed = store.tasks.setTaskArchived(input.taskId, input.archived);
+        for (const task of changed) store.tasks.createComment({ taskId: task.id, kind: "system", authorName: input.authorName, body: input.archived ? "Task archived" : "Task restored from archive" });
+        return changed;
+      });
+      for (const task of changed) {
+        publishTasksChanged(bb, task.id, task.projectId);
+        publishCommentsChanged(bb, task.id);
+      }
+      return { ok: true as const, task: apiTask(store, store.tasks.getTask(input.taskId)!) };
+    },
+    archiveCompleted(input) {
+      const changed = store.transaction(() => {
+        const changed = store.tasks.archiveCompletedTasks(input.projectId);
+        for (const task of changed) store.tasks.createComment({ taskId: task.id, kind: "system", authorName: input.authorName, body: "Task archived" });
+        return changed;
+      });
+      for (const task of changed) {
+        publishTasksChanged(bb, task.id, task.projectId);
+        publishCommentsChanged(bb, task.id);
+      }
+      return { archivedCount: changed.length };
     },
     async listTaskThreads(input) {
       return { taskThreads: await reconcileTaskThreads(bb, store.tasks, input.taskId) };

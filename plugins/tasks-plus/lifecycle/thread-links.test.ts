@@ -279,7 +279,7 @@ it("preserves assignment history through an archive v6 round-trip", async () => 
   await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(6);
+  expect(capture.manifest.version).toBe(7);
   const { bb, harness } = createFakePluginHost({ pluginId: "tasks-plus" });
   harnesses.push(harness);
   const restored = createStore(bb);

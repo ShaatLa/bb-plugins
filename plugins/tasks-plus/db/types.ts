@@ -40,6 +40,7 @@ export interface Project {
 }
 
 export interface Task {
+  archivedAt?: string | null;
   id: string;
   projectId: string;
   number: number;
@@ -189,6 +190,7 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters {
+  archive?: "active" | "archived" | "all";
   projectId?: string;
   statuses?: readonly TaskStatus[];
   excludeStatuses?: readonly TaskStatus[];
