@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-tasks-plus",
-  "version": "0.9.3",
-  "description": "Plan and track work in BB, delegate tasks to agents, and keep task context connected to worker threads.",
+  "version": "0.9.4",
+  "description": "Project tracking for people and AI agents in BB: kanban, epics, owner actions, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/ShaatLa/bb-plugins/tree/main/plugins/tasks-plus",
@@ -27,7 +27,7 @@
   },
   "bb": {
     "name": "Tasks Plus",
-    "description": "BB Tasks with delegation to existing threads.",
+    "description": "A project tracker for people and AI agents in BB. Plan projects with tasks, epics, subtasks, kanban boards and custom workflows. Delegate work to existing threads, assign owner actions and collect decisions through questions with selectable answers. Track GitHub pull requests and CI, keep completed work in a searchable archive, and export or import project history for versioned storage in Git.",
     "branding": {
       "icon": "ListTodo"
     },

@@ -10,7 +10,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "settings",
     title: "Tasks Plus",
-    description: "Task tracking and delegation to existing threads.",
+    description: "Projects, workflows and GitHub synchronization for work shared by people and AI agents.",
     component: TasksSettings,
   });
   app.slots.navPanel({

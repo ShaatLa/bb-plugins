@@ -339,9 +339,16 @@ function TasksSettingsContent() {
     <div className="space-y-5">
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Send tasks to existing threads from the task card. Busy threads
-          receive the task in their queue using their current settings.
+          Plan and track work shared by people and AI agents. Keep tasks,
+          decisions, worker threads and delivery progress together in one place.
         </p>
+        <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+          <li>Lists and kanban boards, epics and subtasks, search and filters, and per-project workflows.</li>
+          <li>Delegate to existing BB threads, or create owner actions for manual work.</li>
+          <li>Questions with single or multiple answers, recommendations and recorded decisions.</li>
+          <li>GitHub PR and CI tracking, delivery evidence and reusable description templates.</li>
+          <li>Searchable archives and project export/import, including comments, attachments and questions.</li>
+        </ul>
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
