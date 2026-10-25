@@ -1,3 +1,4 @@
+import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -819,6 +820,7 @@ export const tasksRpcContract = {
   listTasks: {
     input: z
       .object({
+        ...taskDateFiltersSchema.shape,
         archive: z.enum(["active", "archived", "all"]).default("active"),
         projectId: idSchema.optional(),
         statuses: z.array(taskStatusSchema).optional(),

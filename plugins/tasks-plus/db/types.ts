@@ -1,4 +1,5 @@
 import type { TaskSort } from "../shared/pagination.js";
+import type { TaskDateFilters } from "../shared/task-dates.js";
 import type { TaskStatusDefinition } from "../shared/statuses.js";
 import type { Evidence } from "../shared/contract.js";
 import type {
@@ -189,7 +190,7 @@ export interface MoveTaskToProjectResult {
   moved: Array<{ previousKey: string; task: Task }>;
 }
 
-export interface ListTasksFilters {
+export interface ListTasksFilters extends TaskDateFilters {
   archive?: "active" | "archived" | "all";
   projectId?: string;
   statuses?: readonly TaskStatus[];

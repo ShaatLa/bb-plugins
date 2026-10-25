@@ -155,3 +155,49 @@ it.each(["board", "list", "side"])(
     await waitFor(() => expect(slot.queryByText(f.task.title)).toBeNull());
   },
 );
+
+it("browses newest pages and resets pagination when searching or filtering a UTC day", async () => {
+  const f = setup();
+  for (let i = 0; i < 25; i++)
+    f.store.tasks.createTask({
+      projectId: f.project.id,
+      title: `Work ${i}`,
+      status: "done",
+    });
+  f.store.tasks.archiveCompletedTasks(f.project.id);
+  const slot = renderSlot(
+    app.navPanels[0]!,
+    { subPath: "archive" },
+    { rpc: f.rpc },
+  );
+  await slot.findByRole("button", { name: `Restore ${f.task.key}` });
+  fireEvent.keyDown(
+    slot.getByRole("combobox", { name: "Archive latest count" }),
+    { key: "ArrowDown" },
+  );
+  fireEvent.click(await slot.findByRole("option", { name: "25" }));
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  await waitFor(() =>
+    expect(
+      slot.queryByRole("button", { name: `Restore ${f.task.key}` }),
+    ).toBeNull(),
+  );
+  fireEvent.click(slot.getByRole("button", { name: "Next" }));
+  await slot.findByRole("button", { name: `Restore ${f.task.key}` });
+  fireEvent.change(
+    slot.getByRole("textbox", { name: "Search archived tasks" }),
+    { target: { value: f.task.key } },
+  );
+  await waitFor(() =>
+    expect(
+      slot.getByRole("button", { name: "Previous" }).hasAttribute("disabled"),
+    ).toBe(true),
+  );
+  fireEvent.change(slot.getByLabelText("Archive from date"), {
+    target: { value: "2099-01-01" },
+  });
+  fireEvent.change(slot.getByLabelText("Archive to date"), {
+    target: { value: "2099-01-01" },
+  });
+  await slot.findByText("No archived tasks.");
+});

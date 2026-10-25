@@ -937,6 +937,9 @@ export function registerHandlers(
     listTasks(input) {
       const page = store.tasks.listTasksPage({
         archive: input.archive,
+        dateField: input.dateField,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
         projectId: input.projectId,
         statuses: input.statuses,
         excludeStatuses: input.excludeStatuses,

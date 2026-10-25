@@ -27,6 +27,12 @@ function task(
 const keys = (tasks: readonly Task[]) => tasks.map((t) => t.key);
 
 describe("sortTasks", () => {
+  it("sorts newest creation first with descending IDs breaking ties", () => {
+    const older = { ...task("T-3"), createdAt: "2026-06-01T00:00:00.000Z" };
+    expect(
+      keys(sortTasks([older, task("T-1"), task("T-2")], "newest")),
+    ).toEqual(["T-2", "T-1", "T-3"]);
+  });
   it("keeps the server order for manual without mutating the input", () => {
     const input = [task("T-2"), task("T-1")];
     const sorted = sortTasks(input, "manual");

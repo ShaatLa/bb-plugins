@@ -381,8 +381,27 @@ New and replacement workers should run `bb tasks attach KEY`; this preserves oth
 
 ### Task archive (0.8.0)
 
-The **Archive** section keeps completed cards off working lists and both boards. Archiving is manual: open a Done/Canceled card and click **Archive task**, or select a project in **Archive** and click **Archive completed**. A family with unfinished children stays on the board. Archiving a task or epic archives its completed children too; restoring it restores the family. Individually archived sub-tasks whose parent is archived require restoring that parent first. Status, IDs, descriptions, questions, evidence, comments, attachments and worker history are preserved. There is no automatic archiving on Done.
+The **Archive** section keeps completed cards off working lists and both boards. Archiving is manual: open a Done/Canceled card and click **Archive task**, or select a project in **Archive** and click **Archive completed**. A family with unfinished children stays on the board. Archiving a task or epic archives its completed children too; restoring it restores the family. Individually archived sub-tasks whose parent is archived require restoring that parent first. Status, IDs, descriptions, questions, evidence, comments, attachments and worker history are preserved. Completing a card does not immediately archive it. In plugin settings, **Automatically archive completed tasks** offers Off (default), 7, 14 or 30 days. The hourly check requires the whole active family to be Done/Canceled and inactive for that period. Task edits, comments, attachments and question changes restart the inactivity period. Unanswered questions and working agents prevent automatic archival. A restored card gets a fresh inactivity period.
 
 The archive has project filtering, search, card links and **Restore**. Archived cards remain directly accessible by key. Agents use `bb tasks archive KEY`, `bb tasks restore KEY`, `bb tasks archive-completed --project PREFIX`, and `bb tasks list --project PREFIX --archived [--search TEXT] --json`. `--include-archived` lists both scopes; the two flags are mutually exclusive. `bb tasks show KEY` also works for archived cards. Dispatch requires restoring the card first.
 
 Export v7 always includes both archived and live cards, with required `task.archivedAt` (`null` or a UTC ISO timestamp with milliseconds). Import v1–v6 defaults an absent timestamp to null. No task is deleted by archiving or restoration.
+
+### Archive queries and automatic retention (0.8.1)
+
+The Archive view supports project and text search (key, title or description), inclusive UTC date bounds, a date field (archived, created or updated), and pages of the latest 25/50/100/500 matching cards. Use equal start/end dates for one day. Previous/Next browse further results; restart results if a concurrent write makes a pagination cursor stale.
+
+Agents can combine these with the existing status, executor, type, priority and label filters:
+
+```sh
+bb tasks show ANV-8 --json
+bb tasks list --project ANV --archived --latest 20 --json
+bb tasks list --project ANV --archived --search "registry access" --json
+bb tasks list --project ANV --archived --on 2026-10-24 --json
+bb tasks list --project ANV --archived --from 2026-10-01 --to 2026-10-24 --latest 50 --json
+bb tasks list --project ANV --archived --date-field created --on 2026-10-01 --json
+```
+
+`--latest N` selects newest order and the page size (1–500); a `nextCursor` permits continuing with the same filters. `--sort newest` also works with `--limit`. Dates are `YYYY-MM-DD`, inclusive in UTC. With `--archived`, the default date field is archived; otherwise it is created. `--date-field updated` selects last task-record modification (including archival/restoration), not the last comment. `--on` cannot be combined with `--from`/`--to`. Exact key/ID lookup is `show`, which reads either archive scope. The RPC uses `dateField`, `dateFrom`, `dateTo`, `sort: "newest"` and the existing `limit`/`cursor`.
+
+Automatic retention is a device/plugin setting, applies to all tracker projects, and is disabled until enabled. It runs while BB has the plugin loaded; missed checks are caught by the next hourly sweep. It preserves the existing manual and bulk actions. Export stays v7, includes all records, and carries no device settings.
