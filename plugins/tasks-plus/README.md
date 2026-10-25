@@ -2,7 +2,14 @@
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/tasks-plus). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tasks-plus` after disabling built-in Tasks and completing any data import described below. Existing local-path Tasks Plus installations can be re-registered with `bb plugin install /path/to/collection --plugin tasks-plus` while retaining the same plugin ID and data.
 
-Форк встроенного BB Tasks из BB 0.46.1. Сохраняет доску, списки, проекты, статусы, комментарии, вложения, пресеты и связи с тредами.
+Трекер проектов для совместной работы людей и AI-агентов внутри BB. Основан на встроенном BB Tasks из BB 0.46.1 и сохраняет его проекты, комментарии, вложения, пресеты и связи с тредами.
+
+- Списки и канбан в основной и правой панели, эпики и сабтаски, поиск, фильтры и настраиваемые статусы каждого проекта.
+- Передача задач существующим тредам и отдельные Owner actions для ручных действий владельца.
+- Вопросы с одиночным или множественным выбором, рекомендуемыми вариантами и сохранением ответов прямо в задаче.
+- Связи с GitHub PR, наблюдение за CI и push-workflows после merge, структурированные свидетельства ревью и QA, шаблоны описаний.
+- Поисковый архив завершённых задач, ручная и массовая архивация, опциональная автоматическая архивация.
+- Детерминированный экспорт и импорт проекта с комментариями, вложениями, вопросами и связями — для хранения истории в Git. Работа через UI и `bb tasks` CLI.
 
 В карточке задачи появилась кнопка **Existing thread…**. Выбери существующий тред или вставь его ID. Занятый тред получит контекст задачи в очередь; свободный начнёт работу. Модель, права и окружение треда сохраняются. Пресет и привязка проекта для этого действия не нужны.
 
