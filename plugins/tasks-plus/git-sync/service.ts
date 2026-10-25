@@ -4,6 +4,7 @@ import type { tasksRpcContract } from "../shared/contract";
 import { publishTasksChanged, publishProjectsChanged } from "../api";
 import {
   gitSyncConfigSchema,
+  repositorySchema,
   parsePrUrl,
   prIdentity,
   prLinkSchema,
@@ -350,22 +351,42 @@ export function createGitSyncService(
     },
     async getGitSyncConfig({ projectId }) {
       const project = requireProject(projectId);
+      const fromRemote = (remote: string | null) => {
+        const match = remote?.match(
+          /^(?:https?:\/\/(?:[^/@]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/i,
+        );
+        const parsed = repositorySchema.safeParse(match?.[1]);
+        return parsed.success ? parsed.data : null;
+      };
       let suggestedRepository: string | null = null;
-      if (project.linkedBbProjectId) {
+      const available = new Set<string>();
+      try {
+        const projects = await bb.sdk.projects.list({ includePersonal: true });
+        for (const entry of projects) {
+          const repository = fromRemote(entry.gitRemoteUrl);
+          if (repository) available.add(repository);
+          if (entry.id === project.linkedBbProjectId)
+            suggestedRepository = repository;
+        }
+      } catch {
+        /* Manual configuration stays available if BB projects cannot be read. */
+      }
+      if (project.linkedBbProjectId && !suggestedRepository) {
         try {
           const linked = await bb.sdk.projects.get({
             projectId: project.linkedBbProjectId,
           });
-          const remote = linked.gitRemoteUrl;
-          const match = remote?.match(
-            /(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/,
-          );
-          if (match) suggestedRepository = match[1]!.toLowerCase();
+          suggestedRepository = fromRemote(linked.gitRemoteUrl);
+          if (suggestedRepository) available.add(suggestedRepository);
         } catch {
           /* Suggestions are optional. */
         }
       }
-      return { config: data.config(projectId), suggestedRepository };
+      return {
+        config: data.config(projectId),
+        suggestedRepository,
+        availableRepositories: [...available].sort(),
+      };
     },
     setGitSyncConfig({ projectId, config }) {
       requireProject(projectId);
