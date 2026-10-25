@@ -20,6 +20,11 @@ function byDueDate(a: Task, b: Task): number {
 
 export function sortTasks(tasks: readonly Task[], sort: TaskSort): Task[] {
   if (sort === "manual") return [...tasks];
+  if (sort === "newest")
+    return [...tasks].sort(
+      (a, b) =>
+        b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+    );
   const [primary, secondary] =
     sort === "priority" ? [byPriority, byDueDate] : [byDueDate, byPriority];
   return [...tasks].sort((a, b) => primary(a, b) || secondary(a, b));

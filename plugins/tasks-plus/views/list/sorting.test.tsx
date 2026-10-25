@@ -145,10 +145,11 @@ describe("list sorting (compact viewport)", () => {
       "Manual",
       "Priority",
       "Due date",
+      "Newest first",
     ]);
     expect(
       options.map((option) => option.getAttribute("aria-checked")),
-    ).toEqual(["true", "false", "false"]);
+    ).toEqual(["true", "false", "false", "false"]);
 
     fireEvent.click(
       await within(drawer).findByRole("menuitemcheckbox", {

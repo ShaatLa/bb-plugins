@@ -1,3 +1,4 @@
+import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -2050,6 +2051,11 @@ export function registerTasksCli(
         list: cliCommand({
           summary: "List and filter tasks",
           options: {
+            "date-field": { type: "enum", values: TASK_DATE_FIELDS, description: "Date used for filtering and newest order: archived by default with --archived, otherwise created" },
+            from: { type: "string", description: "Inclusive start date (YYYY-MM-DD, UTC)" },
+            to: { type: "string", description: "Inclusive end date (YYYY-MM-DD, UTC)" },
+            on: { type: "string", description: "One UTC calendar date; cannot combine with --from/--to" },
+            latest: { type: "integer", min: 1, max: TASKS_PAGE_MAX_LIMIT, description: "Return the latest N matching tasks (newest first, up to 500 per page)" },
             archived: { type: "boolean", description: "List only archived tasks" },
             "include-archived": { type: "boolean", description: "Include archived and unarchived tasks" },
             executor: {
@@ -2111,7 +2117,7 @@ export function registerTasksCli(
               type: "string",
               placeholder: "query",
               aliases: ["query", "q"],
-              description: "Match title and description text",
+              description: "Match task key, title and description text",
             },
             sort: {
               type: "enum",
@@ -2171,10 +2177,15 @@ export function registerTasksCli(
                   ? input.options.status
                   : [...new Set(projects.flatMap((entry) => (entry.statuses ?? DEFAULT_TASK_STATUSES).map((status) => status.id)))]
               ).filter((status) => !excludedStatuses.has(status));
-              const limit = input.options.limit;
+              if (input.options.on && (input.options.from || input.options.to)) throw new CliError("Use --on or --from/--to", { code: "invalid_value" });
+              if (input.options.latest !== undefined && input.options.sort !== "manual" && input.options.sort !== "newest") throw new CliError("--latest requires newest order", { code: "invalid_value" });
+              const limit = input.options.latest ?? input.options.limit;
               const result = tasksRpcContract.listTasks.output.parse(
                 await domain.listTasks(
                   tasksRpcContract.listTasks.input.parse({
+                    dateField: input.options["date-field"],
+                    dateFrom: input.options.on ?? input.options.from,
+                    dateTo: input.options.on ?? input.options.to,
                     archive: input.options.archived ? "archived" : input.options["include-archived"] ? "all" : "active",
                     projectId: project?.id,
                     type: input.options.type,
@@ -2194,7 +2205,7 @@ export function registerTasksCli(
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
                     search: input.options.search,
-                    sort: input.options.sort,
+                    sort: input.options.latest !== undefined ? "newest" : input.options.sort,
                     limit,
                     cursor: input.options.cursor,
                   }),

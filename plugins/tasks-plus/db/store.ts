@@ -1,3 +1,4 @@
+import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
   taskStatusesSchema,
@@ -12,6 +13,7 @@ import {
 import { evidenceSchema } from "../shared/contract.js";
 import { initializeTasksSchema } from "./schema";
 import {
+  TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
   TASKS_PAGE_MAX_LIMIT,
   type TaskSort,
@@ -105,6 +107,7 @@ interface TaskRow {
 }
 
 interface TaskPageRow extends TaskRow {
+  cursor_date: string;
   cursor_priority: number;
   cursor_due_null: number;
   cursor_due_date: string;
@@ -187,9 +190,10 @@ const taskCursorSchema = z
     version: z.literal(1),
     revision: z.number().int().nonnegative(),
     query: z.string().length(43),
-    sort: z.enum(["manual", "priority", "due"]),
+    sort: z.enum(TASK_SORTS),
     key: z
       .object({
+        date: z.string().default(""),
         priority: z.number().int().min(0).max(5),
         dueNull: z.number().int().min(0).max(1),
         dueDate: z.string(),
@@ -226,6 +230,9 @@ function taskQueryFingerprint(
 ): string {
   const normalized = JSON.stringify({
     archive: filters.archive ?? "all",
+    ...(filters.dateField ? { dateField: filters.dateField } : {}),
+    ...(filters.dateFrom ? { dateFrom: filters.dateFrom } : {}),
+    ...(filters.dateTo ? { dateTo: filters.dateTo } : {}),
     projectId: filters.projectId ?? null,
     statuses: normalizedFilterValues(filters.statuses),
     excludeStatuses: normalizedFilterValues(filters.excludeStatuses),
@@ -1019,10 +1026,21 @@ export function createTasksStore(db: PluginDatabase) {
         if (!known.has(status))
           throw new Error(`Unknown task status: ${status}`);
     }
+    taskDateFiltersSchema.parse(filters);
+    const dateField = filters.dateField ?? (filters.archive === "archived" ? "archived" : "created");
+    const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
     const parameters: Record<string, SqlParameter> = {};
+    if (filters.dateFrom) {
+      clauses.push(`${dateColumn} >= @dateFrom`);
+      parameters.dateFrom = `${filters.dateFrom}T00:00:00.000Z`;
+    }
+    if (filters.dateTo) {
+      clauses.push(`${dateColumn} <= @dateTo`);
+      parameters.dateTo = `${filters.dateTo}T23:59:59.999Z`;
+    }
 
     if (filters.projectId !== undefined) {
       clauses.push("t.project_id = @projectId");
@@ -1146,7 +1164,9 @@ export function createTasksStore(db: PluginDatabase) {
     }
 
     const orderBy =
-      sort === "manual"
+      sort === "newest"
+        ? "cursor_date DESC, cursor_id DESC"
+        : sort === "manual"
         ? "cursor_project_id, cursor_status, cursor_position, cursor_id"
         : sort === "priority"
           ? "cursor_priority, cursor_due_null, cursor_due_date, cursor_project_id, cursor_status, cursor_position, cursor_id"
@@ -1154,12 +1174,15 @@ export function createTasksStore(db: PluginDatabase) {
     const cursorWhere =
       cursor === null
         ? ""
+        : sort === "newest"
+          ? "WHERE (cursor_date, cursor_id) < (@cursorDate, @cursorId)"
         : sort === "manual"
           ? "WHERE (cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)"
           : sort === "priority"
             ? "WHERE (cursor_priority, cursor_due_null, cursor_due_date, cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorPriority, @cursorDueNull, @cursorDueDate, @cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)"
             : "WHERE (cursor_due_null, cursor_due_date, cursor_priority, cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorDueNull, @cursorDueDate, @cursorPriority, @cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)";
     if (cursor !== null) {
+      parameters.cursorDate = cursor.key.date;
       parameters.cursorPriority = cursor.key.priority;
       parameters.cursorDueNull = cursor.key.dueNull;
       parameters.cursorDueDate = cursor.key.dueDate;
@@ -1195,6 +1218,7 @@ export function createTasksStore(db: PluginDatabase) {
             WITH filtered_tasks AS (
               SELECT
                 t.*,
+                COALESCE(${dateColumn}, '') AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
                   WHEN 'urgent' THEN 0
@@ -1235,6 +1259,7 @@ export function createTasksStore(db: PluginDatabase) {
                 query,
                 sort,
                 key: {
+                  date: last.cursor_date,
                   priority: last.cursor_priority,
                   dueNull: last.cursor_due_null,
                   dueDate: last.cursor_due_date,
@@ -1603,11 +1628,24 @@ export function createTasksStore(db: PluginDatabase) {
     return changed.map(task => requireTask(task.id));
   });
 
-  const archiveCompletedTasks = db.transaction((projectId: string): Task[] => {
+  const archiveCompletedTasks = db.transaction((projectId: string, inactiveBefore?: string): Task[] => {
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
-      if (archiveFamily(task.id).every(member => ["done", "canceled"].includes(member.status)))
+      const family = archiveFamily(task.id);
+      if (inactiveBefore && family.some(member => !member.archivedAt && (
+        member.updatedAt > inactiveBefore ||
+        db.prepare<{ taskId: string; cutoff: string }, { found: number }>(`
+          SELECT 1 AS found WHERE
+            EXISTS (SELECT 1 FROM comments WHERE task_id = @taskId AND created_at > @cutoff)
+            OR EXISTS (SELECT 1 FROM attachments a LEFT JOIN comments c ON c.id = a.comment_id
+              WHERE (a.task_id = @taskId OR c.task_id = @taskId) AND a.created_at > @cutoff)
+            OR EXISTS (SELECT 1 FROM task_questions WHERE task_id = @taskId AND
+              (json_extract(payload, '$.answeredBy') IS NULL OR json_extract(payload, '$.updatedAt') > @cutoff))
+            OR EXISTS (SELECT 1 FROM task_threads WHERE task_id = @taskId AND live_status IN ('starting', 'working'))
+        `).get({ taskId: member.id, cutoff: inactiveBefore })
+      ))) continue;
+      if (family.every(member => ["done", "canceled"].includes(member.status)))
         changed.push(...setTaskArchived(task.id, true));
     }
     return changed;
