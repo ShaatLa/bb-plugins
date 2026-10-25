@@ -1,3 +1,4 @@
+import { usePrSummaries } from "../../components/pr-summary";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Label, Task } from "../../shared/contract.js";
@@ -132,6 +133,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
   });
   const meta = useTaskListMeta(projectId);
   const questionCounts = useQuestionCounts(tasksQuery.data ?? []);
+  const prSummaries = usePrSummaries(tasksQuery.data ?? []);
   const edits = useListTaskEdits(tasksQuery.data, (message) => push(message));
 
   const labelsById = useMemo(
@@ -313,6 +315,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               key={task.id}
               task={task}
               meta={meta.data?.get(task.id)}
+              prSummary={prSummaries.data?.get(task.id)}
               unansweredQuestions={questionCounts.data?.get(task.id)}
               project={projectsById.get(task.projectId)}
               showProject={showProject}

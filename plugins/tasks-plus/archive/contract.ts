@@ -1,3 +1,4 @@
+import { gitSyncConfigSchema, prLinkSchema, prIdentity } from "../shared/git-sync";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import { z } from "zod";
 import {
@@ -26,8 +27,10 @@ export const archiveProjectSchema = z
       z.literal(5),
       z.literal(6),
       z.literal(7),
+      z.literal(8),
     ]),
     project: projectSchema,
+    gitSync: gitSyncConfigSchema.optional(),
     folders: z.array(folderSchema),
     labels: z.array(labelSchema),
     taskIds: z.array(idSchema),
@@ -38,6 +41,7 @@ export const archiveProjectSchema = z
 export const archiveTaskSchema = z
   .object({
     task: taskSchema,
+    pullRequests: z.array(prLinkSchema).optional(),
     comments: z.array(commentSchema),
     questions: z.array(questionSchema).default([]),
     attachments: z.array(
@@ -100,6 +104,13 @@ function unique(ids: readonly string[], label: string) {
 
 export function validateArchive({ manifest, records }: ProjectArchive): void {
   const projectId = manifest.project.id;
+  if (manifest.version >= 8 && !manifest.gitSync) throw new Error("Archive v8 requires gitSync");
+  if (manifest.version < 8 && (manifest.gitSync || records.some(record => record.pullRequests !== undefined))) throw new Error("Git/PR links require archive v8");
+  for (const record of records) {
+    if (manifest.version >= 8 && !record.pullRequests) throw new Error("Archive v8 requires pullRequests");
+    unique((record.pullRequests ?? []).map(prIdentity), "PR link");
+    if (record.pullRequests?.some(link => link.taskId !== record.task.id)) throw new Error("PR link belongs to another task");
+  }
   for (const record of records) {
     if (manifest.version >= 7 && record.task.archivedAt === undefined)
       throw new Error("Archive v7 requires task.archivedAt");

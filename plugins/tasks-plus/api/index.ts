@@ -1,3 +1,4 @@
+import { gitSyncService } from "../git-sync/service";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
@@ -641,6 +642,7 @@ export function registerHandlers(
   const structured = createStructuredStore(bb, store);
   return {
     ...structured.handlers,
+    ...gitSyncService(bb, store).handlers,
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
       publishProjectsChanged(bb, null);

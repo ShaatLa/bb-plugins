@@ -743,6 +743,19 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
+        "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
+        pr: groupCommand("pr", "Manage persistent task-to-PR links", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"]]),
+        ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({
+          summary: action === "list" ? "List persistent PR links and their cached status" : action === "link" ? "Link or confirm a PR with an explicit role" : "Exclude a PR (survives discovery)",
+          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" } } : {}) },
+          run(input) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            if (action === "list") { const result = await domain.listPrLinks({ taskId: task.id }); return input.options.json ? JSON.stringify(result) : result.links.map(({ link, snapshot, stale }) => `${link.repository}#${link.number} · ${link.role}${link.part ? ` ${link.part}` : ""} · ${link.excluded ? "excluded" : link.confirmed ? "confirmed" : `suggested (${link.source})`} · ${snapshot?.state ?? "unknown"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n") || "No PR links."; }
+            if (action === "unlink") return JSON.stringify(await domain.unlinkPr(tasksRpcContract.unlinkPr.input.parse({ taskId: task.id, url: input.options.url })));
+            return JSON.stringify(await domain.linkPr(tasksRpcContract.linkPr.input.parse({ taskId: task.id, url: input.options.url, role: input.options.role, part: input.options.part })));
+          }); },
+        })])),
         ...Object.fromEntries(["archive", "restore"].map(action => [action, cliCommand({
           summary: action === "archive" ? "Archive a completed task and its children" : "Restore a task and its children from the archive",
           positionals: [KEY_POSITIONAL],
@@ -2328,8 +2341,10 @@ export function registerTasksCli(
                     }),
                   ),
                 );
+              const prLinks = (await domain.listPrLinks({ taskId: task.id })).links;
               if (input.options.json) {
                 return JSON.stringify({
+                  prLinks,
                   task,
                   project,
                   labels,
@@ -2346,6 +2361,7 @@ export function registerTasksCli(
                 });
               }
               return [
+                ...(prLinks.length ? [`Git/PR links\n${prLinks.map(({link,snapshot,stale}) => `${link.repository}#${link.number} · ${link.role} · ${link.excluded ? "excluded" : snapshot?.state ?? "unchecked"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n")}`] : []),
                 detail([
                   ["Task", `${task.key} — ${task.title}`],
                   ["Type", task.type],

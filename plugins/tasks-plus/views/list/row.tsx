@@ -1,3 +1,4 @@
+import { PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { memo, useState } from "react";
 import type {
   Label,
@@ -91,6 +92,7 @@ function LabelChips({
 }
 
 interface TaskRowProps {
+  prSummary?: PrSummary;
   unansweredQuestions?: number;
   task: Task;
   meta: TaskRowMeta | undefined;
@@ -106,6 +108,7 @@ interface TaskRowProps {
 }
 
 export const TaskRow = memo(function TaskRow({
+  prSummary,
   unansweredQuestions,
   task,
   meta,
@@ -191,6 +194,7 @@ export const TaskRow = memo(function TaskRow({
           ) : null}
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
           <QuestionCount count={unansweredQuestions} />
+          <PullRequestSummary summary={prSummary} />
           <LabelChips task={task} labelsById={labelsById} />
           {task.dueDate !== null ? (
             <span className={`${RAIL_CHIP_CLASS} shrink-0 tabular-nums`}>

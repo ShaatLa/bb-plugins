@@ -1,3 +1,5 @@
+import { createGitSyncStore } from "../git-sync/store";
+import { prIdentity } from "../shared/git-sync";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -43,7 +45,8 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-tasks-plus",
-      version: 7,
+      version: 8,
+      gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
       labels: store.tasks
@@ -70,6 +73,7 @@ export function captureProject(
         >("SELECT prefix, number FROM task_key_aliases WHERE task_id = ? ORDER BY prefix, number")
         .all(task.id);
       return {
+        pullRequests: createGitSyncStore(bb.storage.database()).links(task.id),
         task: {
           ...task,
           labelIds: store.tasks
@@ -159,6 +163,8 @@ export function restoreProject(
   }
   if (archive.manifest.project.statuses)
     assertNoSecretsInValue(archive.manifest.project.statuses, "statuses");
+  if (archive.manifest.gitSync) assertNoSecretsInValue(archive.manifest.gitSync, "Git sync configuration");
+  for (const record of archive.records) for (const link of record.pullRequests ?? []) assertNoSecretsInValue(link, "PR link");
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
@@ -230,6 +236,8 @@ export function restoreProject(
     const labels = new Map(
       store.tasks.listLabels(projectId).map((label) => [label.id, label]),
     );
+    if (manifest.gitSync) plan("git_sync_projects", { project_id: projectId, payload: JSON.stringify(manifest.gitSync) }, ["project_id"]);
+    for (const record of records) for (const link of record.pullRequests ?? []) plan("task_pr_links", { task_id: record.task.id, identity: prIdentity(link), payload: JSON.stringify(link) }, ["task_id", "identity"]);
     for (const label of manifest.labels) {
       plan("labels", dbRow(label), ["id"], ["project_id"]);
       labels.set(label.id, label);
@@ -367,6 +375,7 @@ export function restoreProject(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
     }
+    if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
       const currentIds = store.tasks
         .listTaskLabels(task.id)
