@@ -83,7 +83,19 @@ function setup() {
 }
 it("configures repositories and enables background sync from compact project settings", async () => {
   const f = setup();
+  f.harness.sdk.stub("projects.list", async () => [
+    {
+      id: "proj_service",
+      gitRemoteUrl: "https://github.com/example/service.git",
+    },
+    { id: "proj_other", gitRemoteUrl: "git@github.com:example/available.git" },
+  ]);
   const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  await slot.findByRole("checkbox", { name: "example/service" });
+  fireEvent.click(slot.getByRole("checkbox", { name: "example/service" }));
+  fireEvent.click(slot.getByRole("checkbox", { name: "example/available" }));
+  fireEvent.click(slot.getByRole("checkbox", { name: "example/available" }));
+  fireEvent.click(slot.getByText("Other repositories"));
   const input = await slot.findByRole("textbox", { name: "Git repositories" });
   await waitFor(() =>
     expect((input.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(
@@ -91,10 +103,25 @@ it("configures repositories and enables background sync from compact project set
     ),
   );
   fireEvent.change(input, {
-    target: { value: "example/service\nexample/infra" },
+    target: { value: "example/infra" },
   });
+  fireEvent.click(slot.getByRole("button", { name: /^Add$/ }));
   fireEvent.click(
-    slot.getByRole("checkbox", { name: "Enable periodic synchronization" }),
+    slot.getByRole("button", { name: "Remove repository example/infra" }),
+  );
+  fireEvent.change(input, { target: { value: "example/tools" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.click(slot.getByText("Advanced settings"));
+  fireEvent.change(
+    slot.getByRole("spinbutton", { name: "Discovery lookback (days)" }),
+    { target: { value: "45" } },
+  );
+  fireEvent.change(
+    slot.getByRole("textbox", { name: "Required GitHub checks" }),
+    { target: { value: "build\ntest" } },
+  );
+  fireEvent.click(
+    slot.getByRole("switch", { name: "Enable periodic synchronization" }),
   );
   fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
   await slot.findByText("Git/PR settings saved.");
@@ -102,7 +129,9 @@ it("configures repositories and enables background sync from compact project set
     createGitSyncStore(f.bb.storage.database()).config(f.project.id),
   ).toMatchObject({
     enabled: true,
-    repositories: ["example/service", "example/infra"],
+    repositories: ["example/service", "example/tools"],
+    lookbackDays: 45,
+    requiredChecks: ["build", "test"],
   });
 });
 it.each(["main", "side"])(

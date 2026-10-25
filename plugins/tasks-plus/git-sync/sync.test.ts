@@ -610,3 +610,26 @@ it("retains terminal merge history without polling old merged PRs, while explici
   await f.service.handlers.syncGit({ projectId: f.project.id });
   expect(f.client.snapshot).toHaveBeenCalledTimes(2);
 });
+
+it("offers unique GitHub repositories from BB projects without changing sync configuration", async () => {
+  const f = setup();
+  f.harness.sdk.stub("projects.list", async () => [
+    { id: "proj_a", gitRemoteUrl: "https://github.com/Example/Service.git" },
+    { id: "proj_b", gitRemoteUrl: "git@github.com:example/service.git" },
+    { id: "proj_c", gitRemoteUrl: "ssh://git@github.com/example/infra.git" },
+    { id: "proj_d", gitRemoteUrl: "https://gitlab.com/example/other.git" },
+    {
+      id: "proj_e",
+      gitRemoteUrl: "https://evil.test/github.com/example/spoof.git",
+    },
+    { id: "proj_f", gitRemoteUrl: null },
+  ]);
+  const result = await f.service.handlers.getGitSyncConfig({
+    projectId: f.project.id,
+  });
+  expect(result.availableRepositories).toEqual([
+    "example/infra",
+    "example/service",
+  ]);
+  expect(result.config).toMatchObject({ enabled: false, repositories: [] });
+});

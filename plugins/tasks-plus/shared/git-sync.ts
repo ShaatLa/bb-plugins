@@ -205,6 +205,7 @@ export const gitSyncMethods = {
       .object({
         config: gitSyncConfigSchema,
         suggestedRepository: repositorySchema.nullable(),
+        availableRepositories: z.array(repositorySchema).default([]),
       })
       .strict(),
   },
