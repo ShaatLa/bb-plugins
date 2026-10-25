@@ -46,6 +46,7 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       color: "blue",
     });
     const methods = [
+      "getGitSyncConfig",
       "listProjects",
       "updateProject",
       "listFolders",
@@ -219,7 +220,7 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
       {},
       {
         rpc: Object.fromEntries(
-          ["listProjects", "updateProject"].map((method) => [
+          ["getGitSyncConfig", "listProjects", "updateProject"].map((method) => [
             method,
             (input: unknown) => harness.callRpc(method, input),
           ]),

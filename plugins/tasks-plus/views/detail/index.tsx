@@ -1,3 +1,4 @@
+import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
@@ -642,6 +643,8 @@ function TaskDetail({
               onCreate={createSubtask}
             />
           ) : null}
+
+          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
 
           {(threads.data ?? []).length > 0 ? (
             <div className="mt-6">

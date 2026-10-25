@@ -1,3 +1,4 @@
+import { gitSyncMethods } from "./git-sync";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -604,6 +605,7 @@ const updatePresetInputSchema = z
   });
 
 export const tasksRpcContract = {
+  ...gitSyncMethods,
   createFolder: {
     input: z
       .object({

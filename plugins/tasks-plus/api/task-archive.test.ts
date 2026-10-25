@@ -154,7 +154,7 @@ it("exports both scopes in v7 and restores archive timestamps while importing ol
   f.store.tasks.setTaskArchived(f.done.id, true);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(7);
+  expect(capture.manifest.version).toBe(8);
   expect(records).toHaveLength(2);
   const dest = createFakePluginHost({ pluginId: "tasks-plus" });
   hosts.push(dest);
@@ -169,20 +169,22 @@ it("exports both scopes in v7 and restores archive timestamps while importing ol
   expect(restored.tasks.getTask(f.done.id)?.archivedAt).toBe(
     f.store.tasks.getTask(f.done.id)?.archivedAt,
   );
+  const { gitSync, ...legacyManifest } = capture.manifest;
+  const legacyRecords = records.map(({ pullRequests, ...record }) => record);
   expect(() =>
-    validateArchive({ manifest: { ...capture.manifest, version: 6 }, records }),
+    validateArchive({ manifest: { ...legacyManifest, version: 6 }, records: legacyRecords }),
   ).toThrow("v7");
-  const old = records.map((record) => {
+  const old = legacyRecords.map((record) => {
     const { archivedAt, ...task } = record.task;
     return { ...record, task };
   });
   expect(() =>
-    validateArchive({ manifest: capture.manifest, records: old }),
+    validateArchive({ manifest: { ...legacyManifest, version: 7 }, records: old }),
   ).toThrow("archivedAt");
   restoreProject(
     dest.bb,
     restored,
-    { manifest: { ...capture.manifest, version: 6 }, records: old },
+    { manifest: { ...legacyManifest, version: 6 }, records: old },
     new Map(),
     true,
   );

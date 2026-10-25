@@ -1,3 +1,4 @@
+import { gitSyncService } from "./git-sync/service";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
@@ -10,7 +11,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const TASKS_PLUGIN_NAME = "Tasks Plus";
-export const TASKS_PLUGIN_VERSION = "0.8.1";
+export const TASKS_PLUGIN_VERSION = "0.9.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -69,6 +70,8 @@ export default async function plugin(bb: BbPluginApi) {
     const count = autoArchiveTasks(bb, store, Number(autoArchiveAfterDays));
     if (count) bb.log.info(`Automatically archived ${count} tasks`);
   });
+
+  bb.background.schedule("git-pr-sync", "* * * * *", () => gitSyncService(bb, store).runDue());
 
   bb.rpc.register(tasksRpcContract, {
     ping(): { ok: true; version: string } {

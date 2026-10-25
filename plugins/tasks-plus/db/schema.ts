@@ -305,6 +305,14 @@ const MIGRATIONS = [
   },
   `ALTER TABLE tasks ADD COLUMN archived_at TEXT;
    CREATE INDEX idx_tasks_archive ON tasks(project_id, archived_at, status);`,
+  `CREATE TABLE git_sync_projects (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, payload TEXT NOT NULL, last_attempt_at INTEGER
+  );
+  CREATE TABLE task_pr_links (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, identity TEXT NOT NULL, payload TEXT NOT NULL,
+    PRIMARY KEY(task_id, identity)
+  );
+  CREATE TABLE git_pr_snapshots (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, identity TEXT NOT NULL, payload TEXT, error TEXT, PRIMARY KEY(project_id, identity));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

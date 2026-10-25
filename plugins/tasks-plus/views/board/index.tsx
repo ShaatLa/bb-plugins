@@ -1,3 +1,4 @@
+import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { displayName } from "../../shared/display-name.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
@@ -96,6 +97,7 @@ function WorkingAgentsChip({ threads }: { threads: TaskThread[] }) {
 }
 
 interface TaskCardProps {
+  prSummary?: PrSummary;
   statusLabel?: (status: TaskStatus) => string;
   unansweredQuestions?: number;
   subtasks?: readonly Task[];
@@ -114,6 +116,7 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  prSummary,
   statusLabel = displayName,
   unansweredQuestions,
   subtasks = [],
@@ -215,6 +218,7 @@ function TaskCard({
           {task.title}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <PullRequestSummary summary={prSummary} />
           <PriorityIcon priority={task.priority} />
           {labels.map((label) => (
             <span
@@ -357,6 +361,7 @@ export function BoardView({ projectId }: BoardViewProps) {
   );
 
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
+  const prSummaries = usePrSummaries(board.data?.tasks ?? []);
   const questionCounts = useQuestionCounts([
     ...(board.data?.tasks ?? []),
     ...(board.data?.subtasks ?? []),
@@ -633,6 +638,7 @@ export function BoardView({ projectId }: BoardViewProps) {
           statusLabel={statusLabel}
           labelsById={labelsById}
           meta={metaByTaskId.get(task.id) ?? EMPTY_META}
+          prSummary={prSummaries.data?.get(task.id)}
           unansweredQuestions={questionTotals.get(task.id)}
           subtasks={subtasksByParent.get(task.id)}
           questionCounts={questionCounts.data}

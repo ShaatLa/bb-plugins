@@ -1,0 +1,147 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { createStore, registerTasksApi } from "../api";
+import { gitSyncService } from "./service";
+import { createGitSyncStore } from "./store";
+import { gitSyncConfigSchema, prSnapshotSchema } from "../shared/git-sync";
+import { tasksRpcContract } from "../shared/contract";
+
+window.matchMedia ??= (media) => ({
+  matches: false,
+  media,
+  onchange: null,
+  addListener() {},
+  removeListener() {},
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent: () => false,
+});
+window.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+Element.prototype.scrollIntoView ??= () => {};
+const app = await loadPluginApp(() => import("../app"));
+const hosts: ReturnType<typeof createFakePluginHost>[] = [];
+afterEach(async () => {
+  cleanup();
+  localStorage.clear();
+  await Promise.all(hosts.splice(0).map((host) => host.harness.dispose()));
+});
+function setup() {
+  const host = createFakePluginHost({ pluginId: "tasks-plus" });
+  hosts.push(host);
+  const store = createStore(host.bb);
+  gitSyncService(host.bb, store, {
+    discover: vi.fn(async () => []),
+    snapshot: vi.fn(async () =>
+      prSnapshotSchema.parse({
+        repository: "example/service",
+        number: 42,
+        remoteId: "PR_42",
+        url: "https://github.com/example/service/pull/42",
+        title: "A pull request",
+        state: "merged",
+        headSha: "a".repeat(40),
+        mergeSha: "b".repeat(40),
+        mergedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        observedAt: new Date().toISOString(),
+        baseBranch: "trunk",
+        checks: [],
+        requirementsKnown: false,
+        ci: "passing",
+        mergeState: "CLEAN",
+        mergeable: true,
+        review: "APPROVED",
+        unresolvedThreads: 0,
+        coverage: [],
+      }),
+    ),
+  });
+  registerTasksApi(host.bb, store);
+  const project = store.tasks.createProject({
+    name: "Example",
+    prefix: "ABC",
+    color: "blue",
+  });
+  const task = store.tasks.createTask({
+    projectId: project.id,
+    title: "Example task",
+  });
+  const rpc = Object.fromEntries(
+    Object.keys(tasksRpcContract).map((method) => [
+      method,
+      (input: unknown) => host.harness.callRpc(method, input),
+    ]),
+  );
+  return { ...host, store, project, task, rpc };
+}
+it("configures repositories and enables background sync from compact project settings", async () => {
+  const f = setup();
+  const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  const input = await slot.findByRole("textbox", { name: "Git repositories" });
+  await waitFor(() =>
+    expect((input.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(
+      false,
+    ),
+  );
+  fireEvent.change(input, {
+    target: { value: "example/service\nexample/infra" },
+  });
+  fireEvent.click(
+    slot.getByRole("checkbox", { name: "Enable periodic synchronization" }),
+  );
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await slot.findByText("Git/PR settings saved.");
+  expect(
+    createGitSyncStore(f.bb.storage.database()).config(f.project.id),
+  ).toMatchObject({
+    enabled: true,
+    repositories: ["example/service", "example/infra"],
+  });
+});
+it.each(["main", "side"])(
+  "links, refreshes and excludes a PR in the %s task card",
+  async (surface) => {
+    const f = setup();
+    createGitSyncStore(f.bb.storage.database()).setConfig(
+      f.project.id,
+      gitSyncConfigSchema.parse({ repositories: ["example/service"] }),
+    );
+    const slot =
+      surface === "main"
+        ? renderSlot(
+            app.navPanels[0]!,
+            { subPath: `task/${f.task.key}` },
+            { rpc: f.rpc },
+          )
+        : renderSlot(
+            app.threadPanelActions[0]!,
+            { threadId: "thr_example", params: { taskKey: f.task.key } },
+            { rpc: f.rpc },
+          );
+    const section = within(
+      await slot.findByRole("region", { name: "Task pull requests" }),
+    );
+    fireEvent.click(section.getByRole("button", { name: "Link PR" }));
+    fireEvent.change(section.getByRole("textbox", { name: "PR URL" }), {
+      target: { value: "https://github.com/example/service/pull/42" },
+    });
+    fireEvent.click(section.getByRole("button", { name: "Save link" }));
+    await section.findByText("Confirmed");
+    fireEvent.click(section.getByRole("button", { name: "Sync PRs" }));
+    await section.findByText(/merged · CI passing/);
+    fireEvent.click(section.getByRole("button", { name: "Exclude" }));
+    await waitFor(() =>
+      expect(
+        createGitSyncStore(f.bb.storage.database()).links(f.task.id)[0]
+          ?.excluded,
+      ).toBe(true),
+    );
+  },
+);

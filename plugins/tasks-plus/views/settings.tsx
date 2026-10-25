@@ -1,3 +1,4 @@
+import { GitSyncSettings } from "./git-sync-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
 import {
   Select,
@@ -408,6 +409,7 @@ function TasksSettingsContent() {
           </p>
         ) : null}
       </section>
+      {project ? <GitSyncSettings key={project.id} projectId={project.id} /> : null}
     </div>
   );
 }
