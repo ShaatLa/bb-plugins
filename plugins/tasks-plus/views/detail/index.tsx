@@ -494,7 +494,7 @@ function TaskDetail({
 
   return (
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
-      <div className="flex flex-1 items-stretch rounded-lg border border-border bg-card shadow-2xs">
+      <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
             <CopyTaskKey
@@ -644,8 +644,6 @@ function TaskDetail({
             />
           ) : null}
 
-          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
-
           {(threads.data ?? []).length > 0 ? (
             <div className="mt-6">
               <ThreadsSection
@@ -695,8 +693,9 @@ function TaskDetail({
           onMoveToProject={(projectId) => void moveToProject(projectId)}
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
-          className="hidden @[45rem]:block"
-        />
+        >
+          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
+        </PropertiesRail>
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />
     </div>

@@ -1,6 +1,6 @@
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type {
   Label,
   Project,
@@ -620,10 +620,12 @@ export function PropertiesRail({
   onError,
   onAddQuestion,
   className,
+  children,
 }: TaskPropertiesProps & {
   presets: Preset[] | undefined;
   onError: (message: string) => void;
   className?: string;
+  children?: ReactNode;
 }) {
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
@@ -634,142 +636,151 @@ export function PropertiesRail({
     ["projects:changed"],
   );
   return (
-    <aside className={cn("w-56 shrink-0 py-10 pl-2 pr-6", className)}>
-      <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
-        Properties
-      </h2>
-      <TypeMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-      <ExecutorMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-      {task.type !== "epic" && task.parentTaskId === null ? (
-        <EpicPicker
-          projectId={task.projectId}
-          value={task.epicId}
-          onChange={(epicId) => onUpdate({ epicId })}
-          className={RAIL_ROW_CLASS}
+    <aside
+      aria-label="Task details"
+      className={cn(
+        "w-full min-w-0 shrink-0 px-7 pb-8 @[45rem]:w-64 @[45rem]:px-4 @[45rem]:py-10",
+        className,
+      )}
+    >
+      <div className="hidden @[45rem]:block">
+        <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
+          Properties
+        </h2>
+        <TypeMenu
+          task={task}
+          onUpdate={onUpdate}
+          triggerClassName={RAIL_ROW_CLASS}
         />
-      ) : null}
-      <StatusMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-      <PriorityMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-      <DueDateMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-      {onAddQuestion ? (
-        <button
-          type="button"
-          className={RAIL_ROW_CLASS}
-          onClick={onAddQuestion}
-        >
-          <Icon name="FileQuestion" className="size-3.5" />
-          Add question
-        </button>
-      ) : null}
-
-      <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-        Labels
-      </div>
-      <div className="flex flex-wrap items-center gap-1 py-0.5">
-        {taskLabels.map((label) => (
-          <LabelChip key={label.id} label={label} />
-        ))}
-        <LabelsMenu task={task} labels={labels} onUpdate={onUpdate}>
+        <ExecutorMenu
+          task={task}
+          onUpdate={onUpdate}
+          triggerClassName={RAIL_ROW_CLASS}
+        />
+        {task.type !== "epic" && task.parentTaskId === null ? (
+          <EpicPicker
+            projectId={task.projectId}
+            value={task.epicId}
+            onChange={(epicId) => onUpdate({ epicId })}
+            className={RAIL_ROW_CLASS}
+          />
+        ) : null}
+        <StatusMenu
+          task={task}
+          onUpdate={onUpdate}
+          triggerClassName={RAIL_ROW_CLASS}
+        />
+        <PriorityMenu
+          task={task}
+          onUpdate={onUpdate}
+          triggerClassName={RAIL_ROW_CLASS}
+        />
+        <DueDateMenu
+          task={task}
+          onUpdate={onUpdate}
+          triggerClassName={RAIL_ROW_CLASS}
+        />
+        {onAddQuestion ? (
           <button
             type="button"
-            aria-label="Edit labels"
-            className="inline-flex items-center rounded-md border border-dashed border-border px-1.5 py-0.5 text-muted-foreground hover:border-input hover:text-foreground"
+            className={RAIL_ROW_CLASS}
+            onClick={onAddQuestion}
           >
-            <Icon name="Plus" className="size-3" />
+            <Icon name="FileQuestion" className="size-3.5" />
+            Add question
           </button>
-        </LabelsMenu>
-      </div>
+        ) : null}
 
-      <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-        Project
-      </div>
-      <ProjectMenu
-        task={task}
-        project={project}
-        projects={projects}
-        onMoveToProject={onMoveToProject}
-        triggerClassName={RAIL_ROW_CLASS}
-      />
-
-      {task.executionTarget !== "owner" && !task.archivedAt ? (
-        <>
-          <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-            Dispatch target
-          </div>
-          {project !== undefined ? (
-            <DispatchTargetMenu
-              project={project}
-              bbProjects={bbProjects.data ?? []}
-              onError={onError}
-              triggerClassName={RAIL_ROW_CLASS}
-            />
-          ) : (
-            <div className="py-0.5 text-sm text-muted-foreground">…</div>
-          )}
-
-          <div className="mt-2.5 py-0.5">
-            <DispatchControl
-              taskId={task.id}
-              projectId={task.projectId}
-              threads={threads}
-              presets={presets}
-              onError={onError}
-              align="start"
-              className="w-full"
-            />
-          </div>
-        </>
-      ) : (
-        <p className="mt-3 text-xs text-muted-foreground">
-          The owner performs this action. Mark Done after verifying the result;
-          the requester thread will be notified if set.
-        </p>
-      )}
-
-      <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-        Agents
-      </div>
-      <div className="flex flex-col gap-1 py-0.5 text-xs">
-        {active.length > 0 ? (
-          active.map((thread) => (
-            <span
-              key={thread.id}
-              className="flex items-center gap-1.5 font-medium text-success"
+        <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
+          Labels
+        </div>
+        <div className="flex flex-wrap items-center gap-1 py-0.5">
+          {taskLabels.map((label) => (
+            <LabelChip key={label.id} label={label} />
+          ))}
+          <LabelsMenu task={task} labels={labels} onUpdate={onUpdate}>
+            <button
+              type="button"
+              aria-label="Edit labels"
+              className="inline-flex items-center rounded-md border border-dashed border-border px-1.5 py-0.5 text-muted-foreground hover:border-input hover:text-foreground"
             >
-              <span
-                aria-hidden
-                className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
+              <Icon name="Plus" className="size-3" />
+            </button>
+          </LabelsMenu>
+        </div>
+
+        <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
+          Project
+        </div>
+        <ProjectMenu
+          task={task}
+          project={project}
+          projects={projects}
+          onMoveToProject={onMoveToProject}
+          triggerClassName={RAIL_ROW_CLASS}
+        />
+
+        {task.executionTarget !== "owner" && !task.archivedAt ? (
+          <>
+            <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
+              Dispatch target
+            </div>
+            {project !== undefined ? (
+              <DispatchTargetMenu
+                project={project}
+                bbProjects={bbProjects.data ?? []}
+                onError={onError}
+                triggerClassName={RAIL_ROW_CLASS}
               />
-              <span className="truncate">
-                {thread.presetName}{" "}
-                {thread.liveStatus === "starting" ? "starting" : "working"}
-              </span>
-            </span>
-          ))
+            ) : (
+              <div className="py-0.5 text-sm text-muted-foreground">…</div>
+            )}
+
+            <div className="mt-2.5 py-0.5">
+              <DispatchControl
+                taskId={task.id}
+                projectId={task.projectId}
+                threads={threads}
+                presets={presets}
+                onError={onError}
+                align="start"
+                className="w-full"
+              />
+            </div>
+          </>
         ) : (
-          <span className="text-muted-foreground">none active</span>
+          <p className="mt-3 text-xs text-muted-foreground">
+            The owner performs this action. Mark Done after verifying the
+            result; the requester thread will be notified if set.
+          </p>
         )}
+
+        <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
+          Agents
+        </div>
+        <div className="flex flex-col gap-1 py-0.5 text-xs">
+          {active.length > 0 ? (
+            active.map((thread) => (
+              <span
+                key={thread.id}
+                className="flex items-center gap-1.5 font-medium text-success"
+              >
+                <span
+                  aria-hidden
+                  className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
+                />
+                <span className="truncate">
+                  {thread.presetName}{" "}
+                  {thread.liveStatus === "starting" ? "starting" : "working"}
+                </span>
+              </span>
+            ))
+          ) : (
+            <span className="text-muted-foreground">none active</span>
+          )}
+        </div>
       </div>
+      {children}
     </aside>
   );
 }
