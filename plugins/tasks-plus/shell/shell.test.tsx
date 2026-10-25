@@ -105,6 +105,7 @@ describe("project view preference", () => {
 
   it("restores the remembered view when the URL names none", async () => {
     const listed = openProject(`${PROJECT_ID}?view=list`);
+    expect(listed.getByRole("link", { name: "Tasks Plus settings" }).getAttribute("href")).toBe("/settings/plugins/tasks-plus");
     fireEvent.click(await listed.findByRole("button", { name: "Board" }));
     expect(listed.navigateCalls).toContainEqual({
       method: "toPluginPanel",
