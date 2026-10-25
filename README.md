@@ -5,10 +5,10 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
-| **Tasks Plus** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `tasks-plus` | [README](plugins/tasks-plus/README.md) |
+| **Agent Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `agent-board` | [README](plugins/agent-board/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 
-The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Package names, plugin IDs and data directories remain unchanged when using this collection. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
+The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Agent Board 0.10.0 replaces the former Tasks Plus identity; existing users must complete its [migration](plugins/agent-board/README.md#переход-с-tasks-plus-на-agent-board-0100) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibi
 Additional requirements depend on the plugin:
 
 - **Antigravity:** an installed, signed-in **`agy` 1.4.6 or newer on each execution machine**. Login and the CLI installation remain managed by Antigravity.
-- **Tasks Plus:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Tasks Plus installation**, as described below.
+- **Agent Board:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Agent Board installation**, as described below.
 - **CI Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
 ## Install from GitHub
@@ -33,20 +33,20 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin an
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 ```
 
-For **Tasks Plus**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
+For **Agent Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
 
 ```sh
 bb plugin disable tasks
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tasks-plus
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-board
 ```
 
-The `--plugin` values are collection entry names. You can also select a directory with `--subdirectory plugins/tasks-plus`, for example. The repository root itself is a collection, not a plugin package.
+The `--plugin` values are collection entry names. You can also select a directory with `--subdirectory plugins/agent-board`, for example. The repository root itself is a collection, not a plugin package.
 
 BB installs dependencies and builds Git installations. Open **Settings → Plugins** to configure each installed plugin. Inspect its active source and status with:
 
 ```sh
 bb plugin list
-bb plugin source tasks-plus --json
+bb plugin source agent-board --json
 ```
 
 ### Updates
@@ -56,13 +56,13 @@ An installation tracking `@main` receives branch changes when you apply an updat
 ```sh
 bb plugin outdated
 bb plugin update antigravity
-bb plugin update tasks-plus
+bb plugin update agent-board
 bb plugin update delivery-dashboard
 ```
 
 Replace `@main` in an installation URL with a full commit SHA to pin an exact revision. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
 
-If a plugin is already installed, check its source before changing installation methods. Keep its existing ID and data rather than installing a renamed copy. In particular, Antigravity remains provider `antigravity`, and built-in Tasks must stay disabled while Tasks Plus is enabled.
+If a plugin is already installed, check its source before changing installation methods. Keep its existing ID and data rather than installing a renamed copy. In particular, Antigravity remains provider `antigravity`, and built-in Tasks must stay disabled while Agent Board is enabled.
 
 ## Plugins
 
@@ -86,9 +86,11 @@ bb antigravity diagnostics --host <machine-id>
 
 [Setup, permissions and limitations →](plugins/provider-antigravity/README.md)
 
-### Tasks Plus
+### Agent Board
 
-A replacement for BB's built-in Tasks, retaining the **`bb tasks` CLI** and adding:
+Existing Tasks Plus users: follow the plugin’s [identity migration guide](plugins/agent-board/README.md#переход-с-tasks-plus-на-agent-board-0100). Disable `tasks-plus`, copy its database/blobs and restore settings; changing the install command alone does not migrate data. Update automations and agent roles from `bb tasks` to `bb agent-board` before removing the old command.
+
+A replacement for BB's built-in Tasks, using the **`bb agent-board` CLI** and adding:
 
 - Projects, tasks, epics, subtasks, statuses, priorities, labels, Markdown descriptions, attachments and comments.
 - Lists and kanban in the main area and a thread's right panel, with shared project filters, task search and remembered project/view preferences.
@@ -97,12 +99,12 @@ A replacement for BB's built-in Tasks, retaining the **`bb tasks` CLI** and addi
 - **Questions** with single/multiple choices, optional free-text answers, recommendations, revision history, a Needs answer filter and answer notifications to the working agent.
 - Append-only structured **evidence** for review, QA, merge, deploy and exemptions, plus per-project Markdown description templates.
 - Status inclusion/exclusion filters in the CLI, including `--exclude-status done,canceled`.
-- Deterministic **export/import** for storing project snapshots in Git: versioned JSON, immutable ID-based task filenames and separate attachment blobs. The current format is **v5**; imports accept v1–v5.
+- Deterministic **export/import** for storing project snapshots in Git: versioned JSON, immutable ID-based task filenames and separate attachment blobs. The current format is **v8** with marker `bb-agent-board`; imports accept v1–v8 and the legacy marker.
 - A write-time guard for common secret patterns in task text, comments and structured content.
 
 Exports do not commit or push Git changes; scheduled synchronization is a separate automation. If an automation validates exports with a closed schema, update that validator before activating a plugin version that changes the archive format. Questions, recommendations and evidence are task data, not automatic approval or completion rules.
 
-[Setup, CLI reference, archive behavior and migration →](plugins/tasks-plus/README.md)
+[Setup, CLI reference, archive behavior and migration →](plugins/agent-board/README.md)
 
 ### CI Dashboard
 
@@ -122,21 +124,21 @@ The Anvil production card also has a project-specific **Deploy production** acti
 
 ## Migrate built-in Tasks data
 
-Do this **before installing Tasks Plus for the first time**. Both `tasks` and `tasks-plus` must be disabled, and the destination data directory must not already exist. An existing Tasks Plus installation should keep its current data; this migration is not an update command.
+For built-in Tasks only, do this **before installing Agent Board for the first time**. Existing Tasks Plus users must use `--source-plugin tasks-plus` and the identity migration guide above. Both `tasks` and `agent-board` must be disabled, and the destination data directory must not already exist. An existing Agent Board installation should keep its current data; this migration is not an update command.
 
 Clone this repository, then run the migration helper from its plugin directory:
 
 ```sh
 git clone https://github.com/ShaatLa/bb-plugins.git
-cd bb-plugins/plugins/tasks-plus
+cd bb-plugins/plugins/agent-board
 bb plugin disable tasks
 python3 scripts/import_tasks.py
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tasks-plus
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-board
 ```
 
-The helper copies the SQLite database through its backup API, preserves record IDs and attachment files, and rewrites attachment URLs in copied descriptions/comments for `tasks-plus`. The original built-in data remains in place. For another BB data location, pass `--data-dir /path/to/bb-data`.
+The helper copies the SQLite database through its backup API, preserves record IDs and attachment files, and rewrites attachment URLs in copied descriptions/comments for `agent-board`. The original built-in data remains in place. For another BB data location, pass `--data-dir /path/to/bb-data`.
 
-Old built-in chat mentions and UI view preferences are not migrated. Old chat attachment links may stop opening while built-in Tasks is disabled. Switching back to built-in Tasks does not copy new Tasks Plus changes back automatically. See the [full migration guide](plugins/tasks-plus/README.md#переключение-со-встроенного-плагина).
+Old built-in chat mentions and UI view preferences are not migrated. Old chat attachment links may stop opening while built-in Tasks is disabled. Switching back to built-in Tasks does not copy new Agent Board changes back automatically. See the [full migration guide](plugins/agent-board/README.md#переключение-со-встроенного-плагина).
 
 ## Local development
 
@@ -145,7 +147,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | Directory | Install development dependencies | Additional requirements/checks |
 | --- | --- | --- |
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
-| `plugins/tasks-plus` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
+| `plugins/agent-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 
 From the chosen plugin directory, after installing its dependencies:
@@ -164,12 +166,12 @@ bb plugin build .
 bb plugin reload <plugin-id>
 ```
 
-`bb plugin dev` provides a build/reload watcher for an already-installed local directory. Do not enable built-in Tasks alongside a local Tasks Plus installation.
+`bb plugin dev` provides a build/reload watcher for an already-installed local directory. Do not enable built-in Tasks alongside a local Agent Board installation.
 
 ## License and attribution
 
 All three plugins retain MIT licenses and their upstream acknowledgements:
 
 - **Antigravity provider:** inspired by [amrtawfik160/bb-plugin-antigravity](https://github.com/amrtawfik160/bb-plugin-antigravity); original [MIT license](plugins/provider-antigravity/LICENSE) and vendored BB component attribution are retained in the plugin directory.
-- **Tasks Plus:** forked from BB Tasks and required shared UI sources at `desktop-v0.46.1`; [MIT license](plugins/tasks-plus/LICENSE), [upstream source details](plugins/tasks-plus/UPSTREAM.md).
+- **Agent Board:** forked from BB Tasks and required shared UI sources at `desktop-v0.46.1`; [MIT license](plugins/agent-board/LICENSE), [upstream source details](plugins/agent-board/UPSTREAM.md).
 - **CI Dashboard:** imported from the existing standalone dashboard repository and uses BB shared UI sources; [MIT license](plugins/ci-dashboard/LICENSE), [upstream source details](plugins/ci-dashboard/UPSTREAM.md).
