@@ -52,14 +52,34 @@ function setup() {
         updatedAt: new Date().toISOString(),
         observedAt: new Date().toISOString(),
         baseBranch: "trunk",
-        checks: [],
+        checks: [
+          {
+            name: "Build",
+            app: "GitHub Actions",
+            appId: 1,
+            sha: "a".repeat(40),
+            url: "https://github.com/example/service/actions/runs/77",
+            state: "passed",
+            required: true,
+          },
+        ],
         requirementsKnown: false,
         ci: "passing",
         mergeState: "CLEAN",
         mergeable: true,
         review: "APPROVED",
         unresolvedThreads: 0,
-        coverage: [],
+        coverage: [
+          {
+            workflow: "Deploy",
+            state: "passed",
+            runId: 88,
+            sha: "b".repeat(40),
+            url: "https://github.com/example/service/actions/runs/88",
+            superseded: false,
+            originalRunId: null,
+          },
+        ],
       }),
     ),
   });
@@ -147,12 +167,12 @@ it.each(["main", "side"])(
         ? renderSlot(
             app.navPanels[0]!,
             { subPath: `task/${f.task.key}` },
-            { rpc: f.rpc },
+            { rpc: f.rpc, openUrl: () => true },
           )
         : renderSlot(
             app.threadPanelActions[0]!,
             { threadId: "thr_example", params: { taskKey: f.task.key } },
-            { rpc: f.rpc },
+            { rpc: f.rpc, openUrl: () => true },
           );
     const region = await slot.findByRole("region", {
       name: "Task pull requests",
@@ -176,9 +196,28 @@ it.each(["main", "side"])(
     expect(details.open).toBe(false);
     fireEvent.click(section.getByRole("button", { name: "Sync PRs" }));
     await section.findByRole("img", { name: "CI passing" });
+    const prLink = section.getByRole("link", { name: "service#42" });
+    expect(prLink.getAttribute("target")).toBeNull();
+    fireEvent.click(prLink);
+    expect(slot.navigateCalls).toContainEqual({
+      method: "openUrl",
+      url: "https://github.com/example/service/pull/42",
+    });
+    expect(details.open).toBe(false);
     fireEvent.click(summary);
     expect(details.open).toBe(true);
     await section.findByText(/merged · CI passing/);
+    fireEvent.click(section.getByText("Checks (1)"));
+    fireEvent.click(section.getByRole("link", { name: "Build" }));
+    fireEvent.click(section.getByRole("link", { name: "run 88" }));
+    expect(slot.navigateCalls).toContainEqual({
+      method: "openUrl",
+      url: "https://github.com/example/service/actions/runs/77",
+    });
+    expect(slot.navigateCalls).toContainEqual({
+      method: "openUrl",
+      url: "https://github.com/example/service/actions/runs/88",
+    });
     fireEvent.click(section.getByRole("button", { name: "Exclude" }));
     await waitFor(() =>
       expect(
