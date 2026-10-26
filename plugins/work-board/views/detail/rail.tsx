@@ -631,6 +631,7 @@ export function PropertiesRail({
     task.labelIds.includes(label.id),
   );
   const active = threads.filter(isActiveThread);
+  const navigate = useBbNavigate();
   const bbProjects = useTasksQuery(
     async (query) => (await query.call("listBbProjects")).bbProjects,
     ["projects:changed"],
@@ -761,19 +762,23 @@ export function PropertiesRail({
         <div className="flex flex-col gap-1 py-0.5 text-xs">
           {active.length > 0 ? (
             active.map((thread) => (
-              <span
+              <button
                 key={thread.id}
-                className="flex items-center gap-1.5 font-medium text-success"
+                type="button"
+                title={`${thread.title || thread.threadId} · ${thread.liveStatus === "starting" ? "starting" : "working"}`}
+                aria-label={`Open thread ${thread.title || thread.threadId}`}
+                onClick={() => navigate.toThread(thread.threadId)}
+                className="flex min-w-0 items-center gap-1.5 rounded text-left font-medium text-success hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <span
                   aria-hidden
                   className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
                 />
                 <span className="truncate">
-                  {thread.presetName}{" "}
-                  {thread.liveStatus === "starting" ? "starting" : "working"}
+                  {thread.title || thread.threadId}
                 </span>
-              </span>
+                <Icon name="ArrowUpRight" className="size-3 shrink-0" />
+              </button>
             ))
           ) : (
             <span className="text-muted-foreground">none active</span>

@@ -31,6 +31,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [checks, setChecks] = useState("");
   const [workflows, setWorkflows] = useState("");
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   useEffect(() => {
@@ -46,6 +47,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   }, [query.data]);
   const act = async (save: boolean) => {
     setBusy(true);
+    setSyncing(!save);
     setError(null);
     setMessage("");
     try {
@@ -71,6 +73,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       setError(errorMessage(error));
     } finally {
       setBusy(false);
+      setSyncing(false);
     }
   };
   const addRepository = (value: string) => {
@@ -383,8 +386,9 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             variant="ghost"
             className="h-7 gap-1.5 px-2.5"
             onClick={() => void act(false)}
+            aria-busy={syncing}
           >
-            <Icon name="RefreshCw" className="size-3.5" />
+            <Icon name="RotateCcw" className={`size-3.5${syncing ? " animate-spin" : ""}`} />
             Sync now
           </Button>
         </div>
