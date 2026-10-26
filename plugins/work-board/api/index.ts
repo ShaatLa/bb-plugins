@@ -1060,6 +1060,9 @@ export function registerHandlers(
     },
     async listComments(input) {
       const comments = store.tasks.listComments(input.taskId);
+      if (input.resolveMetadata === false) {
+        return { comments: comments.map((comment) => ({ ...comment, threadTitle: null, provider: null })) };
+      }
       const threadInfo = await resolveAgentThreadInfo(bb, comments);
       const providerBadges = await resolveProviderBadges(bb, threadInfo);
       return {
@@ -1153,7 +1156,9 @@ export function registerHandlers(
       return { archivedCount: changed.length };
     },
     async listTaskThreads(input) {
-      return { taskThreads: await reconcileTaskThreads(bb, store.tasks, input.taskId) };
+      return { taskThreads: input.reconcile === false
+        ? store.tasks.listTaskThreads(input.taskId)
+        : await reconcileTaskThreads(bb, store.tasks, input.taskId) };
     },
     async listTaskPullRequests(input) {
       return listTaskPullRequests(bb, store, input.taskId);

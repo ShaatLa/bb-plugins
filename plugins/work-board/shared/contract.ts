@@ -913,7 +913,7 @@ export const tasksRpcContract = {
     output: z.object({ comment: commentSchema }).strict(),
   },
   listComments: {
-    input: z.object({ taskId: idSchema }).strict(),
+    input: z.object({ taskId: idSchema, resolveMetadata: z.boolean().optional() }).strict(),
     output: z.object({ comments: z.array(displayCommentSchema) }).strict(),
   },
   listAttachments: {
@@ -934,7 +934,7 @@ export const tasksRpcContract = {
     output: attachmentDeleteResultSchema,
   },
   listTaskThreads: {
-    input: z.object({ taskId: idSchema }).strict(),
+    input: z.object({ taskId: idSchema, reconcile: z.boolean().optional() }).strict(),
     output: z.object({ taskThreads: z.array(taskThreadSchema) }).strict(),
   },
   listTaskPullRequests: {

@@ -77,7 +77,7 @@ async function reconcile(
     }
   };
   try {
-    for (const link of links) await get(link.threadId);
+    await Promise.all(links.map((link) => get(link.threadId)));
     const unavailable = links.filter((link) => {
       const thread = snapshots.get(link.threadId);
       return !thread || threadUnavailable(thread);
