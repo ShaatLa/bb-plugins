@@ -11,6 +11,29 @@ import { tasksRpcContract } from "../shared/contract";
 import { createComment, createStore, registerTasksApi } from ".";
 
 describe("Tasks RPC domain API", () => {
+  it("serves task content, saved workers and comments within 500 ms without metadata lookups", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      const store = createStore(bb);
+      registerTasksApi(bb, store);
+      const project = store.tasks.createProject({ name: "Fast detail", prefix: "FAST", color: "blue" });
+      const task = store.tasks.createTask({ projectId: project.id, title: "Local task" });
+      store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_slow_metadata", title: "Worker", presetName: "Attached", liveStatus: "working" });
+      store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Worker", threadId: "thr_slow_metadata", body: "Saved context" });
+      const start = performance.now();
+      const [detail, workers, activity] = await Promise.all([
+        harness.callRpc("getTaskByKey", { taskKey: task.key }),
+        harness.callRpc("listTaskThreads", { taskId: task.id, reconcile: false }),
+        harness.callRpc("listComments", { taskId: task.id, resolveMetadata: false }),
+      ]);
+      expect(performance.now() - start).toBeLessThan(500);
+      expect(detail).toMatchObject({ task: { title: "Local task" } });
+      expect(workers).toMatchObject({ taskThreads: [{ title: "Worker" }] });
+      expect(activity).toMatchObject({ comments: [{ body: "Saved context", threadTitle: null, provider: null }] });
+      expect(harness.sdk.calls).toHaveLength(0);
+    } finally { await harness.dispose(); }
+  });
+
   it.each(["get", "send"])(
     "returns and publishes a persisted comment while notification %s is blocked",
     async (blockedOperation) => {

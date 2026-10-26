@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TasksEditor } from "../../editor/tasks-editor.js";
-import { experimental_saveFile, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { Markdown, experimental_saveFile, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import {
   useMentionItems,
   useTasksQuery,
@@ -74,12 +74,14 @@ export function activityFeedEntries(
 
 function useActivityFeed(taskId: string) {
   return useTasksQuery<FeedEntry[]>(
-    async (rpc) => {
+    async (rpc, publish) => {
       const [{ comments }, { attachments }] = await Promise.all([
-        rpc.call("listComments", { taskId }),
+        rpc.call("listComments", { taskId, resolveMetadata: false }),
         rpc.call("listAttachments", { commentsOfTaskId: taskId }),
       ]);
-      return activityFeedEntries(comments, attachments);
+      publish(activityFeedEntries(comments, attachments));
+      const enriched = await rpc.call("listComments", { taskId });
+      return activityFeedEntries(enriched.comments, attachments);
     },
     ["comments:changed", "tasks:changed"],
     [taskId],
@@ -271,13 +273,17 @@ function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
             {formatRelativeTime(comment.createdAt, nowMs)}
           </time>
         </div>
-        <TasksEditor
-          value={comment.body}
-          onChange={() => {}}
-          readOnly
-          variant="comment"
-          onOpenThread={(threadId) => navigate.toThread(threadId)}
-        />
+        {/\]\(bb(?:task|thread):\/\//.test(comment.body) ? (
+          <TasksEditor
+            value={comment.body}
+            onChange={() => {}}
+            readOnly
+            variant="comment"
+            onOpenThread={(threadId) => navigate.toThread(threadId)}
+          />
+        ) : (
+          <Markdown content={comment.body} className="text-sm [overflow-wrap:anywhere]" />
+        )}
         {attachments.length > 0 ? (
           <AttachmentTracks
             attachments={attachments}
@@ -491,7 +497,10 @@ interface TaskActivityProps {
 export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
   const feed = useActivityFeed(taskId);
   const nowMs = useNowTick();
+  const [history, setHistory] = useState({ taskId, count: 20 });
+  const visibleCount = history.taskId === taskId ? history.count : 20;
   const entries = useMemo(() => feed.data ?? [], [feed.data]);
+  const visibleEntries = entries.slice(-visibleCount);
   const notificationTarget = useMemo(
     () => agentNotificationTarget(entries.map((entry) => entry.comment)),
     [entries],
@@ -502,6 +511,14 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
       <EvidenceSection comments={entries.map((entry) => entry.comment)} pullRequests={pullRequests} />
       <div className="mt-6 border-t border-border-hairline" />
       <h2 className="pb-3 pt-4 text-sm font-semibold">Activity</h2>
+      {entries.length > visibleCount ? (
+        <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <Button size="sm" variant="ghost" onClick={() => setHistory({ taskId, count: visibleCount + 20 })}>
+            Show earlier activity
+          </Button>
+          <span>Showing {visibleEntries.length} of {entries.length}</span>
+        </div>
+      ) : null}
       <div
         className={cn(
           "relative",
@@ -515,7 +532,7 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
         {entries.length === 0 && !feed.isLoading && !feed.error ? (
           <div className="text-xs text-muted-foreground">No activity yet.</div>
         ) : null}
-        {entries.map((entry) =>
+        {visibleEntries.map((entry) =>
           entry.comment.kind === "system" ? (
             <SystemEvent
               key={entry.comment.id}

@@ -437,3 +437,25 @@ it("walks through an older attached worker when the replacement is its child", a
   expect(await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id)).toMatchObject([{ threadId: "thr_parent" }]);
   expect(f.store.tasks.listComments(f.task.id)).toHaveLength(3);
 });
+
+it("starts independent worker lookups in parallel", async () => {
+  const f = setup();
+  f.add("thr_parallel_one");
+  f.add("thr_parallel_two");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started: string[] = [];
+  f.harness.sdk.stub("threads.get", async ({ threadId }) => {
+    started.push(threadId);
+    await gate;
+    return f.threads.get(threadId)!;
+  });
+  const result = reconcileTaskThreads(f.bb, f.store.tasks, f.task.id);
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(started.sort()).toEqual(["thr_parallel_one", "thr_parallel_two"]);
+  } finally {
+    release();
+    await result;
+  }
+});

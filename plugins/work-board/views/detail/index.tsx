@@ -9,7 +9,7 @@ import {
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
-import type { Task } from "../../shared/contract.js";
+import type { Task, TaskThread } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
 import {
@@ -365,9 +365,12 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
-  const threads = useTasksQuery(
-    async (query) =>
-      (await query.call("listTaskThreads", { taskId: task.id })).taskThreads,
+  const threads = useTasksQuery<TaskThread[]>(
+    async (query, publish) => {
+      const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
+      publish(cached.taskThreads);
+      return (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
+    },
     ["threads:changed"],
     [task.id],
     { relevantTaskIds: [task.id] },

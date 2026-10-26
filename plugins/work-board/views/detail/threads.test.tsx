@@ -447,3 +447,45 @@ describe("copying the task key", () => {
     },
   );
 });
+
+it.each(["main", "side"])("renders an ANV-71-sized card within 500 ms while Git and live metadata are blocked (%s)", async (surface) => {
+  const pending = new Promise<never>(() => {});
+  const comments = Array.from({ length: 80 }, (_, index) => ({
+    id: `01HZZZZZZZZZZZZZZZZZZ${String(index).padStart(6, "0")}`,
+    taskId: TASK_ID,
+    kind: "agent",
+    authorName: "Worker",
+    presetName: null,
+    threadId: "thr_remote",
+    threadTitle: null,
+    provider: null,
+    body: `Activity ${index + 1}: ${"A review of the current implementation. ".repeat(10)}`,
+    notifiedCount: 0,
+    createdAt: "2026-07-15T00:00:00.000Z",
+  }));
+  const options = { rpc: detailRpc({
+    getTaskByKey: () => ({ task: { ...task, description: "Task details without waiting for Git." } }),
+    listTaskThreads: (input: unknown) => rpcInput(input).reconcile === false
+      ? { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_remote", "Saved worker")] }
+      : pending,
+    listComments: (input: unknown) => rpcInput(input).resolveMetadata === false ? { comments } : pending,
+    listTaskPullRequests: () => pending,
+    listPrLinks: () => pending,
+  }) };
+  const started = performance.now();
+  const slot = surface === "main"
+    ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+  await slot.findByRole("textbox", { name: "Task title" }, { timeout: 500 });
+  await slot.findByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
+  await slot.findByText("Showing 20 of 80", {}, { timeout: 500 });
+  expect(performance.now() - started).toBeLessThan(500);
+  const activity = slot.getByRole("region", { name: "Activity" });
+  expect(activity.querySelectorAll(".tiptap")).toHaveLength(1);
+  expect(slot.queryByText(comments[0]!.body.trim())).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Show earlier activity" }));
+  await slot.findByText("Showing 40 of 80");
+  fireEvent.click(slot.getByRole("button", { name: "Show earlier activity" }));
+  fireEvent.click(slot.getByRole("button", { name: "Show earlier activity" }));
+  await slot.findByText(comments[0]!.body.trim());
+});
