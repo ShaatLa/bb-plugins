@@ -50,6 +50,36 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   } finally { slot.lifecycle.unmount(); }
 });
 
+test("chart expansion is reciprocal, restores the same charts and persists through a data refresh", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
+  try {
+    const ci = await slot.findByRole("figure", { name: "CI pass rate over time" });
+    const deployments = slot.getByRole("figure", { name: "Deployment throughput" });
+    const group = slot.getByRole("group", { name: "History charts" });
+    fireEvent.click(slot.getByRole("button", { name: "Expand CI pass rate over time" }));
+    expect(slot.getByRole("button", { name: "Restore CI pass rate over time" }).getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(slot.getByRole("button", { name: "Restore CI pass rate over time" }));
+    expect(slot.queryByRole("figure", { name: "Deployment throughput" })).toBeNull();
+    expect(deployments.closest("[inert]")?.getAttribute("aria-hidden")).toBe("true");
+    expect(group.className).toContain("xl:grid-cols-[minmax(0,1fr)_minmax(0,0fr)]");
+    expect(group.className).toContain("transition-[grid-template-columns,gap]");
+    fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
+    await act(async () => {});
+    expect(slot.getByRole("button", { name: "Restore CI pass rate over time" })).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Restore CI pass rate over time" }));
+    expect(slot.getByRole("figure", { name: "Deployment throughput" })).toBe(deployments);
+    expect(slot.getByRole("figure", { name: "CI pass rate over time" })).toBe(ci);
+    fireEvent.click(slot.getByRole("button", { name: "Expand Deployment throughput" }));
+    expect(slot.queryByRole("figure", { name: "CI pass rate over time" })).toBeNull();
+    expect(group.className).toContain("xl:grid-cols-[minmax(0,0fr)_minmax(0,1fr)]");
+    fireEvent.click(slot.getByRole("button", { name: "Restore Deployment throughput" }));
+    expect(slot.getByRole("figure", { name: "CI pass rate over time" })).toBe(ci);
+    expect(slot.getByRole("figure", { name: "Deployment throughput" })).toBe(deployments);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("progressive loading skeletons clear independently while ready cards and errors remain readable", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));

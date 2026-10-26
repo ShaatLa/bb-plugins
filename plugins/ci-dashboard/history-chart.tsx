@@ -1,10 +1,32 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { Button } from "./components/ui/button";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 
-export function HistoryChart({ title, metric, range, onSelect, percent = false }: {
-  title: string; metric: Metrics["deployments"]; range: Metrics["range"]; onSelect: (since: string, until: string) => void; percent?: boolean;
+export function HistoryCharts({ repo, onSelect }: {
+  repo: Metrics; onSelect: (since: string, until: string) => void;
+}) {
+  const [expanded, setExpanded] = useState<"ci" | "deployments" | null>(null);
+  const columns = expanded === "ci" ? "xl:grid-cols-[minmax(0,1fr)_minmax(0,0fr)] gap-0"
+    : expanded === "deployments" ? "xl:grid-cols-[minmax(0,0fr)_minmax(0,1fr)] gap-0"
+      : "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3";
+  return <div role="group" aria-label="History charts" style={{ containerType: "inline-size" }} className={`grid min-w-0 grid-cols-1 transition-[grid-template-columns,gap] duration-300 ease-in-out motion-reduce:transition-none ${columns}`}>
+    {(["ci", "deployments"] as const).map((kind) => {
+      const hidden = expanded !== null && expanded !== kind;
+      return <div key={kind} aria-hidden={hidden || undefined} inert={hidden} className={`min-w-0 overflow-hidden transition-opacity duration-300 ease-in-out motion-reduce:transition-none ${hidden ? "hidden opacity-0 xl:block" : "opacity-100"}`}>
+        {/* Keep shrinking labels from wrapping and increasing the row height. */}
+        <div className="h-full xl:min-w-[calc((100cqw_-_0.75rem)/2)]">
+          <HistoryChart title={kind === "ci" ? "CI pass rate over time" : "Deployment throughput"} metric={repo[kind]} range={repo.range} percent={kind === "ci"} onSelect={onSelect}
+            expanded={expanded === kind} onToggle={() => setExpanded((current) => current === kind ? null : kind)} />
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+export function HistoryChart({ title, metric, range, onSelect, percent = false, expanded, onToggle }: {
+  title: string; metric: Metrics["deployments"]; range: Metrics["range"]; onSelect: (since: string, until: string) => void; percent?: boolean; expanded: boolean; onToggle: () => void;
 }) {
   const headingId = useId();
   const calendarDay = range.label === "today";
@@ -15,11 +37,17 @@ export function HistoryChart({ title, metric, range, onSelect, percent = false }
   const dateLabel = (date: string, index: number) => calendarDay
     ? new Date(Date.parse(range.since) + index * range.bucketMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
     : new Date(date).toLocaleString(undefined, { month: "short", day: "numeric", ...(range.bucketMs < 86_400_000 ? { hour: "2-digit", minute: "2-digit" } : {}), timeZone: "UTC" });
-  return <Card className="p-4">
-    <figure aria-labelledby={headingId}>
-      <figcaption>
-        <h4 id={headingId} className="text-sm font-medium">{title}</h4>
+  return <Card className="h-full min-w-0 p-4">
+    <figure id={`${headingId}-chart`} aria-labelledby={headingId}>
+      <figcaption className="flex items-start justify-between gap-3">
+        <div className="min-w-0"><h4 id={headingId} className="text-sm font-medium">{title}</h4>
         <p className="mt-1 text-xs text-muted-foreground">{range.label} · {range.bucketMs / 3_600_000}-hour intervals · UTC · click a bar for details{percent ? " · — means no runs" : ""}</p>
+        </div>
+        <Button type="button" variant="ghost" size="icon" className={`shrink-0 ${expanded ? "" : "hidden xl:inline-flex"}`} aria-label={`${expanded ? "Restore" : "Expand"} ${title}`} aria-expanded={expanded} aria-controls={`${headingId}-chart`} onClick={(event) => { event.currentTarget.focus(); onToggle(); }}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+            <path d={expanded ? "m4 8 4 4-4 4m16-8-4 4 4 4M2 12h6m8 0h6" : "m8 8-4 4 4 4m8-8 4 4-4 4M4 12h16"} />
+          </svg>
+        </Button>
       </figcaption>
       {series ? <div className="mt-5 overflow-x-auto" role="group" aria-label={`${title}: ${series.map((point, index) => `${dateLabel(point.date, index)}: ${format(point.value)}`).join(", ")}`}>
         <div className="grid gap-2 border-b border-border" style={{ gridTemplateColumns: `repeat(${series.length}, minmax(38px, 1fr))` }}>
