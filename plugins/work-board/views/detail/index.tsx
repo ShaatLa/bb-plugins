@@ -159,10 +159,16 @@ function EditableTitle({
   task: Task;
   onSave: (title: string) => void;
 }) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    const element = titleRef.current;
+    if (element && document.activeElement !== element) element.textContent = task.title;
+  }, [task.id, task.title]);
   return (
     <div className="mb-2.5 mt-1">
       <h1
-        key={`${task.id}:${task.title}`}
+        key={task.id}
+        ref={titleRef}
         contentEditable
         suppressContentEditableWarning
         role="textbox"
@@ -182,9 +188,7 @@ function EditableTitle({
           }
           if (next !== task.title) onSave(next);
         }}
-      >
-        {task.title}
-      </h1>
+      />
     </div>
   );
 }
@@ -697,7 +701,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
-          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
+          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />

@@ -206,10 +206,20 @@ it.each(["main", "side"])(
     expect(syncButton.getAttribute("aria-busy")).toBe("true");
     expect(syncButton.hasAttribute("disabled")).toBe(true);
     expect(syncButton.querySelector(".animate-spin")).not.toBeNull();
+    const linkButton = section.getByRole("button", { name: "Link PR" });
+    expect(linkButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(linkButton);
+    fireEvent.change(section.getByRole("textbox", { name: "PR URL" }), {
+      target: { value: "https://github.com/example/service/pull/99" },
+    });
+    expect(section.getByRole("button", { name: "Save link" }).hasAttribute("disabled")).toBe(false);
+    expect(slot.getByRole("textbox", { name: "Task title" }).getAttribute("contenteditable")).toBe("true");
     finishSync();
     await section.findByRole("img", { name: "CI passing" });
     await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
     expect(syncButton.querySelector(".animate-spin")).toBeNull();
+    expect((section.getByRole("textbox", { name: "PR URL" }) as HTMLInputElement).value).toBe("https://github.com/example/service/pull/99");
+    fireEvent.click(linkButton);
     const prLink = section.getByRole("link", { name: "service#42" });
     expect(prLink.getAttribute("target")).toBeNull();
     fireEvent.click(prLink);
