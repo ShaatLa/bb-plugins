@@ -480,6 +480,9 @@ it.each(["main", "side"])("renders an ANV-71-sized card within 500 ms while Git 
   await slot.findByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
   await slot.findByText("Showing 20 of 80", {}, { timeout: 500 });
   expect(performance.now() - started).toBeLessThan(500);
+  const syncButton = slot.getByRole("button", { name: "Sync PRs" });
+  expect(syncButton.getAttribute("aria-busy")).toBe("true");
+  expect(syncButton.querySelector(".animate-spin")).not.toBeNull();
   const activity = slot.getByRole("region", { name: "Activity" });
   expect(activity.querySelectorAll(".tiptap")).toHaveLength(1);
   expect(slot.queryByText(comments[0]!.body.trim())).toBeNull();
@@ -488,4 +491,43 @@ it.each(["main", "side"])("renders an ANV-71-sized card within 500 ms while Git 
   fireEvent.click(slot.getByRole("button", { name: "Show earlier activity" }));
   fireEvent.click(slot.getByRole("button", { name: "Show earlier activity" }));
   await slot.findByText(comments[0]!.body.trim());
+});
+
+it.each(["main", "side"])("keeps editors and navigation usable during a background refresh (%s)", async (surface) => {
+  let refreshing = false;
+  let finishRefresh!: () => void;
+  const pending = new Promise<void>((resolve) => { finishRefresh = resolve; });
+  const options = { rpc: detailRpc({
+    getTaskByKey: async () => {
+      if (refreshing) await pending;
+      return { task: { ...task, title: refreshing ? "Updated by another worker" : task.title } };
+    },
+    listTaskPullRequests: async () => {
+      if (refreshing) await pending;
+      return { pullRequests: [], unavailableThreadIds: [] };
+    },
+    listPrLinks: () => ({ links: [] }),
+  }) };
+  const slot = surface === "main"
+    ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+  const title = await slot.findByRole("textbox", { name: "Task title" });
+  const activity = slot.getByRole("region", { name: "Activity" });
+  const composer = activity.querySelector(".tiptap")!;
+  title.focus();
+  title.textContent = "Unsaved title draft";
+  refreshing = true;
+  await slot.behavior.emitRealtime("tasks:changed", { taskId: TASK_ID });
+  await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+  const syncButton = slot.getByRole("button", { name: "Sync PRs" });
+  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("true"));
+  expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
+  expect(document.activeElement).toBe(title);
+  expect(title.textContent).toBe("Unsaved title draft");
+  expect(slot.getByRole("button", { name: "Copy task key" }).hasAttribute("disabled")).toBe(false);
+  finishRefresh();
+  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
+  expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
+  expect(title.textContent).toBe("Unsaved title draft");
+  expect(activity.querySelector(".tiptap")).toBe(composer);
 });

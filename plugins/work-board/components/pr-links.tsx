@@ -24,9 +24,11 @@ import { PR_STATE_META } from "../views/detail/meta";
 export function PullRequestsSection({
   taskId,
   projectId,
+  loading = false,
 }: {
   taskId: string;
   projectId: string;
+  loading?: boolean;
 }) {
   const rpc = useTasksRpc();
   const query = useTasksQuery(
@@ -242,25 +244,35 @@ export function PullRequestsSection({
             <TooltipTrigger asChild>
               <Button
                 aria-label="Sync PRs"
-                aria-busy={syncing}
+                aria-busy={syncing || loading || query.isFetching}
                 size="icon"
                 variant="ghost"
                 className="size-6 shrink-0 text-muted-foreground"
-                disabled={busy}
+                disabled={busy || syncing}
                 onClick={() => {
+                  if (syncing) return;
                   setSyncing(true);
-                  void act(async () => {
-                    const result = await rpc.call("syncGit", { projectId });
-                    setMessage(
-                      `${result.checked} PRs checked${result.errors.length ? ` · ${result.errors.join("; ")}` : ""}`,
-                    );
-                  }).finally(() => setSyncing(false));
+                  setError(null);
+                  setMessage("");
+                  void (async () => {
+                    try {
+                      const result = await rpc.call("syncGit", { projectId });
+                      setMessage(
+                        `${result.checked} PRs checked${result.errors.length ? ` · ${result.errors.join("; ")}` : ""}`,
+                      );
+                      query.refresh();
+                    } catch (error) {
+                      setError(errorMessage(error));
+                    } finally {
+                      setSyncing(false);
+                    }
+                  })();
                 }}
               >
-                <Icon name="RotateCcw" className={`size-3.5${syncing ? " animate-spin" : ""}`} />
+                <Icon name="RotateCcw" className={`size-3.5${syncing || loading || query.isFetching ? " animate-spin" : ""}`} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Sync PRs</TooltipContent>
+            <TooltipContent>{syncing || loading || query.isFetching ? "Updating Git information…" : "Sync PRs"}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>

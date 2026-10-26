@@ -124,6 +124,7 @@ interface TasksQuery<T> {
   data: T | undefined;
   error: string | null;
   isLoading: boolean;
+  isFetching: boolean;
   refresh: () => void;
 }
 
@@ -161,6 +162,7 @@ export function useTasksQuery<T>(
     data: T | undefined;
     error: string | null;
     isLoading: boolean;
+    isFetching: boolean;
   }>(() => ({
     data:
       options.snapshot === undefined
@@ -168,6 +170,7 @@ export function useTasksQuery<T>(
         : readQuerySnapshot(options.snapshot.name, options.snapshot.schema),
     error: null,
     isLoading: true,
+    isFetching: true,
   }));
   const seqRef = useRef(0);
   const dataRef = useRef(state.data);
@@ -207,6 +210,7 @@ export function useTasksQuery<T>(
   const dataDepsKeyRef = useRef(depsKey);
   const refresh = useCallback(() => {
     const seq = ++seqRef.current;
+    setState((current) => ({ ...current, isFetching: true }));
     const snapshot = snapshotRef.current;
     const snapshotRevision =
       snapshot === undefined ? 0 : claimQuerySnapshotRevision(snapshot.name);
@@ -214,7 +218,7 @@ export function useTasksQuery<T>(
       if (seq !== seqRef.current) return;
       dataDepsKeyRef.current = depsKey;
       dataRef.current = partial;
-      setState({ data: partial, error: null, isLoading: true });
+      setState({ data: partial, error: null, isLoading: true, isFetching: true });
     };
     return scheduler.trackFetch(() =>
       fetcherRef.current(rpc, publish).then(
@@ -225,7 +229,7 @@ export function useTasksQuery<T>(
           if (seq !== seqRef.current) return;
           dataDepsKeyRef.current = depsKey;
           dataRef.current = data;
-          setState({ data, error: null, isLoading: false });
+          setState({ data, error: null, isLoading: false, isFetching: false });
         },
         (error: unknown) => {
           if (seq !== seqRef.current) return;
@@ -235,6 +239,7 @@ export function useTasksQuery<T>(
             data: keepsData ? current.data : undefined,
             error: errorMessage(error),
             isLoading: false,
+            isFetching: false,
           }));
         },
       ),
