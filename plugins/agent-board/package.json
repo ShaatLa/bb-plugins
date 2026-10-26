@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-agent-board",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Project tracking for people and AI agents in BB: kanban, epics, owner actions, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",

@@ -40,7 +40,7 @@ export default definePluginApp((app) => {
   });
   app.slots.threadPanelAction({
     id: "task",
-    title: "Task",
+    title: "Agent Board",
     icon: "ListTodo",
     component: TaskEmbedPanel,
     layout: "flush",
