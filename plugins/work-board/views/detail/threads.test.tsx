@@ -127,6 +127,23 @@ function taskThreadRow(id: string, threadId: string, title: string) {
   };
 }
 
+it.each(["main", "side"])("opens named active workers from the %s properties rail", async (surface) => {
+  const options = { rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [
+    taskThreadRow(THREAD_ROW_ID, "thr_review", "Correctness review"),
+    taskThreadRow(OFFLINE_ROW_ID, "thr_qa", "QA verification"),
+  ] }) }) };
+  const slot = surface === "main"
+    ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+  fireEvent.click(await slot.findByRole("button", { name: "Open thread Correctness review" }));
+  fireEvent.click(slot.getByRole("button", { name: "Open thread QA verification" }));
+  expect(slot.navigateCalls).toEqual([
+    { method: "toThread", threadId: "thr_review" },
+    { method: "toThread", threadId: "thr_qa" },
+  ]);
+  expect(slot.queryByText("Attached working")).toBeNull();
+});
+
 function detailRpc(overrides: Record<string, unknown> = {}) {
   return {
     listProjects: () => ({
@@ -222,7 +239,7 @@ describe("task detail pull request pills", () => {
       },
     );
 
-    await slot.findByText("Offline worker");
+    await slot.findByRole("button", { name: "Detach Offline worker" });
     expect(slot.getAllByText("PR unavailable")).toHaveLength(1);
     expect(slot.queryAllByRole("link").filter((link) => link.getAttribute("href")?.startsWith("https://github.com/"))).toHaveLength(0);
   });

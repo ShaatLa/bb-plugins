@@ -194,8 +194,22 @@ it.each(["main", "side"])(
     );
     const details = summary.closest("details")!;
     expect(details.open).toBe(false);
-    fireEvent.click(section.getByRole("button", { name: "Sync PRs" }));
+    let finishSync!: () => void;
+    const pendingSync = new Promise<void>((resolve) => { finishSync = resolve; });
+    const originalSync = f.rpc.syncGit!;
+    f.rpc.syncGit = async (input) => {
+      await pendingSync;
+      return originalSync(input);
+    };
+    const syncButton = section.getByRole("button", { name: "Sync PRs" });
+    fireEvent.click(syncButton);
+    expect(syncButton.getAttribute("aria-busy")).toBe("true");
+    expect(syncButton.hasAttribute("disabled")).toBe(true);
+    expect(syncButton.querySelector(".animate-spin")).not.toBeNull();
+    finishSync();
     await section.findByRole("img", { name: "CI passing" });
+    await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
+    expect(syncButton.querySelector(".animate-spin")).toBeNull();
     const prLink = section.getByRole("link", { name: "service#42" });
     expect(prLink.getAttribute("target")).toBeNull();
     fireEvent.click(prLink);

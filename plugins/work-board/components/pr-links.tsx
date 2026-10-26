@@ -40,6 +40,7 @@ export function PullRequestsSection({
   const [role, setRole] = useState<PrLink["role"]>("delivers");
   const [part, setPart] = useState("");
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const act = async (work: () => Promise<unknown>) => {
@@ -241,20 +242,22 @@ export function PullRequestsSection({
             <TooltipTrigger asChild>
               <Button
                 aria-label="Sync PRs"
+                aria-busy={syncing}
                 size="icon"
                 variant="ghost"
                 className="size-6 shrink-0 text-muted-foreground"
                 disabled={busy}
-                onClick={() =>
+                onClick={() => {
+                  setSyncing(true);
                   void act(async () => {
                     const result = await rpc.call("syncGit", { projectId });
                     setMessage(
                       `${result.checked} PRs checked${result.errors.length ? ` · ${result.errors.join("; ")}` : ""}`,
                     );
-                  })
-                }
+                  }).finally(() => setSyncing(false));
+                }}
               >
-                <Icon name="RefreshCw" className="size-3.5" />
+                <Icon name="RotateCcw" className={`size-3.5${syncing ? " animate-spin" : ""}`} />
               </Button>
             </TooltipTrigger>
             <TooltipContent>Sync PRs</TooltipContent>
