@@ -7,7 +7,7 @@ import { Card } from "./components/ui/card";
 import { LoadingSkeleton } from "./components/ui/skeleton";
 import { DashboardSkeleton } from "./dashboard-skeleton";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
-import { HistoryChart } from "./history-chart";
+import { HistoryCharts } from "./history-chart";
 import { CiTiming } from "./ci-cards";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
 import { metricsProgressSchema } from "./metrics";
@@ -224,10 +224,7 @@ export function Dashboard() {
           </div>
           <CiTiming repo={repo} />
           <CiOutcomes repo={repo} showDetails />
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <HistoryChart title="CI pass rate over time" metric={repo.ci} range={repo.range} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} percent />
-            <HistoryChart title="Deployment throughput" metric={repo.deployments} range={repo.range} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
-          </div>
+          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           <RepositoryActivity repo={repo} />
           <RepositoryDetails repo={repo} />
           <p className="text-xs text-muted-foreground">Last checked {new Date(repo.updatedAt).toLocaleString()}</p>
