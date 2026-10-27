@@ -26,18 +26,22 @@ test("consecutive failures stay within workflow and branch, ignoring skipped and
   expect(summarizeCi([...rows, run(7, { head_branch: "feature", conclusion: null })], "trunk").alerts).toEqual([]);
 });
 
-test("timings include cancelled runs, preserve zeroes, omit missing or invalid intervals and compute median and nearest-rank P95", () => {
+test("timings exclude all non-successful runs, preserve zeroes, omit missing or invalid intervals and compute median and nearest-rank P95", () => {
   const started = "2026-10-20T12:00:00Z";
   const rows = [0, 60, 120, 600].map((seconds, index) => run(index + 1, {
     conclusion: index === 3 ? "cancelled" : "success", run_started_at: started,
     updated_at: new Date(Date.parse(started) + seconds * 1000).toISOString(),
   }));
-  rows.push(run(5), run(6, { run_started_at: started, updated_at: "2026-10-20T11:00:00Z" }));
+  rows.push(run(5, { conclusion: "success" }), run(6, { conclusion: "success", run_started_at: started, updated_at: "2026-10-20T11:00:00Z" }));
+  for (const [index, conclusion] of ["failure", "skipped", "timed_out", "neutral", null].entries()) rows.push(run(index + 7, {
+    conclusion, run_started_at: started, updated_at: "2026-10-20T20:00:00Z",
+  }));
   const result = summarizeCi(rows, null);
-  expect(result.timing).toEqual({ count: 4, totalMs: 780_000, averageMs: 195_000, medianMs: 90_000, p95Ms: 600_000 });
+  expect(result.timing).toEqual({ basis: "success", count: 3, totalMs: 180_000, averageMs: 60_000, medianMs: 60_000, p95Ms: 120_000 });
   expect(result.workflows[0].timing).toEqual(result.timing);
-  expect(result.slowRuns.map((row) => row.id)).toEqual([4, 3, 2, 1]);
+  expect(result.slowRuns.map((row) => row.id)).toEqual([3, 2, 1]);
   expect(result.main).toBeNull();
+  expect(summarizeCi(rows.filter((row) => row.conclusion !== "success"), null)).toMatchObject({ timing: { count: 0, averageMs: null, medianMs: null, p95Ms: null }, slowRuns: [] });
 });
 
 test("legacy metadata and empty histories never fabricate workflow identity or duration", () => {

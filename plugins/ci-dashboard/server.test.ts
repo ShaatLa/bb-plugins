@@ -72,8 +72,21 @@ test("workflow metadata survives persistence and powers contained ranges without
   try {
     await plugin(bb);
     const result = await harness.behavior.callRpc("metrics", { days: 7 }) as { repositories: Metrics[] };
-    expect(result).toMatchObject({ repositories: [{ ciInsights: { identified: 10, defaultBranch: "main", timing: { count: 10, totalMs: 1_200_000 } } }] });
+    expect(result).toMatchObject({ repositories: [{ ciInsights: { identified: 10, defaultBranch: "main", timing: { basis: "success", count: 8, totalMs: 960_000 } } }] });
     fetchMock.mockClear();
+    const legacy = structuredClone(result);
+    delete legacy.repositories[0].ciInsights!.timing.basis;
+    Object.assign(legacy.repositories[0].ciInsights!.timing, { count: 10, totalMs: 1_200_000 });
+    const database = bb.storage.database();
+    database.prepare("UPDATE dashboard_snapshots SET data = ?").run(JSON.stringify({ ...legacy, authSource: "gh", discoveryError: null }));
+    const previous = JSON.parse((database.prepare("SELECT data FROM repository_history").get() as { data: string }).data);
+    previous.metrics.ciInsights = legacy.repositories[0].ciInsights;
+    database.prepare("UPDATE repository_history SET data = ?").run(JSON.stringify(previous));
+    const rebuilt = await harness.behavior.callRpc("snapshot", { days: 7 });
+    expect(rebuilt).toMatchObject({ repositories: [{ updatedAt: result.repositories[0].updatedAt, ciInsights: { timing: { basis: "success", count: 8, totalMs: 960_000 } } }] });
+    const saved = JSON.parse((database.prepare("SELECT data FROM dashboard_snapshots WHERE selection = ?").get(JSON.stringify({ days: 7 })) as { data: string }).data);
+    expect(saved.repositories[0].ciInsights.timing.basis).toBe("success");
+    expect(fetchMock).not.toHaveBeenCalled();
     const local = await harness.behavior.callRpc("snapshot", { days: 3 });
     expect(local).toMatchObject({ repositories: [{ ciInsights: result.repositories[0].ciInsights }] });
     expect(fetchMock).not.toHaveBeenCalled();
