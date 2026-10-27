@@ -67,6 +67,41 @@ function setup() {
 }
 
 describe("task search", () => {
+  it.each(["main", "side"])("searches 250 tasks immediately with all subsequent RPCs blocked (%s)", async (surface) => {
+    const { store, project, rpc } = setup();
+    for (let index = 9; index < 250; index++) store.tasks.createTask({
+      projectId: project.id, title: `Bulk card ${index}`, description: `Performance needle ${"Saved acceptance criteria. ".repeat(30)}`,
+    });
+    const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_anvil" }) } } };
+    const slot = surface === "main"
+      ? renderSlot(app.navPanels[0]!, { subPath: project.id }, options)
+      : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_search", params: null }, options);
+    const input = await slot.findByRole("combobox", { name: "Search tasks" });
+    fireEvent.change(input, { target: { value: "8" } });
+    await slot.findByRole("option", { name: /ANV-8/ });
+    const pending = new Promise<never>(() => {});
+    for (const method of Object.keys(rpc)) rpc[method] = () => pending;
+    const before = slot.rpcCalls.length;
+    for (const term of ["176", "Bulk card 12", "8", "Performance needle", "176"]) {
+      const started = performance.now();
+      fireEvent.change(input, { target: { value: term } });
+      expect(slot.getAllByRole("option").length).toBeGreaterThan(0);
+      expect(slot.queryByText("Searching tasks…")).toBeNull();
+      expect(performance.now() - started).toBeLessThan(250);
+    }
+    expect(slot.rpcCalls).toHaveLength(before);
+  });
+
+  it("resolves historical task keys after moving a task to another project", async () => {
+    const { store, child, rpc } = setup();
+    const other = store.tasks.createProject({ name: "Other", prefix: "OTH", color: "blue" });
+    await rpc.moveTaskToProject!({ taskId: child.id, projectId: other.id });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "all" }, { rpc });
+    fireEvent.change(await slot.findByRole("combobox", { name: "Search tasks" }), { target: { value: "ANV-8" } });
+    await slot.findByRole("option", { name: /OTH-1.*Find nested needle/ });
+    expect(slot.rpcCalls).toContainEqual({ method: "getTaskByKey", input: { taskKey: "ANV-8" } });
+  });
+
   it.each(["main", "side"])("looks up a task number directly in the %s project view", async (surface) => {
     const { project, rpc } = setup();
     const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_anvil" }) } } };
@@ -77,24 +112,24 @@ describe("task search", () => {
     input.focus();
     fireEvent.change(input, { target: { value: "8" } });
     await slot.findByRole("option", { name: /ANV-8.*Find nested needle/ });
-    expect(slot.rpcCalls).toContainEqual({ method: "getTaskByKey", input: { taskKey: "ANV-8" } });
+    expect(slot.rpcCalls.filter((call) => call.method === "getTaskByKey")).toHaveLength(0);
     expect(slot.rpcCalls.filter((call) => call.method === "listTasks" && rpcInput(call.input).search)).toHaveLength(0);
     expect(input.parentElement?.classList.contains("focus-within:ring-inset")).toBe(true);
   });
 
   it("keeps results visible during realtime refresh and reuses recent searches while revalidating", async () => {
-    const { project, rpc } = setup();
-    const list = rpc.listTasks!;
+    const { project, child, rpc } = setup();
+    const get = rpc.getTask!;
     let blocked = false;
     let waiting = 0;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    rpc.listTasks = async (input) => {
-      if (blocked && rpcInput(input).search === "needle") {
+    rpc.getTask = async (input) => {
+      if (blocked && rpcInput(input).taskId === child.id) {
         waiting++;
         await gate;
       }
-      return list(input);
+      return get(input);
     };
     const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, { rpc });
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
@@ -102,7 +137,7 @@ describe("task search", () => {
     await slot.findByRole("option", { name: /ANV-8/ });
     blocked = true;
     try {
-      await slot.behavior.emitRealtime("tasks:changed", { taskId: "some_task" });
+      await slot.behavior.emitRealtime("tasks:changed", { taskId: child.id });
       await waitFor(() => expect(waiting).toBeGreaterThan(0));
       expect(slot.getByRole("option", { name: /ANV-8/ })).toBeDefined();
       expect(slot.queryByText("Searching tasks…")).toBeNull();
@@ -118,17 +153,14 @@ describe("task search", () => {
     } finally { release(); }
   });
 
-  it("fetches only 25 matches and reports that a broad search is truncated", async () => {
+  it("shows only 25 matches without a server request for each search", async () => {
     const { store, project, rpc } = setup();
     for (let index = 0; index < 30; index++) store.tasks.createTask({ projectId: project.id, title: `Broad match ${index}` });
     const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, { rpc });
     fireEvent.change(await slot.findByRole("combobox", { name: "Search tasks" }), { target: { value: "Broad match" } });
     await slot.findByText("Showing the first 25 matches. Refine your search to find more.");
     expect(slot.getAllByRole("option")).toHaveLength(25);
-    const calls = slot.rpcCalls.filter((call) => call.method === "listTasks" && rpcInput(call.input).search === "Broad match");
-    expect(calls).toHaveLength(1);
-    expect(rpcInput(calls[0]!.input).limit).toBe(25);
-    expect(rpcInput(calls[0]!.input).cursor).toBeUndefined();
+    expect(slot.rpcCalls.filter((call) => call.method === "listTasks" && rpcInput(call.input).search)).toHaveLength(0);
   });
 
   it("finds ANV-8 despite board filters and opens the sub-task in the same thread panel with Enter", async () => {
@@ -164,10 +196,7 @@ describe("task search", () => {
     fireEvent.change(input, { target: { value: "  anv-8  " } });
     await slot.findByRole("option", { name: /ANV-8.*Find nested needle/ });
     expect(document.activeElement).toBe(input);
-    expect(slot.rpcCalls).toContainEqual({
-      method: "getTaskByKey",
-      input: { taskKey: "anv-8" },
-    });
+    expect(slot.rpcCalls.filter((call) => call.method === "getTaskByKey")).toHaveLength(0);
     fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
@@ -202,8 +231,9 @@ describe("task search", () => {
     expect(document.activeElement).toBe(input);
     expect(slot.queryByRole("option", { name: /OTH-/ })).toBeNull();
     const searchCalls = slot.rpcCalls.filter(
-      (call) => call.method === "listTasks" && rpcInput(call.input).search,
+      (call) => call.method === "listTasks" && rpcInput(call.input).archive === "active",
     );
+    expect(searchCalls).toHaveLength(1);
     expect(
       searchCalls.every(
         (call) =>
@@ -229,7 +259,7 @@ describe("task search", () => {
     const list = rpc.listTasks!;
     let failed = true;
     rpc.listTasks = async (input) => {
-      if (rpcInput(input).search && failed)
+      if (rpcInput(input).archive === "active" && failed)
         throw new Error("Search temporarily unavailable");
       return list(input);
     };

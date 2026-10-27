@@ -1155,6 +1155,18 @@ export function registerHandlers(
       }
       return { archivedCount: changed.length };
     },
+    listTaskCardMeta({ taskIds }) {
+      const ids = [...new Set(taskIds)];
+      if (ids.length === 0) return { metadata: [] };
+      const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
+        `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
+      ).all(...ids).map((row) => [row.task_id, row.count]));
+      return { metadata: ids.map((taskId) => ({
+        taskId,
+        attachmentCount: counts.get(taskId) ?? 0,
+        taskThreads: store.tasks.listTaskThreads(taskId),
+      })) };
+    },
     async listTaskThreads(input) {
       return { taskThreads: input.reconcile === false
         ? store.tasks.listTaskThreads(input.taskId)

@@ -132,7 +132,7 @@ async function activeThreadsFor(
   rpc: TasksRpc,
   taskId: string,
 ): Promise<TaskThread[]> {
-  const { taskThreads } = await rpc.call("listTaskThreads", { taskId });
+  const { taskThreads } = await rpc.call("listTaskThreads", { taskId, reconcile: false });
   return taskThreads.filter(isActiveThread);
 }
 
