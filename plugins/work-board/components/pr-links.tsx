@@ -45,6 +45,11 @@ export function PullRequestsSection({
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const links = [...(query.data ?? [])].sort((a, b) =>
+    Date.parse(b.snapshot?.mergedAt ?? b.snapshot?.updatedAt ?? b.link.createdAt) -
+      Date.parse(a.snapshot?.mergedAt ?? a.snapshot?.updatedAt ?? a.link.createdAt) ||
+    b.link.number - a.link.number || a.link.repository.localeCompare(b.link.repository),
+  );
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -290,13 +295,13 @@ export function PullRequestsSection({
             <TooltipContent>Link PR</TooltipContent>
           </Tooltip>
         </div>
-        {query.data?.filter((value) => !value.link.excluded).map(render)}
-        {query.data?.some((value) => value.link.excluded) ? (
+        {links.filter((value) => !value.link.excluded).map(render)}
+        {links.some((value) => value.link.excluded) ? (
           <details>
             <summary className="cursor-pointer text-xs text-muted-foreground">
               Excluded links
             </summary>
-            {query.data.filter((value) => value.link.excluded).map(render)}
+            {links.filter((value) => value.link.excluded).map(render)}
           </details>
         ) : null}
         {adding ? (
