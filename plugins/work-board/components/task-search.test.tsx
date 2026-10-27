@@ -91,10 +91,15 @@ describe("task search", () => {
         rpc,
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: "Search tasks" }));
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
+    expect(input.tagName).toBe("INPUT");
+    expect(slot.queryByRole("button", { name: "Search tasks" })).toBeNull();
+    expect(slot.queryByRole("listbox")).toBeNull();
+    input.focus();
+    expect(slot.queryByRole("listbox")).toBeNull();
     fireEvent.change(input, { target: { value: "  anv-8  " } });
     await slot.findByRole("option", { name: /ANV-8.*Find nested needle/ });
+    expect(document.activeElement).toBe(input);
     expect(slot.rpcCalls).toContainEqual({
       method: "getTaskByKey",
       input: { taskKey: "anv-8" },
@@ -125,10 +130,12 @@ describe("task search", () => {
       { subPath: project.id },
       { rpc },
     );
-    fireEvent.click(await slot.findByRole("button", { name: "Search tasks" }));
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
+    input.focus();
+    expect(slot.queryByRole("listbox")).toBeNull();
     fireEvent.change(input, { target: { value: "Acceptance criteria" } });
     await slot.findByRole("option", { name: /ANV-8.*Find nested needle/ });
+    expect(document.activeElement).toBe(input);
     expect(slot.queryByRole("option", { name: /OTH-/ })).toBeNull();
     const searchCalls = slot.rpcCalls.filter(
       (call) => call.method === "listTasks" && rpcInput(call.input).search,
@@ -142,6 +149,7 @@ describe("task search", () => {
       ),
     ).toBe(true);
     fireEvent.change(input, { target: { value: "Large milestone" } });
+    expect(slot.queryByRole("option", { name: /ANV-8/ })).toBeNull();
     fireEvent.click(
       await slot.findByRole("option", { name: /ANV-9.*Large milestone/ }),
     );
@@ -152,7 +160,7 @@ describe("task search", () => {
     });
   });
 
-  it("shows empty results, retries a failed search and clears the query on close", async () => {
+  it("shows empty results, retries a failed search and dismisses results without losing input", async () => {
     const { project, child, rpc } = setup();
     const list = rpc.listTasks!;
     let failed = true;
@@ -166,7 +174,6 @@ describe("task search", () => {
       { subPath: project.id },
       { rpc },
     );
-    fireEvent.click(await slot.findByRole("button", { name: "Search tasks" }));
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     fireEvent.change(input, { target: { value: "needle" } });
     await slot.findByRole("alert");
@@ -177,9 +184,11 @@ describe("task search", () => {
     await slot.findByText("No matching tasks.");
     expect(slot.queryByRole("option")).toBeNull();
     fireEvent.keyDown(input, { key: "Escape" });
-    fireEvent.click(slot.getByRole("button", { name: "Search tasks" }));
+    expect(slot.queryByRole("listbox")).toBeNull();
     expect(
       await slot.findByRole("combobox", { name: "Search tasks" }),
-    ).toHaveProperty("value", "");
+    ).toHaveProperty("value", "no such task exists");
+    fireEvent.change(input, { target: { value: "" } });
+    expect(slot.queryByRole("listbox")).toBeNull();
   });
 });
