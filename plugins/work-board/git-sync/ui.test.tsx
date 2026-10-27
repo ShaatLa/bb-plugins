@@ -101,6 +101,40 @@ function setup() {
   );
   return { ...host, store, project, task, rpc };
 }
+it.each(["main", "side"])("orders PRs newest first by merge date in the %s task card", async (surface) => {
+  const f = setup();
+  createGitSyncStore(f.bb.storage.database()).setConfig(
+    f.project.id, gitSyncConfigSchema.parse({ repositories: ["example/service"] }),
+  );
+  await f.rpc.linkPr!({ taskId: f.task.id, url: "https://github.com/example/service/pull/42" });
+  await f.rpc.syncGit!({ projectId: f.project.id });
+  const { links: [base] } = tasksRpcContract.listPrLinks.output.parse(
+    await f.rpc.listPrLinks!({ taskId: f.task.id }),
+  );
+  const links = [
+    { number: 42, mergedAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-21T00:00:00.000Z" },
+    { number: 43, mergedAt: "2026-10-10T00:00:00.000Z", updatedAt: "2026-10-26T00:00:00.000Z" },
+    { number: 44, mergedAt: null, updatedAt: "2026-10-25T00:00:00.000Z" },
+    { number: 45, mergedAt: null, updatedAt: null },
+  ].map(({ number, mergedAt, updatedAt }) => {
+    const url = `https://github.com/example/service/pull/${number}`;
+    return {
+      ...base!,
+      link: { ...base!.link, number, url, createdAt: "2026-10-05T00:00:00.000Z" },
+      snapshot: updatedAt ? { ...base!.snapshot!, number, url, mergedAt, updatedAt, state: mergedAt ? "merged" as const : "open" as const } : null,
+    };
+  });
+  f.rpc.listPrLinks = async () => ({ links });
+  const slot = surface === "main"
+    ? renderSlot(app.navPanels[0]!, { subPath: `task/${f.task.key}` }, { rpc: f.rpc })
+    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_example", params: { taskKey: f.task.key } }, { rpc: f.rpc });
+  const region = await slot.findByRole("region", { name: "Task pull requests" });
+  await within(region).findByRole("link", { name: "service#42" });
+  expect(within(region).getAllByRole("link", { name: /^service#/ }).map((link) => link.textContent)).toEqual([
+    "service#44", "service#42", "service#43", "service#45",
+  ]);
+});
+
 it("configures repositories and enables background sync from compact project settings", async () => {
   const f = setup();
   f.harness.sdk.stub("projects.list", async () => [
