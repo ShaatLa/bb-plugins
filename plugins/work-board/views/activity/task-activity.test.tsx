@@ -13,6 +13,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createComment, createStore } from "../../api/index.js";
 import type { Attachment, DisplayComment } from "../../shared/contract.js";
+import { EvidenceSection } from "../detail/evidence.js";
 import {
   activityFeedEntries,
   AgentNotificationControl,
@@ -128,6 +129,30 @@ describe("AttachmentTracks", () => {
 });
 
 describe("activity feed entries", () => {
+  it("shows the latest 15 evidence records and reveals older history without losing superseded markers", () => {
+    const comments: DisplayComment[] = Array.from({ length: 40 }, (_, index) => ({
+      ...comment("agent"),
+      id: `evidence_${String(index).padStart(3, "0")}`,
+      body: `Evidence note ${index + 1}`,
+      createdAt: new Date(Date.UTC(2026, 9, 27, 0, index)).toISOString(),
+      evidence: { kind: "review", pr: index % 2 + 1, head: (index < 20 ? "a" : "b").repeat(40), verdict: "approve", thread: "thr_review" },
+    }));
+    const view = render(<EvidenceSection comments={[...comments].reverse()} />);
+    expect(view.getAllByRole("row")).toHaveLength(16);
+    expect(view.getByText("Showing 15 of 40")).toBeDefined();
+    expect(view.getByText("Evidence note 40")).toBeDefined();
+    expect(view.getByText("Evidence note 26")).toBeDefined();
+    expect(view.queryByText("Evidence note 25")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Show earlier evidence" }));
+    expect(view.getAllByRole("row")).toHaveLength(31);
+    expect(view.getByText("Showing 30 of 40")).toBeDefined();
+    fireEvent.click(view.getByRole("button", { name: "Show earlier evidence" }));
+    expect(view.getAllByRole("row")).toHaveLength(41);
+    expect(view.getByText("Showing 40 of 40")).toBeDefined();
+    expect(view.getAllByText("superseded")).toHaveLength(20);
+    expect(view.queryByRole("button", { name: "Show earlier evidence" })).toBeNull();
+  });
+
   it("groups one task-wide attachment listing under the comments that own each file", () => {
     const first = { ...comment("user"), id: "01HZZZZZZZZZZZZZZZZZZZZZC1" };
     const second = { ...comment("agent"), id: "01HZZZZZZZZZZZZZZZZZZZZZC2" };

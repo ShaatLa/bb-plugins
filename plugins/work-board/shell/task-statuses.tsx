@@ -42,6 +42,7 @@ export function useTaskStatuses(projectId?: string | null) {
         }
     }
     return {
+      prefix: projects.find((project) => project.id === projectId)?.prefix ?? null,
       statuses,
       ids: statuses.map((status) => status.id),
       label: (status: string, id = projectId) =>

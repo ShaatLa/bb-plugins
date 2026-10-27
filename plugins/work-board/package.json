@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-work-board",
-  "version": "0.11.5",
+  "version": "0.11.6",
   "description": "Project tracking for people and AI agents in BB: kanban, epics, owner actions, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",
