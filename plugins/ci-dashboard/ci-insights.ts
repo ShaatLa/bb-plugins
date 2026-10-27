@@ -9,6 +9,8 @@ export const ciRunSchema = z.object({
 });
 type Run = z.infer<typeof ciRunSchema>;
 const timingSchema = z.object({
+  // Missing basis identifies legacy aggregates that must be rebuilt from raw records.
+  basis: z.literal("success").optional(),
   count: z.number(), totalMs: z.number(), averageMs: z.number().nullable(),
   medianMs: z.number().nullable(), p95Ms: z.number().nullable(),
 });
@@ -40,9 +42,9 @@ function duration(run: Run): number | null {
   return finish >= start && start >= Date.parse(run.created_at) ? finish - start : null;
 }
 function timings(runs: Run[]) {
-  const values = runs.map(duration).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const values = runs.filter((run) => run.conclusion === "success").map(duration).filter((value): value is number => value !== null).sort((a, b) => a - b);
   const count = values.length, totalMs = values.reduce((sum, value) => sum + value, 0);
-  return { count, totalMs, averageMs: count ? totalMs / count : null,
+  return { basis: "success" as const, count, totalMs, averageMs: count ? totalMs / count : null,
     medianMs: count ? (values[Math.floor((count - 1) / 2)] + values[Math.floor(count / 2)]) / 2 : null,
     p95Ms: count ? values[Math.ceil(count * 0.95) - 1] : null };
 }
@@ -79,7 +81,7 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
     total: runs.length, identified: known.length, defaultBranch,
     main: defaultBranch ? counts(known.filter((run) => run.head_branch === defaultBranch && !isPr(run))) : null,
     pullRequests: counts(known.filter(isPr)), alerts, workflows, timing: timings(runs),
-    slowRuns: runs.flatMap((run) => {
+    slowRuns: runs.filter((run) => run.conclusion === "success").flatMap((run) => {
       const durationMs = duration(run);
       return durationMs === null ? [] : [{ id: run.id, name: run.name ?? `Run #${run.id}`, branch: run.head_branch ?? null, durationMs }];
     }).sort((a, b) => b.durationMs - a.durationMs || b.id - a.id).slice(0, 5),

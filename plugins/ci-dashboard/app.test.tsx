@@ -26,26 +26,27 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   const ciInsights = summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
     created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z`,
   })).concat([{ id: 4, workflow_id: 43, name: "Slower workflow", head_branch: "main", event: "push", conclusion: "success",
-    created_at: "2026-10-20T04:00:00Z", run_started_at: "2026-10-20T04:00:00Z", updated_at: "2026-10-20T04:05:00Z" }]), "main");
-  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights }] }) }, settings: {} });
+    created_at: "2026-10-20T04:00:00Z", run_started_at: "2026-10-20T04:00:00Z", updated_at: "2026-10-20T04:05:00Z" }, { id: 5, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "success",
+    created_at: "2026-10-19T23:00:00Z", run_started_at: "2026-10-19T23:00:00Z", updated_at: "2026-10-19T23:02:00Z" }]), "main");
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 2, failure: 3 } }] }) }, settings: {} });
   try {
     const attention = await slot.findByRole("region", { name: "CI health" });
     expect(slot.queryByRole("region", { name: "CI needs attention" })).toBeNull();
     expect(attention.textContent).toContain("3 consecutive failures");
     expect(slot.getByRole("link", { name: "Unit tests · main: latest run failed" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
-    expect(slot.getByText("3 failed · 0.0% passed · 3 counted runs")).toBeTruthy();
+    expect(slot.getByText("3 failed · 25.0% passed · 4 counted runs")).toBeTruthy();
     const timings = slot.getByRole("region", { name: "CI run timings" });
     const order = [timings, attention, slot.getByRole("heading", { name: "CI pass rate over time" }),
       slot.getByRole("region", { name: "Repository activity in the last 7 days" }), slot.getByRole("region", { name: "PRs awaiting review" })];
     for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(attention.contains(slot.getByRole("region", { name: "CI signals" }))).toBe(true);
-    expect(timings.textContent).toContain("11m 0s");
-    expect(timings.textContent).toContain("Timing available for 4 of 4 runs");
-    expect(slot.getByRole("link", { name: /Unit tests · main · #3/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
+    expect(timings.textContent).toContain("7m 0s");
+    expect(timings.textContent).toContain("Timing available for 2 of 2 successful runs · 3 non-successful runs excluded");
+    expect(slot.getByRole("link", { name: /Unit tests · main · #5/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/5");
     const workflows = slot.getByRole("list", { name: "Workflow timings" });
     expect(workflows.querySelector("li a")?.textContent).toBe("Slower workflow");
     const unit = workflows.querySelector('a[href$="/actions/workflows/42"]');
-    expect(unit?.closest("li")?.textContent).toContain("Total 6m 0s");
+    expect(unit?.closest("li")?.textContent).toContain("Total 2m 0s");
     expect(unit?.closest("li")?.querySelector(".text-lg")?.textContent).toBe("2m 0s");
   } finally { slot.lifecycle.unmount(); }
 });

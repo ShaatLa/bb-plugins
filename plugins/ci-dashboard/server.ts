@@ -81,6 +81,9 @@ export default function plugin(bb: BbPluginApi) {
       if (result.removed) bb.log.info(`Cache cleanup removed ${result.removed} entries; ${result.bytes} payload bytes retained.`);
     } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
   }
+  function currentTimings(result: DashboardData) {
+    return result.repositories.every((repo) => !repo.ciInsights || repo.ciInsights.timing.basis === "success");
+  }
   function touchSnapshot(result: DashboardData, selection: string, config: string) {
     database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ? AND configuration = ?").run(Date.now(), selection, config);
     for (const repo of result.repositories) database.prepare("UPDATE repository_history SET last_used_at = ? WHERE repository = ? AND configuration = ?").run(Date.now(), repo.repository, config);
@@ -282,7 +285,10 @@ export default function plugin(bb: BbPluginApi) {
       const config = configuration(values);
       const row = database.prepare("SELECT data FROM dashboard_snapshots WHERE selection = ? AND configuration = ?")
         .get(selectionKey(input), config) as { data: string } | undefined;
-      if (row) return touchSnapshot(dashboardSchema.parse(JSON.parse(row.data)), selectionKey(input), config);
+      if (row) {
+        const cached = dashboardSchema.parse(JSON.parse(row.data));
+        if (currentTimings(cached)) return touchSnapshot(cached, selectionKey(input), config);
+      }
       const candidates = database.prepare("SELECT selection, data, history FROM dashboard_snapshots WHERE configuration = ? AND history IS NOT NULL ORDER BY refreshed_at DESC LIMIT 8")
         .all(config) as { selection: string; data: string; history: string }[];
       const common = database.prepare("SELECT data FROM repository_history WHERE configuration = ?").all(config) as { data: string }[];
@@ -309,7 +315,10 @@ export default function plugin(bb: BbPluginApi) {
         if (version !== generation || controller.signal.aborted) return null;
         const latest = database.prepare("SELECT data FROM dashboard_snapshots WHERE selection = ? AND configuration = ?")
           .get(selectionKey(input), config) as { data: string } | undefined;
-        if (latest) return touchSnapshot(dashboardSchema.parse(JSON.parse(latest.data)), selectionKey(input), config);
+        if (latest) {
+          const cached = dashboardSchema.parse(JSON.parse(latest.data));
+          if (currentTimings(cached)) return touchSnapshot(cached, selectionKey(input), config);
+        }
         database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ?").run(Date.now(), candidate.selection);
         database.prepare("INSERT INTO dashboard_snapshots (selection, configuration, data, refreshed_at) VALUES (?, ?, ?, ?) ON CONFLICT(selection) DO UPDATE SET configuration = excluded.configuration, data = excluded.data, refreshed_at = excluded.refreshed_at, history = NULL")
           .run(selectionKey(input), config, JSON.stringify(result), Date.now());
@@ -334,7 +343,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   bb.agents.registerTool({
     name: "ci_dashboard_metrics",
-    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh data. Cancelled/skipped are excluded from pass rates but included in timing estimates. No deployments or other writes are triggered.",
+    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. No deployments or other writes are triggered.",
     parameters: ciQuerySchema,
     presentation: { label: { pending: "Reading CI Dashboard", completed: "Read CI Dashboard" } },
     async execute(input, { signal }) {
