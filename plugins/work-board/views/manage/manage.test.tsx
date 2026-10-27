@@ -130,7 +130,7 @@ describe("NewTaskDialog", () => {
           },
         },
       );
-      fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+      fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
       fireEvent.change(await slot.findByLabelText("Task title"), {
         target: { value: "Task assigned from the dialog" },
       });
@@ -231,7 +231,7 @@ describe("NewTaskDialog", () => {
             },
           },
         );
-        fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+        fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
         const title = await slot.findByLabelText("Task title");
         fireEvent.change(title, { target: { value: "Keep this draft open" } });
         fireEvent.click(slot.getByLabelText(field));
@@ -310,7 +310,7 @@ describe("NewTaskDialog", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Keyboard submission" },
     });
@@ -345,7 +345,7 @@ describe("NewTaskDialog", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     const title = await slot.findByLabelText("Task title");
     fireEvent.change(title, { target: { value: "  Ship the dialog  " } });
     fireEvent.click(slot.getByRole("button", { name: "Create task" }));
@@ -390,7 +390,7 @@ describe("NewTaskDialog", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.click(await slot.findByRole("checkbox", { name: "Create more" }));
     const title = await slot.findByLabelText("Task title");
     fireEvent.change(title, { target: { value: "First" } });
@@ -424,7 +424,7 @@ describe("NewTaskDialog", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Nested" },
     });
@@ -470,7 +470,7 @@ describe("NewTaskDialog", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.click(await slot.findByRole("button", { name: /Labels/ }));
     const search = await slot.findByPlaceholderText("Add labels…");
     fireEvent.change(search, { target: { value: "  dank  " } });
@@ -521,7 +521,7 @@ describe("NewTaskDialog drafts", () => {
       { subPath: PROJECT_ID },
       { rpc: draftRpc(createCalls) },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Twenty minutes of drafting" },
     });
@@ -601,7 +601,7 @@ describe("NewTaskDialog drafts", () => {
         },
       },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Started before projects loaded" },
     });
@@ -654,7 +654,7 @@ describe("NewTaskDialog drafts", () => {
           },
         },
       );
-      fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+      fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
       await slot.findByLabelText("Task title");
       fireEvent.click(slot.getByRole("button", { name: "Create task" }));
       await waitFor(() => expect(createCalls).toHaveLength(1));
@@ -673,7 +673,7 @@ describe("NewTaskDialog drafts", () => {
       { subPath: PROJECT_ID },
       { rpc: draftRpc([]) },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Throwaway" },
     });
@@ -697,7 +697,7 @@ describe("NewTaskDialog drafts", () => {
       { subPath: PROJECT_ID },
       { rpc: draftRpc([]) },
     );
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     const title = (await slot.findByLabelText(
       "Task title",
     )) as HTMLInputElement;
@@ -764,7 +764,7 @@ describe("NewTaskDialog attachments", () => {
     slot: ReturnType<typeof renderSlot>,
     title: string,
   ) => {
-    fireEvent.click(await slot.findByRole("button", { name: /New task/ }));
+    fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
     const titleInput = await slot.findByLabelText("Task title");
     fireEvent.change(titleInput, { target: { value: title } });
     return titleInput;

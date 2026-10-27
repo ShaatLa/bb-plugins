@@ -1,7 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import type { tasksRpcContract } from "../shared/contract";
-import { publishTasksChanged, publishProjectsChanged } from "../api";
+import { publishProjectsChanged } from "../api";
 import {
   gitSyncConfigSchema,
   repositorySchema,
@@ -107,7 +107,7 @@ export function createGitSyncService(
         updatedAt: now,
       }),
     );
-    publishTasksChanged(bb, task.id, task.projectId);
+    bb.realtime.publish("prs:changed", { taskId: task.id, projectId: task.projectId });
     return link;
   };
   async function syncProject(
@@ -174,23 +174,25 @@ export function createGitSyncService(
           }
         }
       const environmentTasks = new Map<string, Set<string>>();
+      if (config.repositories.length === 1) {
+        const evidence = db.prepare<[string], { taskId: string; pr: number }>(
+          `SELECT DISTINCT c.task_id AS taskId, json_extract(c.evidence, '$.pr') AS pr
+           FROM comments c JOIN tasks t ON t.id=c.task_id
+           WHERE t.project_id=? AND c.evidence IS NOT NULL AND json_extract(c.evidence, '$.pr') > 0`,
+        ).all(projectId);
+        for (const row of evidence) remember(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
+      }
+      const threadCache = new Map<string, ReturnType<typeof bb.sdk.threads.get>>();
       for (const task of tasks) {
         if (!current()) break;
-        if (config.repositories.length === 1)
-          for (const comment of store.tasks.listComments(task.id)) {
-            const evidence = comment.evidence;
-            if (evidence && "pr" in evidence && evidence.pr)
-              remember(
-                task.id,
-                `https://github.com/${config.repositories[0]}/pull/${evidence.pr}`,
-                "evidence",
-              );
-          }
         for (const link of store.tasks.listTaskThreads(task.id)) {
           try {
-            const thread = await bb.sdk.threads.get({
-              threadId: link.threadId,
-            });
+            let lookup = threadCache.get(link.threadId);
+            if (!lookup) {
+              lookup = bb.sdk.threads.get({ threadId: link.threadId });
+              threadCache.set(link.threadId, lookup);
+            }
+            const thread = await lookup;
             if (!thread.environmentId || !current()) continue;
             const members =
               environmentTasks.get(thread.environmentId) ?? new Set<string>();
@@ -217,9 +219,9 @@ export function createGitSyncService(
         }
       }
       let checked = 0;
+      const refreshed = new Set<string>();
       const unique = new Map<string, PrLink>();
-      for (const task of tasks)
-        for (const link of data.links(task.id))
+      for (const link of data.linksForProject(projectId))
           if (!link.excluded && config.repositories.includes(link.repository))
             unique.set(prIdentity(link), link);
       for (const link of unique.values()) {
@@ -277,17 +279,21 @@ export function createGitSyncService(
               publishProjectsChanged(bb, projectId);
             }
           });
+          refreshed.add(prIdentity(link));
+          refreshed.add(prIdentity(snapshot));
           checked++;
         } catch (error) {
           if (!current()) break;
           const message = report(link.repository, error);
+          refreshed.add(prIdentity(link));
           data.fail(projectId, link, message);
           errors.push(message);
         }
       }
-      if (current())
-        for (const task of tasks)
-          publishTasksChanged(bb, task.id, task.projectId);
+      if (current()) {
+        const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
+        for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+      }
       return { checked, errors: [...new Set(errors)] };
     })();
     pending.set(projectId, operation);
@@ -307,48 +313,7 @@ export function createGitSyncService(
     | "unlinkPr"
     | "syncGit"
   > = {
-    prSummaries({ taskIds }) {
-      const ids = new Set(taskIds);
-      const all = data
-        .links()
-        .filter((link) => ids.has(link.taskId) && !link.excluded);
-      return {
-        summaries: taskIds.flatMap((taskId) => {
-          const task = store.tasks.getTask(taskId);
-          if (!task) return [];
-          const links = all.filter((link) => link.taskId === taskId);
-          if (!links.length) return [];
-          const values = links.map((link) => ({
-            link,
-            ...data.snapshot(task.projectId, link),
-          }));
-          const config = data.config(task.projectId);
-          return [
-            {
-              taskId,
-              total: links.length,
-              merged: values.filter(
-                (value) => value.snapshot?.state === "merged",
-              ).length,
-              failing: values.filter(
-                (value) => value.snapshot?.ci === "failing",
-              ).length,
-              pending: values.filter(
-                (value) => value.snapshot?.ci === "pending",
-              ).length,
-              stale: values.some(
-                (value) =>
-                  !value.snapshot ||
-                  Boolean(value.error) ||
-                  !config.repositories.includes(value.link.repository) ||
-                  Date.now() - Date.parse(value.snapshot.observedAt) >
-                    config.pollMinutes * 60_000,
-              ),
-            },
-          ];
-        }),
-      };
-    },
+    prSummaries({ taskIds }) { return { summaries: data.summaries(taskIds) }; },
     async getGitSyncConfig({ projectId }) {
       const project = requireProject(projectId);
       const fromRemote = (remote: string | null) => {
@@ -444,7 +409,7 @@ export function createGitSyncService(
           updatedAt: now,
         }),
       );
-      publishTasksChanged(bb, task.id, task.projectId);
+      bb.realtime.publish("prs:changed", { taskId: task.id, projectId: task.projectId });
       return { excluded: true };
     },
     syncGit({ projectId }) {

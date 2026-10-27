@@ -843,6 +843,7 @@ export const tasksRpcContract = {
           .max(TASKS_PAGE_MAX_LIMIT)
           .default(TASKS_PAGE_DEFAULT_LIMIT),
         cursor: nonBlankStringSchema.optional(),
+        allowStaleCursor: z.boolean().default(false),
       })
       .strict(),
     output: z

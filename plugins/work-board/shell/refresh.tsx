@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { invalidateTaskDatasets } from "./task-dataset";
 import { useRealtimeConnectionState } from "@get-bb/plugin-sdk/app";
 
 interface TasksRefreshState {
@@ -63,6 +64,7 @@ function endGenerationWork() {
 
 function requestRefresh() {
   if (sharedSnapshot.isRefreshing) return;
+  invalidateTaskDatasets(true);
   const generation = sharedSnapshot.generation + 1;
   updateSharedSnapshot({ generation, isRefreshing: true });
   queueMicrotask(() => {

@@ -191,6 +191,7 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters extends TaskDateFilters {
+  allowStaleCursor?: boolean;
   archive?: "active" | "archived" | "all";
   projectId?: string;
   statuses?: readonly TaskStatus[];

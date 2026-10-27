@@ -633,3 +633,15 @@ it("offers unique GitHub repositories from BB projects without changing sync con
   ]);
   expect(result.config).toMatchObject({ enabled: false, repositories: [] });
 });
+
+it("refreshes only PR subscribers after polling and leaves unrelated task indexes alone", async () => {
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
+  const before = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id);
+  const signals = f.harness.realtimeSignals.slice(before);
+  expect(signals).toEqual([{ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } }]);
+  const summary = await f.service.handlers.prSummaries({ taskIds: f.tasks.map((task) => task.id) });
+  expect(summary.summaries).toMatchObject([{ taskId: f.task.id, total: 1, stale: false }]);
+});

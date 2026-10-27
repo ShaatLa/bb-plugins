@@ -1,6 +1,9 @@
+import { tasksRpcContract } from "../../shared/contract";
+import { useMemo } from "react";
+import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
+import { taskBatches } from "../../shell/task-batches";
 import {
   listAllTasks,
-  listTasksOpenFirst,
   patchTasks,
   useTasksQuery,
   type TasksRpc,
@@ -81,34 +84,23 @@ export function useListTasks(
   activeOnly: boolean,
   filters: ListTaskFilters,
 ) {
-  const query = listTasksQuery(projectId, activeOnly, filters);
-  return useTasksQuery<Task[]>(
-    async (rpc, publish) =>
-      filters.statuses.length > 0 || activeOnly
-        ? listAllTasks(rpc, query)
-        : listTasksOpenFirst(rpc, query, publish),
-    activeOnly ? ["tasks:changed", "threads:changed"] : ["tasks:changed"],
-    [
-      projectId,
-      activeOnly,
-      filters.type,
-      filters.executionTarget,
-      filters.statuses.join(),
-      filters.priorities.join(),
-      filters.labelIds === null ? "" : `active:${filters.labelIds.join()}`,
-    ],
-    activeOnly
-      ? {}
-      : {
-          applySignals: (rpc, current, signals) =>
-            patchTasks(
-              rpc,
-              current,
-              signalTaskIds(signals, "tasks:changed"),
-              (task) => belongsToList(task, projectId, filters),
-            ),
-        },
+  const query = useTasksQuery<Task[]>(
+    (rpc, publish) => activeOnly
+      ? listAllTasks(rpc, { ...(projectId ? { projectId } : {}), activeOnly: true, parentTaskId: null })
+      : loadTaskDataset(rpc, projectId, publish),
+    activeOnly ? ["tasks:changed", "threads:changed"] : ["tasks:changed", "projects:changed"],
+    [projectId, activeOnly],
+    activeOnly ? {} : {
+      snapshot: taskDatasetSnapshot(projectId),
+      applySignals: (rpc, current, signals) => signals.some((signal) => signal.channel === "projects:changed")
+        ? Promise.resolve(null)
+        : patchTasks(rpc, current, signalTaskIds(signals, "tasks:changed"), (task) => !task.archivedAt && (projectId === null || task.projectId === projectId)),
+    },
   );
+  const data = useMemo(() => query.data?.filter((task) => belongsToList(task, projectId, filters)), [
+    query.data, projectId, filters.type, filters.executionTarget, filters.statuses.join(), filters.priorities.join(), filters.labelIds?.join(),
+  ]);
+  return { ...query, data };
 }
 
 export function useLabels(projectIds: readonly string[]) {
@@ -121,6 +113,7 @@ export function useLabels(projectIds: readonly string[]) {
     },
     ["projects:changed"],
     [projectIds.join()],
+    { snapshot: { name: `labels:${[...projectIds].sort().join()}`, schema: tasksRpcContract.listLabels.output.shape.labels } },
   );
 }
 
@@ -128,31 +121,15 @@ export interface TaskRowMeta {
   activeThreads: TaskThread[];
 }
 
-async function activeThreadsFor(
-  rpc: TasksRpc,
-  taskId: string,
-): Promise<TaskThread[]> {
-  const { taskThreads } = await rpc.call("listTaskThreads", { taskId, reconcile: false });
-  return taskThreads.filter(isActiveThread);
+async function readListMeta(rpc: TasksRpc, ids: string[]) {
+  const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("listTaskCardMeta", { taskIds })).metadata);
+  return new Map(rows.filter((row) => row.taskThreads.some(isActiveThread)).map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread) }]));
 }
-
-async function patchListMeta(
-  rpc: TasksRpc,
-  current: ReadonlyMap<string, TaskRowMeta>,
-  signals: readonly TaskSignal[],
-): Promise<Map<string, TaskRowMeta>> {
-  const taskIds = new Set([
-    ...signalTaskIds(signals, "threads:changed"),
-    ...signalTaskIds(signals, "tasks:changed"),
-  ]);
+async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRowMeta>, signals: readonly TaskSignal[]) {
+  const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed")])];
   const next = new Map(current);
-  await Promise.all(
-    [...taskIds].map(async (taskId) => {
-      const activeThreads = await activeThreadsFor(rpc, taskId);
-      if (activeThreads.length > 0) next.set(taskId, { activeThreads });
-      else next.delete(taskId);
-    }),
-  );
+  for (const id of ids) next.delete(id);
+  for (const [id, meta] of await readListMeta(rpc, ids)) next.set(id, meta);
   return next;
 }
 
@@ -164,18 +141,7 @@ export function useTaskListMeta(projectId: string | null) {
         activeOnly: true,
         parentTaskId: null,
       });
-      const entries = await Promise.all(
-        activeTasks.map(
-          async (task) =>
-            [
-              task.id,
-              { activeThreads: await activeThreadsFor(rpc, task.id) },
-            ] as const,
-        ),
-      );
-      return new Map(
-        entries.filter(([, meta]) => meta.activeThreads.length > 0),
-      );
+      return readListMeta(rpc, activeTasks.map((task) => task.id));
     },
     ["threads:changed", "tasks:changed"],
     [projectId],

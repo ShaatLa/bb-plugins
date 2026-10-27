@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { appendFileSync } from "node:fs";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import {
@@ -326,3 +327,63 @@ it.each(["main", "side"])(
     }
   },
 );
+
+it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { count: 2500, surface: "main" }, { count: 2500, surface: "side" }])("shows $count cards before metadata, bounds DOM, scrolls and reopens ($surface)", async ({ count, surface }) => {
+  const f = await setup();
+  const statuses = ["backlog", "todo", "in_progress", "in_review", "done"] as const;
+  let lastBacklog = f.unrelated;
+  f.store.transaction(() => {
+    for (let index = 0; index < count - 2; index++) {
+      const task = f.store.tasks.createTask({ projectId: f.project.id, title: `Bulk card ${index}`, status: statuses[index % 5] });
+      if (task.status === "backlog") lastBacklog = task;
+    }
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const pending = new Promise<never>(() => {});
+  const list = f.rpc.listTasks!;
+  f.rpc.listTasks = async (input) => {
+    if ((input as { cursor?: string }).cursor) await gate;
+    return list(input);
+  };
+  for (const method of ["listTaskCardMeta", "listLabels", "questionCounts", "prSummaries"]) f.rpc[method] = () => pending;
+  const options = { rpc: f.rpc, sdk: f.sdk };
+  const mount = () => surface === "main"
+    ? renderSlot(app.navPanels[0]!, { subPath: `${f.project.id}?view=board` }, options)
+    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_subtasks", params: null }, options);
+  const started = performance.now();
+  const slot = mount();
+  await waitFor(() => expect(slot.container.querySelectorAll("[data-task-key]").length).toBeGreaterThan(0), { timeout: 500 });
+  const coldReadyMs = performance.now() - started;
+  expect(coldReadyMs).toBeLessThan(500);
+  expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
+  release();
+  await slot.findByText(`${count} tasks`);
+  expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
+  const backlog = slot.container.querySelector('[data-board-column="backlog"]')!;
+  fireEvent.scroll(backlog, { target: { scrollTop: 1_000_000 } });
+  await waitFor(() => expect(slot.container.querySelector(`[data-task-key="${lastBacklog.key}"]`)).not.toBeNull());
+  expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
+  if (count === 250 && surface === "main") {
+    f.store.tasks.updateTask(lastBacklog.id, { title: "Changed while metadata is blocked" });
+    await slot.behavior.emitRealtime("tasks:changed", { taskId: lastBacklog.id, projectId: f.project.id });
+    await slot.findByText("Changed while metadata is blocked", {}, { timeout: 500 });
+    const todo = slot.container.querySelector('[data-board-column="todo"]')!;
+    fireEvent.click(slot.getByRole("button", { name: `Sub-tasks of ${f.parent.key}` }));
+    await slot.findByRole("list", { name: `Sub-tasks of ${f.parent.key}` });
+    fireEvent.scroll(todo, { target: { scrollTop: 1_000_000 } });
+    await waitFor(() => expect(slot.queryByRole("button", { name: `Sub-tasks of ${f.parent.key}` })).toBeNull());
+    fireEvent.scroll(todo, { target: { scrollTop: 0 } });
+    expect((await slot.findByRole("button", { name: `Sub-tasks of ${f.parent.key}` })).getAttribute("aria-expanded")).toBe("true");
+  }
+  slot.lifecycle.unmount();
+  f.rpc.listTasks = () => pending;
+  const reopenedAt = performance.now();
+  const reopened = mount();
+  await reopened.findByText(`${count} tasks`, {}, { timeout: 500 });
+  const warmReadyMs = performance.now() - reopenedAt;
+  expect(warmReadyMs).toBeLessThan(500);
+  const measurement = { count, surface, coldReadyMs, warmReadyMs, mountedCards: reopened.container.querySelectorAll("[data-task-key]").length };
+  if (process.env.WORK_BOARD_PERF_OUT) appendFileSync(process.env.WORK_BOARD_PERF_OUT, JSON.stringify(measurement) + "\n");
+  expect(reopened.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
+});

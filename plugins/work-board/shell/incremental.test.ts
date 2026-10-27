@@ -254,3 +254,24 @@ it("counts epic tasks separately from their sub-tasks and updates progress incre
   const removed = await patchBoard(rpc, project.id, updated!, [{ channel: "tasks:changed", taskId: member.id }]);
   expect(removed?.metaByTaskId.get(epic.id)).toMatchObject({ subDone: 0, subTotal: 0 });
 });
+
+it("continues a live UI dataset across worker revision changes while default cursors remain strict", async () => {
+  const { loadTaskDataset } = await import("./task-dataset");
+  const { store, project, rpc } = setup();
+  const tasks = store.transaction(() => Array.from({ length: 600 }, (_, index) => store.tasks.createTask({ projectId: project.id, title: `Row ${index}` })));
+  let changed = false;
+  const changingRpc: TasksRpc = { async call(method, ...args) {
+    const result = await rpc.call(method, ...args);
+    if (method === "listTasks" && !changed) {
+      changed = true;
+      store.tasks.upsertTaskThread({ taskId: tasks[0]!.id, threadId: "thr_busy", title: "Busy", presetName: "Attached", liveStatus: "working" });
+    }
+    return result;
+  } };
+  const data = await loadTaskDataset(changingRpc, project.id);
+  expect(data).toHaveLength(600);
+  expect(new Set(data.map((task) => task.id)).size).toBe(600);
+  const page = store.tasks.listTasksPage({ projectId: project.id, limit: 1 });
+  store.tasks.updateTask(tasks[0]!.id, { title: "Changed again" });
+  expect(() => store.tasks.listTasksPage({ projectId: project.id, limit: 1, cursor: page.nextCursor! })).toThrow(/changed after this cursor/);
+});

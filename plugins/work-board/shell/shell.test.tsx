@@ -929,9 +929,12 @@ describe("tasks app shell", () => {
 
     deferAll = true;
     slot.lifecycle.rerender(<Panel subPath="all" />);
+    await slot.findByText("Scope truth");
+    expect(slot.queryByText("No tasks yet")).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Refresh tasks" }));
     await waitFor(() => expect(pendingAll.length).toBeGreaterThan(0));
     expect(slot.queryByText("No tasks yet")).toBeNull();
-    expect(slot.queryByText("Scope truth")).toBeNull();
+    expect(slot.getByText("Scope truth")).toBeDefined();
     act(() => {
       for (const release of pendingAll.splice(0)) release();
     });
