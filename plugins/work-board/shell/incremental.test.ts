@@ -40,7 +40,7 @@ function setup() {
   const callsTo = (method: string) =>
     calls
       .filter((call) => call.method === method)
-      .map((call) => rpcInput(call.input).taskId);
+      .map((call) => rpcInput(call.input).taskIds ?? rpcInput(call.input).taskId);
   const resetCalls = () => {
     calls.length = 0;
   };
@@ -126,6 +126,23 @@ describe("patchTasks", () => {
 });
 
 describe("patchBoard", () => {
+  it("loads 250 cards with three RPCs and no SDK metadata calls", async () => {
+    const { store, project, rpc, callsTo, harness } = setup();
+    const tasks = Array.from({ length: 250 }, (_, index) => store.tasks.createTask({ projectId: project.id, title: `Card ${index}` }));
+    store.tasks.upsertTaskThread({ taskId: tasks[0]!.id, threadId: "thr_cached", presetName: "Attached", title: "Cached worker", liveStatus: "working" });
+    store.tasks.createAttachment({ taskId: tasks[0]!.id, fileName: "note.txt", mime: "text/plain", sizeBytes: 1, blobPath: "blobs/note.txt", isImage: false });
+    const board = await fetchBoard(rpc, project.id);
+    expect(board.tasks).toHaveLength(250);
+    expect(board.metaByTaskId.get(tasks[0]!.id)).toMatchObject({ attachmentCount: 1, workingThreads: [{ title: "Cached worker" }] });
+    expect(board.metaByTaskId.get(tasks[1]!.id)).toMatchObject({ attachmentCount: 0, workingThreads: [] });
+    expect(callsTo("listTasks")).toHaveLength(1);
+    expect(callsTo("listLabels")).toHaveLength(1);
+    expect(callsTo("listTaskCardMeta")).toHaveLength(1);
+    expect(callsTo("listAttachments")).toHaveLength(0);
+    expect(callsTo("listTaskThreads")).toHaveLength(0);
+    expect(harness.sdk.calls).toHaveLength(0);
+  });
+
   it("shows subtasks promoted by deleting their parent as cards", async () => {
     const { harness, store, project, rpc, taskSignals } = setup();
     const parent = store.tasks.createTask({
@@ -171,7 +188,8 @@ describe("patchBoard", () => {
       "in_review",
     );
     expect(callsTo("getTask")).toEqual([first.id]);
-    expect(callsTo("listAttachments")).toEqual([first.id]);
+    expect(callsTo("listTaskCardMeta")).toEqual([[first.id]]);
+    expect(callsTo("listAttachments")).toEqual([]);
     expect(callsTo("listTasks")).toEqual([]);
   });
 

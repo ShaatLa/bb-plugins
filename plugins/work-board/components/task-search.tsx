@@ -1,10 +1,11 @@
 import { useTaskStatuses } from "../shell/task-statuses.js";
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Command as CommandPrimitive } from "cmdk";
 import { usePortalScopeProps } from "@/lib/portal-scope";
-import { useTasksQuery } from "../shell/data.js";
-import type { Task } from "../shared/contract.js";
+import { listAllTasks, patchTasks, useTasksQuery } from "../shell/data.js";
+import { signalTaskIds } from "../shell/signal-scheduler.js";
+import { tasksRpcContract, type Task } from "../shared/contract.js";
 import { useTasksNavigation } from "../shell/routes.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -15,12 +16,6 @@ import {
 } from "@/components/ui/command";
 import { StatusIcon } from "../views/list/icons.js";
 
-interface SearchResults {
-  term: string;
-  tasks: Task[];
-  more: boolean;
-}
-
 export function TaskSearch({ projectId }: { projectId: string | null }) {
   const { label: statusLabel, prefix } = useTaskStatuses(projectId);
   const navigation = useTasksNavigation();
@@ -29,47 +24,47 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const term = search.trim();
-  const [debouncedTerm, setDebouncedTerm] = useState(term);
-  const cache = useRef(new Map<string, SearchResults>());
-  const cacheKey = (value: string) => JSON.stringify([projectId, value.toLowerCase()]);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedTerm(term), 150);
-    return () => clearTimeout(timer);
-  }, [term]);
-  const results = useTasksQuery<SearchResults>(
-    async (rpc, publish) => {
-      const term = debouncedTerm;
-      if (!open || !term) return { term: "", tasks: [], more: false };
-      const key = cacheKey(term);
-      const cached = cache.current.get(key);
-      if (cached) publish({ ...cached, term });
-      const remember = (tasks: Task[], more = false) => {
-        const result = { term, tasks, more };
-        cache.current.delete(key);
-        cache.current.set(key, result);
-        if (cache.current.size > 20) cache.current.delete(cache.current.keys().next().value!);
-        return result;
-      };
-      const taskKey = /^\d+$/.test(term) && prefix ? `${prefix}-${term}` : term;
-      if (/^[a-z][a-z0-9]{0,9}-\d+$/i.test(taskKey)) {
-        const { task } = await rpc.call("getTaskByKey", { taskKey });
-        if (task && (projectId === null || task.projectId === projectId))
-          return remember([task]);
-      }
-      const page = await rpc.call("listTasks", {
-        ...(projectId === null ? {} : { projectId }),
-        search: term,
-        limit: 25,
-      });
-      return remember(page.tasks, !!page.nextCursor);
-    },
+  const index = useTasksQuery<Task[]>(
+    (rpc) => listAllTasks(rpc, { archive: "active", ...(projectId ? { projectId } : {}) }),
     ["tasks:changed", "projects:changed"],
-    [open, debouncedTerm, projectId, prefix],
+    [projectId],
+    {
+      snapshot: { name: `task-search-index:${projectId ?? "all"}`, schema: tasksRpcContract.listTasks.output.shape.tasks },
+      applySignals: (rpc, current, signals) => signals.some((signal) => signal.channel === "projects:changed")
+        ? Promise.resolve(null)
+        : patchTasks(rpc, current, signalTaskIds(signals, "tasks:changed"), (task) => !task.archivedAt && (projectId === null || task.projectId === projectId)),
+    },
   );
-  const current = results.data?.term === term
-    ? results.data
-    : cache.current.get(cacheKey(term));
-  const updating = term !== debouncedTerm || results.isFetching;
+  const searchable = useMemo(() => index.data?.map((task) => ({
+    task,
+    key: task.key.toLowerCase(),
+    text: `${task.key} ${task.title} ${task.description}`.toLowerCase(),
+  })), [index.data]);
+  const taskKey = /^\d+$/.test(term) && prefix ? `${prefix}-${Number(term)}` : term;
+  const exact = searchable?.find((entry) => entry.key === taskKey.toLowerCase())?.task;
+  const matches = useMemo(() => {
+    if (!term) return [];
+    if (exact) return [exact];
+    const words = term.toLowerCase().split(/\s+/);
+    return searchable?.filter((entry) => !entry.task.archivedAt && words.every((word) => entry.text.includes(word)))
+      .map((entry) => entry.task) ?? [];
+  }, [term, exact, searchable]);
+  // Historical keys can point to a different canonical key after a project move.
+  const alias = useTasksQuery<{ query: string; task: Task | null }>(
+    async (rpc) => {
+      if (!open || !index.data || exact || !/^[a-z][a-z0-9]{0,9}-\d+$/i.test(taskKey))
+        return { query: taskKey, task: null };
+      const { task } = await rpc.call("getTaskByKey", { taskKey });
+      return { query: taskKey, task: task && (projectId === null || task.projectId === projectId) ? task : null };
+    },
+    [],
+    [open, taskKey, exact?.id, index.data === undefined, projectId],
+  );
+  const aliasTask = alias.data?.query === taskKey ? alias.data.task : null;
+  const found = aliasTask ? [aliasTask] : matches;
+  const current = index.data ? { tasks: found.slice(0, 25), more: found.length > 25 } : undefined;
+  const error = index.error ?? alias.error;
+  const updating = index.isFetching;
 
   return (
     <Command
@@ -118,14 +113,14 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
             }}
           >
             <CommandList label="Task search results">
-              {!current && (updating || !results.error) ? (
+              {(!current || (current.tasks.length === 0 && alias.isFetching)) && !error ? (
                 <p role="status" className="p-3 text-sm text-muted-foreground">
                   Searching tasks…
                 </p>
-              ) : !current && results.error ? (
+              ) : !current && error ? (
                 <div className="space-y-2 p-3 text-sm">
-                  <p role="alert">{results.error}</p>
-                  <Button variant="outline" size="sm" onClick={results.refresh}>
+                  <p role="alert">{error}</p>
+                  <Button variant="outline" size="sm" onClick={index.refresh}>
                     Retry
                   </Button>
                 </div>
@@ -166,7 +161,7 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
               )}
               {current && updating ? <p role="status" className="px-3 py-1 text-xs text-muted-foreground">Updating results…</p> : null}
               {current?.more ? <p className="p-3 text-xs text-muted-foreground">Showing the first 25 matches. Refine your search to find more.</p> : null}
-              {current && results.error && !updating ? <p role="alert" className="p-3 text-xs text-destructive">{results.error}</p> : null}
+              {current && error && !updating ? <p role="alert" className="p-3 text-xs text-destructive">{error}</p> : null}
             </CommandList>
           </Popover.Content>
         </Popover.Portal>

@@ -34,10 +34,10 @@ export async function fetchBoard(
   const tasks = await listAllTasks(rpc, { projectId });
   const topLevel = tasks.filter((task) => task.parentTaskId === null && !task.archivedAt);
 
-  const labels = await rpc.call("listLabels", { projectId }).then(
-    (result) => result.labels,
-    () => [],
-  );
+  const [labels, metadata] = await Promise.all([
+    rpc.call("listLabels", { projectId }).then((result) => result.labels, () => []),
+    cardMetadata(rpc, topLevel.map((task) => task.id)),
+  ]);
   const subProgress = new Map<string, { done: number; total: number }>();
   for (const task of tasks) {
     const parentId = task.parentTaskId ?? task.epicId;
@@ -47,38 +47,6 @@ export async function fetchBoard(
     if (task.status === "done") entry.done += 1;
     subProgress.set(parentId, entry);
   }
-  const activeTaskIds = await listAllTasks(rpc, {
-    projectId,
-    activeOnly: true,
-  }).then(
-    (result) => new Set(result.map((task) => task.id)),
-    () => new Set<string>(),
-  );
-  const workingByTaskId = new Map<string, TaskThread[]>();
-  await Promise.all(
-    topLevel
-      .filter((task) => activeTaskIds.has(task.id))
-      .map(async (task) => {
-        const threads = await rpc
-          .call("listTaskThreads", { taskId: task.id })
-          .then(
-            (result) => result.taskThreads,
-            () => [],
-          );
-        workingByTaskId.set(task.id, threads.filter(isActiveThread));
-      }),
-  );
-  const attachmentCounts = new Map<string, number>();
-  await Promise.all(
-    topLevel.map(async (task) => {
-      const count = await rpc.call("listAttachments", { taskId: task.id }).then(
-        (result) => result.attachments.length,
-        () => 0,
-      );
-      attachmentCounts.set(task.id, count);
-    }),
-  );
-
   return {
     tasks: topLevel,
     subtasks: tasks.filter((task) => task.parentTaskId !== null),
@@ -87,8 +55,7 @@ export async function fetchBoard(
       topLevel.map((task) => [
         task.id,
         {
-          workingThreads: workingByTaskId.get(task.id) ?? [],
-          attachmentCount: attachmentCounts.get(task.id) ?? 0,
+          ...(metadata.get(task.id) ?? EMPTY_META),
           subDone: subProgress.get(task.id)?.done ?? 0,
           subTotal: subProgress.get(task.id)?.total ?? 0,
         },
@@ -97,14 +64,18 @@ export async function fetchBoard(
   };
 }
 
-async function workingThreadsFor(
-  rpc: TasksRpc,
-  taskId: string,
-): Promise<TaskThread[]> {
-  return rpc.call("listTaskThreads", { taskId }).then(
-    (result) => result.taskThreads.filter(isActiveThread),
-    () => [],
-  );
+async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
+  const metadata = new Map<string, BoardCardMeta>();
+  for (let offset = 0; offset < taskIds.length; offset += 500) {
+    const result = await rpc.call("listTaskCardMeta", { taskIds: taskIds.slice(offset, offset + 500) })
+      .catch(() => ({ metadata: [] }));
+    for (const entry of result.metadata) metadata.set(entry.taskId, {
+      ...EMPTY_META,
+      workingThreads: entry.taskThreads.filter(isActiveThread),
+      attachmentCount: entry.attachmentCount,
+    });
+  }
+  return metadata;
 }
 
 export async function patchBoard(
@@ -143,29 +114,10 @@ export async function patchBoard(
   const threadIds = signalTaskIds(signals, "threads:changed").filter(
     (taskId) => topLevelIds.has(taskId) && !changed.has(taskId),
   );
-  await Promise.all([
-    ...refreshedCards.map(async (task) => {
-      const [workingThreads, attachmentCount] = await Promise.all([
-        workingThreadsFor(rpc, task.id),
-        rpc.call("listAttachments", { taskId: task.id }).then(
-          (result) => result.attachments.length,
-          () => 0,
-        ),
-      ]);
-      metaByTaskId.set(task.id, {
-        ...EMPTY_META,
-        workingThreads,
-        attachmentCount,
-      });
-    }),
-    ...threadIds.map(async (taskId) => {
-      const workingThreads = await workingThreadsFor(rpc, taskId);
-      metaByTaskId.set(taskId, {
-        ...(metaByTaskId.get(taskId) ?? EMPTY_META),
-        workingThreads,
-      });
-    }),
+  const metadata = await cardMetadata(rpc, [
+    ...refreshedCards.map((task) => task.id), ...threadIds,
   ]);
+  for (const [taskId, meta] of metadata) metaByTaskId.set(taskId, meta);
   const progress = new Map<string, { done: number; total: number }>();
   for (const task of [...tasks, ...subtasks]) {
     const parentId = task.parentTaskId ?? task.epicId;
