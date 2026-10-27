@@ -1,6 +1,8 @@
 import { UrlLink, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Comment, TaskPullRequest } from "../../shared/contract";
 import { evidenceIndex } from "../../structured/evidence";
+import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 
 export function EvidenceSection({
   comments,
@@ -10,7 +12,14 @@ export function EvidenceSection({
   pullRequests?: readonly TaskPullRequest[];
 }) {
   const navigate = useBbNavigate();
-  const index = evidenceIndex(comments);
+  const [visibleCount, setVisibleCount] = useState(15);
+  const index = useMemo(() => evidenceIndex(comments), [comments]);
+  const records = useMemo(() => {
+    const latest = new Set([...index.records]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.commentId.localeCompare(a.commentId))
+      .slice(0, visibleCount).map((record) => record.commentId));
+    return index.records.filter((record) => latest.has(record.commentId));
+  }, [index, visibleCount]);
   if (index.records.length === 0) return null;
   return (
     <section aria-label="Evidence" className="my-5 space-y-2">
@@ -29,7 +38,7 @@ export function EvidenceSection({
             </tr>
           </thead>
           <tbody>
-            {index.records.map((record) => {
+            {records.map((record) => {
               const pr = pullRequests.find(
                 (candidate) => candidate.number === record.indexedPr,
               );
@@ -119,6 +128,16 @@ export function EvidenceSection({
           </tbody>
         </table>
       </div>
+      {index.records.length > 15 ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Showing {records.length} of {index.records.length}</span>
+          {records.length < index.records.length ? (
+            <Button size="sm" variant="ghost" onClick={() => setVisibleCount((count) => count + 15)}>
+              Show earlier evidence
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

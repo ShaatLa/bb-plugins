@@ -500,15 +500,16 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
   const [history, setHistory] = useState({ taskId, count: 20 });
   const visibleCount = history.taskId === taskId ? history.count : 20;
   const entries = useMemo(() => feed.data ?? [], [feed.data]);
+  const comments = useMemo(() => entries.map((entry) => entry.comment), [entries]);
   const visibleEntries = entries.slice(-visibleCount);
   const notificationTarget = useMemo(
-    () => agentNotificationTarget(entries.map((entry) => entry.comment)),
-    [entries],
+    () => agentNotificationTarget(comments),
+    [comments],
   );
 
   return (
     <section aria-label="Activity">
-      <EvidenceSection comments={entries.map((entry) => entry.comment)} pullRequests={pullRequests} />
+      <EvidenceSection key={taskId} comments={comments} pullRequests={pullRequests} />
       <div className="mt-6 border-t border-border-hairline" />
       <h2 className="pb-3 pt-4 text-sm font-semibold">Activity</h2>
       {entries.length > visibleCount ? (
