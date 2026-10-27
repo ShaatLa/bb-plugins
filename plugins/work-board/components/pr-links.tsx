@@ -33,7 +33,7 @@ export function PullRequestsSection({
   const rpc = useTasksRpc();
   const query = useTasksQuery(
     async (rpc) => (await rpc.call("listPrLinks", { taskId })).links,
-    ["tasks:changed"],
+    ["tasks:changed", "prs:changed"],
     [taskId],
     { relevantTaskIds: [taskId] },
   );

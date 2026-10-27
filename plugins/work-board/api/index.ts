@@ -29,6 +29,7 @@ import {
   type SidebarProjectSummary,
   type Task,
   type TaskPullRequest,
+  type TaskThread,
   type TasksChangedEvent,
   type TasksDomainError,
   type CommentsChangedEvent,
@@ -956,6 +957,7 @@ export function registerHandlers(
         sort: input.sort,
         limit: input.limit,
         cursor: input.cursor,
+        allowStaleCursor: input.allowStaleCursor,
       });
       return {
         tasks: apiTasks(store, page.tasks),
@@ -1161,10 +1163,16 @@ export function registerHandlers(
       const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
+      const threads = new Map<string, TaskThread[]>();
+      for (const thread of store.tasks.listActiveTaskThreads(ids)) {
+        const entries = threads.get(thread.taskId) ?? [];
+        entries.push(thread);
+        threads.set(thread.taskId, entries);
+      }
       return { metadata: ids.map((taskId) => ({
         taskId,
         attachmentCount: counts.get(taskId) ?? 0,
-        taskThreads: store.tasks.listTaskThreads(taskId),
+        taskThreads: threads.get(taskId) ?? [],
       })) };
     },
     async listTaskThreads(input) {

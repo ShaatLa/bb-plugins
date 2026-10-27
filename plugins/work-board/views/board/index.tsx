@@ -25,11 +25,13 @@ import {
   dropNeighborsForIndex,
   visibleBoardStatuses,
 } from "./drop-position.js";
+import { cardLayout, cardWindow } from "./card-window";
 import { PriorityIcon, StatusIcon } from "./icons.js";
 import {
   EMPTY_META,
   fetchBoard,
   patchBoard,
+  useBoardMetadata,
   type BoardCardMeta,
   type BoardData,
 } from "./board-data.js";
@@ -40,6 +42,7 @@ import {
   loadListPreference,
   storeListPreference,
 } from "../list/list-preference.js";
+import { useLabels } from "../list/data";
 import { matchesFilters } from "../list/optimistic.js";
 import { Button } from "@/components/ui/button";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
@@ -97,6 +100,8 @@ function WorkingAgentsChip({ threads }: { threads: TaskThread[] }) {
 }
 
 interface TaskCardProps {
+  expanded?: boolean;
+  onExpandedChange?: (taskId: string, expanded: boolean) => void;
   prSummary?: PrSummary;
   statusLabel?: (status: TaskStatus) => string;
   unansweredQuestions?: number;
@@ -116,6 +121,8 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  expanded = false,
+  onExpandedChange,
   prSummary,
   statusLabel = displayName,
   unansweredQuestions,
@@ -132,7 +139,7 @@ function TaskCard({
   onPointerDown,
   onClick,
 }: TaskCardProps) {
-  const [expanded, setExpanded] = useState(false);
+  const setExpanded = (value: boolean) => onExpandedChange?.(task.id, value);
   const childQuestions = subtasks.reduce(
     (sum, child) => sum + (questionCounts?.get(child.id) ?? 0),
     0,
@@ -242,7 +249,7 @@ function TaskCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setExpanded((value) => !value);
+                  setExpanded(!expanded);
                 }}
                 className="flex items-center gap-1 rounded-sm text-2xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
@@ -351,15 +358,25 @@ export function BoardView({ projectId }: BoardViewProps) {
     setFilters(next);
   };
   const board = useTasksQuery<BoardData>(
-    (queryRpc) => fetchBoard(queryRpc, projectId),
+    (queryRpc, publish) => fetchBoard(queryRpc, projectId, publish),
     ["tasks:changed", "projects:changed", "threads:changed"],
     [projectId],
     {
       applySignals: (queryRpc, current, signals) =>
-        patchBoard(queryRpc, projectId, current, signals),
+        patchBoard(queryRpc, projectId, current, signals, false),
     },
   );
 
+  const labelQuery = useLabels([projectId]);
+  const metadata = useBoardMetadata(board.data?.tasks ?? [], projectId, !board.isFetching && board.data !== undefined);
+  const labelsById = useMemo(() => new Map((labelQuery.data ?? []).map((label) => [label.id, label])), [labelQuery.data]);
+  const metaByTaskId = useMemo(() => {
+    const map = new Map(board.data?.metaByTaskId);
+    for (const row of metadata.data ?? []) map.set(row.taskId, {
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, attachmentCount: row.attachmentCount,
+    });
+    return map;
+  }, [board.data?.metaByTaskId, metadata.data]);
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
   const prSummaries = usePrSummaries(board.data?.tasks ?? []);
   const questionCounts = useQuestionCounts([
@@ -393,12 +410,9 @@ export function BoardView({ projectId }: BoardViewProps) {
   }, [board.data, statusIds]);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
-  const labelOptions = labelFilterOptions([
-    ...(board.data?.labelsById.values() ?? []),
-  ]);
-  const labelIds = selectedLabelIds(labelOptions, filters.labelNames);
-  const visibleColumns =
-    columns &&
+  const labelOptions = useMemo(() => labelFilterOptions([...labelsById.values()]), [labelsById]);
+  const labelIds = useMemo(() => selectedLabelIds(labelOptions, filters.labelNames), [labelOptions, filters.labelNames]);
+  const visibleColumns = useMemo(() => columns &&
     groupColumns(
       Object.values(columns)
         .flat()
@@ -418,7 +432,7 @@ export function BoardView({ projectId }: BoardViewProps) {
             ),
         ),
       statusIds,
-    );
+    ), [columns, filters, labelIds, questionTotals, statusIds]);
   const visibleColumnsRef = useRef(visibleColumns);
   visibleColumnsRef.current = visibleColumns;
 
@@ -427,6 +441,52 @@ export function BoardView({ projectId }: BoardViewProps) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const columnRefs = useRef(new Map<TaskStatus, HTMLDivElement>());
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
+  const [expandedCards, setExpandedCards] = useState(new Set<string>());
+  const setExpanded = (taskId: string, expanded: boolean) => setExpandedCards((current) => {
+    if (current.has(taskId) === expanded) return current;
+    const next = new Set(current);
+    if (expanded) next.add(taskId); else next.delete(taskId);
+    return next;
+  });
+  const heights = useRef(new Map<string, number>());
+  const [heightVersion, setHeightVersion] = useState(0);
+  const [viewports, setViewports] = useState<Record<string, { top: number; height: number }>>({});
+  const resizeObserver = useRef<ResizeObserver | null>(null);
+  useEffect(() => {
+    let frame: number | null = null;
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const element = entry.target as HTMLElement;
+        const status = element.dataset.boardColumn;
+        if (status) {
+          const height = element.clientHeight || 600;
+          const top = Math.floor(element.scrollTop / 64) * 64;
+          setViewports((current) => current[status]?.height === height && current[status]?.top === top ? current : { ...current, [status]: { top, height } });
+          continue;
+        }
+        const id = element.dataset.boardTaskId;
+        const height = entry.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height;
+        if (id && height > 0 && heights.current.get(id) !== height) {
+          heights.current.set(id, height);
+          changed = true;
+        }
+      }
+      if (changed && frame === null) frame = requestAnimationFrame(() => {
+        frame = null;
+        setHeightVersion((value) => value + 1);
+      });
+    });
+    resizeObserver.current = observer;
+    for (const element of [...cardRefs.current.values(), ...columnRefs.current.values()]) observer.observe(element);
+    return () => { observer.disconnect(); resizeObserver.current = null; if (frame !== null) cancelAnimationFrame(frame); };
+  }, []);
+  const layouts = useMemo(() => new Map(Object.entries(visibleColumns ?? {}).map(([status, cards]) => [
+    status, cardLayout(cards.map((task) => task.id), heights.current),
+  ])), [visibleColumns, heightVersion]);
+  const layoutsRef = useRef(layouts);
+  layoutsRef.current = layouts;
   const suppressClickRef = useRef(false);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => () => dragCleanupRef.current?.(), []);
@@ -454,13 +514,16 @@ export function BoardView({ projectId }: BoardViewProps) {
       const rect = columnElement.getBoundingClientRect();
       if (x < rect.left - 6 || x > rect.right + 6) continue;
       const centers = current[status]
-        .filter((task) => task.id !== draggedTaskId)
-        .map((task) => {
+        .map((task, index) => {
+          if (task.id === draggedTaskId) return null;
           const cardElement = cardRefs.current.get(task.id);
-          if (!cardElement) return Number.NEGATIVE_INFINITY;
+          if (!cardElement) {
+            const layout = layoutsRef.current.get(status)!;
+            return rect.top + 4 - columnElement.scrollTop + layout.offsets[index]! + layout.heights[index]! / 2;
+          }
           const cardRect = cardElement.getBoundingClientRect();
           return cardRect.top + cardRect.height / 2;
-        });
+        }).filter((center): center is number => center !== null);
       return { status, index: dropIndexForPointer(centers, y) };
     }
     return null;
@@ -604,9 +667,6 @@ export function BoardView({ projectId }: BoardViewProps) {
     return <BoardSkeleton />;
   }
 
-  const labelsById = board.data?.labelsById ?? new Map<string, Label>();
-  const metaByTaskId =
-    board.data?.metaByTaskId ?? new Map<string, BoardCardMeta>();
   const ghostTask = drag
     ? Object.values(columns)
         .flat()
@@ -622,19 +682,18 @@ export function BoardView({ projectId }: BoardViewProps) {
     const indicatorBeforeTaskId = isDragOver
       ? (remaining[drag.dropIndex]?.id ?? null)
       : undefined;
-    const indicator = (
-      <div
-        key="drop-indicator"
-        className="h-0.5 shrink-0 rounded-full bg-primary"
-      />
-    );
+    const layout = layouts.get(status)!;
+    const viewport = viewports[status];
+    const range = cardWindow(layout, viewport?.top ?? 0, viewport?.height ?? 600);
     const children: ReactNode[] = [];
-    for (const task of cards) {
-      if (task.id === indicatorBeforeTaskId) children.push(indicator);
+    if (range.before) children.push(<div key="window-before" aria-hidden style={{ height: range.before, flexShrink: 0 }} />);
+    for (const task of cards.slice(range.start, range.end)) {
       children.push(
         <TaskCard
           key={task.id}
           task={task}
+          expanded={expandedCards.has(task.id)}
+          onExpandedChange={setExpanded}
           statusLabel={statusLabel}
           labelsById={labelsById}
           meta={metaByTaskId.get(task.id) ?? EMPTY_META}
@@ -646,15 +705,20 @@ export function BoardView({ projectId }: BoardViewProps) {
           onOpenSubtask={openTask}
           dragging={drag?.taskId === task.id}
           cardRef={(element) => {
-            if (element) cardRefs.current.set(task.id, element);
-            else cardRefs.current.delete(task.id);
+            const previous = cardRefs.current.get(task.id);
+            if (previous && previous !== element) resizeObserver.current?.unobserve(previous);
+            if (element) {
+              element.dataset.boardTaskId = task.id;
+              cardRefs.current.set(task.id, element);
+              resizeObserver.current?.observe(element);
+            } else cardRefs.current.delete(task.id);
           }}
           onPointerDown={(event) => handleCardPointerDown(event, task)}
           onClick={() => openTask(task)}
         />,
       );
     }
-    if (indicatorBeforeTaskId === null) children.push(indicator);
+    if (range.after) children.push(<div key="window-after" aria-hidden style={{ height: range.after, flexShrink: 0 }} />);
 
     return (
       <div
@@ -679,17 +743,27 @@ export function BoardView({ projectId }: BoardViewProps) {
         </div>
         <div
           ref={(element) => {
-            if (element) columnRefs.current.set(status, element);
+            const previous = columnRefs.current.get(status);
+            if (previous && previous !== element) resizeObserver.current?.unobserve(previous);
+            if (element) { columnRefs.current.set(status, element); resizeObserver.current?.observe(element); }
             else columnRefs.current.delete(status);
           }}
           data-board-column={status}
+          onScroll={(event) => {
+            const top = Math.floor(event.currentTarget.scrollTop / 64) * 64;
+            const height = event.currentTarget.clientHeight || 600;
+            setViewports((current) => current[status]?.top === top && current[status]?.height === height ? current : { ...current, [status]: { top, height } });
+          }}
           className={cn(
             "flex min-h-16 flex-col gap-2 overflow-y-auto rounded-lg p-1",
             isDragOver &&
               "bg-surface-selected outline-2 outline-dashed outline-input",
           )}
         >
-          {children}
+          <div className="relative flex shrink-0 flex-col gap-2">
+            {children}
+            {isDragOver ? <div className="pointer-events-none absolute inset-x-0 h-0.5 rounded-full bg-primary" style={{ top: indicatorBeforeTaskId ? layout.offsets[cards.findIndex((task) => task.id === indicatorBeforeTaskId)] : layout.total }} /> : null}
+          </div>
         </div>
       </div>
     );
@@ -707,6 +781,8 @@ export function BoardView({ projectId }: BoardViewProps) {
           0,
         )}
       />
+      {board.error ? <p role="alert" className="px-4 pt-1 text-xs text-destructive">Couldn't finish updating the board. <Button size="sm" variant="ghost" onClick={board.refresh}>Retry</Button></p> : null}
+      {board.isFetching || metadata.isFetching || labelQuery.isFetching ? <p role="status" className="px-4 pt-1 text-xs text-muted-foreground">Updating board…</p> : null}
       {filters.unansweredOnly && questionCounts.error ? (
         <p role="alert" className="px-4 py-2 text-sm text-destructive">
           Couldn't load question counts.{" "}

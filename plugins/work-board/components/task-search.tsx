@@ -3,9 +3,10 @@ import { useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Command as CommandPrimitive } from "cmdk";
 import { usePortalScopeProps } from "@/lib/portal-scope";
-import { listAllTasks, patchTasks, useTasksQuery } from "../shell/data.js";
+import { patchTasks, useTasksQuery } from "../shell/data.js";
+import { loadTaskDataset, taskDatasetSnapshot } from "../shell/task-dataset";
 import { signalTaskIds } from "../shell/signal-scheduler.js";
-import { tasksRpcContract, type Task } from "../shared/contract.js";
+import { type Task } from "../shared/contract.js";
 import { useTasksNavigation } from "../shell/routes.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -25,11 +26,11 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
   const [search, setSearch] = useState("");
   const term = search.trim();
   const index = useTasksQuery<Task[]>(
-    (rpc) => listAllTasks(rpc, { archive: "active", ...(projectId ? { projectId } : {}) }),
+    (rpc, publish) => loadTaskDataset(rpc, projectId, publish),
     ["tasks:changed", "projects:changed"],
     [projectId],
     {
-      snapshot: { name: `task-search-index:${projectId ?? "all"}`, schema: tasksRpcContract.listTasks.output.shape.tasks },
+      snapshot: taskDatasetSnapshot(projectId),
       applySignals: (rpc, current, signals) => signals.some((signal) => signal.channel === "projects:changed")
         ? Promise.resolve(null)
         : patchTasks(rpc, current, signalTaskIds(signals, "tasks:changed"), (task) => !task.archivedAt && (projectId === null || task.projectId === projectId)),
@@ -113,7 +114,7 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
             }}
           >
             <CommandList label="Task search results">
-              {(!current || (current.tasks.length === 0 && alias.isFetching)) && !error ? (
+              {(!current || (current.tasks.length === 0 && (alias.isFetching || index.isFetching))) && !error ? (
                 <p role="status" className="p-3 text-sm text-muted-foreground">
                   Searching tasks…
                 </p>

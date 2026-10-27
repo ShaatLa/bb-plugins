@@ -1205,7 +1205,7 @@ export function createTasksStore(db: PluginDatabase) {
       if (revision === undefined) {
         throw new Error("Task-list revision state is unavailable");
       }
-      if (cursor !== null && cursor.revision !== revision) {
+      if (cursor !== null && cursor.revision !== revision && !filters.allowStaleCursor) {
         throw new TasksPageCursorError(
           "stale_cursor",
           "task-list data changed after this cursor was issued; restart pagination without --cursor",
@@ -2045,6 +2045,14 @@ export function createTasksStore(db: PluginDatabase) {
     return thread;
   }
 
+  function listActiveTaskThreads(taskIds: readonly string[]): TaskThread[] {
+    if (!taskIds.length) return [];
+    return db.prepare<string[], TaskThreadRow>(
+      `SELECT * FROM task_threads WHERE task_id IN (${taskIds.map(() => "?").join(",")})
+       AND live_status IN ('starting', 'working') ORDER BY task_id, attached_at, id`,
+    ).all(...taskIds).map(taskThreadFromRow);
+  }
+
   function listTaskThreads(taskId: string): TaskThread[] {
     return db
       .prepare<[string], TaskThreadRow>(
@@ -2261,6 +2269,7 @@ export function createTasksStore(db: PluginDatabase) {
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
     listTaskThreads,
+    listActiveTaskThreads,
     updateTaskThreadStatus,
     deleteTaskThread,
     createPreset,

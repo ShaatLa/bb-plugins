@@ -1,5 +1,6 @@
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { configure } from "@testing-library/react";
+import { resetTaskDatasetCachesForTest } from "./shell/task-dataset";
 import { beforeEach } from "vitest";
 
 if (typeof window !== "undefined") installTestPluginRuntime();
@@ -32,5 +33,6 @@ if (typeof window !== "undefined" && !window.matchMedia) {
 }
 
 beforeEach(() => {
+  resetTaskDatasetCachesForTest();
   if (typeof window !== "undefined") window.localStorage.clear();
 });

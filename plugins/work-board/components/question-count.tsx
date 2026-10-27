@@ -1,24 +1,30 @@
 import type { Task } from "../shared/contract";
-import { useTasksQuery } from "../shell/data";
+import { taskBatches } from "../shell/task-batches";
+import { signalTaskIds } from "../shell/signal-scheduler";
+import { useTasksQuery, type TasksRpc } from "../shell/data";
 import { Icon } from "@/components/ui/icon";
 
+async function readCounts(rpc: TasksRpc, ids: readonly string[]) {
+  const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("questionCounts", { taskIds })).counts);
+  return new Map(rows.map((row) => [row.taskId, row.unanswered]));
+}
 export function useQuestionCounts(tasks: readonly Task[]) {
-  const taskIds = tasks.map((task) => task.id);
+  const taskIds = tasks.map((task) => task.id).sort();
   return useTasksQuery(
-    async (rpc) => {
-      const counts = new Map<string, number>();
-      for (let offset = 0; offset < taskIds.length; offset += 500) {
-        const result = await rpc.call("questionCounts", {
-          taskIds: taskIds.slice(offset, offset + 500),
-        });
-        for (const entry of result.counts)
-          counts.set(entry.taskId, entry.unanswered);
-      }
-      return counts;
-    },
+    (rpc) => readCounts(rpc, taskIds),
     ["tasks:changed"],
     [taskIds.join()],
-    { relevantTaskIds: taskIds },
+    {
+      relevantTaskIds: taskIds,
+      applySignals: async (rpc, current, signals) => {
+        const changed = signalTaskIds(signals, "tasks:changed").filter((id) => taskIds.includes(id));
+        if (!changed.length) return current;
+        const next = new Map(current);
+        for (const id of changed) next.delete(id);
+        for (const [id, count] of await readCounts(rpc, changed)) next.set(id, count);
+        return next;
+      },
+    },
   );
 }
 

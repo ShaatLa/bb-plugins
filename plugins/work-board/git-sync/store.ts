@@ -37,6 +37,42 @@ export function createGitSyncStore(db: Database) {
     return link;
   };
   return {
+    summaries(taskIds: string[]) {
+      if (!taskIds.length) return [];
+      const rows = db.prepare<string[], {
+        taskId: string; projectId: string; repository: string; state: string | null;
+        ci: string | null; observedAt: string | null; error: string | null;
+      }>(`SELECT l.task_id AS taskId, t.project_id AS projectId,
+        json_extract(l.payload, '$.repository') AS repository,
+        json_extract(s.payload, '$.state') AS state,
+        json_extract(s.payload, '$.ci') AS ci,
+        json_extract(s.payload, '$.observedAt') AS observedAt, s.error
+        FROM task_pr_links l JOIN tasks t ON t.id=l.task_id
+        LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
+        WHERE l.task_id IN (${taskIds.map(() => "?").join(",")})
+        AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0`).all(...taskIds);
+      const configs = new Map<string, GitSyncConfig>();
+      const summaries = new Map<string, { taskId: string; total: number; merged: number; failing: number; pending: number; stale: boolean }>();
+      const now = Date.now();
+      for (const row of rows) {
+        let settings = configs.get(row.projectId);
+        if (!settings) { settings = config(row.projectId); configs.set(row.projectId, settings); }
+        const summary = summaries.get(row.taskId) ?? { taskId: row.taskId, total: 0, merged: 0, failing: 0, pending: 0, stale: false };
+        summary.total++;
+        if (row.state === "merged") summary.merged++;
+        if (row.ci === "failing") summary.failing++;
+        if (row.ci === "pending") summary.pending++;
+        summary.stale ||= !row.observedAt || Boolean(row.error) || !settings.repositories.includes(row.repository)
+          || now - Date.parse(row.observedAt) > settings.pollMinutes * 60_000;
+        summaries.set(row.taskId, summary);
+      }
+      return [...new Set(taskIds)].flatMap((id) => summaries.has(id) ? [summaries.get(id)!] : []);
+    },
+    linksForProject(projectId: string): PrLink[] {
+      return db.prepare<[string], { payload: string }>(
+        "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? ORDER BY l.task_id, l.identity",
+      ).all(projectId).map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
+    },
     config,
     links,
     saveLink,
@@ -90,18 +126,11 @@ export function createGitSyncStore(db: Database) {
         "INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, NULL) ON CONFLICT(project_id, identity) DO UPDATE SET payload=excluded.payload, error=NULL",
       ).run(projectId, prIdentity(link), JSON.stringify(value));
       // A repository rename is a durable identity update, not a new delivery link.
-      for (const current of links().filter(
-        (item) =>
-          prIdentity(item) === prIdentity(link) &&
-          Boolean(
-            db
-              .prepare<
-                [string, string],
-                { found: number }
-              >("SELECT 1 AS found FROM tasks WHERE id=? AND project_id=?")
-              .get(item.taskId, projectId),
-          ),
-      )) {
+      const linked = db.prepare<[string, string], { payload: string }>(
+        "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity=?",
+      ).all(projectId, prIdentity(link));
+      for (const row of linked) {
+        const current = prLinkSchema.parse(JSON.parse(row.payload));
         const next = {
           ...current,
           repository: value.repository,

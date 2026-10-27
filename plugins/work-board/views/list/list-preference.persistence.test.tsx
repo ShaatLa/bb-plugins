@@ -378,7 +378,7 @@ describe("list filter/sort preference persistence", () => {
     ).not.toContain("Priority");
   });
 
-  it("persists priority and label filters and sends resolved label ids", async () => {
+  it("persists priority and label filters and applies them locally", async () => {
     const registration = app.navPanels[0]!;
     const listTasksCalls: Record<string, unknown>[] = [];
     const rpc = baseRpc({}, listTasksCalls);
@@ -407,17 +407,7 @@ describe("list filter/sort preference persistence", () => {
       ]);
     });
 
-    await waitFor(() => {
-      expect(
-        listTasksCalls.some(
-          (call) =>
-            Array.isArray(call.labelIds) &&
-            call.labelIds.includes(LABEL_BUG) &&
-            Array.isArray(call.priorities) &&
-            call.priorities.includes("urgent"),
-        ),
-      ).toBe(true);
-    });
+    expect(listTasksCalls.every((call) => call.labelIds === undefined && call.priorities === undefined)).toBe(true);
 
     slot.lifecycle.unmount();
     const remounted = renderSlot(
@@ -458,13 +448,7 @@ describe("list filter/sort preference persistence", () => {
     expect(slot.getByRole("button", { name: /^Label/ }).textContent).toContain(
       "DeletedLabel",
     );
-    await waitFor(() => {
-      expect(
-        listTasksCalls.some(
-          (call) => Array.isArray(call.labelIds) && call.labelIds.length === 0,
-        ),
-      ).toBe(true);
-    });
+    expect(listTasksCalls.every((call) => call.labelIds === undefined)).toBe(true);
     await waitFor(() => {
       expect(slot.queryByText("ALP-1")).toBeNull();
       expect(slot.queryByText("ALP-2")).toBeNull();

@@ -15,6 +15,7 @@ import {
   readQuerySnapshot,
   writeQuerySnapshot,
 } from "./query-snapshot.js";
+import { invalidateTaskDatasets } from "./task-dataset";
 import { useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
@@ -139,11 +140,15 @@ type ApplySignals<T> = (
   signals: readonly TaskSignal[],
 ) => Promise<T | null>;
 
+export type QueryPublish<T> = (partial: T) => void;
+
 export function useTasksQuery<T>(
-  fetcher: (rpc: TasksRpc, publish: (partial: T) => void) => Promise<T>,
+  fetcher: (rpc: TasksRpc, publish: QueryPublish<T>) => Promise<T>,
   channels: readonly InvalidationChannel[],
   deps: readonly unknown[] = [],
   options: {
+    enabled?: boolean;
+    dataScope?: string;
     snapshot?: TasksQuerySnapshot<T>;
     applySignals?: ApplySignals<T>;
     relevantTaskIds?: readonly string[];
@@ -152,6 +157,9 @@ export function useTasksQuery<T>(
   const rpc = useTasksRpc();
   const { generation, beginGenerationWork, endGenerationWork } =
     useTasksRefresh();
+  const enabled = options.enabled !== false;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const snapshotRef = useRef(options.snapshot);
@@ -207,34 +215,40 @@ export function useTasksQuery<T>(
   );
   const previousGenerationRef = useRef(generation);
   const depsKey = JSON.stringify(deps);
-  const dataDepsKeyRef = useRef(depsKey);
+  const dataScopeKey = options.dataScope ?? depsKey;
+  const dataDepsKeyRef = useRef(dataScopeKey);
   const refresh = useCallback(() => {
+    if (!enabledRef.current) return Promise.resolve();
     const seq = ++seqRef.current;
     setState((current) => ({ ...current, isFetching: true }));
     const snapshot = snapshotRef.current;
     const snapshotRevision =
       snapshot === undefined ? 0 : claimQuerySnapshotRevision(snapshot.name);
-    const publish = (partial: T) => {
+    const publish: QueryPublish<T> = (data) => {
       if (seq !== seqRef.current) return;
-      dataDepsKeyRef.current = depsKey;
-      dataRef.current = partial;
-      setState({ data: partial, error: null, isLoading: true, isFetching: true });
+      dataDepsKeyRef.current = dataScopeKey;
+      dataRef.current = data;
+      setState({ data, error: null, isLoading: true, isFetching: true });
     };
     return scheduler.trackFetch(() =>
       fetcherRef.current(rpc, publish).then(
         (data) => {
+          if (seq !== seqRef.current) return;
           if (snapshot !== undefined) {
             writeQuerySnapshot(snapshot.name, data, snapshotRevision);
           }
           if (seq !== seqRef.current) return;
-          dataDepsKeyRef.current = depsKey;
+          dataDepsKeyRef.current = dataScopeKey;
           dataRef.current = data;
           setState({ data, error: null, isLoading: false, isFetching: false });
         },
         (error: unknown) => {
           if (seq !== seqRef.current) return;
-          const keepsData = dataDepsKeyRef.current === depsKey;
-          if (!keepsData) dataRef.current = undefined;
+          const keepsData = dataDepsKeyRef.current === dataScopeKey;
+          if (!keepsData) {
+            dataRef.current = undefined;
+            dataDepsKeyRef.current = dataScopeKey;
+          }
           setState((current) => ({
             data: keepsData ? current.data : undefined,
             error: errorMessage(error),
@@ -244,7 +258,7 @@ export function useTasksQuery<T>(
         },
       ),
     );
-  }, [rpc, depsKey, scheduler]);
+  }, [rpc, depsKey, dataScopeKey, scheduler]);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
@@ -252,9 +266,11 @@ export function useTasksQuery<T>(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      seqRef.current += 1;
     };
   }, []);
   useEffect(() => {
+    if (!enabled) { seqRef.current++; return; }
     const generationBumped = previousGenerationRef.current !== generation;
     previousGenerationRef.current = generation;
     setState((current) => ({ ...current, isLoading: true }));
@@ -269,8 +285,9 @@ export function useTasksQuery<T>(
     return () => {
       finish();
     };
-  }, [refresh, generation, beginGenerationWork, endGenerationWork]);
+  }, [refresh, generation, enabled, beginGenerationWork, endGenerationWork]);
   const preparePatch = (signals: TaskSignal[]) => {
+    if (!enabledRef.current) return null;
     const apply = applySignalsRef.current;
     if (apply === undefined) return null;
     const seq = seqRef.current;
@@ -290,6 +307,8 @@ export function useTasksQuery<T>(
       }
       if (next === current) return;
       dataRef.current = next;
+      const snapshot = snapshotRef.current;
+      if (snapshot) writeQuerySnapshot(snapshot.name, next, claimQuerySnapshotRevision(snapshot.name));
       setState((previous) => ({ ...previous, data: next }));
     };
   };
@@ -306,19 +325,23 @@ export function useTasksQuery<T>(
       scheduler.dispose();
     };
   }, [scheduler]);
-  useRealtime("tasks:changed", (payload) =>
-    scheduler.push("tasks:changed", payload),
-  );
-  useRealtime("projects:changed", (payload) =>
-    scheduler.push("projects:changed", payload),
-  );
+  useRealtime("tasks:changed", (payload) => {
+    invalidateTaskDatasets();
+    scheduler.push("tasks:changed", payload);
+  });
+  useRealtime("projects:changed", (payload) => {
+    invalidateTaskDatasets();
+    scheduler.push("projects:changed", payload);
+  });
   useRealtime("comments:changed", (payload) =>
     scheduler.push("comments:changed", payload),
   );
   useRealtime("threads:changed", (payload) =>
     scheduler.push("threads:changed", payload),
   );
-  return { ...state, refresh };
+  useRealtime("prs:changed", (payload) => scheduler.push("prs:changed", payload));
+  const sameScope = dataDepsKeyRef.current === dataScopeKey;
+  return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
 }
 
 const foldersSnapshot = {
