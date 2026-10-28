@@ -1,6 +1,8 @@
 import type { TaskThread, ThreadHealth } from "./contract.js";
 
 const IDLE_EXEMPT_STATUSES = new Set(["done", "canceled", "in_review"]);
+// A dead thread on finished work needs no attention.
+const FAILED_EXEMPT_STATUSES = new Set(["done", "canceled"]);
 
 export function evaluateThreadHealth(
   taskStatus: string,
@@ -8,7 +10,7 @@ export function evaluateThreadHealth(
   lastActivityAt: string,
   thresholdMinutes: number | null,
 ): ThreadHealth {
-  const failed = links
+  const failed = FAILED_EXEMPT_STATUSES.has(taskStatus) ? [] : links
     .filter((link) => link.liveStatus === "failed")
     .map((link) => ({ threadId: link.threadId, title: link.title, failedAt: link.updatedAt }));
   const idleLinks = links.filter((link) => link.liveStatus === "idle");
