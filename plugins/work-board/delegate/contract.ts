@@ -19,6 +19,8 @@ export const delegationRpcContract = defineRpcContract({
         taskId: idSchema,
         presetId: idSchema,
         extraInstructions: z.string().optional(),
+        parentThreadId: threadIdSchema.optional(),
+        parentNotifications: z.enum(["auto", "stuck", "off"]).optional(),
       })
       .strict(),
     output: z.object({ threadId: threadIdSchema }).strict(),
