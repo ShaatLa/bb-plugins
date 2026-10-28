@@ -188,6 +188,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
     config: gitSyncConfigSchema.parse({
       repositories: ["example/service"],
       enabled: true,
+      overlapRules: [{ pattern: "migrations/**", match: "added" }],
     }),
   });
   await f.service.handlers.linkPr({
@@ -227,6 +228,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
     false,
   );
   const data = createGitSyncStore(dest.bb.storage.database());
+  expect(data.config(f.project.id).overlapRules).toEqual([{ pattern: "migrations/**", match: "added" }]);
   expect(data.links(f.task.id)).toHaveLength(2);
   expect(
     data.snapshot(f.project.id, data.links(f.task.id)[0]!).snapshot,
@@ -644,4 +646,14 @@ it("refreshes only PR subscribers after polling and leaves unrelated task indexe
   expect(signals).toEqual([{ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } }]);
   const summary = await f.service.handlers.prSummaries({ taskIds: f.tasks.map((task) => task.id) });
   expect(summary.summaries).toMatchObject([{ taskId: f.task.id, total: 1, stale: false }]);
+});
+
+it("fetches files once per open head and refetches after the head changes", async () => {
+  const f = githubFixture();
+  const config = gitSyncConfigSchema.parse({});
+  const first = await f.client.snapshot("example/service", 42, config);
+  const second = await f.client.snapshot("example/service", 42, config, first);
+  expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(1);
+  await f.client.snapshot("example/service", 42, config, { ...second, headSha: b });
+  expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(2);
 });
