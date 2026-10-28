@@ -1,4 +1,4 @@
-import type { Comment, Evidence } from "../shared/contract";
+import type { Comment, Evidence, TaskPullRequest } from "../shared/contract";
 
 export type EvidenceEntry = Evidence & {
   commentId: string;
@@ -131,4 +131,24 @@ export function evidenceText(index: ReturnType<typeof evidenceIndex>): string {
       ),
     ].join("\n") || "(none)"
   );
+}
+
+export function evidenceFlags(records: readonly EvidenceEntry[], pullRequests: readonly TaskPullRequest[], links: readonly { link: { number: number; url?: string; excluded?: boolean }; snapshot: { state: string; headSha: string } | null }[]) {
+  const flags: { commentId: string; kind: "self_review" | "stale_head"; message: string }[] = [];
+  for (const record of records) {
+    if ((record.kind !== "review" && record.kind !== "qa") || !record.pr) continue;
+    const matches = pullRequests.filter((pr) => pr.number === record.pr);
+    const linked = links.filter(({ link }) => !link.excluded && link.number === record.pr);
+    if (matches.length === 1 && (linked.length === 0 || (linked.length === 1 && linked[0]!.link.url === matches[0]!.url)) && matches[0]!.threadIds.includes(record.thread))
+      flags.push({ commentId: record.commentId, kind: "self_review", message: "Reviewer is the PR author thread" });
+  }
+  const merged = links.filter(({ link, snapshot }) => !link.excluded && snapshot?.state === "merged");
+  for (const { link, snapshot } of merged) {
+    if (!snapshot || links.filter((item) => !item.link.excluded && item.link.number === link.number).length !== 1) continue;
+    const approvals = records.filter((record) => (record.kind === "review" || record.kind === "qa") && record.pr === link.number && (record.verdict === "approve" || record.verdict === "pass"));
+    if (approvals.some((record) => record.indexedHead?.toLowerCase() === snapshot.headSha.toLowerCase())) continue;
+    const newest = approvals.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.commentId.localeCompare(a.commentId))[0];
+    if (newest && (newest.kind === "review" || newest.kind === "qa")) flags.push({ commentId: newest.commentId, kind: "stale_head", message: `Approved head ${newest.head.slice(0, 7)} differs from merged head ${snapshot.headSha.slice(0, 7)}` });
+  }
+  return flags;
 }

@@ -509,7 +509,7 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
 
   return (
     <section aria-label="Activity">
-      <EvidenceSection key={taskId} comments={comments} pullRequests={pullRequests} />
+      <EvidenceSection key={taskId} taskId={taskId} comments={comments} pullRequests={pullRequests} />
       <div className="mt-6 border-t border-border-hairline" />
       <h2 className="pb-3 pt-4 text-sm font-semibold">Activity</h2>
       {entries.length > visibleCount ? (
