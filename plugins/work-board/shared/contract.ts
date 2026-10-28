@@ -392,6 +392,14 @@ export const taskThreadSchema = z
   })
   .strict();
 
+export const threadHealthSchema = z
+  .object({
+    failed: z.array(z.object({ threadId: z.string().startsWith("thr_"), title: z.string(), failedAt: z.string() }).strict()),
+    // Armed idle state: the UI compares `since` with its own clock so the marker appears without a server push.
+    idle: z.object({ threadId: z.string().startsWith("thr_"), since: z.string(), thresholdMinutes: z.number().int().positive() }).strict().nullable(),
+  })
+  .strict();
+
 const taskPullRequestSchema = z
   .object({
     url: z.string().url(),
@@ -944,6 +952,7 @@ export const tasksRpcContract = {
       taskId: idSchema,
       attachmentCount: z.number().int().nonnegative(),
       taskThreads: z.array(taskThreadSchema),
+      threadHealth: threadHealthSchema,
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {
@@ -1085,6 +1094,7 @@ export type CommentProvider = z.infer<typeof commentProviderSchema>;
 export type DisplayComment = z.infer<typeof displayCommentSchema>;
 export type Attachment = z.infer<typeof attachmentSchema>;
 export type TaskThread = z.infer<typeof taskThreadSchema>;
+export type ThreadHealth = z.infer<typeof threadHealthSchema>;
 export type TaskPullRequest = z.infer<typeof taskPullRequestSchema>;
 export type Preset = z.infer<typeof presetSchema>;
 export type TasksDomainError = z.infer<typeof tasksDomainErrorSchema>;

@@ -54,6 +54,7 @@ import {
   useQuestionCounts,
 } from "../../components/question-count";
 
+import { ThreadHealthMarkers } from "../../components/thread-health-markers";
 import { DetailToasts, useDetailToasts } from "../detail/toast";
 
 const DRAG_THRESHOLD_PX = 5;
@@ -200,6 +201,7 @@ function TaskCard({
               </span>
             ) : null}
             <WorkingAgentsChip threads={meta.workingThreads} />
+            <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
           {childQuestions > 0 && !ghost ? (
             <button
@@ -373,7 +375,7 @@ export function BoardView({ projectId }: BoardViewProps) {
   const metaByTaskId = useMemo(() => {
     const map = new Map(board.data?.metaByTaskId);
     for (const row of metadata.data ?? []) map.set(row.taskId, {
-      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, attachmentCount: row.attachmentCount,
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
     });
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);
