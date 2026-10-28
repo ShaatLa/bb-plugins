@@ -629,4 +629,51 @@ describe("delegation seed prompt", () => {
       "
     `);
   });
+
+  it("parents the spawned thread only when the caller thread is given", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "work-board",
+      sdk: { threads: { spawn: async () => ({ id: "thr_child" }) } },
+    });
+    const store = createStore(bb);
+    const project = store.tasks.createProject({
+      name: "Tasks plugin",
+      prefix: "TASK",
+      color: "blue",
+      linkedBbProjectId: "proj_bb",
+    });
+    const task = store.tasks.createTask({
+      projectId: project.id,
+      title: "Parent me",
+      description: "",
+      status: "todo",
+    });
+    registerDelegation(bb, store);
+    const preset = createTestPreset(store);
+
+    await harness.callRpc("delegate", { taskId: task.id, presetId: preset.id });
+    await harness.callRpc("delegate", {
+      taskId: task.id,
+      presetId: preset.id,
+      parentThreadId: "thr_lead",
+    });
+    await harness.callRpc("delegate", {
+      taskId: task.id,
+      presetId: preset.id,
+      parentThreadId: "thr_lead",
+      parentNotifications: "stuck",
+    });
+
+    const [ui, parented, quiet] = harness.sdk
+      .callsTo("threads.spawn")
+      .map(([args]) => args as Record<string, unknown>);
+    expect(ui).not.toHaveProperty("parentThreadId");
+    expect(ui).not.toHaveProperty("parentNotifications");
+    expect(parented).toMatchObject({ parentThreadId: "thr_lead" });
+    expect(parented).not.toHaveProperty("parentNotifications");
+    expect(quiet).toMatchObject({
+      parentThreadId: "thr_lead",
+      parentNotifications: "stuck",
+    });
+  });
 });

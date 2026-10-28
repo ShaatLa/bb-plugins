@@ -426,6 +426,15 @@ export function handlers(
       });
 
       const environment = await presetSpawnEnvironment(bb, preset);
+      // The server accepts parentNotifications on create, but the SDK typings omit it.
+      const parentLink = {
+        ...(input.parentThreadId
+          ? { parentThreadId: input.parentThreadId }
+          : {}),
+        ...(input.parentThreadId && input.parentNotifications
+          ? { parentNotifications: input.parentNotifications }
+          : {}),
+      };
       const thread = await bb.sdk.threads
         .spawn({
           projectId: linkedBbProjectId,
@@ -439,6 +448,7 @@ export function handlers(
           permissionMode: execution.permissionMode,
           title,
           prompt,
+          ...parentLink,
         })
         .catch((error: unknown) => mapSpawnTargetError(error, preset));
 
