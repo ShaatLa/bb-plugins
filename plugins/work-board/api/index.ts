@@ -18,6 +18,7 @@ import {
 import { deliverCommentToLatestAgent } from "../steer";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { displayName } from "../shared/display-name";
+import { evaluateThreadHealth } from "../shared/thread-health";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
@@ -638,9 +639,12 @@ async function listTaskPullRequests(
   };
 }
 
+export const DEFAULT_STALE_IDLE_MINUTES = 45;
+
 export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
+  staleIdleMinutes: () => Promise<number | null> = async () => DEFAULT_STALE_IDLE_MINUTES,
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   return {
@@ -1168,23 +1172,30 @@ export function registerHandlers(
       }
       return { archivedCount: changed.length };
     },
-    listTaskCardMeta({ taskIds }) {
+    async listTaskCardMeta({ taskIds }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
       const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
       const threads = new Map<string, TaskThread[]>();
-      for (const thread of store.tasks.listActiveTaskThreads(ids)) {
+      for (const thread of store.tasks.listTaskThreadsForTasks(ids)) {
         const entries = threads.get(thread.taskId) ?? [];
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
-      return { metadata: ids.map((taskId) => ({
-        taskId,
-        attachmentCount: counts.get(taskId) ?? 0,
-        taskThreads: threads.get(taskId) ?? [],
-      })) };
+      const activity = store.tasks.listTaskActivity(ids);
+      const threshold = await staleIdleMinutes();
+      return { metadata: ids.map((taskId) => {
+        const links = threads.get(taskId) ?? [];
+        const task = activity.get(taskId);
+        return {
+          taskId,
+          attachmentCount: counts.get(taskId) ?? 0,
+          taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", threshold),
+        };
+      }) };
     },
     async listTaskThreads(input) {
       return { taskThreads: input.reconcile === false
@@ -1281,6 +1292,10 @@ export function registerHandlers(
   };
 }
 
-export function registerTasksApi(bb: BbPluginApi, store: TasksApiStore): void {
-  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store));
+export function registerTasksApi(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  staleIdleMinutes?: () => Promise<number | null>,
+): void {
+  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes));
 }

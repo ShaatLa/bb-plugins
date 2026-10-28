@@ -2045,12 +2045,22 @@ export function createTasksStore(db: PluginDatabase) {
     return thread;
   }
 
-  function listActiveTaskThreads(taskIds: readonly string[]): TaskThread[] {
+  function listTaskThreadsForTasks(taskIds: readonly string[]): TaskThread[] {
     if (!taskIds.length) return [];
     return db.prepare<string[], TaskThreadRow>(
       `SELECT * FROM task_threads WHERE task_id IN (${taskIds.map(() => "?").join(",")})
-       AND live_status IN ('starting', 'working') ORDER BY task_id, attached_at, id`,
+       ORDER BY task_id, attached_at, id`,
     ).all(...taskIds).map(taskThreadFromRow);
+  }
+
+  // Status plus the latest task-level update: the task row itself or a non-system comment (evidence lives on comments).
+  function listTaskActivity(taskIds: readonly string[]): Map<string, { status: string; lastActivityAt: string }> {
+    if (!taskIds.length) return new Map();
+    return new Map(db.prepare<string[], { id: string; status: string; at: string }>(
+      `SELECT t.id, t.status, MAX(t.updated_at, COALESCE(
+         (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
+       FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
+    ).all(...taskIds).map((row) => [row.id, { status: row.status, lastActivityAt: row.at }]));
   }
 
   function listTaskThreads(taskId: string): TaskThread[] {
@@ -2331,7 +2341,8 @@ export function createTasksStore(db: PluginDatabase) {
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
     listTaskThreads,
-    listActiveTaskThreads,
+    listTaskThreadsForTasks,
+    listTaskActivity,
     updateTaskThreadStatus,
     deleteTaskThread,
     createPreset,

@@ -1,4 +1,4 @@
-import { tasksRpcContract, type Label, type Task, type TaskThread } from "../../shared/contract.js";
+import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
 import {
   signalTaskIds,
@@ -10,6 +10,7 @@ import { isActiveThread } from "../detail/meta.js";
 
 export interface BoardCardMeta {
   workingThreads: TaskThread[];
+  threadHealth?: ThreadHealth;
   attachmentCount: number;
   subDone: number;
   subTotal: number;
@@ -107,6 +108,7 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
   for (const entry of rows) metadata.set(entry.taskId, {
     ...EMPTY_META,
     workingThreads: entry.taskThreads.filter(isActiveThread),
+    threadHealth: entry.threadHealth,
     attachmentCount: entry.attachmentCount,
   });
   return metadata;

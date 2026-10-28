@@ -8,6 +8,7 @@ import type {
 } from "../../shared/contract.js";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { ThreadHealthMarkers } from "../../components/thread-health-markers";
 import { QuestionCount } from "../../components/question-count";
 import type { TaskRowMeta } from "./data.js";
 import { activeWorkLabel, formatDueDate, partitionLabels } from "./lib.js";
@@ -193,6 +194,7 @@ export const TaskRow = memo(function TaskRow({
             </span>
           ) : null}
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
+          <ThreadHealthMarkers health={meta?.threadHealth} />
           <QuestionCount count={unansweredQuestions} />
           <PullRequestSummary summary={prSummary} />
           <LabelChips task={task} labelsById={labelsById} />

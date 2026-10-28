@@ -110,6 +110,7 @@ describe("bb work-board CLI", () => {
               id: threadId,
               title: "CLI provider worker",
               providerId: "codex",
+              ...(threadId === "thr_broken" ? { status: "error" as const } : {}),
             }),
         },
         providers: {
@@ -188,8 +189,15 @@ describe("bb work-board CLI", () => {
       subtasks: [],
       attachments: [],
       taskThreads: [],
+      threadHealth: { failed: [], staleIdle: null },
       comments: [],
     });
+
+    const store = createStore(bb);
+    store.tasks.upsertTaskThread({ taskId: createPayload.task.id, threadId: "thr_broken", presetName: "p", title: "Broken", liveStatus: "failed" });
+    expect(JSON.parse(stdout(await harness.runCli(["show", "cli-1", "--json"]))).threadHealth).toEqual({ failed: ["thr_broken"], staleIdle: null });
+    expect(JSON.parse(stdout(await harness.runCli(["list", "--project", "CLI", "--json"]))).tasks[0].threadHealth).toEqual({ failed: ["thr_broken"], staleIdle: null });
+    store.tasks.deleteTaskThread(store.tasks.listTaskThreads(createPayload.task.id)[0]!.id);
 
     const updateResult = await harness.runCli([
       "update",
