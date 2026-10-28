@@ -487,3 +487,7 @@ Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pu
 ## Dispatch и иерархия тредов
 
 `bb work-board dispatch KEY --preset NAME`, вызванный из треда, делает новый тред дочерним для вызывающего (`BB_THREAD_ID`), поэтому уведомления о жизненном цикле и архивация следуют иерархии. `--parent-notifications auto|stuck|off` задаёт, какие ходы потомка будят родителя (без флага действует значение bb по умолчанию); `--no-parent` запускает тред вне иерархии (флаги взаимоисключающие). Запуск из UI человеком и `--thread` не меняют родителя. Рекомендации агентам — в разделе «Building a hierarchy without burning provider limits» в `skills/work-board/SKILL.md`.
+
+## Sequence claims
+
+Create a project sequence with `bb work-board seq create registry_version --project ANV --next 234 --format '1.{n}'`. Use `seq list`, `seq show`, `seq set-next` and `seq delete` with `--project`. Claim with `bb work-board claim registry_version --project ANV --task ANV-12 [--pr URL] [--another]`; plain output is the rendered value. Release with `claim release registry_version 234 --project ANV --reason 'reason'`. Active claims appear on the task. Claims are idempotent per task unless `--another` is supplied; released values are never reused. `set-next --force` permits a lower counter, but allocation remains blocked until it exceeds all prior claims. Sequence state is not exported or imported, and PR close or merge does not release claims automatically.
