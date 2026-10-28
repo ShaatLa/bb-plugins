@@ -184,6 +184,10 @@ each renders its own card.
 - Prefer stable task keys such as `ABC-12` for task commands. Use `--json` for
   machine-readable output and human output for quick inspection.
 
+## Thread health (read-only)
+
+`show --json` and `list --json` include `threadHealth: {failed: [threadId...], staleIdle: {threadId, idleMinutes} | null}`. `failed` lists attached threads whose turn failed or was interrupted; `staleIdle` is set when an attached thread has been idle (no working thread) longer than the board's `staleIdleMinutes` setting (default 45) without a task update, comment or evidence; it is never set for done, canceled or in_review tasks. Use it to find stalled workers; it sends nothing to them.
+
 ## Send a task to an existing thread
 
 Use `bb work-board dispatch ABC-12 --thread thr_existing` to send task context without creating a thread. Use exactly one of `--thread` or `--preset`. Busy threads receive the task in their queue; idle threads start a turn. Existing model, permission mode, and environment settings are preserved. Optional `--instructions "..."` adds task-specific instructions.

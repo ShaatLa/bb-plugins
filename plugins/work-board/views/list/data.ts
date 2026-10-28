@@ -18,6 +18,7 @@ import type {
   TaskPriority,
   TaskStatus,
   TaskThread,
+  ThreadHealth,
 } from "../../shared/contract.js";
 import { isActiveThread } from "../detail/meta.js";
 
@@ -119,11 +120,14 @@ export function useLabels(projectIds: readonly string[]) {
 
 export interface TaskRowMeta {
   activeThreads: TaskThread[];
+  threadHealth: ThreadHealth;
 }
 
 async function readListMeta(rpc: TasksRpc, ids: string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("listTaskCardMeta", { taskIds })).metadata);
-  return new Map(rows.filter((row) => row.taskThreads.some(isActiveThread)).map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread) }]));
+  return new Map(rows
+    .filter((row) => row.taskThreads.some(isActiveThread) || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
+    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth }]));
 }
 async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRowMeta>, signals: readonly TaskSignal[]) {
   const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed")])];
