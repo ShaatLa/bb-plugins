@@ -2341,10 +2341,11 @@ export function registerTasksCli(
                     }),
                   ),
                 );
-              const prLinks = (await domain.listPrLinks({ taskId: task.id })).links;
+              const { links: prLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
+                  overlaps,
                   task,
                   project,
                   labels,

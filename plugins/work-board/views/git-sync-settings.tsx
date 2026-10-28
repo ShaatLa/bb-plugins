@@ -30,6 +30,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [repositories, setRepositories] = useState("");
   const [checks, setChecks] = useState("");
   const [workflows, setWorkflows] = useState("");
+  const [overlapRules, setOverlapRules] = useState("[]");
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       setRepositories(query.data.config.repositories.join("\n"));
       setChecks(query.data.config.requiredChecks.join("\n"));
       setWorkflows(query.data.config.postMergeWorkflows.join("\n"));
+      setOverlapRules(JSON.stringify(query.data.config.overlapRules ?? [], null, 2));
     }
   }, [query.data]);
   const act = async (save: boolean) => {
@@ -59,6 +61,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             repositories: lines(repositories),
             requiredChecks: lines(checks),
             postMergeWorkflows: lines(workflows),
+            overlapRules: JSON.parse(overlapRules),
           }),
         });
         setMessage("Git/PR settings saved.");
@@ -368,6 +371,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 onChange={(event) => setWorkflows(event.target.value)}
               />
             </div>
+            <div className="space-y-1.5"><label htmlFor={`${id}-overlap`} className="font-medium">Overlap rules (JSON)</label><Textarea id={`${id}-overlap`} aria-label="Overlap rules" rows={3} value={overlapRules} onChange={event => setOverlapRules(event.target.value)} /><p className="text-muted-foreground">Array of pattern and match (added or changed), up to 50 rules.</p></div>
             <p className="text-muted-foreground">
               Authentication uses GH_TOKEN, GITHUB_TOKEN or gh on the BB server.
             </p>

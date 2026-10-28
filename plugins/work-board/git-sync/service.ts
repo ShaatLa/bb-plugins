@@ -75,6 +75,10 @@ export function createGitSyncService(
     if (!project) throw new Error("Project not found");
     return project;
   };
+  const publishProjectPrs = (projectId: string) => {
+    for (const taskId of new Set(data.linksForProject(projectId).map(link => link.taskId)))
+      bb.realtime.publish("prs:changed", { taskId, projectId });
+  };
   const remember = (
     taskId: string,
     url: string,
@@ -107,7 +111,7 @@ export function createGitSyncService(
         updatedAt: now,
       }),
     );
-    bb.realtime.publish("prs:changed", { taskId: task.id, projectId: task.projectId });
+    publishProjectPrs(task.projectId);
     return link;
   };
   async function syncProject(
@@ -220,6 +224,8 @@ export function createGitSyncService(
       }
       let checked = 0;
       const refreshed = new Set<string>();
+      // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
+      let filesChanged = false;
       const unique = new Map<string, PrLink>();
       for (const link of data.linksForProject(projectId))
           if (!link.excluded && config.repositories.includes(link.repository))
@@ -249,6 +255,7 @@ export function createGitSyncService(
             link.repository,
             link.number,
             config,
+            previous.snapshot,
           );
           if (!current()) break;
           if (
@@ -281,6 +288,7 @@ export function createGitSyncService(
           });
           refreshed.add(prIdentity(link));
           refreshed.add(prIdentity(snapshot));
+          if (snapshot.headSha !== previous.snapshot?.headSha) filesChanged = true;
           checked++;
         } catch (error) {
           if (!current()) break;
@@ -291,8 +299,11 @@ export function createGitSyncService(
         }
       }
       if (current()) {
-        const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
-        for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+        if (filesChanged) publishProjectPrs(projectId);
+        else {
+          const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
+          for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+        }
       }
       return { checked, errors: [...new Set(errors)] };
     })();
@@ -313,7 +324,11 @@ export function createGitSyncService(
     | "unlinkPr"
     | "syncGit"
   > = {
-    prSummaries({ taskIds }) { return { summaries: data.summaries(taskIds) }; },
+    prSummaries({ taskIds }) {
+      const summaries = data.summaries(taskIds);
+      const overlaps = data.overlapsForTasks(summaries.map((summary) => summary.taskId));
+      return { summaries: summaries.map((summary) => ({ ...summary, overlaps: overlaps.get(summary.taskId) ?? [] })) };
+    },
     async getGitSyncConfig({ projectId }) {
       const project = requireProject(projectId);
       const fromRemote = (remote: string | null) => {
@@ -361,12 +376,14 @@ export function createGitSyncService(
       );
       discovery.clear();
       publishProjectsChanged(bb, projectId);
+      publishProjectPrs(projectId);
       return { config: saved };
     },
     listPrLinks({ taskId }) {
       const task = requireTask(taskId);
       const config = data.config(task.projectId);
       return {
+        overlaps: data.overlaps(taskId),
         links: data.links(taskId).map((link) => {
           const cached = data.snapshot(task.projectId, link);
           return {
@@ -409,7 +426,7 @@ export function createGitSyncService(
           updatedAt: now,
         }),
       );
-      bb.realtime.publish("prs:changed", { taskId: task.id, projectId: task.projectId });
+      publishProjectPrs(task.projectId);
       return { excluded: true };
     },
     syncGit({ projectId }) {
