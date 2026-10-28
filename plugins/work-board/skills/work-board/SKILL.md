@@ -257,3 +257,14 @@ Explicitly link a PR using `bb work-board pr link KEY --url https://github.com/o
 Configured post-merge push workflows are tracked on the merge SHA/base branch. A cancelled run is pending, not a failed result. A later run of the same workflow/repository/base branch can cover it only after the GitHub compare API proves ancestry. Read coverage.superseded, originalRunId, runId, sha, state and url; the covering run still needs to finish. A diverged/behind commit is not coverage. Stable workflow IDs avoid ambiguous names. This observation does not replace project QA/evidence rules or authorize marking a card done.
 
 Export v8 adds project.json.gitSync and per-record pullRequests, including exclusions and immutable task/PR identifiers; live CI caches and tokens stay local. Legacy imports preserve local links/config when absent. New conflicts need explicit --overwrite; imports make no GitHub request. Only activate v8 after downstream strict format checkers accept the exact schema and sample.
+
+## Building a hierarchy without burning provider limits
+
+By default every child turn wakes its parent, so status pings burn the parent's provider quota.
+
+- Spawn children with `bb thread spawn --parent-self --parent-notifications stuck` when you read their result from the task (evidence, comments) instead of waiting on each turn. `stuck` still wakes you when a child fails, is interrupted, or is blocked on an approval or question.
+- With `stuck`, the child reports only what the parent must act on: READY for review/merge, a blocker, a question for the parent. Send it with `bb thread tell <parent-thread>`: one message, no acknowledgements. Never send progress pings such as "still waiting on CI".
+- Reviewers and QA record verdicts as task evidence, not as chat messages.
+- Parents read state from the board (`bb work-board show KEY --json`, evidence) instead of polling children.
+- Link every working thread to its task with `bb work-board attach KEY`.
+- `bb work-board dispatch KEY --preset NAME` parents the new thread to the invoking thread (`BB_THREAD_ID`). Add `--parent-notifications auto|stuck|off` to set which child turns wake you, or `--no-parent` to start it outside your hierarchy. `--thread` never re-parents an existing thread. Dispatch from the UI has no parent.

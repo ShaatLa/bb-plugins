@@ -1168,6 +1168,79 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("dispatch --preset parents the new thread to the invoking thread", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "work-board",
+      sdk: { threads: { spawn: async () => ({ id: "thr_child" }) } },
+    });
+    await plugin(bb);
+    stdout(
+      await harness.runCli([
+        "project",
+        "create",
+        "--name",
+        "Hier",
+        "--prefix",
+        "HIER",
+        "--link-bb-project",
+        "proj_bb",
+      ]),
+    );
+    stdout(
+      await harness.runCli(["create", "--project", "HIER", "--title", "Child"]),
+    );
+    stdout(
+      await harness.runCli([
+        "preset",
+        "create",
+        "--name",
+        "Hier worker",
+        "--provider",
+        "codex",
+        "--model",
+        "gpt-5.6-sol",
+        "--reasoning",
+        "high",
+        "--permission",
+        "full",
+      ]),
+    );
+    const lead = { threadId: "thr_lead", projectId: "proj_bb" };
+    const dispatch = (...extra: string[]) =>
+      harness.runCli(["dispatch", "HIER-1", "--preset", "Hier worker", ...extra], lead);
+
+    const previousThreadId = process.env.BB_THREAD_ID;
+    delete process.env.BB_THREAD_ID;
+    try {
+      stdout(await dispatch());
+      stdout(await dispatch("--parent-notifications", "stuck"));
+      stdout(await dispatch("--no-parent"));
+      expect((await dispatch("--no-parent", "--parent-notifications", "off")).exitCode).not.toBe(0);
+      // A person without an invoking thread keeps the unparented behaviour.
+      stdout(
+        await harness.runCli(["dispatch", "HIER-1", "--preset", "Hier worker"]),
+      );
+    } finally {
+      if (previousThreadId !== undefined)
+        process.env.BB_THREAD_ID = previousThreadId;
+    }
+
+    const calls = harness.sdk
+      .callsTo("threads.spawn")
+      .map(([args]) => args as Record<string, unknown>);
+    expect(calls).toHaveLength(4);
+    expect(calls[0]).toMatchObject({ parentThreadId: "thr_lead" });
+    expect(calls[0]).not.toHaveProperty("parentNotifications");
+    expect(calls[1]).toMatchObject({
+      parentThreadId: "thr_lead",
+      parentNotifications: "stuck",
+    });
+    expect(calls[2]).not.toHaveProperty("parentThreadId");
+    expect(calls[3]).not.toHaveProperty("parentThreadId");
+
+    await harness.dispose();
+  });
+
   it("self-attaches through BB_THREAD_ID and lists the live thread status", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "work-board",
