@@ -224,6 +224,8 @@ export function createGitSyncService(
       }
       let checked = 0;
       const refreshed = new Set<string>();
+      // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
+      let filesChanged = false;
       const unique = new Map<string, PrLink>();
       for (const link of data.linksForProject(projectId))
           if (!link.excluded && config.repositories.includes(link.repository))
@@ -286,6 +288,7 @@ export function createGitSyncService(
           });
           refreshed.add(prIdentity(link));
           refreshed.add(prIdentity(snapshot));
+          if (snapshot.headSha !== previous.snapshot?.headSha) filesChanged = true;
           checked++;
         } catch (error) {
           if (!current()) break;
@@ -296,7 +299,11 @@ export function createGitSyncService(
         }
       }
       if (current()) {
-        if (refreshed.size) publishProjectPrs(projectId);
+        if (filesChanged) publishProjectPrs(projectId);
+        else {
+          const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
+          for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+        }
       }
       return { checked, errors: [...new Set(errors)] };
     })();
@@ -317,7 +324,11 @@ export function createGitSyncService(
     | "unlinkPr"
     | "syncGit"
   > = {
-    prSummaries({ taskIds }) { return { summaries: data.summaries(taskIds).map(summary => ({ ...summary, overlaps: data.overlaps(summary.taskId) })) }; },
+    prSummaries({ taskIds }) {
+      const summaries = data.summaries(taskIds);
+      const overlaps = data.overlapsForTasks(summaries.map((summary) => summary.taskId));
+      return { summaries: summaries.map((summary) => ({ ...summary, overlaps: overlaps.get(summary.taskId) ?? [] })) };
+    },
     async getGitSyncConfig({ projectId }) {
       const project = requireProject(projectId);
       const fromRemote = (remote: string | null) => {

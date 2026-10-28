@@ -7,6 +7,7 @@ import {
   prIdentity,
   type GitSyncConfig,
   type PrLink,
+  type Overlap,
   type PrSnapshot,
 } from "../shared/git-sync";
 
@@ -38,14 +39,28 @@ export function createGitSyncStore(db: Database) {
     ).run(link.taskId, prIdentity(link), JSON.stringify(link));
     return link;
   };
+  // One project scan per call, not per task: board summaries arrive in batches of hundreds.
+  function overlapsForTasks(taskIds: readonly string[]) {
+    const result = new Map<string, Overlap[]>();
+    const byProject = new Map<string, string[]>();
+    for (const taskId of new Set(taskIds)) {
+      const task = db.prepare<[string], { projectId: string }>("SELECT project_id AS projectId FROM tasks WHERE id=?").get(taskId);
+      if (task) byProject.set(task.projectId, [...(byProject.get(task.projectId) ?? []), taskId]);
+    }
+    for (const [projectId, ids] of byProject) {
+      const projectConfig = config(projectId);
+      const rows = db.prepare<[string], { taskId: string; taskKey: string; link: string; snapshot: string }>(`SELECT t.id AS taskId, p.prefix || '-' || t.number AS taskKey, l.payload AS link, s.payload AS snapshot FROM task_pr_links l JOIN tasks t ON t.id=l.task_id JOIN projects p ON p.id=t.project_id JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE t.project_id=? AND s.payload IS NOT NULL AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0 AND json_extract(s.payload, '$.state') IN ('open', 'draft') AND json_extract(s.payload, '$.files') IS NOT NULL`).all(projectId);
+      const entries = rows.map(row => ({ ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot: prSnapshotSchema.parse(JSON.parse(row.snapshot)) })).filter(row => projectConfig.repositories.includes(row.link.repository));
+      const withPrs = new Set(entries.map(entry => entry.taskId));
+      for (const taskId of ids) result.set(taskId, withPrs.has(taskId) ? evaluateOverlaps(entries, taskId, projectConfig.overlapRules ?? []) : []);
+    }
+    return result;
+  }
   return {
     overlaps(taskId: string) {
-      const task = db.prepare<[string], { projectId: string }>("SELECT project_id AS projectId FROM tasks WHERE id=?").get(taskId);
-      if (!task) return [];
-      const rows = db.prepare<[string], { taskId: string; taskKey: string; link: string; snapshot: string }>(`SELECT t.id AS taskId, p.prefix || '-' || t.number AS taskKey, l.payload AS link, s.payload AS snapshot FROM task_pr_links l JOIN tasks t ON t.id=l.task_id JOIN projects p ON p.id=t.project_id JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE t.project_id=? AND s.payload IS NOT NULL AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0`).all(task.projectId);
-      const entries = rows.map(row => ({ ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot: prSnapshotSchema.parse(JSON.parse(row.snapshot)) })).filter(row => ["open", "draft"].includes(row.snapshot.state) && row.snapshot.files && config(task.projectId).repositories.includes(row.link.repository));
-      return evaluateOverlaps(entries, taskId, config(task.projectId).overlapRules ?? []);
+      return overlapsForTasks([taskId]).get(taskId) ?? [];
     },
+    overlapsForTasks,
     summaries(taskIds: string[]) {
       if (!taskIds.length) return [];
       const rows = db.prepare<string[], {
