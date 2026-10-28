@@ -1,19 +1,24 @@
 import { UrlLink, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Comment, TaskPullRequest } from "../../shared/contract";
-import { evidenceIndex } from "../../structured/evidence";
+import { evidenceFlags, evidenceIndex } from "../../structured/evidence";
 import { useMemo, useState } from "react";
+import { useTasksQuery } from "../../shell/data";
 import { Button } from "@/components/ui/button";
 
 export function EvidenceSection({
   comments,
+  taskId,
   pullRequests = [],
 }: {
   comments: readonly Comment[];
+  taskId?: string;
   pullRequests?: readonly TaskPullRequest[];
 }) {
   const navigate = useBbNavigate();
   const [visibleCount, setVisibleCount] = useState(15);
+  const links = useTasksQuery(async (rpc) => taskId ? (await rpc.call("listPrLinks", { taskId })).links : [], ["tasks:changed", "prs:changed"], [taskId]);
   const index = useMemo(() => evidenceIndex(comments), [comments]);
+  const flags = evidenceFlags(index.records, pullRequests, links.data ?? []);
   const records = useMemo(() => {
     const latest = new Set([...index.records]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.commentId.localeCompare(a.commentId))
@@ -54,6 +59,7 @@ export function EvidenceSection({
                   </td>
                   <td className="p-2">
                     {record.kind}
+                    {flags.filter((flag) => flag.commentId === record.commentId).map((flag) => <span key={flag.kind} className="block rounded bg-amber-100 px-1 text-amber-900">⚠ {flag.message}</span>)}
                     {record.superseded ? (
                       <span className="block">superseded</span>
                     ) : null}
@@ -94,6 +100,7 @@ export function EvidenceSection({
                     ) : (
                       "—"
                     )}
+                    {record.recordedByThread && (!("thread" in record) || record.recordedByThread !== record.thread) ? <span className="block">recorded by {record.recordedByThread}</span> : null}
                   </td>
                   <td className="min-w-40 p-2 whitespace-pre-wrap">
                     {record.body}

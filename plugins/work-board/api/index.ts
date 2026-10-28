@@ -460,6 +460,7 @@ async function resolveProviderBadges(
 
 interface CreateCommentInput {
   evidence?: Evidence;
+  recordedByThread?: string | null;
   taskId: string;
   kind: StoredComment["kind"];
   authorName: string;
@@ -483,7 +484,7 @@ export async function createComment(
       presetName: input.presetName,
       threadId: input.threadId,
       body: input.body,
-      ...(input.evidence ? { evidence: input.evidence } : {}),
+      ...(input.evidence ? { evidence: { ...input.evidence, recordedByThread: input.recordedByThread ?? input.threadId } } : {}),
     }),
   );
 
