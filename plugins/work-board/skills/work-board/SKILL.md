@@ -257,3 +257,7 @@ Explicitly link a PR using `bb work-board pr link KEY --url https://github.com/o
 Configured post-merge push workflows are tracked on the merge SHA/base branch. A cancelled run is pending, not a failed result. A later run of the same workflow/repository/base branch can cover it only after the GitHub compare API proves ancestry. Read coverage.superseded, originalRunId, runId, sha, state and url; the covering run still needs to finish. A diverged/behind commit is not coverage. Stable workflow IDs avoid ambiguous names. This observation does not replace project QA/evidence rules or authorize marking a card done.
 
 Export v8 adds project.json.gitSync and per-record pullRequests, including exclusions and immutable task/PR identifiers; live CI caches and tokens stay local. Legacy imports preserve local links/config when absent. New conflicts need explicit --overwrite; imports make no GitHub request. Only activate v8 after downstream strict format checkers accept the exact schema and sample.
+
+## Sequence claims
+
+For shared registry or migration numbers, use `bb work-board seq list --project ABC` and `bb work-board claim NAME --project ABC --task ABC-12 [--pr URL]`. A repeat returns the same active claim; use `--another` for an additional value. Release with `bb work-board claim release NAME VALUE --project ABC --reason 'reason'`. Values are never reused. Sequences and claims are operational state and are not exported; PR close or merge does not release them automatically.

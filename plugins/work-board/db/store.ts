@@ -2220,7 +2220,69 @@ export function createTasksStore(db: PluginDatabase) {
     );
   }
 
+  type Sequence = { projectId: string; name: string; next: number; format: string };
+  type Claim = { id: number; projectId: string; name: string; value: number; rendered: string; taskId: string | null; taskKey: string; prUrl: string | null; threadId: string | null; claimedAt: string; state: "active" | "released"; releasedAt: string | null; reason: string | null };
+  const sequenceSelect = `SELECT project_id AS projectId, name, next, format FROM sequences`;
+  const claimSelect = `SELECT id, project_id AS projectId, name, value, rendered, task_id AS taskId, task_key AS taskKey, pr_url AS prUrl, thread_id AS threadId, claimed_at AS claimedAt, state, released_at AS releasedAt, reason FROM sequence_claims`;
+  const getSequence = (projectId: string, name: string) => db.prepare<[string, string], Sequence>(`${sequenceSelect} WHERE project_id = ? AND name = ? AND deleted = 0`).get(projectId, name);
+  const listSequences = (projectId: string) => db.prepare<[string], Sequence>(`${sequenceSelect} WHERE project_id = ? AND deleted = 0 ORDER BY name`).all(projectId);
+  const listSequenceClaims = (projectId: string, name: string) => db.prepare<[string, string], Claim>(`${claimSelect} WHERE project_id = ? AND name = ? ORDER BY id DESC LIMIT 100`).all(projectId, name);
+  const listTaskClaims = (taskId: string) => db.prepare<[string], Claim>(`${claimSelect} WHERE task_id = ? AND state = 'active' ORDER BY id DESC`).all(taskId);
+  const maxClaim = (projectId: string, name: string) => db.prepare<[string, string], { max: number | null }>(`SELECT MAX(value) AS max FROM sequence_claims WHERE project_id = ? AND name = ?`).get(projectId, name)?.max ?? -1;
+  function validateNext(next: number) { if (!Number.isSafeInteger(next) || next < 0 || next >= Number.MAX_SAFE_INTEGER) throw new Error("next must be a non-negative safe integer below the maximum"); }
+  function createSequence(projectId: string, name: string, next: number, format: string) {
+    if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(name)) throw new Error("Invalid sequence name");
+    if (format.length > 40 || format.split("{n}").length !== 2) throw new Error("format must contain exactly one {n} and be at most 40 characters");
+    assertNoSecrets(format, "format"); validateNext(next);
+    return db.transaction(() => {
+      if (getSequence(projectId, name)) throw new Error("Sequence already exists");
+      if (next <= maxClaim(projectId, name)) throw new Error("next must exceed every claimed value");
+      db.prepare<[string, string, number, string]>(`INSERT INTO sequences(project_id, name, next, format) VALUES (?, ?, ?, ?) ON CONFLICT(project_id, name) DO UPDATE SET next=excluded.next, format=excluded.format, deleted=0`).run(projectId, name, next, format);
+      return getSequence(projectId, name)!;
+    })();
+  }
+  function setSequenceNext(projectId: string, name: string, next: number, force: boolean) {
+    validateNext(next);
+    return db.transaction(() => {
+      if (!getSequence(projectId, name)) throw new Error("Sequence not found");
+      if (!force && next <= maxClaim(projectId, name)) throw new Error("next must exceed every claimed value");
+      db.prepare<[number, string, string]>(`UPDATE sequences SET next=? WHERE project_id=? AND name=?`).run(next, projectId, name);
+      return getSequence(projectId, name)!;
+    })();
+  }
+  function deleteSequence(projectId: string, name: string) {
+    return db.transaction(() => {
+      if (!getSequence(projectId, name)) throw new Error("Sequence not found");
+      if (db.prepare<[string, string]>(`SELECT 1 FROM sequence_claims WHERE project_id=? AND name=? AND state='active' LIMIT 1`).get(projectId, name)) throw new Error("Sequence has active claims");
+      db.prepare<[string, string]>(`UPDATE sequences SET deleted=1 WHERE project_id=? AND name=?`).run(projectId, name); return true;
+    })();
+  }
+  function claimSequence(projectId: string, name: string, taskId: string, prUrl: string | null, threadId: string | null, another: boolean) {
+    assertNoSecrets(prUrl ?? undefined, "PR URL");
+    return db.transaction(() => {
+      const seq = getSequence(projectId, name); if (!seq) throw new Error("Sequence not found");
+      const task = getTask(taskId); if (!task || task.projectId !== projectId) throw new Error("Task not found in project");
+      const previous = db.prepare<[string, string, string], Claim>(`${claimSelect} WHERE project_id=? AND name=? AND task_id=? AND state='active' ORDER BY id DESC LIMIT 1`).get(projectId, name, taskId);
+      if (previous && !another) return previous;
+      validateNext(seq.next);
+      if (seq.next <= maxClaim(projectId, name)) throw new Error("next would reuse a claimed value; resync the sequence");
+      db.prepare<[number, string, string]>(`UPDATE sequences SET next=? WHERE project_id=? AND name=?`).run(seq.next + 1, projectId, name);
+      db.prepare<[string, string, number, string, string, string, string | null, string | null, string]>(`INSERT INTO sequence_claims(project_id,name,value,rendered,task_id,task_key,pr_url,thread_id,claimed_at,state) VALUES (?,?,?,?,?,?,?,?,?,'active')`).run(projectId, name, seq.next, seq.format.replace('{n}', String(seq.next)), task.id, task.key, prUrl, threadId, nowIso());
+      return listSequenceClaims(projectId, name)[0]!;
+    })();
+  }
+  function releaseClaim(projectId: string, name: string, value: number, reason: string) {
+    assertNoSecrets(reason, "release reason"); if (!reason.trim()) throw new Error("reason must not be blank");
+    return db.transaction(() => {
+      const claim = db.prepare<[string, string, number], Claim>(`${claimSelect} WHERE project_id=? AND name=? AND value=? AND state='active'`).get(projectId, name, value);
+      if (!claim) throw new Error("Active claim not found");
+      db.prepare<[string, string, number]>(`UPDATE sequence_claims SET state='released', released_at=?, reason=? WHERE id=?`).run(nowIso(), reason, claim.id);
+      return { ...claim, state: "released" as const, releasedAt: nowIso(), reason };
+    })();
+  }
+
   return {
+    createSequence, getSequence, listSequences, listSequenceClaims, listTaskClaims, setSequenceNext, deleteSequence, claimSequence, releaseClaim,
     createFolder,
     getFolder,
     listFolders,

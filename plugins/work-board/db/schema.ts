@@ -313,6 +313,9 @@ const MIGRATIONS = [
     PRIMARY KEY(task_id, identity)
   );
   CREATE TABLE git_pr_snapshots (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, identity TEXT NOT NULL, payload TEXT, error TEXT, PRIMARY KEY(project_id, identity));`,
+  `CREATE TABLE sequences (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, next INTEGER NOT NULL, format TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id, name));
+  CREATE TABLE sequence_claims (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, name TEXT NOT NULL, value INTEGER NOT NULL, rendered TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL, task_key TEXT NOT NULL, pr_url TEXT, thread_id TEXT, claimed_at TEXT NOT NULL, state TEXT NOT NULL, released_at TEXT, reason TEXT, FOREIGN KEY(project_id, name) REFERENCES sequences(project_id, name) ON DELETE CASCADE, UNIQUE(project_id, name, value));
+  CREATE INDEX idx_sequence_claims_task ON sequence_claims(task_id, state);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
