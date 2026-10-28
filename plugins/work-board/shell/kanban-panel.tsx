@@ -6,6 +6,7 @@ import { TasksRefreshProvider } from "./refresh.js";
 import { parseTasksRoute } from "./routes.js";
 import { loadLastProjectId } from "./view-preference.js";
 import { Button } from "@/components/ui/button";
+import { LockChips } from "../components/lock-chips.js";
 
 export const KANBAN_TAB = { panelId: "work-board", id: "kanban" } as const;
 
@@ -26,7 +27,7 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   }
   return (
     <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
-      <header className="shrink-0 truncate border-b border-border-hairline px-4 py-2 text-sm font-medium">{project.name}</header>
+      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 flex-1 truncate">{project.name}</span><LockChips projectId={project.id} /></header>
       <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
     </section>
   );

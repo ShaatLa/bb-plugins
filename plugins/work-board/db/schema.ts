@@ -313,6 +313,29 @@ const MIGRATIONS = [
     PRIMARY KEY(task_id, identity)
   );
   CREATE TABLE git_pr_snapshots (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, identity TEXT NOT NULL, payload TEXT, error TEXT, PRIMARY KEY(project_id, identity));`,
+  `CREATE TABLE resource_locks (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    holder_thread_id TEXT,
+    task_key TEXT,
+    reason TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY (project_id, name)
+  );
+  CREATE TABLE resource_lock_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('acquired', 'released', 'taken_over', 'expired')),
+    thread_id TEXT,
+    previous_thread_id TEXT,
+    task_key TEXT,
+    reason TEXT NOT NULL,
+    forced INTEGER NOT NULL DEFAULT 0,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
