@@ -929,7 +929,7 @@ export function registerTasksCli(
         })])),
         claim: cliCommand({ summary: "Claim a sequence value for a task", positionals: [{ name: "name", description: "Sequence name", required: true }], options: { project: REQUIRED_PROJECT_OPTION, task: { type: "string", required: true, description: "Task key" }, pr: { type: "string", description: "PR URL" }, another: { type: "boolean", description: "Take an additional value" }, json: JSON_OPTION }, run(input, ctx) { return guard(async () => {
           const project = await requiredProject(domain, ctx, input.options.project); const task = await resolveTask(domain, input.options.task);
-          const result = await domain.claimSequence(tasksRpcContract.claimSequence.input.parse({ projectId: project.id, name: input.positionals.name, taskId: task.id, prUrl: input.options.pr ?? null, threadId: process.env.BB_THREAD_ID ?? ctx.threadId ?? null, another: input.options.another ?? false }));
+          const result = await domain.claimSequence(tasksRpcContract.claimSequence.input.parse({ projectId: project.id, name: input.positionals.name, taskId: task.id, prUrl: input.options.pr ?? null, threadId: ctx.threadId ?? process.env.BB_THREAD_ID ?? null, another: input.options.another ?? false }));
           return input.options.json ? JSON.stringify(result) : result.claim.rendered;
         }); } }),
         "claim release": cliCommand({ summary: "Release a claimed value", positionals: [{ name: "name", description: "Sequence name", required: true }, { name: "value", description: "Integer value", required: true }], options: { project: REQUIRED_PROJECT_OPTION, reason: { type: "string", required: true, description: "Release reason" }, json: JSON_OPTION }, run(input, ctx) { return guard(async () => {
@@ -3801,7 +3801,7 @@ export function registerTasksCli(
                     extraInstructions: input.options.instructions,
                     parentThreadId: input.options["no-parent"]
                       ? undefined
-                      : (process.env.BB_THREAD_ID ?? ctx.threadId),
+                      : (ctx.threadId ?? process.env.BB_THREAD_ID),
                     parentNotifications: input.options["parent-notifications"],
                   }),
                 ),
