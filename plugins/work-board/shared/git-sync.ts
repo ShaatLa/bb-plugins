@@ -36,8 +36,12 @@ const names = z
     (values) => new Set(values).size === values.length,
     "Duplicate names",
   );
+export const overlapRuleSchema = z.object({ pattern: z.string().trim().min(1).max(500), match: z.enum(["added", "changed"]) }).strict();
+export const overlapSchema = z.object({ pr: z.object({ repository: repositorySchema, number: z.number().int().positive() }).strict(), otherTaskKey: z.string(), otherPr: z.object({ repository: repositorySchema, number: z.number().int().positive() }).strict(), rule: overlapRuleSchema.nullable(), files: z.array(z.string()) }).strict();
+export type Overlap = z.infer<typeof overlapSchema>;
 export const gitSyncConfigSchema = z
   .object({
+    overlapRules: z.array(overlapRuleSchema).max(50).optional(),
     enabled: z.boolean().default(false),
     repositories: z.array(repositorySchema).max(30).default([]),
     pollMinutes: z.number().int().min(1).max(60).default(5),
@@ -143,6 +147,7 @@ export const coverageSchema = z
   .strict();
 export const prSnapshotSchema = z
   .object({
+    files: z.object({ entries: z.array(z.object({ filename: z.string(), status: z.enum(["added", "modified", "removed", "renamed"]), previous_filename: z.string().optional() }).strict()), truncated: z.boolean() }).optional(),
     repository: repositorySchema,
     number: z.number().int().positive(),
     remoteId: z.string(),
@@ -193,6 +198,7 @@ export const gitSyncMethods = {
               failing: z.number(),
               pending: z.number(),
               stale: z.boolean(),
+              overlaps: z.array(overlapSchema).default([]),
             })
             .strict(),
         ),
@@ -217,7 +223,7 @@ export const gitSyncMethods = {
   },
   listPrLinks: {
     input: z.object({ taskId: z.string() }).strict(),
-    output: z.object({ links: z.array(prLinkStateSchema) }).strict(),
+    output: z.object({ links: z.array(prLinkStateSchema), overlaps: z.array(overlapSchema).default([]) }).strict(),
   },
   linkPr: {
     input: z

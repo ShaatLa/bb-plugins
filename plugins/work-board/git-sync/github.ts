@@ -331,11 +331,27 @@ export function createGithubClient(options: {
     repository: string,
     number: number,
     config: GitSyncConfig,
+    previous?: PrSnapshot | null,
   ): Promise<PrSnapshot> {
     const pr = pull.parse(
       await request(`/repos/${repository}/pulls/${number}`),
     );
     const repo = pr.base.repo.full_name;
+    let files: PrSnapshot["files"] = previous?.headSha === pr.head.sha ? previous.files : undefined;
+    if (pr.state === "open") {
+      if (previous?.headSha === pr.head.sha && previous.files) files = previous.files;
+      else {
+        const entries: NonNullable<PrSnapshot["files"]>["entries"] = [];
+        let truncated = false;
+        for (let page = 1; page <= 30; page++) {
+          const batch = z.array(z.object({ filename: z.string(), status: z.enum(["added", "modified", "removed", "renamed"]), previous_filename: z.string().optional() })).parse(await request(`/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`));
+          entries.push(...batch);
+          if (batch.length < 100) break;
+          if (page === 30) truncated = true;
+        }
+        files = { entries, truncated };
+      }
+    }
     const checks: PrSnapshot["checks"] = [];
     const latest = new Map<
       string,
@@ -583,6 +599,7 @@ export function createGithubClient(options: {
             ? "unknown"
             : "passing";
     return prSnapshotSchema.parse({
+      files,
       repository: repo,
       number,
       remoteId: pr.node_id,
