@@ -1,3 +1,4 @@
+import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
@@ -701,6 +702,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
+          <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
           <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>
       </div>

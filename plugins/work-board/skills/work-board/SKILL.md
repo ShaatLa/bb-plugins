@@ -272,3 +272,7 @@ By default every child turn wakes its parent, so status pings burn the parent's 
 Evidence records automatically stamp the invoking thread as `recordedByThread`; `--thread` identifies the reviewer. `show --json` exposes advisory `evidenceFlags` for self-review and stale approvals; these flags never block writes.
 
 PR file overlaps: `show KEY --json` and `pr list KEY --json` include `overlaps` computed from cached files for open linked PRs on different tasks. Configure `overlapRules` in git-config: `changed` matches shared paths; `added` matches additions or rename targets even when paths differ. File caches are local and can be truncated at 3,000 files; inspect `snapshot.files.truncated`. Rules export in v8.
+
+## Sequence claims
+
+For shared registry or migration numbers, use `bb work-board seq list --project ABC` and `bb work-board claim NAME --project ABC --task ABC-12 [--pr URL]`. A repeat returns the same active claim; use `--another` for an additional value. Release with `bb work-board claim release NAME VALUE --project ABC --reason 'reason'`. Values are never reused. Sequences and claims are operational state and are not exported; PR close or merge does not release them automatically.

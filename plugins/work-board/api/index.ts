@@ -643,6 +643,14 @@ export function registerHandlers(
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   return {
+    createSequence: (input) => ({ sequence: store.tasks.createSequence(input.projectId, input.name, input.next, input.format) }),
+    listSequences: (input) => ({ sequences: store.tasks.listSequences(input.projectId) }),
+    showSequence: (input) => { const sequence = store.tasks.getSequence(input.projectId, input.name); if (!sequence) throw new Error("Sequence not found"); return { sequence, claims: store.tasks.listSequenceClaims(input.projectId, input.name) }; },
+    setSequenceNext: (input) => ({ sequence: store.tasks.setSequenceNext(input.projectId, input.name, input.next, input.force) }),
+    deleteSequence: (input) => ({ deleted: store.tasks.deleteSequence(input.projectId, input.name) }),
+    claimSequence: (input) => { const claim = store.tasks.claimSequence(input.projectId, input.name, input.taskId, input.prUrl, input.threadId, input.another); publishTasksChanged(bb, input.taskId, input.projectId); return { claim }; },
+    releaseClaim: (input) => { const claim = store.tasks.releaseClaim(input.projectId, input.name, input.value, input.reason); if (claim.taskId) publishTasksChanged(bb, claim.taskId, input.projectId); return { claim }; },
+    listTaskClaims: (input) => ({ claims: store.tasks.listTaskClaims(input.taskId) }),
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
     createFolder(input) {
