@@ -3543,9 +3543,27 @@ export function registerTasksCli(
               aliases: ["extra-instructions"],
               description: "Extra instructions for this dispatch only",
             },
+            "no-parent": {
+              type: "boolean",
+              description:
+                "With --preset, do not parent the new thread to the invoking thread",
+            },
+            "parent-notifications": {
+              type: "string",
+              placeholder: "auto|stuck|off",
+              choices: ["auto", "stuck", "off"],
+              description:
+                "With --preset, which child turn outcomes wake the parent (default: bb default)",
+            },
             json: JSON_OPTION,
           },
-          run(input) {
+          constraints: [
+            {
+              kind: "at-most-one",
+              options: ["no-parent", "parent-notifications"],
+            },
+          ],
+          run(input, ctx) {
             return guard(async () => {
               const task = await resolveTask(
                 domain,
@@ -3583,6 +3601,10 @@ export function registerTasksCli(
                     taskId: task.id,
                     presetId: preset.id,
                     extraInstructions: input.options.instructions,
+                    parentThreadId: input.options["no-parent"]
+                      ? undefined
+                      : (process.env.BB_THREAD_ID ?? ctx.threadId),
+                    parentNotifications: input.options["parent-notifications"],
                   }),
                 ),
               );
