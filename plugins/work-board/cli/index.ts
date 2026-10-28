@@ -743,6 +743,34 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        seq: groupCommand("seq", "Manage project sequences", [["create", "Create a sequence"], ["list", "List sequences"], ["show", "Show sequence and claims"], ["set-next", "Resync next value"], ["delete", "Delete a sequence"]]),
+        ...Object.fromEntries((["create", "list", "show", "set-next", "delete"] as const).map(action => [`seq ${action}`, cliCommand({
+          summary: `${action} a project sequence`,
+          positionals: action === "list" ? [] : [{ name: "name", description: "Sequence name", required: true }],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION, ...(action === "create" || action === "set-next" ? { next: { type: "string" as const, required: true as const, description: "Next integer" } } : {}), ...(action === "create" ? { format: { type: "string" as const, description: "Format containing {n}" } } : {}), ...(action === "set-next" ? { force: { type: "boolean" as const, description: "Allow a next value at or below claimed values" } } : {}) },
+          run(input, ctx) { return guard(async () => {
+            const project = await requiredProject(domain, ctx, input.options.project);
+            const name = input.positionals.name;
+            if (action === "list") { const result = await domain.listSequences({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : result.sequences.map(s => `${s.name}  ${s.next}  ${s.format}`).join("\n") || "No sequences."; }
+            const key = { projectId: project.id, name };
+            if (action === "show") { const result = await domain.showSequence(tasksRpcContract.showSequence.input.parse(key)); return input.options.json ? JSON.stringify(result) : [`${result.sequence.name} next=${result.sequence.next} format=${result.sequence.format}`, ...result.claims.map(c => `${c.rendered}  ${c.taskKey}  ${c.state}${c.prUrl ? `  ${c.prUrl}` : ""}`)].join("\n"); }
+            if (action === "delete") { const result = await domain.deleteSequence(tasksRpcContract.deleteSequence.input.parse(key)); return input.options.json ? JSON.stringify(result) : `Deleted sequence ${name}`; }
+            const raw = input.options.next; if (!raw || !/^\d+$/.test(String(raw))) throw new CliError("next must be a non-negative integer");
+            const next = Number(raw);
+            const result = action === "create" ? await domain.createSequence(tasksRpcContract.createSequence.input.parse({ ...key, next, format: input.options.format })) : await domain.setSequenceNext(tasksRpcContract.setSequenceNext.input.parse({ ...key, next, force: input.options.force ?? false }));
+            return input.options.json ? JSON.stringify(result) : `${name} next=${result.sequence.next}`;
+          }); },
+        })])),
+        claim: cliCommand({ summary: "Claim a sequence value for a task", positionals: [{ name: "name", description: "Sequence name", required: true }], options: { project: REQUIRED_PROJECT_OPTION, task: { type: "string", required: true, description: "Task key" }, pr: { type: "string", description: "PR URL" }, another: { type: "boolean", description: "Take an additional value" }, json: JSON_OPTION }, run(input, ctx) { return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project); const task = await resolveTask(domain, input.options.task);
+          const result = await domain.claimSequence(tasksRpcContract.claimSequence.input.parse({ projectId: project.id, name: input.positionals.name, taskId: task.id, prUrl: input.options.pr ?? null, threadId: process.env.BB_THREAD_ID ?? ctx.threadId ?? null, another: input.options.another ?? false }));
+          return input.options.json ? JSON.stringify(result) : result.claim.rendered;
+        }); } }),
+        "claim release": cliCommand({ summary: "Release a claimed value", positionals: [{ name: "name", description: "Sequence name", required: true }, { name: "value", description: "Integer value", required: true }], options: { project: REQUIRED_PROJECT_OPTION, reason: { type: "string", required: true, description: "Release reason" }, json: JSON_OPTION }, run(input, ctx) { return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project); if (!/^\d+$/.test(input.positionals.value)) throw new CliError("value must be a non-negative integer");
+          const result = await domain.releaseClaim(tasksRpcContract.releaseClaim.input.parse({ projectId: project.id, name: input.positionals.name, value: Number(input.positionals.value), reason: input.options.reason }));
+          return input.options.json ? JSON.stringify(result) : `Released ${result.claim.rendered}`;
+        }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
         pr: groupCommand("pr", "Manage persistent task-to-PR links", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"]]),

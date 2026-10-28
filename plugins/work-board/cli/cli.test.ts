@@ -2495,3 +2495,29 @@ describe("excluded task statuses", () => {
     }
   });
 });
+
+describe("sequence claims", () => {
+  it("allocates and releases values through the CLI", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    stdout(await harness.runCli(["project", "create", "--name", "Sequence", "--prefix", "SEQ"]));
+    stdout(await harness.runCli(["create", "--project", "SEQ", "--title", "One"]));
+    stdout(await harness.runCli(["create", "--project", "SEQ", "--title", "Two"]));
+    stdout(await harness.runCli(["seq", "create", "registry", "--project", "SEQ", "--next", "234", "--format", "1.{n}"]));
+    const claim = (task: string, ...extra: string[]) => harness.runCli(["claim", "registry", "--project", "SEQ", "--task", task, ...extra]);
+    const [first, second] = await Promise.all([claim("SEQ-1"), claim("SEQ-2")]);
+    expect([stdout(first), stdout(second)].sort()).toEqual(["1.234", "1.235"]);
+    expect(stdout(await claim("SEQ-1"))).toBe(stdout(first));
+    expect(stdout(await claim("SEQ-1", "--another"))).toBe("1.236");
+    expect((await harness.runCli(["seq", "set-next", "registry", "--project", "SEQ", "--next", "236"])).exitCode).toBe(1);
+    const secret = `ghp_${"a".repeat(36)}`;
+    expect((await harness.runCli(["claim", "release", "registry", "234", "--project", "SEQ", "--reason", secret])).exitCode).toBe(1);
+    stdout(await harness.runCli(["claim", "release", "registry", "234", "--project", "SEQ", "--reason", "unused"]));
+    expect(stdout(await claim("SEQ-2", "--another"))).toBe("1.237");
+    const shown = JSON.parse(stdout(await harness.runCli(["seq", "show", "registry", "--project", "SEQ", "--json"])));
+    expect(shown.claims).toHaveLength(4);
+    expect(shown.claims.at(-1)).toMatchObject({ state: "released", reason: "unused" });
+    expect((await harness.runCli(["seq", "create", "bad", "--project", "SEQ", "--next", "0", "--format", "{n}-{n}"])).exitCode).toBe(1);
+    await harness.dispose();
+  });
+});

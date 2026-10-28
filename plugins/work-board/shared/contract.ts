@@ -604,8 +604,22 @@ const updatePresetInputSchema = z
     }
   });
 
+const sequenceNameSchema = z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/);
+const sequenceNumberSchema = z.number().int().nonnegative().safe();
+const sequenceSchema = z.object({ projectId: idSchema, name: sequenceNameSchema, next: sequenceNumberSchema, format: z.string() }).strict();
+const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema, name: sequenceNameSchema, value: sequenceNumberSchema, rendered: z.string(), taskId: idSchema.nullable(), taskKey: z.string(), prUrl: z.string().nullable(), threadId: z.string().nullable(), claimedAt: z.string(), state: z.enum(["active", "released"]), releasedAt: z.string().nullable(), reason: z.string().nullable() }).strict();
+const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
+
 export const tasksRpcContract = {
   ...gitSyncMethods,
+  createSequence: { input: sequenceKeySchema.extend({ next: sequenceNumberSchema, format: z.string().max(40).default("{n}") }), output: z.object({ sequence: sequenceSchema }).strict() },
+  listSequences: { input: z.object({ projectId: idSchema }).strict(), output: z.object({ sequences: z.array(sequenceSchema) }).strict() },
+  showSequence: { input: sequenceKeySchema, output: z.object({ sequence: sequenceSchema, claims: z.array(sequenceClaimSchema) }).strict() },
+  setSequenceNext: { input: sequenceKeySchema.extend({ next: sequenceNumberSchema, force: z.boolean().default(false) }), output: z.object({ sequence: sequenceSchema }).strict() },
+  deleteSequence: { input: sequenceKeySchema, output: z.object({ deleted: z.boolean() }).strict() },
+  claimSequence: { input: sequenceKeySchema.extend({ taskId: idSchema, prUrl: z.string().url().nullable().default(null), threadId: z.string().nullable().default(null), another: z.boolean().default(false) }), output: z.object({ claim: sequenceClaimSchema }).strict() },
+  releaseClaim: { input: sequenceKeySchema.extend({ value: sequenceNumberSchema, reason: nonBlankStringSchema }), output: z.object({ claim: sequenceClaimSchema }).strict() },
+  listTaskClaims: { input: z.object({ taskId: idSchema }).strict(), output: z.object({ claims: z.array(sequenceClaimSchema) }).strict() },
   createFolder: {
     input: z
       .object({
