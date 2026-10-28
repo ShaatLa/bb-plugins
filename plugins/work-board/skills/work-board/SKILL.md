@@ -276,3 +276,7 @@ PR file overlaps: `show KEY --json` and `pr list KEY --json` include `overlaps` 
 ## Sequence claims
 
 For shared registry or migration numbers, use `bb work-board seq list --project ABC` and `bb work-board claim NAME --project ABC --task ABC-12 [--pr URL]`. A repeat returns the same active claim; use `--another` for an additional value. Release with `bb work-board claim release NAME VALUE --project ABC --reason 'reason'`. Values are never reused. Sequences and claims are operational state and are not exported; PR close or merge does not release them automatically.
+
+## Resource locks
+
+Use `bb work-board lock` instead of coordination messages when only one party may use a shared resource (e.g. the dev contour) at a time. `lock acquire NAME --project PREFIX --reason "dev QA ANV-12" [--task KEY] [--ttl MINUTES]` exits non-zero and prints the holder, reason, since and STALE state if someone else holds it; there is no waiting or queue, so retry later or ask the holder. Always `lock release NAME --project PREFIX` when you are done. Only the holder thread may release; `--force --reason "..."` overrides and is recorded. A lock is STALE when its ttl expired or the holder thread failed, was archived or deleted; only a STALE lock may be taken with `--takeover`. Re-acquiring your own lock refreshes reason/ttl. `lock list` / `lock show NAME` (with history) support `--json`. Reasons are secret-guarded. Locks are visible as chips in the project header and are not exported.

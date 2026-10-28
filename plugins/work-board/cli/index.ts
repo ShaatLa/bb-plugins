@@ -42,6 +42,7 @@ import {
   type Task,
   type TaskMutationResult,
 } from "../shared/contract";
+import type { Lock } from "../shared/locks";
 import { attachmentDownloadUrl } from "../shared/attachments";
 import { errorMessage } from "../shared/errors";
 import {
@@ -673,6 +674,171 @@ function groupCommand(
   });
 }
 
+const LOCK_NAME_POSITIONAL = {
+  name: "name",
+  description: "Lock name such as dev (a-z, 0-9, _ and -)",
+  required: true,
+} as const;
+
+function lockHolder(lock: Lock): string {
+  return lock.holderThreadId
+    ? `${lock.holderTitle ? `${lock.holderTitle} ` : ""}(${lock.holderThreadId})`
+    : "person";
+}
+
+function lockFields(lock: Lock) {
+  return detail([
+    ["Lock", lock.name],
+    ["Holder", lockHolder(lock)],
+    ["Task", lock.taskKey ?? "-"],
+    ["Reason", lock.reason],
+    ["Since", lock.acquiredAt],
+    ["Expires", lock.expiresAt ?? "never"],
+    ["State", lock.stale ? `STALE (${lock.stale})` : "held"],
+  ]);
+}
+
+// Held/not-holder is a normal, scriptable outcome: --json prints it on stdout.
+function lockOutcome(
+  result: { ok: true; lock: Lock | null } | { ok: false; error: { code: string; message: string }; lock: Lock | null },
+  json: boolean | undefined,
+  text: string,
+): PluginCliResult | string {
+  if (result.ok) return json ? JSON.stringify(result) : text;
+  if (json) return { exitCode: 1, stdout: JSON.stringify(result) };
+  throw new CliError(result.error.message, { code: `lock_${result.error.code}` });
+}
+
+function lockCommands(domain: TasksDomain) {
+  const common = { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION };
+  return {
+    lock: groupCommand("lock", "Visible per-project resource locks, e.g. the dev contour", [
+      ["acquire <name>", "Take a lock (fails if held; no queueing)"],
+      ["release <name>", "Release a lock you hold (--force to override)"],
+      ["list", "List held locks"],
+      ["show <name>", "Show a lock with its history"],
+    ]),
+    "lock acquire": cliCommand({
+      summary: "Acquire a resource lock; exits non-zero when someone holds it",
+      positionals: [LOCK_NAME_POSITIONAL],
+      options: {
+        ...common,
+        reason: { type: "string", required: true, description: "Why you need it (1-200 chars)" },
+        task: { type: "string", placeholder: "key", description: "Related task key such as ANV-12" },
+        ttl: { type: "integer", min: 1, max: 1440, description: "Minutes until the lock counts as stale" },
+        takeover: { type: "boolean", description: "Take over a stale lock (expired or dead holder thread)" },
+      },
+      run(input, ctx) {
+        return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project);
+          const result = tasksRpcContract.acquireLock.output.parse(
+            await domain.acquireLock(
+              tasksRpcContract.acquireLock.input.parse({
+                projectId: project.id,
+                name: input.positionals.name,
+                reason: input.options.reason,
+                threadId: ctx.threadId ?? null,
+                taskKey: input.options.task,
+                ttlMinutes: input.options.ttl,
+                takeover: input.options.takeover ?? false,
+              }),
+            ),
+          );
+          return lockOutcome(result, input.options.json, result.ok && result.lock ? lockFields(result.lock) : "");
+        });
+      },
+    }),
+    "lock release": cliCommand({
+      summary: "Release a lock; only the holder may, unless --force with a reason",
+      positionals: [LOCK_NAME_POSITIONAL],
+      options: {
+        ...common,
+        force: { type: "boolean", description: "Release a lock held by someone else" },
+        reason: { type: "string", description: "Why (required with --force; recorded in history)" },
+      },
+      run(input, ctx) {
+        return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project);
+          const name = input.positionals.name;
+          const result = tasksRpcContract.releaseLock.output.parse(
+            await domain.releaseLock(
+              tasksRpcContract.releaseLock.input.parse({
+                projectId: project.id,
+                name,
+                threadId: ctx.threadId ?? null,
+                force: input.options.force ?? false,
+                reason: input.options.reason,
+              }),
+            ),
+          );
+          return lockOutcome(result, input.options.json, `Released ${name}`);
+        });
+      },
+    }),
+    "lock list": cliCommand({
+      summary: "List held locks of a project",
+      options: common,
+      run(input, ctx) {
+        return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project);
+          const { locks } = tasksRpcContract.listLocks.output.parse(
+            await domain.listLocks({ projectId: project.id }),
+          );
+          return input.options.json
+            ? JSON.stringify({ locks })
+            : table(
+                ["LOCK", "HOLDER", "TASK", "SINCE", "EXPIRES", "STATE", "REASON"],
+                locks.map((lock) => [
+                  lock.name,
+                  lockHolder(lock),
+                  lock.taskKey ?? "-",
+                  lock.acquiredAt,
+                  lock.expiresAt ?? "never",
+                  lock.stale ? `STALE (${lock.stale})` : "held",
+                  lock.reason,
+                ]),
+                "No locks held.",
+              );
+        });
+      },
+    }),
+    "lock show": cliCommand({
+      summary: "Show a lock and its recent history",
+      positionals: [LOCK_NAME_POSITIONAL],
+      options: common,
+      run(input, ctx) {
+        return guard(async () => {
+          const project = await requiredProject(domain, ctx, input.options.project);
+          const name = input.positionals.name;
+          const { locks } = await domain.listLocks({ projectId: project.id });
+          const lock = locks.find((candidate) => candidate.name === name) ?? null;
+          const { events } = tasksRpcContract.lockHistory.output.parse(
+            await domain.lockHistory(
+              tasksRpcContract.lockHistory.input.parse({ projectId: project.id, name }),
+            ),
+          );
+          if (input.options.json) return JSON.stringify({ lock, events });
+          return [
+            lock ? lockFields(lock) : `Lock ${name} is free`,
+            "",
+            table(
+              ["AT", "EVENT", "BY", "TASK", "REASON"],
+              events.map((event) => [
+                event.at,
+                event.forced ? `${event.kind} (forced)` : event.kind,
+                event.threadId ?? "person",
+                event.taskKey ?? "-",
+                event.reason,
+              ]),
+              "No history.",
+            ),
+          ].join("\n");
+        });
+      },
+    }),
+  };
+}
+
 export function registerTasksCli(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -807,6 +973,7 @@ export function registerTasksCli(
           }); },
         }),
         ...templateReadCommands,
+        ...lockCommands(domain),
         template: groupCommand(
           "template",
           "Manage project description templates",

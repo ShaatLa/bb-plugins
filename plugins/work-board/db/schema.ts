@@ -316,6 +316,30 @@ const MIGRATIONS = [
   `CREATE TABLE sequences (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, next INTEGER NOT NULL, format TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id, name));
   CREATE TABLE sequence_claims (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, name TEXT NOT NULL, value INTEGER NOT NULL, rendered TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL, task_key TEXT NOT NULL, pr_url TEXT, thread_id TEXT, claimed_at TEXT NOT NULL, state TEXT NOT NULL, released_at TEXT, reason TEXT, FOREIGN KEY(project_id, name) REFERENCES sequences(project_id, name) ON DELETE CASCADE, UNIQUE(project_id, name, value));
   CREATE INDEX idx_sequence_claims_task ON sequence_claims(task_id, state);`,
+
+  `CREATE TABLE resource_locks (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    holder_thread_id TEXT,
+    task_key TEXT,
+    reason TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY (project_id, name)
+  );
+  CREATE TABLE resource_lock_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('acquired', 'released', 'taken_over', 'expired')),
+    thread_id TEXT,
+    previous_thread_id TEXT,
+    task_key TEXT,
+    reason TEXT NOT NULL,
+    forced INTEGER NOT NULL DEFAULT 0,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

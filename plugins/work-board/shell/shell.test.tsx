@@ -199,6 +199,66 @@ describe("startup screen", () => {
   });
 });
 
+describe("resource lock chips", () => {
+  const kanbanTab = tasksRegistration.fixedTabs!.find(({ id }) => id === "kanban")!;
+  const lock = {
+    name: "dev",
+    holderThreadId: "thr_holder",
+    holderTitle: "Dev QA run",
+    taskKey: "TSK-1",
+    reason: "dev QA TSK-1",
+    acquiredAt: new Date(Date.now() - 25 * 60_000).toISOString(),
+    expiresAt: null,
+    stale: null,
+  };
+
+  it("shows a chip per held lock in the project header and the side panel", async () => {
+    const rpc = seededRpc({ listLocks: () => ({ locks: [lock] }) });
+    const main = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, { rpc });
+    const chip = await main.findByRole("button", { name: /dev · Dev QA run · dev QA TSK-1 · 25 min/ });
+    expect(chip.className).not.toContain("text-warning");
+    main.lifecycle.unmount();
+
+    const panel = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc });
+    await panel.findByRole("button", { name: /dev · Dev QA run/ });
+  });
+
+  it("renders nothing without locks and flags a stale lock", async () => {
+    const empty = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, {
+      rpc: seededRpc({ listLocks: () => ({ locks: [] }) }),
+    });
+    await waitFor(() => expect(empty.rpcCalls.some(({ method }) => method === "listLocks")).toBe(true));
+    expect(empty.queryByText(/dev ·/)).toBeNull();
+    empty.lifecycle.unmount();
+
+    const stale = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, {
+      rpc: seededRpc({ listLocks: () => ({ locks: [{ ...lock, stale: "thread_failed" }] }) }),
+    });
+    expect((await stale.findByRole("button", { name: /dev · Dev QA run/ })).className).toContain("text-warning");
+  });
+
+  it("opens details with the holder thread link and force-releases with a reason", async () => {
+    const releaseLock = vi.fn(() => ({ ok: true, lock: null }));
+    const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, {
+      rpc: seededRpc({ listLocks: () => ({ locks: [lock] }), releaseLock }),
+    });
+    fireEvent.click(await slot.findByRole("button", { name: /dev · Dev QA run/ }));
+    const release = await slot.findByRole("button", { name: "Release (force)" });
+    expect(release).toHaveProperty("disabled", true);
+    fireEvent.change(slot.getByLabelText("Release reason"), { target: { value: "holder is gone" } });
+    fireEvent.click(slot.getByRole("button", { name: "Dev QA run" }));
+    expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_holder" });
+    fireEvent.click(release);
+    await waitFor(() => expect(releaseLock).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      name: "dev",
+      threadId: null,
+      force: true,
+      reason: "holder is gone",
+    }));
+  });
+});
+
 describe("kanban side panel", () => {
   const kanbanTab = tasksRegistration.fixedTabs!.find(({ id }) => id === "kanban")!;
 

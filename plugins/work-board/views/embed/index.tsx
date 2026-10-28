@@ -19,6 +19,7 @@ import {
   type TasksNavigation,
   type TasksRoute,
 } from "../../shell/routes.js";
+import { LockChips } from "../../components/lock-chips.js";
 import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
@@ -358,6 +359,7 @@ function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
             <div className="min-w-0 flex-1 truncate text-sm font-medium">
               {project?.name ?? "Project board"}
             </div>
+            {project ? <LockChips projectId={project.id} /> : null}
             <OpenInTasksButton
               label="Open board in Tasks"
               subPath={boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}
