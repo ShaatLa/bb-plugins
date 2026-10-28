@@ -56,6 +56,9 @@ import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
 import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
 
+import { evidenceIndex, evidenceText } from "../structured/evidence";
+import { threadHealthJson } from "../shared/thread-health";
+
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
 const ACTIVE_THREAD_STATUSES = new Set(["starting", "working"]);
@@ -2419,6 +2422,11 @@ export function registerTasksCli(
                   }),
                 ),
               );
+              const health = new Map(
+                (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata.map(
+                  (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
+                ),
+              );
               const tasks = [];
               for (const task of result.tasks) {
                 const threadResult =
@@ -2437,6 +2445,7 @@ export function registerTasksCli(
                   agentsWorking: threadResult.taskThreads.filter((thread) =>
                     ACTIVE_THREAD_STATUSES.has(thread.liveStatus),
                   ).length,
+                  threadHealth: health.get(task.id),
                 });
               }
               if (input.options.json) {
@@ -2528,6 +2537,10 @@ export function registerTasksCli(
                   }),
                 ),
               ).taskThreads;
+              const threadHealth = threadHealthJson(
+                (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!.threadHealth,
+                Date.now(),
+              );
               const { pullRequests, unavailableThreadIds } =
                 tasksRpcContract.listTaskPullRequests.output.parse(
                   await domain.listTaskPullRequests(
@@ -2548,6 +2561,7 @@ export function registerTasksCli(
                   ...(task.type === "epic" ? { epicTasks: subtasks } : {}),
                   attachments,
                   taskThreads,
+                  threadHealth,
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   comments,

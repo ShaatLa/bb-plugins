@@ -84,7 +84,13 @@ function ThreadCard({
   const navigate = useBbNavigate();
   const meta = THREAD_STATUS_META[thread.liveStatus];
   return (
-    <div className="mb-2 flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 shadow-2xs">
+    <div
+      data-thread-status={thread.liveStatus}
+      className={cn(
+        "mb-2 flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 shadow-2xs",
+        thread.liveStatus === "failed" && "border-destructive/60 bg-destructive/5",
+      )}
+    >
       <span
         className={cn(
           "flex shrink-0 items-center gap-1.5 text-xs font-medium",
@@ -101,6 +107,9 @@ function ThreadCard({
         <div className="truncate text-sm font-medium">{thread.title}</div>
         <div className="text-xs text-muted-foreground">
           {thread.presetName} · attached {formatRelativeTime(thread.attachedAt)}
+          {thread.liveStatus === "failed" ? (
+            <span className="text-destructive"> · failed {formatRelativeTime(thread.updatedAt)}</span>
+          ) : null}
         </div>
       </div>
       <ThreadPullRequestPill

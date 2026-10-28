@@ -127,6 +127,17 @@ function taskThreadRow(id: string, threadId: string, title: string) {
   };
 }
 
+it("shows a failed thread card clearly in the task detail", async () => {
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [
+    { ...taskThreadRow(THREAD_ROW_ID, "thr_broken", "Broken worker"), liveStatus: "failed" },
+  ] }) }) });
+  const detach = await slot.findByRole("button", { name: "Detach Broken worker" });
+  const card = detach.closest("[data-thread-status]")!;
+  expect(card.getAttribute("data-thread-status")).toBe("failed");
+  expect(card.textContent).toContain("Failed");
+  expect(card.textContent).toContain("· failed");
+});
+
 it.each(["main", "side"])("opens named active workers from the %s properties rail", async (surface) => {
   const options = { rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [
     taskThreadRow(THREAD_ROW_ID, "thr_review", "Correctness review"),

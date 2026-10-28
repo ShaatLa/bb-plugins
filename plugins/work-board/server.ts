@@ -42,6 +42,21 @@ export default async function plugin(bb: BbPluginApi) {
       },
       default: "off",
     },
+    staleIdleMinutes: {
+      type: "select",
+      label: "Flag idle threads without task updates",
+      description:
+        "Shows an amber marker on a task card when its attached thread has been idle this long and the task has had no update, comment or evidence. Display only: nothing is sent to the thread.",
+      options: ["off", "30", "45", "60", "120"],
+      experimental_optionLabels: {
+        off: "Off",
+        "30": "After 30 minutes",
+        "45": "After 45 minutes",
+        "60": "After 60 minutes",
+        "120": "After 2 hours",
+      },
+      default: "45",
+    },
     defaultScreen: {
       type: "select",
       label: "Open by default",
@@ -58,7 +73,10 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const store = createStore(bb);
-  registerTasksApi(bb, store);
+  registerTasksApi(bb, store, async () => {
+    const { staleIdleMinutes } = await settings.get();
+    return staleIdleMinutes === "off" ? null : Number(staleIdleMinutes);
+  });
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);
