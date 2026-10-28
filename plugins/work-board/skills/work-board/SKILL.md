@@ -268,3 +268,5 @@ By default every child turn wakes its parent, so status pings burn the parent's 
 - Parents read state from the board (`bb work-board show KEY --json`, evidence) instead of polling children.
 - Link every working thread to its task with `bb work-board attach KEY`.
 - `bb work-board dispatch KEY --preset NAME` parents the new thread to the invoking thread (`BB_THREAD_ID`). Add `--parent-notifications auto|stuck|off` to set which child turns wake you, or `--no-parent` to start it outside your hierarchy. `--thread` never re-parents an existing thread. Dispatch from the UI has no parent.
+
+Evidence records automatically stamp the invoking thread as `recordedByThread`; `--thread` identifies the reviewer. `show --json` exposes advisory `evidenceFlags` for self-review and stale approvals; these flags never block writes.

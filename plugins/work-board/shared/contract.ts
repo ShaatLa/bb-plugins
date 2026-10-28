@@ -92,6 +92,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("review"),
+      recordedByThread: evidenceThreadSchema.nullable().optional(),
       pr: z.number().int().positive(),
       head: shaSchema,
       verdict: z.enum(["approve", "changes"]),
@@ -102,6 +103,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("qa"),
+      recordedByThread: evidenceThreadSchema.nullable().optional(),
       head: shaSchema,
       verdict: z.enum(["pass", "fail", "partial"]),
       thread: evidenceThreadSchema,
@@ -121,6 +123,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("merge"),
+      recordedByThread: evidenceThreadSchema.nullable().optional(),
       pr: z.number().int().positive(),
       head: shaSchema,
       merge: shaSchema,
@@ -137,6 +140,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("deploy"),
+      recordedByThread: evidenceThreadSchema.nullable().optional(),
       merge: shaSchema,
       run: nonBlankStringSchema,
       env: z.enum(["development", "production"]),
@@ -145,6 +149,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("exemption"),
+      recordedByThread: evidenceThreadSchema.nullable().optional(),
       row: nonBlankStringSchema,
       reason: nonBlankStringSchema,
       ownerQuote: nonBlankStringSchema.optional(),

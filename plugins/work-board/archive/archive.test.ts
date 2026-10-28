@@ -299,6 +299,7 @@ describe("project archives", () => {
         head: "a".repeat(40),
         verdict: "approve",
         thread: "thr_reviewer",
+        recordedByThread: "thr_recorder",
         lens: "security",
       },
     });
