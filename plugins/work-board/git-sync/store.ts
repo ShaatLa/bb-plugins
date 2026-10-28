@@ -10,6 +10,8 @@ import {
   type PrSnapshot,
 } from "../shared/git-sync";
 
+import { evaluateOverlaps } from "./overlap";
+
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export function createGitSyncStore(db: Database) {
   const config = (projectId: string): GitSyncConfig => {
@@ -37,6 +39,13 @@ export function createGitSyncStore(db: Database) {
     return link;
   };
   return {
+    overlaps(taskId: string) {
+      const task = db.prepare<[string], { projectId: string }>("SELECT project_id AS projectId FROM tasks WHERE id=?").get(taskId);
+      if (!task) return [];
+      const rows = db.prepare<[string], { taskId: string; taskKey: string; link: string; snapshot: string }>(`SELECT t.id AS taskId, p.prefix || '-' || t.number AS taskKey, l.payload AS link, s.payload AS snapshot FROM task_pr_links l JOIN tasks t ON t.id=l.task_id JOIN projects p ON p.id=t.project_id JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE t.project_id=? AND s.payload IS NOT NULL AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0`).all(task.projectId);
+      const entries = rows.map(row => ({ ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot: prSnapshotSchema.parse(JSON.parse(row.snapshot)) })).filter(row => ["open", "draft"].includes(row.snapshot.state) && row.snapshot.files && config(task.projectId).repositories.includes(row.link.repository));
+      return evaluateOverlaps(entries, taskId, config(task.projectId).overlapRules ?? []);
+    },
     summaries(taskIds: string[]) {
       if (!taskIds.length) return [];
       const rows = db.prepare<string[], {

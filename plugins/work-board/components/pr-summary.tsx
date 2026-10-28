@@ -1,6 +1,7 @@
 import { taskBatches } from "../shell/task-batches";
 import { signalTaskIds } from "../shell/signal-scheduler";
 import { useTasksQuery, type TasksRpc } from "../shell/data";
+import type { Overlap } from "../shared/git-sync";
 import type { Task } from "../shared/contract";
 export type PrSummary = {
   total: number;
@@ -8,6 +9,7 @@ export type PrSummary = {
   failing: number;
   pending: number;
   stale: boolean;
+  overlaps?: Overlap[];
 };
 async function readSummaries(rpc: TasksRpc, ids: readonly string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("prSummaries", { taskIds })).summaries);
@@ -46,6 +48,7 @@ export function PullRequestSummary({ summary }: { summary?: PrSummary }) {
           ? ` · CI ${summary.pending} pending`
           : ""}
       {summary.stale ? " · stale" : ""}
+      {summary.overlaps?.length ? <span className={summary.overlaps.some(o => o.rule) ? "text-destructive" : "text-muted-foreground"} title={summary.overlaps.map(o => `Overlaps ${o.otherTaskKey} (${o.otherPr.repository}#${o.otherPr.number}): ${o.rule ? `${o.rule.pattern} ${o.rule.match}; ` : ""}${o.files.length} ${o.rule?.match === "added" ? "matched" : "shared"} files`).join("\n")}> · ⚠ {summary.overlaps.length}</span> : null}
     </span>
   );
 }

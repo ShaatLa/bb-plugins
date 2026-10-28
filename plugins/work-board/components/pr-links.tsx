@@ -32,7 +32,7 @@ export function PullRequestsSection({
 }) {
   const rpc = useTasksRpc();
   const query = useTasksQuery(
-    async (rpc) => (await rpc.call("listPrLinks", { taskId })).links,
+    async (rpc) => await rpc.call("listPrLinks", { taskId }),
     ["tasks:changed", "prs:changed"],
     [taskId],
     { relevantTaskIds: [taskId] },
@@ -45,7 +45,7 @@ export function PullRequestsSection({
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const links = [...(query.data ?? [])].sort((a, b) =>
+  const links = [...(query.data?.links ?? [])].sort((a, b) =>
     Date.parse(b.snapshot?.mergedAt ?? b.snapshot?.updatedAt ?? b.link.createdAt) -
       Date.parse(a.snapshot?.mergedAt ?? a.snapshot?.updatedAt ?? a.link.createdAt) ||
     b.link.number - a.link.number || a.link.repository.localeCompare(b.link.repository),
@@ -200,6 +200,7 @@ export function PullRequestsSection({
             Not checked yet. Sync to load PR status.
           </p>
         ) : null}
+        {(query.data?.overlaps ?? []).filter(o => o.pr.repository === link.repository && o.pr.number === link.number).map((o, i) => <p key={i} className={o.rule ? "text-destructive" : "text-muted-foreground"}>Overlaps {o.otherTaskKey} ({o.otherPr.repository}#{o.otherPr.number}){o.rule ? ` · ${o.rule.pattern} ${o.rule.match}` : ""}: {o.files.slice(0, 10).join(", ")}{o.files.length > 10 ? ` +${o.files.length - 10}` : ""}</p>)}
         {syncError && !link.excluded ? (
           <p className="text-destructive">{syncError}</p>
         ) : null}
