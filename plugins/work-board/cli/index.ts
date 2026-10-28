@@ -55,8 +55,6 @@ import { allocatePrefix } from "./prefix";
 import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
 import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
-
-import { evidenceIndex, evidenceText } from "../structured/evidence";
 import { threadHealthJson } from "../shared/thread-health";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;

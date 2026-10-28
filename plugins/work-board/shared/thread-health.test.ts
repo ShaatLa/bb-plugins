@@ -42,8 +42,12 @@ describe("thread health", () => {
     expect(stale("in_progress", [link("thr_a", "idle", iso(300)), link("thr_b", "idle", iso(10))], 300)).toBeNull();
   });
 
-  it("reports failed threads independently of task status or the idle setting", () => {
-    const health = evaluateThreadHealth("done", [link("thr_f", "failed", iso(5)), link("thr_a", "idle", iso(300))], iso(300), null);
+  it("hides failed threads on finished tasks", () => {
+    expect(evaluateThreadHealth("done", [link("thr_f", "failed", iso(5))], iso(300), null).failed).toEqual([]);
+  });
+
+  it("reports failed threads independently of the idle setting", () => {
+    const health = evaluateThreadHealth("in_progress", [link("thr_f", "failed", iso(5)), link("thr_a", "idle", iso(300))], iso(300), null);
     expect(health.failed).toEqual([{ threadId: "thr_f", title: "Title thr_f", failedAt: iso(5) }]);
     expect(threadHealthJson(health, T0)).toEqual({ failed: ["thr_f"], staleIdle: null });
   });
