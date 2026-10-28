@@ -13,7 +13,7 @@ import {
   type Comment,
 } from "../shared/contract";
 import { createStructuredStore } from "./store";
-import { evidenceIndex } from "./evidence";
+import { evidenceFlags, evidenceIndex } from "./evidence";
 
 const harnesses: FakePluginHarness[] = [];
 afterEach(async () => {
@@ -864,7 +864,7 @@ describe("evidence index", () => {
         ...flags,
         "--json",
       );
-      expect(result.comment.evidence).toEqual(entry);
+      expect(result.comment.evidence).toEqual({ ...entry, recordedByThread: process.env.BB_THREAD_ID ?? null });
       const index = await cli(
         "evidence",
         task.key,
@@ -881,6 +881,39 @@ describe("evidence index", () => {
       expect(store.tasks.getTask(task.id)?.status).toBe("backlog");
     },
   );
+
+  it("stamps CLI and UI writers automatically", async () => {
+    const { cli, harness, task } = setup();
+    const previous = process.env.BB_THREAD_ID;
+    process.env.BB_THREAD_ID = "thr_writer";
+    try {
+      const result = await cli("comment", task.key, "--body", "Approved", "--kind", "review", "--pr", "12", "--head", "a".repeat(40), "--verdict", "approve", "--thread", "thr_reviewer", "--json");
+      expect(result.comment.evidence.recordedByThread).toBe("thr_writer");
+      expect((await cli("show", task.key, "--json")).evidence[0].recordedByThread).toBe("thr_writer");
+    } finally {
+      if (previous === undefined) delete process.env.BB_THREAD_ID; else process.env.BB_THREAD_ID = previous;
+    }
+    const result = await harness.callRpc("createComment", { taskId: task.id, body: "UI", notify: false, evidence: { kind: "review", pr: 12, head: "a".repeat(40), verdict: "approve", thread: "thr_reviewer", recordedByThread: "thr_spoofed" } });
+    expect(tasksRpcContract.createComment.output.parse(result).comment.evidence?.recordedByThread).toBeNull();
+  });
+
+  it("flags self-review and only the newest uncovered approval", () => {
+    const entries = [
+      { kind: "review", pr: 12, head: "a".repeat(40), verdict: "approve", thread: "thr_author" },
+      { kind: "qa", pr: 12, head: "b".repeat(40), verdict: "pass", thread: "thr_other" },
+    ] as Evidence[];
+    const records = evidenceIndex(entries.map((evidence, i) => ({ id: String(i), taskId: "t", kind: "agent", authorName: "A", presetName: null, threadId: null, body: "", notifiedCount: 0, createdAt: `2026-10-2${i}T00:00:00.000Z`, evidence } as Comment))).records;
+    const prs: import("../shared/contract").TaskPullRequest[] = [{ url: "https://github.com/a/b/pull/12", number: 12, title: "PR", state: "merged", updatedAt: "2026-10-20", threadIds: ["thr_author"] }];
+    const links = [{ link: { number: 12, url: prs[0]!.url }, snapshot: { state: "merged", headSha: "c".repeat(40) } }];
+    expect(evidenceFlags(records, prs, links)).toEqual([
+      { commentId: "0", kind: "self_review", message: "Reviewer is the PR author thread" },
+      { commentId: "1", kind: "stale_head", message: "Approved head bbbbbbb differs from merged head ccccccc" },
+    ]);
+    expect(evidenceFlags(records, prs, [{ link: { number: 12, url: "https://github.com/other/repo/pull/12" }, snapshot: null }])).toEqual([]);
+    expect(evidenceFlags(records, [], links).map((flag) => flag.kind)).toEqual(["stale_head"]);
+    expect(evidenceFlags(records, [], [{ link: { number: 12 }, snapshot: { state: "merged", headSha: "a".repeat(40) } }])).toEqual([]);
+    expect(evidenceFlags(records, [{ ...prs[0], threadIds: ["thr_other_author"] }], [])).toEqual([]);
+  });
 
   it("rejects malformed or incomplete evidence and secrets without persisting comments", async () => {
     const { harness, task, store } = setup();

@@ -53,7 +53,7 @@ import { bytes, detail, oneLine, table } from "./format";
 import { allocatePrefix } from "./prefix";
 import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
-import { evidenceIndex, evidenceText } from "../structured/evidence";
+import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -2358,6 +2358,7 @@ export function registerTasksCli(
                   questions,
                   evidence: evidence.records,
                   evidenceSummary: evidence.summary,
+                  evidenceFlags: evidenceFlags(evidence.records, pullRequests, prLinks),
                 });
               }
               return [
@@ -2851,6 +2852,7 @@ export function registerTasksCli(
                 authorName: input.options.author ?? taskAuthor(ctx),
                 presetName: null,
                 threadId: ctx.threadId ?? null,
+                recordedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                 body,
                 ...(evidence ? { evidence } : {}),
                 notify: input.options.notify,
