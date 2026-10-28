@@ -1,4 +1,5 @@
 import { gitSyncMethods } from "./git-sync";
+import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -625,6 +626,8 @@ export const tasksRpcContract = {
   claimSequence: { input: sequenceKeySchema.extend({ taskId: idSchema, prUrl: z.string().url().nullable().default(null), threadId: z.string().nullable().default(null), another: z.boolean().default(false) }), output: z.object({ claim: sequenceClaimSchema }).strict() },
   releaseClaim: { input: sequenceKeySchema.extend({ value: sequenceNumberSchema, reason: nonBlankStringSchema }), output: z.object({ claim: sequenceClaimSchema }).strict() },
   listTaskClaims: { input: z.object({ taskId: idSchema }).strict(), output: z.object({ claims: z.array(sequenceClaimSchema) }).strict() },
+
+  ...lockMethods,
   createFolder: {
     input: z
       .object({

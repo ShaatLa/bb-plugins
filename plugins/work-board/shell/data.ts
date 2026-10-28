@@ -340,6 +340,7 @@ export function useTasksQuery<T>(
     scheduler.push("threads:changed", payload),
   );
   useRealtime("prs:changed", (payload) => scheduler.push("prs:changed", payload));
+  useRealtime("locks:changed", (payload) => scheduler.push("locks:changed", payload));
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
   return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
 }

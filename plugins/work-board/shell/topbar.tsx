@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useTasksRefresh } from "./refresh.js";
+import { LockChips } from "../components/lock-chips.js";
 
 const REFRESH_TASKS_LABEL = "Refresh tasks";
 
@@ -263,6 +264,9 @@ export function TasksTopbar({
   return (
     <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border-hairline bg-background px-3.5 text-sm max-md:pointer-coarse:h-12 max-md:pl-12 max-md:pointer-coarse:pl-14">
       <div className="min-w-0 flex-1 overflow-hidden">{breadcrumb}</div>
+      {route.kind === "project" && project ? (
+        <LockChips projectId={project.id} />
+      ) : null}
       {route.kind === "task" &&
       (pagerScope !== null || projects !== undefined) ? (
         <TaskPager

@@ -1,4 +1,5 @@
 import { gitSyncService } from "../git-sync/service";
+import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
@@ -653,6 +654,7 @@ export function registerHandlers(
     listTaskClaims: (input) => ({ claims: store.tasks.listTaskClaims(input.taskId) }),
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
+    ...createLockHandlers(bb, store),
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
       publishProjectsChanged(bb, null);
