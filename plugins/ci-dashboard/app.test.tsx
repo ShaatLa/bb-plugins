@@ -1,3 +1,5 @@
+import { mountDraftSettingsDisclosure } from "./settings-disclosure";
+import { draftSettingLabels } from "./draft-deferrals";
 // @vitest-environment jsdom
 import { act, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -833,4 +835,43 @@ test("fresh range snapshots skip GitHub collection until expiry while Refresh fo
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(metrics).toHaveBeenCalledTimes(3);
   } finally { slot.lifecycle.unmount(); }
+});
+
+
+test("draft settings start collapsed, keep native inputs and clean up on navigation and unload", async () => {
+  const host = document.createElement("div");
+  function fields() {
+    const form = document.createElement("div");
+    for (const label of Object.values(draftSettingLabels)) {
+      const row = document.createElement("div"), inner = document.createElement("div"), input = document.createElement("input");
+      input.setAttribute("aria-label", label); inner.append(input); row.append(inner); form.append(row);
+    }
+    return form;
+  }
+  let form = fields(); host.append(form); document.body.append(host);
+  const controller = new AbortController();
+  const dispose = mountDraftSettingsDisclosure(controller.signal);
+  try {
+    const input = form.querySelector("input")!;
+    const changed = vi.fn(); input.addEventListener("input", changed);
+    let button = form.querySelector("button")!;
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(input.parentElement?.parentElement?.style.display).toBe("none");
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(input.parentElement?.parentElement?.style.display).toBe("");
+    fireEvent.input(input, { target: { value: "Renamed step" } });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(form.querySelector("input")).toBe(input);
+    fireEvent.click(button);
+    expect(input.parentElement?.parentElement?.style.display).toBe("none");
+    const replacement = fields(); form.replaceWith(replacement); form = replacement;
+    await act(async () => {});
+    expect(host.querySelectorAll("button")).toHaveLength(1);
+    button = form.querySelector("button")!;
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    controller.abort();
+    expect(form.querySelector("button")).toBeNull();
+    expect(form.querySelector("input")?.parentElement?.parentElement?.style.display).toBe("");
+  } finally { dispose(); host.remove(); }
 });

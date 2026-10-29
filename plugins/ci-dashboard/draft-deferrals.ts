@@ -2,6 +2,11 @@ import { z } from "zod";
 import type { GitHubRequest } from "./metrics";
 import type { ciRunSchema } from "./ci-insights";
 
+export const draftSettingLabels = {
+  draftWorkflow: "Draft deferral: workflow name (exact match)",
+  draftJob: "Draft deferral: only failed job name (exact match)",
+  draftStep: "Draft deferral: only failed step name (exact match)",
+};
 export const defaultDraftRules = { workflow: "CI", job: "CI complete", step: "Reject draft pull request" };
 export type DraftRules = typeof defaultDraftRules;
 export const draftNameSchema = z.string().trim().min(1).max(200);

@@ -1,3 +1,4 @@
+import { mountDraftSettingsDisclosure } from "./settings-disclosure";
 import { useEffect, useRef, useState } from "react";
 import { minimumDate, presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
@@ -256,6 +257,7 @@ function DashboardPage() {
 }
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({ id: "draft-settings-disclosure", mount: ({ signal }) => mountDraftSettingsDisclosure(signal) });
   app.slots.navPanel({
     id: "ci-dashboard", title: "CI Dashboard", icon: "delivery-dashboard/pipeline", path: "dashboard", component: DashboardPage,
   });

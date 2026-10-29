@@ -1,4 +1,4 @@
-import { defaultDraftRules, draftRules, draftNameSchema } from "./draft-deferrals";
+import { defaultDraftRules, draftRules, draftNameSchema, draftSettingLabels } from "./draft-deferrals";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { defineRpcContract, type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -44,9 +44,9 @@ export default function plugin(bb: BbPluginApi) {
       experimental_multiline: true,
       experimental_schema: repositoriesSettingSchema,
     },
-    draftWorkflow: { type: "string", label: "Draft deferral: workflow name (exact match)", default: defaultDraftRules.workflow, experimental_schema: draftNameSchema },
-    draftJob: { type: "string", label: "Draft deferral: only failed job name (exact match)", default: defaultDraftRules.job, experimental_schema: draftNameSchema },
-    draftStep: { type: "string", label: "Draft deferral: only failed step name (exact match)", default: defaultDraftRules.step, experimental_schema: draftNameSchema },
+    draftWorkflow: { type: "string", label: draftSettingLabels.draftWorkflow, default: defaultDraftRules.workflow, experimental_schema: draftNameSchema },
+    draftJob: { type: "string", label: draftSettingLabels.draftJob, default: defaultDraftRules.job, experimental_schema: draftNameSchema },
+    draftStep: { type: "string", label: draftSettingLabels.draftStep, default: defaultDraftRules.step, experimental_schema: draftNameSchema },
     token: { type: "string", label: "GitHub token override (blank uses system authorization)", secret: true },
     refreshSeconds: {
       type: "number",
