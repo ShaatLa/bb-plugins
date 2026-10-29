@@ -1,4 +1,4 @@
-import { classifyDraft } from "./draft-deferrals";
+import { classifyDraft, type DraftRules } from "./draft-deferrals";
 import { z } from "zod";
 import { githubRequest, repositorySchema, secureUrlSchema } from "./metrics";
 import { minimumDate } from "./date-range";
@@ -18,7 +18,7 @@ export type CardDetailsInput = z.infer<typeof cardDetailsInput>;
 export type CardDetails = z.infer<typeof cardDetailsOutput>;
 const timestamp = z.iso.datetime({ offset: true });
 
-export async function loadCardDetails(input: CardDetailsInput, token: string | undefined, signal: AbortSignal): Promise<CardDetails> {
+export async function loadCardDetails(input: CardDetailsInput, token: string | undefined, signal: AbortSignal, rules?: DraftRules): Promise<CardDetails> {
   cardDetailsInput.parse(input);
   const checkedAt = new Date().toISOString();
   const request = (path: string) => githubRequest(path, token, signal);
@@ -32,7 +32,7 @@ export async function loadCardDetails(input: CardDetailsInput, token: string | u
     })).max(5) }).parse(body);
     if (workflow_runs.some((run) => Date.parse(run.created_at) < Date.parse(input.since) || Date.parse(run.created_at) > Date.parse(input.until))) throw new Error("GitHub returned runs outside the selected range.");
     const verified = await Promise.all(workflow_runs.map(async (run) => {
-      try { return await classifyDraft(run, input.repository, request) ? null : run; }
+      try { return await classifyDraft(run, input.repository, request, rules) ? null : run; }
       catch { signal.throwIfAborted(); return run; }
     }));
     return { checkedAt, items: verified.filter((run) => run !== null).map((run) => ({

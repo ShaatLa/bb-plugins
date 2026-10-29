@@ -35,7 +35,7 @@ export function Dashboard() {
   const { values, isLoading } = useSettings();
   const repository = typeof values?.repository === "string" ? values.repository : "";
   const importProjects = values?.importBbRepositories !== false;
-  const configuration = JSON.stringify([repository, importProjects]);
+  const configuration = JSON.stringify([repository, importProjects, values?.draftWorkflow ?? "CI", values?.draftJob ?? "CI complete", values?.draftStep ?? "Reject draft pull request"]);
   const seconds = typeof values?.refreshSeconds === "number" ? values.refreshSeconds : 300;
   const [range, setRange] = useState<RangeInput>(() => lastSelection);
   const selection = JSON.stringify(range);
