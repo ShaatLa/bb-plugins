@@ -10,6 +10,7 @@ import {
 } from "./pagination.js";
 
 import { taskStatusSchema, taskStatusesSchema } from "./statuses.js";
+import { BADGE_CRITERIA } from "./badge.js";
 export { TASK_STATUSES } from "./statuses.js";
 export type { TaskStatusDefinition } from "./statuses.js";
 
@@ -1077,6 +1078,17 @@ export const tasksRpcContract = {
             .object({ id: z.string().startsWith("proj_"), name: z.string() })
             .strict(),
         ),
+      })
+      .strict(),
+  },
+  navigationBadge: {
+    input: z.null(),
+    output: z
+      .object({
+        count: z.number().int().nonnegative(),
+        counts: z.partialRecord(z.enum(BADGE_CRITERIA), z.number().int().nonnegative()),
+        criteria: z.array(z.enum(BADGE_CRITERIA)),
+        timeBased: z.boolean(),
       })
       .strict(),
   },

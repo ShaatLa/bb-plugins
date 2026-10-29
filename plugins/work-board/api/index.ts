@@ -20,6 +20,8 @@ import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
 import { environmentPullRequests } from "../git-sync/environment-prs";
+import { navigationBadgeCounts } from "./badge";
+import type { BadgeCriterion } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
@@ -612,6 +614,7 @@ export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
   staleIdleMinutes: () => Promise<number | null> = async () => DEFAULT_STALE_IDLE_MINUTES,
+  badgeCriteria: () => Promise<BadgeCriterion[]> = async () => ["open"],
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   return {
@@ -1250,6 +1253,15 @@ export function registerHandlers(
         })),
       };
     },
+    async navigationBadge() {
+      const criteria = await badgeCriteria();
+      const threshold = criteria.includes("stale_idle") ? await staleIdleMinutes() : null;
+      return {
+        ...navigationBadgeCounts(bb, store, criteria, threshold, Date.now()),
+        criteria,
+        timeBased: threshold !== null,
+      };
+    },
     sidebarOpenTaskCount() {
       return { openTaskCount: store.openTaskCount() };
     },
@@ -1263,6 +1275,7 @@ export function registerTasksApi(
   bb: BbPluginApi,
   store: TasksApiStore,
   staleIdleMinutes?: () => Promise<number | null>,
+  badgeCriteria?: () => Promise<BadgeCriterion[]>,
 ): void {
-  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes));
+  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes, badgeCriteria));
 }
