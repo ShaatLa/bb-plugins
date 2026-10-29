@@ -19,6 +19,7 @@ import { deliverCommentToLatestAgent } from "../steer";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
+import { environmentPullRequests } from "../git-sync/environment-prs";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
@@ -521,29 +522,6 @@ interface TaskPullRequestsResult {
   unavailableThreadIds: string[];
 }
 
-const PULL_REQUEST_LOOKUP_CONCURRENCY = 4;
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  work: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        results[index] = await work(items[index]!);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
-}
-
 async function listTaskPullRequests(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -570,52 +548,41 @@ async function listTaskPullRequests(
   );
 
   const byUrl = new Map<string, TaskPullRequest>();
-  await mapWithConcurrency(
-    [...threadIdsByEnvironment.entries()],
-    PULL_REQUEST_LOOKUP_CONCURRENCY,
-    async ([environmentId, threadIds]) => {
-      let result: Awaited<
-        ReturnType<BbPluginApi["sdk"]["environments"]["pullRequest"]>
-      >;
-      try {
-        result = await bb.sdk.environments.pullRequest({ environmentId });
-      } catch {
-        for (const threadId of threadIds) unavailable.add(threadId);
-        return;
-      }
-      if (result.outcome === "unavailable") {
-        for (const threadId of threadIds) unavailable.add(threadId);
-        return;
-      }
-      if (result.outcome === "absent") return;
-      const { pullRequest } = result;
-      const existing = byUrl.get(pullRequest.url);
-      if (!existing) {
-        byUrl.set(pullRequest.url, {
-          url: pullRequest.url,
-          number: pullRequest.number,
-          title: pullRequest.title,
-          state: pullRequest.state,
-          updatedAt: pullRequest.updatedAt,
-          threadIds: [...threadIds],
-        });
-        return;
-      }
-      const threadIdUnion = [...existing.threadIds, ...threadIds];
-      if (pullRequest.updatedAt.localeCompare(existing.updatedAt) > 0) {
-        byUrl.set(pullRequest.url, {
-          url: pullRequest.url,
-          number: pullRequest.number,
-          title: pullRequest.title,
-          state: pullRequest.state,
-          updatedAt: pullRequest.updatedAt,
-          threadIds: threadIdUnion,
-        });
-      } else {
-        existing.threadIds = threadIdUnion;
-      }
-    },
-  );
+  const lookups = await environmentPullRequests(bb, threadIdsByEnvironment.keys());
+  for (const [environmentId, threadIds] of threadIdsByEnvironment) {
+    const result = lookups.get(environmentId)!;
+    if (result.outcome === "unavailable") {
+      for (const threadId of threadIds) unavailable.add(threadId);
+      continue;
+    }
+    if (result.outcome === "absent") continue;
+    const { pullRequest } = result;
+    const existing = byUrl.get(pullRequest.url);
+    if (!existing) {
+      byUrl.set(pullRequest.url, {
+        url: pullRequest.url,
+        number: pullRequest.number,
+        title: pullRequest.title,
+        state: pullRequest.state,
+        updatedAt: pullRequest.updatedAt,
+        threadIds: [...threadIds],
+      });
+      continue;
+    }
+    const threadIdUnion = [...existing.threadIds, ...threadIds];
+    if (pullRequest.updatedAt.localeCompare(existing.updatedAt) > 0) {
+      byUrl.set(pullRequest.url, {
+        url: pullRequest.url,
+        number: pullRequest.number,
+        title: pullRequest.title,
+        state: pullRequest.state,
+        updatedAt: pullRequest.updatedAt,
+        threadIds: threadIdUnion,
+      });
+    } else {
+      existing.threadIds = threadIdUnion;
+    }
+  }
 
   const threadOrder = new Map(
     taskThreads.map((taskThread, index) => [taskThread.threadId, index]),

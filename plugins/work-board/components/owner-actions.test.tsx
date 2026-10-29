@@ -9,6 +9,7 @@ import {
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../api";
 import { tasksRpcContract } from "../shared/contract";
+import { taskTab } from "../test-fixtures.js";
 
 window.ResizeObserver ??= class {
   observe() {}
@@ -55,10 +56,7 @@ describe("executor filter surfaces", () => {
       );
       const slot =
         surface === "side"
-          ? renderSlot(
-              app.threadPanelActions[0]!,
-              { threadId: "thr_board", params: null },
-              {
+          ? renderSlot(taskTab(app), { threadId: "thr_board", environment: null }, {
                 rpc,
                 sdk: {
                   threads: {
@@ -69,8 +67,7 @@ describe("executor filter surfaces", () => {
                       }),
                   },
                 },
-              },
-            )
+              })
           : renderSlot(
               app.navPanels[0]!,
               { subPath: `${project.id}?view=${surface}` },

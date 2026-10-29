@@ -8,6 +8,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../../api";
 import { tasksRpcContract } from "../../shared/contract";
+import { taskTab } from "../../test-fixtures.js";
 
 window.matchMedia ??= (media) => ({
   matches: false,
@@ -122,10 +123,7 @@ it.each(["board", "list", "side"])(
     const f = setup();
     const slot =
       surface === "side"
-        ? renderSlot(
-            app.threadPanelActions[0]!,
-            { threadId: "thr_archive", params: null },
-            {
+        ? renderSlot(taskTab(app), { threadId: "thr_archive", environment: null }, {
               rpc: f.rpc,
               sdk: {
                 threads: {
@@ -136,8 +134,7 @@ it.each(["board", "list", "side"])(
                     }),
                 },
               },
-            },
-          )
+            })
         : renderSlot(
             app.navPanels[0]!,
             { subPath: `${f.project.id}?view=${surface}` },

@@ -295,7 +295,7 @@ export function TasksTopbar({
           className="size-7 shrink-0 max-md:pointer-coarse:size-9"
           aria-label="Open kanban in side panel"
           onClick={() => {
-            if (!appPanel.openFixedTab({ surface: { kind: "current" }, tab: KANBAN_TAB })) {
+            if (!appPanel.openTab({ tab: KANBAN_TAB })) {
               toast.error("Could not open the kanban panel");
               return;
             }

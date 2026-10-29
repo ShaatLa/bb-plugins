@@ -3,7 +3,7 @@ import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { makeTask, rpcInput } from "../../test-fixtures.js";
+import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { loadListPreference, storeListPreference } from "../list/list-preference.js";
 
 if (!globalThis.ResizeObserver) {
@@ -102,18 +102,17 @@ describe("Task directive card", () => {
   });
 
   it("opens the side panel on primary click and the Tasks app from the arrow", async () => {
-    const openThreadPanel = vi.fn(() => true);
+    const openTab = vi.fn(() => true);
     const slot = renderSlot(
       app.messageDirectives[0]!,
       directiveProps({ key: "TSK-4" }),
-      { openThreadPanel, rpc: { getTaskByKey: () => ({ task }) } },
+      { experimental_panel: { openTab }, rpc: { getTaskByKey: () => ({ task }) } },
     );
 
     fireEvent.click(await slot.findByText("Ship task embeds"));
-    expect(openThreadPanel).toHaveBeenCalledWith({
-      actionId: "task",
-      title: "TSK-4",
-      params: { taskKey: "TSK-4" },
+    expect(openTab).toHaveBeenCalledWith({
+      tab: expect.objectContaining({ id: "task", context: { kind: "thread" }, availability: "fixed" }),
+      target: { taskKey: "TSK-4" },
     });
 
     fireEvent.click(slot.getByRole("button", { name: "Open TSK-4 in Tasks" }));
@@ -268,11 +267,7 @@ describe("Task directive card", () => {
 
 describe("Task embed panel", () => {
   it("keeps an aliased task in the side panel until the user opens Tasks", async () => {
-    const slot = renderSlot(
-      app.threadPanelActions[0]!,
-      { threadId: "thr_1", params: { taskKey: "OLD-4" } },
-      { rpc: taskDetailRpc(() => ({ task })) },
-    );
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, { rpc: taskDetailRpc(() => ({ task })), experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "OLD-4" } } });
     await slot.findByRole("textbox", { name: "Task title" });
     expect(slot.navigateCalls).toEqual([]);
     fireEvent.click(slot.getByRole("button", { name: "Open OLD-4 in Tasks" }));
@@ -287,14 +282,9 @@ describe("Task embed panel", () => {
 
   it("resyncs the embedded task detail after reconnect", async () => {
     let title = "Stale embedded detail";
-    const slot = renderSlot(
-      app.threadPanelActions[0]!,
-      { threadId: "thr_1", params: { taskKey: "TSK-4" } },
-      {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
         realtimeConnectionState: "connected",
-        rpc: taskDetailRpc(() => ({ task: { ...task, title } })),
-      },
-    );
+        rpc: taskDetailRpc(() => ({ task: { ...task, title } })), experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-4" } } });
     await slot.findByText("Stale embedded detail");
 
     title = "Recovered embedded detail";
@@ -306,7 +296,7 @@ describe("Task embed panel", () => {
 
   it("shows the board linked to the panel's thread, regardless of the current route or last project", async () => {
     const getThread = vi.fn(async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }));
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       context: { projectId: "proj_unrelated", threadId: "thr_unrelated" },
       sdk: { threads: { get: getThread } },
       rpc: boardRpc(),
@@ -316,11 +306,11 @@ describe("Task embed panel", () => {
     expect(getThread).toHaveBeenCalledWith({ threadId: "thr_1" });
     expect(slot.rpcCalls.filter((call) => call.method === "listTasks").every((call) => rpcInput(call.input).projectId === PROJECT_ID)).toBe(true);
     expect(slot.navigateCalls).toEqual([]);
-    expect(app.threadPanelActions[0]!.layout).toBe("flush");
+    expect(taskTab(app).layout).toBe("flush");
   });
 
   it("opens a board card in this panel and returns to its board", async () => {
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
       rpc: boardRpc(),
     });
@@ -349,7 +339,7 @@ describe("Task embed panel", () => {
     const selected = { ...task, labelIds: [label.id] };
     const epic = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT2", key: "TSK-2", projectId: PROJECT_ID, title: "Epic milestone", type: "epic", status: "todo", priority: "low" });
     const other = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", key: "TSK-3", projectId: PROJECT_ID, title: "Other work", status: "todo", priority: "low" });
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
       rpc: {
         ...boardRpc(),
@@ -404,7 +394,7 @@ describe("Task embed panel", () => {
     storeListPreference(`project:${PROJECT_ID}`, {
       filters: { statuses: [], priorities: [], labelNames: ["Removed label"] }, sort: "manual",
     });
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
       rpc: boardRpc(),
     });
@@ -422,7 +412,7 @@ describe("Task embed panel", () => {
     const hidden = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT2", projectId: PROJECT_ID, key: "TSK-2", title: "Hidden low priority", status: "todo", priority: "low", position: 100 });
     const target = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", projectId: PROJECT_ID, key: "TSK-3", title: "Visible high priority", status: "todo", priority: "high", position: 200 });
     const boardMove = vi.fn(() => ({ ok: true, task: { ...task, status: "todo" } }));
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
       rpc: {
         ...boardRpc(), boardMove,
@@ -454,10 +444,9 @@ describe("Task embed panel", () => {
   });
 
   it("keeps task links from messages working and offers a return to the thread's board", async () => {
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: { taskKey: task.key } }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
-      rpc: boardRpc(),
-    });
+      rpc: boardRpc(), experimental_fixedTabTarget: { tabId: "task", target: { taskKey: task.key } } });
     await slot.findByRole("textbox", { name: "Task title" });
     fireEvent.click(slot.getByRole("button", { name: "Back to project board" }));
     await slot.findByRole("button", { name: "New Todo task" });
@@ -467,7 +456,7 @@ describe("Task embed panel", () => {
   it("opens newly created tasks in this panel", async () => {
     const creates: Record<string, unknown>[] = [];
     const created = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT9", key: "TSK-9", title: "Created in the thread board" });
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
       rpc: {
         ...boardRpc(),
@@ -487,7 +476,7 @@ describe("Task embed panel", () => {
   });
 
   it("explains a missing project link instead of showing another project's board", async () => {
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_unlinked" }) } },
       rpc: boardRpc(),
     });
@@ -499,7 +488,7 @@ describe("Task embed panel", () => {
 
   it("retries a failed thread lookup without blocking task links", async () => {
     let failed = true;
-    const slot = renderSlot(app.threadPanelActions[0]!, { threadId: "thr_1", params: null }, {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => {
         if (failed) throw new Error("Thread temporarily unavailable");
         return makeThreadResponse({ id: "thr_1", projectId: "proj_thread" });

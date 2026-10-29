@@ -10,6 +10,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../../api";
 import { tasksRpcContract } from "../../shared/contract";
 import { createStructuredStore } from "../../structured/store";
+import { taskTab } from "../../test-fixtures.js";
 
 window.ResizeObserver ??= class {
   observe() {}
@@ -254,10 +255,7 @@ describe("question and evidence UI", () => {
       });
       const mount = () =>
         surface === "side"
-          ? renderSlot(
-              app.threadPanelActions[0]!,
-              { threadId: "thr_questions", params: null },
-              {
+          ? renderSlot(taskTab(app), { threadId: "thr_questions", environment: null }, {
                 rpc,
                 sdk: {
                   threads: {
@@ -268,8 +266,7 @@ describe("question and evidence UI", () => {
                       }),
                   },
                 },
-              },
-            )
+              })
           : renderSlot(
               app.navPanels[0]!,
               { subPath: `${project.id}?view=${surface}` },
@@ -366,10 +363,7 @@ describe("question and evidence UI", () => {
           : question.options.map((option) => option.id),
       );
       slot.lifecycle.unmount();
-      const side = renderSlot(
-        app.threadPanelActions[0]!,
-        { threadId: "thr_questions", params: { taskKey: task.key } },
-        {
+      const side = renderSlot(taskTab(app), { threadId: "thr_questions", environment: null }, {
           rpc,
           sdk: {
             threads: {
@@ -379,9 +373,7 @@ describe("question and evidence UI", () => {
                   projectId: "proj_questions",
                 }),
             },
-          },
-        },
-      );
+          }, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: task.key } } });
       const restored = await side.findByRole("group", {
         name: "Choose platforms",
       });

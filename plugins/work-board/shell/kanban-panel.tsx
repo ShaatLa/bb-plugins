@@ -8,7 +8,11 @@ import { loadLastProjectId } from "./view-preference.js";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
 
-export const KANBAN_TAB = { panelId: "work-board", id: "kanban" } as const;
+export const KANBAN_TAB = {
+  id: "kanban",
+  context: { kind: "nav-panel", panelId: "work-board" },
+  availability: "fixed",
+} as const;
 
 function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
