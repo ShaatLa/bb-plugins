@@ -3,21 +3,18 @@ import {
   type ExperimentalBadge,
   useRealtime,
   useRealtimeConnectionState,
-  useSettings,
 } from "@get-bb/plugin-sdk/app";
 import { badgeLabel } from "../shared/badge.js";
 import { useTasksRpc } from "./data.js";
 
 const TIME_BASED_REFRESH_MS = 60_000;
 
-/** Work Board navigation badge: distinct tasks matching the criteria chosen in settings. */
+/** Work Board navigation badge: distinct tasks matching the criteria chosen in Work Board settings. */
 export function useOpenTasksBadge(): ExperimentalBadge | null {
   const rpc = useTasksRpc();
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
   const connectionState = useRealtimeConnectionState();
-  const settings = useSettings();
-  const settingsKey = JSON.stringify(settings.values ?? null);
   const requestState = useRef({
     isMounted: true,
     isRunning: false,
@@ -65,7 +62,7 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
 
   useEffect(() => {
     if (connectionState === "connected") refresh();
-  }, [connectionState, refresh, settingsKey]);
+  }, [connectionState, refresh]);
   // The idle-thread criterion depends on elapsed time, not only on events.
   useEffect(() => {
     if (!badge.timeBased) return;
@@ -75,6 +72,7 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
   useRealtime("tasks:changed", refresh);
   useRealtime("projects:changed", refresh);
   useRealtime("threads:changed", refresh);
+  useRealtime("badge:changed", refresh);
 
   return badge.value;
 }

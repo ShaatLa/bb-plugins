@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { createStore } from "./index";
+import { createStore, registerTasksApi } from "./index";
 import { navigationBadgeCounts } from "./badge";
 import { badgeLabel } from "../shared/badge";
 
@@ -29,5 +29,27 @@ describe("navigation badge", () => {
     expect(badgeLabel(2, { needs_answer: 1, owner: 1, in_review: 0 }, ["needs_answer", "owner", "in_review"])).toBe(
       "2 tasks: 1 with unanswered questions, 1 for the owner",
     );
+  });
+
+  it("stores the chosen criteria once, in a stable order, and counts with them", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const project = store.tasks.createProject({ name: "Badge", prefix: "BDG", color: "blue" });
+    store.tasks.createTask({ projectId: project.id, title: "Review", status: "in_review" });
+    store.tasks.createTask({ projectId: project.id, title: "Todo" });
+
+    expect(await harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["open"] });
+    expect(
+      await harness.callRpc("setNavigationBadgeCriteria", { criteria: ["owner", "in_review", "owner"] }),
+    ).toEqual({ criteria: ["in_review", "owner"] });
+    expect(await harness.callRpc("navigationBadge", null)).toMatchObject({
+      count: 1,
+      criteria: ["in_review", "owner"],
+      timeBased: false,
+    });
+    await harness.callRpc("setNavigationBadgeCriteria", { criteria: [] });
+    expect(await harness.callRpc("navigationBadge", null)).toMatchObject({ count: 0, criteria: [] });
+    await harness.dispose();
   });
 });

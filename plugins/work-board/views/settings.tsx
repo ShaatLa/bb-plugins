@@ -1,4 +1,5 @@
 import { GitSyncSettings } from "./git-sync-settings";
+import { NavigationBadgeSettings } from "./navigation-badge-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
 import {
   Select,
@@ -370,6 +371,7 @@ function TasksSettingsContent() {
           </Button>
         </div>
       </div>
+      <NavigationBadgeSettings />
       <section
         aria-label="Project task statuses"
         className="space-y-3 border-t border-border pt-4"

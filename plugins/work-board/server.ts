@@ -7,13 +7,12 @@ import { registerAttachments } from "./attachments";
 import { registerTasksCli } from "./cli";
 import { registerDelegation } from "./delegate";
 import { registerLifecycle } from "./lifecycle";
-import { BADGE_CRITERIA, BADGE_SETTING_KEYS, type BadgeCriterion } from "./shared/badge";
 import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.15.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.15.1";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -21,35 +20,6 @@ const tasksRpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true), version: z.string() }),
   },
 });
-
-const BADGE_LABELS: Record<BadgeCriterion, string> = {
-  open: "Navigation badge: open tasks",
-  in_review: "Navigation badge: tasks in review",
-  needs_answer: "Navigation badge: tasks with unanswered questions",
-  owner: "Navigation badge: owner actions",
-  failed_thread: "Navigation badge: tasks with a failed thread",
-  stale_idle: "Navigation badge: tasks with an idle thread and no update",
-};
-
-// One boolean per criterion acts as a multi-select; the badge counts each task once.
-function badgeSettings() {
-  return Object.fromEntries(
-    BADGE_CRITERIA.map((criterion) => [
-      BADGE_SETTING_KEYS[criterion],
-      {
-        type: "boolean" as const,
-        label: BADGE_LABELS[criterion],
-        description:
-          criterion === "open"
-            ? "The Work Board badge counts tasks matching any selected option; a task that matches several counts once."
-            : criterion === "stale_idle"
-              ? "Uses the idle-thread threshold above; off there means this option counts nothing."
-              : "Counted together with the other selected badge options, without duplicates.",
-        default: criterion === "open",
-      },
-    ]),
-  ) as { [K in BadgeCriterion as (typeof BADGE_SETTING_KEYS)[K]]: { type: "boolean"; label: string; description: string; default: boolean } };
-}
 
 function statusPayload() {
   return { name: WORK_BOARD_PLUGIN_NAME, version: WORK_BOARD_PLUGIN_VERSION };
@@ -88,7 +58,6 @@ export default async function plugin(bb: BbPluginApi) {
       },
       default: "45",
     },
-    ...badgeSettings(),
     defaultScreen: {
       type: "select",
       label: "Open by default",
@@ -105,18 +74,10 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const store = createStore(bb);
-  registerTasksApi(
-    bb,
-    store,
-    async () => {
-      const { staleIdleMinutes } = await settings.get();
-      return staleIdleMinutes === "off" ? null : Number(staleIdleMinutes);
-    },
-    async () => {
-      const values = await settings.get();
-      return BADGE_CRITERIA.filter((criterion) => values[BADGE_SETTING_KEYS[criterion]]);
-    },
-  );
+  registerTasksApi(bb, store, async () => {
+    const { staleIdleMinutes } = await settings.get();
+    return staleIdleMinutes === "off" ? null : Number(staleIdleMinutes);
+  });
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);

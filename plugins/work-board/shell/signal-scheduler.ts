@@ -5,6 +5,7 @@ const INVALIDATION_CHANNELS = [
   "threads:changed",
   "prs:changed",
   "locks:changed",
+  "badge:changed",
 ] as const;
 
 export type InvalidationChannel = (typeof INVALIDATION_CHANNELS)[number];
