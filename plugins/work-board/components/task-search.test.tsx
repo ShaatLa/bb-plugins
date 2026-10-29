@@ -9,7 +9,7 @@ import {
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../api";
 import { tasksRpcContract } from "../shared/contract";
-import { rpcInput } from "../test-fixtures";
+import { rpcInput, taskTab } from "../test-fixtures";
 import { storeListPreference } from "../views/list/list-preference";
 
 window.ResizeObserver ??= class {
@@ -75,7 +75,7 @@ describe("task search", () => {
     const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_anvil" }) } } };
     const slot = surface === "main"
       ? renderSlot(app.navPanels[0]!, { subPath: project.id }, options)
-      : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_search", params: null }, options);
+      : renderSlot(taskTab(app), { threadId: "thr_search", environment: null }, options);
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     fireEvent.change(input, { target: { value: "8" } });
     await slot.findByRole("option", { name: /ANV-8/ });
@@ -107,7 +107,7 @@ describe("task search", () => {
     const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_anvil" }) } } };
     const slot = surface === "main"
       ? renderSlot(app.navPanels[0]!, { subPath: project.id }, options)
-      : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_search", params: null }, options);
+      : renderSlot(taskTab(app), { threadId: "thr_search", environment: null }, options);
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     input.focus();
     fireEvent.change(input, { target: { value: "8" } });
@@ -174,10 +174,7 @@ describe("task search", () => {
       },
       sort: "manual",
     });
-    const slot = renderSlot(
-      app.threadPanelActions[0]!,
-      { threadId: "thr_search", params: null },
-      {
+    const slot = renderSlot(taskTab(app), { threadId: "thr_search", environment: null }, {
         sdk: {
           threads: {
             get: async () =>
@@ -185,8 +182,7 @@ describe("task search", () => {
           },
         },
         rpc,
-      },
-    );
+      });
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     expect(input.tagName).toBe("INPUT");
     expect(slot.queryByRole("button", { name: "Search tasks" })).toBeNull();

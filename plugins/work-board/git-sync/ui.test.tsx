@@ -8,6 +8,7 @@ import { gitSyncService } from "./service";
 import { createGitSyncStore } from "./store";
 import { gitSyncConfigSchema, prSnapshotSchema } from "../shared/git-sync";
 import { tasksRpcContract } from "../shared/contract";
+import { taskTab } from "../test-fixtures.js";
 
 window.matchMedia ??= (media) => ({
   matches: false,
@@ -127,7 +128,7 @@ it.each(["main", "side"])("orders PRs newest first by merge date in the %s task 
   f.rpc.listPrLinks = async () => ({ links });
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: `task/${f.task.key}` }, { rpc: f.rpc })
-    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_example", params: { taskKey: f.task.key } }, { rpc: f.rpc });
+    : renderSlot(taskTab(app), { threadId: "thr_example", environment: null }, { rpc: f.rpc, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: f.task.key } } });
   const region = await slot.findByRole("region", { name: "Task pull requests" });
   await within(region).findByRole("link", { name: "service#42" });
   expect(within(region).getAllByRole("link", { name: /^service#/ }).map((link) => link.textContent)).toEqual([
@@ -203,11 +204,7 @@ it.each(["main", "side"])(
             { subPath: `task/${f.task.key}` },
             { rpc: f.rpc, openUrl: () => true },
           )
-        : renderSlot(
-            app.threadPanelActions[0]!,
-            { threadId: "thr_example", params: { taskKey: f.task.key } },
-            { rpc: f.rpc, openUrl: () => true },
-          );
+        : renderSlot(taskTab(app), { threadId: "thr_example", environment: null }, { rpc: f.rpc, openUrl: () => true, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: f.task.key } } });
     const region = await slot.findByRole("region", {
       name: "Task pull requests",
     });

@@ -7,11 +7,12 @@ import { registerAttachments } from "./attachments";
 import { registerTasksCli } from "./cli";
 import { registerDelegation } from "./delegate";
 import { registerLifecycle } from "./lifecycle";
+import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.13.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.14.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -81,6 +82,12 @@ export default async function plugin(bb: BbPluginApi) {
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);
   registerMentions(bb, store);
+  // Read when a provider session starts, so only threads started or resumed after install see it.
+  bb.agents.contributeInstructions(({ projectId }) =>
+    store.tasks.listProjects().some((project) => project.linkedBbProjectId === projectId)
+      ? TASK_LINK_INSTRUCTIONS
+      : null,
+  );
   await registerLifecycle(bb, store);
   bb.background.schedule("auto-archive-tasks", "0 * * * *", async () => {
     const { autoArchiveAfterDays } = await settings.get();

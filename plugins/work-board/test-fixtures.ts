@@ -1,3 +1,5 @@
+import type { ComponentType } from "react";
+import type { ExperimentalThreadTabProps, PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { Task } from "./shared/contract.js";
 
 export function makeTask(overrides: Partial<Task> = {}): Task {
@@ -54,4 +56,31 @@ export function createMemoryStorage(
       entries.set(key, String(value));
     },
   };
+}
+
+/** The fixed Work Board tab of the thread side panel. */
+export function taskTab(app: { tabs: readonly { id: string; context: { kind: string } }[] }) {
+  const tab = app.tabs.find((candidate) => candidate.id === "task" && candidate.context.kind === "thread");
+  if (!tab) throw new Error("Work Board thread tab is not registered");
+  // The collector types tabs as a union of contexts; this one is the thread tab.
+  return tab as unknown as { component: ComponentType<ExperimentalThreadTabProps>; layout?: "flush" | "padded" };
+}
+
+/** Fakes the GitHub PR Status keyed `pullRequests` read from a per-environment lookup. */
+export function prStatusPlugin(lookup: (args: { environmentId: string }) => unknown) {
+  return {
+    callRpc: async ({ input }: { input?: unknown }) => {
+      const { keys } = input as { keys: string[] };
+      return Object.fromEntries(
+        await Promise.all(keys.map(async (key) => [key, await lookup({ environmentId: key })] as const)),
+      );
+    },
+  } as never;
+}
+
+/** A fixed tab of the Work Board page side panel ("navigation" or "kanban"). */
+export function navTab(app: { tabs: readonly { id: string; context: { kind: string } }[] }, id: string) {
+  const tab = app.tabs.find((candidate) => candidate.id === id && candidate.context.kind === "nav-panel");
+  if (!tab) throw new Error(`Work Board page tab ${id} is not registered`);
+  return tab as unknown as { component: ComponentType<PluginNavPanelProps>; layout?: "flush" | "padded" };
 }

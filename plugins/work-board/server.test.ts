@@ -35,3 +35,20 @@ describe("Tasks plugin scaffold", () => {
     await harness.dispose();
   });
 });
+
+describe("task link instructions", () => {
+  it("are contributed only to threads in bb projects linked to Work Board", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Linked", "--prefix", "LNK", "--bb-project", "proj_linked"]);
+
+    const provider = harness.registrations.instructionProvider!;
+    expect(provider({ threadId: "thr_a", projectId: "proj_linked" })).toContain(
+      "[ANV-12](/plugins/work-board/work-board/task/ANV-12)",
+    );
+    expect(provider({ threadId: "thr_b", projectId: "proj_other" })).toBeNull();
+    const shown = JSON.parse((await harness.runCli(["create", "--project", "LNK", "--title", "One", "--json"])).stdout);
+    expect(shown.link).toBe(`[${shown.task.key}](/plugins/work-board/work-board/task/${shown.task.key})`);
+    await harness.dispose();
+  });
+});

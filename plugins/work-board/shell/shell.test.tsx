@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { makeTask } from "../test-fixtures.js";
+import { makeTask, navTab } from "../test-fixtures.js";
 import type { Task } from "../shared/contract.js";
 
 const app = await loadPluginApp(() => import("../app"));
@@ -13,7 +13,7 @@ const { querySnapshotStorageKey, resetQuerySnapshotStateForTest } =
   await import("./query-snapshot.js");
 
 const tasksRegistration = app.navPanels[0]!;
-const navigationView = tasksRegistration.fixedTabs?.[0]!;
+const navigationView = navTab(app, "navigation");
 const navigationRegistration = {
   ...tasksRegistration,
   component: navigationView.component,
@@ -200,7 +200,7 @@ describe("startup screen", () => {
 });
 
 describe("resource lock chips", () => {
-  const kanbanTab = tasksRegistration.fixedTabs!.find(({ id }) => id === "kanban")!;
+  const kanbanTab = navTab(app, "kanban");
   const lock = {
     name: "dev",
     holderThreadId: "thr_holder",
@@ -260,22 +260,24 @@ describe("resource lock chips", () => {
 });
 
 describe("kanban side panel", () => {
-  const kanbanTab = tasksRegistration.fixedTabs!.find(({ id }) => id === "kanban")!;
+  const kanbanTab = navTab(app, "kanban");
 
   it("opens the native kanban tab and leaves the project list in the main area", async () => {
     const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=board` }, {
       rpc: seededRpc(),
-      experimental_openFixedTab: () => true,
+      experimental_panel: { openTab: () => true },
     });
     fireEvent.click(await slot.findByRole("button", { name: "Open kanban in side panel" }));
-    expect(slot.inspection.experimental_fixedTabOpenCalls).toEqual([{ surface: { kind: "current" }, panelId: "work-board", tabId: "kanban" }]);
+    expect(slot.inspection.experimental_panelCalls).toEqual([
+      { method: "openTab", options: { tab: { id: "kanban", context: { kind: "nav-panel", panelId: "work-board" }, availability: "fixed" } } },
+    ]);
     expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${PROJECT_ID}?view=list` } });
   });
 
   it("keeps the main board when the host declines the panel open", async () => {
     const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=board` }, {
       rpc: seededRpc(),
-      experimental_openFixedTab: () => false,
+      experimental_panel: { openTab: () => false },
     });
     fireEvent.click(await slot.findByRole("button", { name: "Open kanban in side panel" }));
     expect(slot.navigateCalls).toEqual([]);

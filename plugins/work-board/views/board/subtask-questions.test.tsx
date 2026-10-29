@@ -11,6 +11,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../../api";
 import { tasksRpcContract } from "../../shared/contract";
 import { createStructuredStore } from "../../structured/store";
+import { taskTab, navTab } from "../../test-fixtures.js";
 
 window.ResizeObserver ??= class {
   observe() {}
@@ -116,17 +117,11 @@ it.each(["main", "side", "kanban"])(
     } = await setup();
     const slot =
       surface === "side"
-        ? renderSlot(
-            app.threadPanelActions[0]!,
-            { threadId: "thr_subtasks", params: null },
-            { rpc, sdk },
-          )
+        ? renderSlot(taskTab(app), { threadId: "thr_subtasks", environment: null }, { rpc, sdk })
         : surface === "kanban"
           ? renderSlot(
               {
-                component: app.navPanels[0]!.fixedTabs!.find(
-                  (tab) => tab.id === "kanban",
-                )!.component,
+                component: navTab(app, "kanban").component,
               },
               { subPath: project.id },
               { rpc, sdk },
@@ -272,11 +267,7 @@ it.each(["main", "side"])(
     } = await setup();
     const slot =
       surface === "side"
-        ? renderSlot(
-            app.threadPanelActions[0]!,
-            { threadId: "thr_subtasks", params: { taskKey: parent.key } },
-            { rpc, sdk },
-          )
+        ? renderSlot(taskTab(app), { threadId: "thr_subtasks", environment: null }, { rpc, sdk, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: parent.key } } })
         : renderSlot(
             app.navPanels[0]!,
             { subPath: `task/${parent.key}` },
@@ -350,7 +341,7 @@ it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { cou
   const options = { rpc: f.rpc, sdk: f.sdk };
   const mount = () => surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: `${f.project.id}?view=board` }, options)
-    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_subtasks", params: null }, options);
+    : renderSlot(taskTab(app), { threadId: "thr_subtasks", environment: null }, options);
   const started = performance.now();
   const slot = mount();
   await waitFor(() => expect(slot.container.querySelectorAll("[data-task-key]").length).toBeGreaterThan(0), { timeout: 500 });

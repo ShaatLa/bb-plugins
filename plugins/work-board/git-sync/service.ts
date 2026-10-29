@@ -1,4 +1,5 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
+import { environmentPullRequests } from "./environment-prs";
 import type { TasksApiStore } from "../api";
 import type { tasksRpcContract } from "../shared/contract";
 import { publishProjectsChanged } from "../api";
@@ -207,13 +208,11 @@ export function createGitSyncService(
           }
         }
       }
+      const lookups = await environmentPullRequests(bb, environmentTasks.keys());
       for (const [environmentId, members] of environmentTasks) {
-        if (!current()) break;
+        const result = lookups.get(environmentId)!;
+        if (result.outcome !== "available" || !current()) continue;
         try {
-          const result = await bb.sdk.environments.pullRequest({
-            environmentId,
-          });
-          if (result.outcome !== "available" || !current()) continue;
           const parsed = parsePrUrl(result.pullRequest.url);
           if (config.repositories.includes(parsed.repository))
             for (const taskId of members)

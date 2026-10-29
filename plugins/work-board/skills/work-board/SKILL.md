@@ -141,19 +141,29 @@ Paths target the invoking thread's machine, otherwise the server; `--machine <id
 
 ## Link tasks in responses
 
-When your answer refers the user to a task — including a task you just
-created — emit this leaf directive on its own line instead of writing the
-key as plain text:
+When your reply to the person mentions a task, write the key as an inline
+Markdown link, including for a task you just created:
+
+```md
+Fixed in [ABC-12](/plugins/work-board/work-board/task/ABC-12).
+```
+
+`bb work-board show KEY` and `create` print this link (`link` in `--json`).
+bb opens it in the app. Use it only in bb chat; GitHub, Slack and task
+comments take plain keys.
+
+When the person needs the live status card, emit this leaf directive on its
+own line instead:
 
 ```md
 ::task{key="ABC-12"}
 ```
 
 `key` is required. Optionally add `title="…"` as a display fallback shown
-while the card loads and when the key no longer resolves. The rendered card
-shows the live status, title, and priority, opens the task in the thread
-side panel, and links to the full Tasks app. Emit one directive per line;
-each renders its own card.
+while the card loads and when the key no longer resolves. The card shows the
+live status, title, and priority, opens the task in the thread side panel's
+Work Board tab, and links to the full Work Board page. Emit one directive per
+line; each renders its own card.
 
 ## CLI conventions
 

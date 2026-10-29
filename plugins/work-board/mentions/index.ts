@@ -10,6 +10,7 @@ import {
   type TaskThread,
 } from "../db";
 import { displayName } from "../shared/display-name";
+import { taskMarkdownLink } from "../shared/task-link";
 
 const SEARCH_LIMIT = 10;
 const RECENT_COMMENT_LIMIT = 5;
@@ -200,6 +201,7 @@ ${JSON.stringify(
 
 ## Action contract
 
+When you mention this task in a reply to the person, write ${taskMarkdownLink(task.key)} so bb renders a link.
 You can act on this task with the bb work-board CLI. If you begin working on it, first run: bb work-board attach ${task.key} (attaches THIS thread so the task shows you as working). Comment substantive updates via bb work-board comment ${task.key} --body ... and set status via bb work-board update ${task.key} --status ...
 `;
 }

@@ -20,10 +20,20 @@ it("exposes Work Board settings with links to tasks and management", () => {
   ]);
 });
 
-describe("Tasks nav panel sidebar accessory", () => {
+// Renders the navigation badge hook so its count can be asserted like the retired accessory.
+function badgeProbe() {
+  const useBadge = app.navPanels[0]?.experimental_useBadge;
+  if (!useBadge) return undefined;
+  return function BadgeProbe() {
+    const badge = useBadge();
+    return badge?.count ? <span>{badge.count}</span> : null;
+  };
+}
+
+describe("Tasks nav panel open-task badge", () => {
   it("renders the durable open count and refreshes it on task changes", async () => {
     let openTaskCount = 12;
-    const Accessory = app.navPanels[0]?.experimental_sidebarAccessory;
+    const Accessory = badgeProbe();
     expect(Accessory).toBeTypeOf("function");
 
     const slot = renderSlot(
@@ -58,7 +68,7 @@ describe("Tasks nav panel sidebar accessory", () => {
 
   it("hides the count when there are no open tasks", async () => {
     let openTaskCount = 0;
-    const Accessory = app.navPanels[0]?.experimental_sidebarAccessory;
+    const Accessory = badgeProbe();
 
     const slot = renderSlot(
       { component: Accessory! },
@@ -103,7 +113,7 @@ describe("Tasks nav panel sidebar accessory", () => {
     const firstRequest = new Promise<{ openTaskCount: number }>((resolve) => {
       resolveFirstRequest = resolve;
     });
-    const Accessory = app.navPanels[0]?.experimental_sidebarAccessory;
+    const Accessory = badgeProbe();
 
     const slot = renderSlot(
       { component: Accessory! },

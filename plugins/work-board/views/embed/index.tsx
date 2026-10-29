@@ -1,11 +1,15 @@
 import { TaskStatusesProvider, useTaskStatuses } from "../../shell/task-statuses.js";
 import { statusLabel } from "../../shared/statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  PluginMessageDirectiveProps,
-  PluginThreadPanelProps,
-} from "@get-bb/plugin-sdk";
-import { useBbNavigate, useRealtime, useSdk } from "@get-bb/plugin-sdk/app";
+import type { PluginMessageDirectiveProps } from "@get-bb/plugin-sdk";
+import {
+  experimental_useAppPanel,
+  experimental_useFixedTabTarget,
+  type ExperimentalThreadTabProps,
+  useBbNavigate,
+  useRealtime,
+  useSdk,
+} from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,6 +30,18 @@ import { PRIORITY_LABELS } from "../list/lib.js";
 import { StatusIcon } from "../list/icons.js";
 
 const TASK_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
+
+type TaskTabTarget = { taskKey: string };
+/** The fixed Work Board tab of the thread side panel; a target opens one task in it. */
+export const TASK_TAB = {
+  id: "task",
+  context: { kind: "thread" },
+  availability: "fixed",
+  experimental_target: {
+    validate: (value: unknown): value is TaskTabTarget =>
+      isRecord(value) && typeof value.taskKey === "string" && TASK_KEY_PATTERN.test(value.taskKey),
+  },
+} as const;
 
 type TaskEmbedState =
   | { kind: "loading" }
@@ -152,6 +168,7 @@ function embedAriaLabel(task: Task, label = statusLabel(task.status)): string {
 function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
   const { label: taskStatusLabel } = useTaskStatuses();
   const navigate = useBbNavigate();
+  const appPanel = experimental_useAppPanel();
   const taskKey = attributes.key?.trim() ?? "";
   const fallbackTitle = attributes.title?.trim() || null;
   const validKey = TASK_KEY_PATTERN.test(taskKey);
@@ -232,11 +249,7 @@ function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
 
   const { task } = state;
   const openInSidePanel = () => {
-    const opened = navigate.openThreadPanel({
-      actionId: "task",
-      title: task.key,
-      params: { taskKey: task.key },
-    });
+    const opened = appPanel.openTab({ tab: TASK_TAB, target: { taskKey: task.key } });
     if (!opened) {
       navigate.toPluginPanel(PANEL_PATH, {
         subPath: taskDetailSubPath(task.key),
@@ -277,15 +290,17 @@ function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
   );
 }
 
-function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
+function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
   const sdk = useSdk();
   const navigate = useBbNavigate();
-  const initialKey = isRecord(params) && typeof params.taskKey === "string"
-    ? params.taskKey.trim()
-    : "";
+  const target = experimental_useFixedTabTarget(TASK_TAB);
   const [route, setRoute] = useState<TasksRoute>(() =>
-    TASK_KEY_PATTERN.test(initialKey) ? { kind: "task", taskKey: initialKey } : { kind: "all" },
+    target ? { kind: "task", taskKey: target.target.taskKey } : { kind: "all" },
   );
+  // Each open-from-message request carries a new sequence, even for the same task.
+  useEffect(() => {
+    if (target) setRoute({ kind: "task", taskKey: target.target.taskKey });
+  }, [target?.sequence]);
   const projects = useProjects();
   const threadProject = useTasksQuery(
     async () => (await sdk.threads.get({ threadId })).projectId,
@@ -372,10 +387,10 @@ function TaskEmbedPanelContent({ threadId, params }: PluginThreadPanelProps) {
   );
 }
 
-export function TaskEmbedPanel(props: PluginThreadPanelProps) {
+export function TaskEmbedPanel(props: ExperimentalThreadTabProps) {
   return (
     <TasksRefreshProvider>
-      <TaskStatusesProvider><TaskEmbedPanelContent key={`${props.threadId}:${JSON.stringify(props.params)}`} {...props} /></TaskStatusesProvider>
+      <TaskStatusesProvider><TaskEmbedPanelContent key={props.threadId} {...props} /></TaskStatusesProvider>
     </TasksRefreshProvider>
   );
 }

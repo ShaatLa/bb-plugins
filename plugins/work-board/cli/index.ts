@@ -55,6 +55,7 @@ import { allocatePrefix } from "./prefix";
 import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
 import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
+import { taskMarkdownLink } from "../shared/task-link";
 import { threadHealthJson } from "../shared/thread-health";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
@@ -2231,9 +2232,10 @@ export function registerTasksCli(
                 }
               }
               const stdout = input.options.json
-                ? JSON.stringify({ task, attachments, failedAttachments })
+                ? JSON.stringify({ task, link: taskMarkdownLink(task.key), attachments, failedAttachments })
                 : [
                     `Created ${task.key}  ${task.title}`,
+                    `Link: ${taskMarkdownLink(task.key)}`,
                     ...attachments.map(
                       (attachment) =>
                         `Attached ${attachment.fileName}  ${attachment.id}`,
@@ -2553,6 +2555,7 @@ export function registerTasksCli(
                   prLinks,
                   overlaps,
                   task,
+                  link: taskMarkdownLink(task.key),
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2573,6 +2576,7 @@ export function registerTasksCli(
                 ...(prLinks.length ? [`Git/PR links\n${prLinks.map(({link,snapshot,stale}) => `${link.repository}#${link.number} · ${link.role} · ${link.excluded ? "excluded" : snapshot?.state ?? "unchecked"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n")}`] : []),
                 detail([
                   ["Task", `${task.key} — ${task.title}`],
+                  ["Link", taskMarkdownLink(task.key)],
                   ["Type", task.type],
                   [
                     "Epic",

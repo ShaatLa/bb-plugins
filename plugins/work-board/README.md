@@ -520,3 +520,11 @@ Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pu
 ## Sequence claims
 
 Create a project sequence with `bb work-board seq create registry_version --project ANV --next 234 --format '1.{n}'`. Use `seq list`, `seq show`, `seq set-next` and `seq delete` with `--project`. Claim with `bb work-board claim registry_version --project ANV --task ANV-12 [--pr URL] [--another]`; plain output is the rendered value. Release with `claim release registry_version 234 --project ANV --reason 'reason'`. Active claims appear on the task. Claims are idempotent per task unless `--another` is supplied; released values are never reused. `set-next --force` permits a lower counter, but allocation remains blocked until it exceeds all prior claims. Sequence state is not exported or imported, and PR close or merge does not release claims automatically.
+
+## Вкладка в правой панели и ссылки на задачи (0.14.0)
+
+**Work Board** — постоянная вкладка правой панели треда рядом с Info и Diff, а не закрываемая вкладка из меню «+». Карточка `::task` открывает задачу в этой вкладке. Вкладки Navigation и Kanban на странице Work Board зарегистрированы тем же способом (`experimental_tab`), их ID прежние. Счётчик открытых задач снова виден на пункте навигации (`experimental_useBadge`).
+
+В ответах в чате bb ссылка на задачу пишется обычной Markdown-ссылкой `[ANV-12](/plugins/work-board/work-board/task/ANV-12)`. `bb work-board show` и `create` печатают её готовой (поле `link` в `--json`), упоминание задачи через `@` передаёт её агенту. Тредам в bb-проектах, связанных с Work Board, плагин добавляет короткое правило про такие ссылки в системные инструкции. Оно появляется у тредов, запущенных или возобновлённых после установки.
+
+PR из окружений воркеров читаются через встроенный плагин GitHub PR Status (`bb--github-pr-status`) одним пакетным запросом: в bb 0.48 `bb.sdk.environments.pullRequest` больше нет. Если плагин GitHub PR Status выключен, такие PR помечаются как недоступные; явные ссылки на PR и Git-синхронизация работают как раньше.

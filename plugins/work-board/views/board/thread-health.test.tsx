@@ -5,6 +5,7 @@ import { createFakePluginHost, makeThreadResponse, type FakePluginHarness } from
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../../api";
 import { tasksRpcContract } from "../../shared/contract";
+import { taskTab, navTab } from "../../test-fixtures.js";
 
 window.ResizeObserver ??= class {
   observe() {}
@@ -57,9 +58,9 @@ it.each(["main", "side", "kanban"])("marks failed and stale-idle threads on the 
   const options = { rpc, sdk };
   const slot =
     surface === "side"
-      ? renderSlot(app.threadPanelActions[0]!, { threadId: "thr_health", params: null }, options)
+      ? renderSlot(taskTab(app), { threadId: "thr_health", environment: null }, options)
       : surface === "kanban"
-        ? renderSlot({ component: app.navPanels[0]!.fixedTabs!.find((tab) => tab.id === "kanban")!.component }, { subPath: project.id }, options)
+        ? renderSlot({ component: navTab(app, "kanban").component }, { subPath: project.id }, options)
         : renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=board` }, options);
   const card = (key: string) => slot.container.querySelector(`[data-task-key="${key}"]`)!;
   const failed = await slot.findByRole("img", { name: /^Thread Broken worker failed/ });

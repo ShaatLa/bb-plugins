@@ -3,7 +3,7 @@ import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { makeTask, rpcInput } from "../../test-fixtures.js";
+import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { storeDefaultThread } from "./thread-preference.js";
 
 if (!window.matchMedia) {
@@ -145,7 +145,7 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
   ] }) }) };
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
-    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+    : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   fireEvent.click(await slot.findByRole("button", { name: "Open thread Correctness review" }));
   fireEvent.click(slot.getByRole("button", { name: "Open thread QA verification" }));
   expect(slot.navigateCalls).toEqual([
@@ -372,11 +372,7 @@ describe("copying the task key", () => {
       const slot =
         surface === "main"
           ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
-          : renderSlot(
-              app.threadPanelActions[0]!,
-              { threadId: "thr_copy", params: { taskKey: "TSK-5" } },
-              options,
-            );
+          : renderSlot(taskTab(app), { threadId: "thr_copy", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
       fireEvent.click(
         await slot.findByRole("button", { name: "Copy task key" }),
       );
@@ -486,7 +482,7 @@ it.each(["main", "side"])("renders an ANV-71-sized card within 500 ms while Git 
   const started = performance.now();
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
-    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+    : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   await slot.findByRole("textbox", { name: "Task title" }, { timeout: 500 });
   await slot.findByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
   await slot.findByText("Showing 20 of 80", {}, { timeout: 500 });
@@ -521,7 +517,7 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   }) };
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
-    : renderSlot(app.threadPanelActions[0]!, { threadId: "thr_parent", params: { taskKey: "TSK-5" } }, options);
+    : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   const title = await slot.findByRole("textbox", { name: "Task title" });
   const activity = slot.getByRole("region", { name: "Activity" });
   const composer = activity.querySelector(".tiptap")!;
