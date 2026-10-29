@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent } from "@testing-library/react";
+import { act, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
@@ -48,6 +48,36 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
     const unit = workflows.querySelector('a[href$="/actions/workflows/42"]');
     expect(unit?.closest("li")?.textContent).toContain("Total 2m 0s");
     expect(unit?.closest("li")?.querySelector(".text-lg")?.textContent).toBe("2m 0s");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("timing summary separates CI from frequent short automation without refetching", async () => {
+  const started = "2026-10-20T00:00:00Z";
+  const ciInsights = summarizeCi([10, 14, 16, 1000, 1100].map((seconds, index) => ({
+    id: index + 1, workflow_id: index < 3 ? 2 : 1, name: index < 3 ? "PR metadata" : "CI",
+    head_branch: "main", event: "push", conclusion: "success", created_at: started, run_started_at: started,
+    updated_at: new Date(Date.parse(started) + seconds * 1000).toISOString(),
+  })), "main");
+  const metrics = vi.fn(() => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 5 } }] }));
+  const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
+  try {
+    const card = await slot.findByRole("region", { name: "CI run timings" });
+    const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
+    expect(median()).toBe("17m 30s");
+    expect(card.textContent).toContain("Timing available for 2 of 2 successful runs");
+    const calls = metrics.mock.calls.length;
+    const select = within(card).getByRole("combobox", { name: "Timing workflow" });
+    fireEvent.change(select, { target: { value: "all" } });
+    expect(median()).toBe("16s");
+    expect(card.textContent).toContain("frequent short automation runs can dominate the median");
+    expect(card.textContent).toContain("Timing available for 5 of 5 successful runs");
+    fireEvent.change(select, { target: { value: "2" } });
+    expect(median()).toBe("14s");
+    expect(card.textContent).toContain("Timing available for 3 of 3 successful runs");
+    expect(metrics.mock.calls.length).toBe(calls);
+    fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
+    await act(async () => {});
+    expect(median()).toBe("14s");
   } finally { slot.lifecycle.unmount(); }
 });
 
