@@ -870,3 +870,28 @@ test("confirmed deferred drafts are separate outcomes and never depress pass rat
   await loadMetrics("acme/widgets", "token", new AbortController().signal, baseline.range, { metrics: baseline, records }, undefined, { request });
   expect(request.mock.calls.filter(([path]) => path.includes("/jobs?"))).toHaveLength(0);
 });
+
+
+test("custom draft recognition settings replace defaults and invalidate old counting results", async () => {
+  const original = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input, options) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("/actions/runs")) return Response.json({ total_count: 1, workflow_runs: [{
+      id: 77, created_at: recent, conclusion: "failure", name: "Verification", event: "pull_request", workflow_id: 1, head_branch: "feature", run_attempt: 1,
+    }] });
+    if (url.pathname.includes("/jobs")) return Response.json({ total_count: 1, jobs: [{ id: 1, name: "Gate", conclusion: "failure", steps: [{ name: "Draft guard", conclusion: "failure" }] }] });
+    return original(input, options);
+  });
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    const before = await harness.behavior.callRpc("metrics", null);
+    expect(before).toMatchObject({ repositories: [{ ci: { value: 0 }, ciOutcomes: { failure: 1 } }] });
+    await expect(harness.behavior.setSettings({ draftStep: "  " })).rejects.toThrow();
+    await harness.behavior.setSettings({ draftWorkflow: "Verification", draftJob: "Gate", draftStep: "Draft guard" });
+    expect(await harness.behavior.callRpc("snapshot", null)).toBeNull();
+    expect(await harness.behavior.callRpc("metrics", null)).toMatchObject({ repositories: [{ ci: { value: null }, ciOutcomes: { deferred_draft: 1 } }] });
+    expect(await harness.behavior.callRpc("interval", { repository: "acme/widgets", since: "2026-10-19T00:00:00Z", until: "2026-10-20T00:00:00Z" })).toMatchObject({ ciOutcomes: { deferred_draft: 1 } });
+    expect(await harness.behavior.callRpc("cardDetails", { kind: "ci", repository: "acme/widgets", since: "2026-10-19T00:00:00Z", until: "2026-10-20T00:00:00Z" })).toMatchObject({ items: [] });
+  } finally { await harness.lifecycle.dispose(); }
+});

@@ -1,3 +1,4 @@
+import { defaultDraftRules, draftRules, draftNameSchema } from "./draft-deferrals";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { defineRpcContract, type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -33,6 +34,9 @@ export const ciRpcContract = defineRpcContract({ ci: { input: ciQuerySchema, out
 
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
+    importBbRepositories: {
+      type: "boolean", label: "Include GitHub repositories from BB projects", default: true,
+    },
     repository: {
       type: "string",
       label: "Additional GitHub repositories (owner/repo, one per line or comma-separated)",
@@ -40,9 +44,9 @@ export default function plugin(bb: BbPluginApi) {
       experimental_multiline: true,
       experimental_schema: repositoriesSettingSchema,
     },
-    importBbRepositories: {
-      type: "boolean", label: "Include GitHub repositories from BB projects", default: true,
-    },
+    draftWorkflow: { type: "string", label: "Draft deferral: workflow name (exact match)", default: defaultDraftRules.workflow, experimental_schema: draftNameSchema },
+    draftJob: { type: "string", label: "Draft deferral: only failed job name (exact match)", default: defaultDraftRules.job, experimental_schema: draftNameSchema },
+    draftStep: { type: "string", label: "Draft deferral: only failed step name (exact match)", default: defaultDraftRules.step, experimental_schema: draftNameSchema },
     token: { type: "string", label: "GitHub token override (blank uses system authorization)", secret: true },
     refreshSeconds: {
       type: "number",
@@ -96,7 +100,10 @@ export default function plugin(bb: BbPluginApi) {
       : "days" in selection && selection.days === 3 ? ["half-day-buckets-v1", selection] : selection);
   }
   function configuration(values: Awaited<ReturnType<typeof settings.get>>) {
-    return createHash("sha256").update(JSON.stringify(["ci-exclude-cancelled-skipped-v1", "review:none", values.repository, values.importBbRepositories, values.token ?? ""])).digest("hex");
+    const rules = draftRules(values);
+    // Preserve existing caches on upgrade when the recognition rule has not changed.
+    const custom = JSON.stringify(rules) === JSON.stringify(defaultDraftRules) ? [] : [rules];
+    return createHash("sha256").update(JSON.stringify(["ci-exclude-cancelled-skipped-v1", "review:none", values.repository, values.importBbRepositories, values.token ?? "", ...custom])).digest("hex");
   }
   settings.onChange(() => {
     generation++;
@@ -204,7 +211,7 @@ export default function plugin(bb: BbPluginApi) {
     if (!force && source && Date.now() - Date.parse(source.metrics.updatedAt) >= 0 && Date.now() - Date.parse(source.metrics.updatedAt) < ttl && Date.parse(asOf.since) >= Date.parse(source.coverage.since) && Date.parse(asOf.until) <= Date.parse(source.coverage.until)
       && (Date.parse(range.until) <= Date.parse(source.coverage.until) || Date.now() - Date.parse(source.coverage.until) < ttl)) {
       // One repository history serves every contained view; PR creation counts remain range-specific.
-      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, onProgress: progress });
+      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, draftRules: draftRules(values), onProgress: progress });
       if (canWrite()) database.prepare("UPDATE repository_history SET data = ? WHERE repository = ? AND configuration = ?").run(JSON.stringify(source), repository, config);
       return metrics;
     }
@@ -217,7 +224,7 @@ export default function plugin(bb: BbPluginApi) {
     start = Math.max(start, Date.parse(minimumDate()));
     const coverage: DateRange = { since: new Date(Math.floor(start / 86_400_000) * 86_400_000).toISOString(), until: new Date(finish).toISOString(), label: "repository history", bucketMs: 86_400_000 };
     let records: HistoricalRecords | undefined;
-    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, historyRange: coverage, previous: source?.records, partitionCi: true, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
+    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
       if (records && canWrite()) {
         const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
         database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, JSON.stringify(result), Date.now());
@@ -249,9 +256,9 @@ export default function plugin(bb: BbPluginApi) {
   });
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
     async cardDetails(input) {
-      const { token: override } = await settings.get();
-      const { token } = await resolveGithubToken(override, controller.signal);
-      return loadCardDetails(input, token, controller.signal);
+      const values = await settings.get();
+      const { token } = await resolveGithubToken(values.token, controller.signal);
+      return loadCardDetails(input, token, controller.signal, draftRules(values));
     },
     async deployProduction() {
       if (deploying) throw new Error("A production deployment request is already in progress.");
@@ -272,11 +279,11 @@ export default function plugin(bb: BbPluginApi) {
     async interval({ repository, since, until }) {
       const start = Date.parse(since), end = Date.parse(until);
       if (start < Date.parse(minimumDate()) || start > end || end > Date.now()) throw new Error("Invalid statistics interval.");
-      const { token: override } = await settings.get();
-      const { token } = await resolveGithubToken(override, controller.signal);
+      const values = await settings.get();
+      const { token } = await resolveGithubToken(values.token, controller.signal);
       return loadMetrics(repository, token, controller.signal, {
         since, until, label: "selected interval", bucketMs: Math.max(1, end - start),
-      });
+      }, undefined, undefined, { draftRules: draftRules(values) });
     },
     metrics: (input) => input && "selection" in input ? metrics(input.selection, input.force) : metrics(input),
     async snapshot(input) {
@@ -310,7 +317,7 @@ export default function plugin(bb: BbPluginApi) {
         const result: DashboardData = {
           ...source,
           repositories: await Promise.all(source.repositories.map(async (repo, index) => ({
-            ...await loadMetrics(repo.repository, undefined, controller.signal, ranges[index]!, { metrics: repo, records: histories[repo.repository] }, undefined, { localOnly: true }),
+            ...await loadMetrics(repo.repository, undefined, controller.signal, ranges[index]!, { metrics: repo, records: histories[repo.repository] }, undefined, { localOnly: true, draftRules: draftRules(values) }),
             projectName: repo.projectName,
           }))),
         };

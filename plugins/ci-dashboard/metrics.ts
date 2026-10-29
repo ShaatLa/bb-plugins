@@ -1,4 +1,4 @@
-import { classifyDraft, draftCandidate } from "./draft-deferrals";
+import { classifyDraft, draftCandidate, type DraftRules } from "./draft-deferrals";
 import { z } from "zod";
 import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
@@ -110,7 +110,7 @@ export async function githubRequest(path: string, token: string | undefined, sig
 }
 
 export type LoadOptions = {
-  request?: GitHubRequest; historyRange?: DateRange; previous?: HistoricalRecords;
+  draftRules?: DraftRules; request?: GitHubRequest; historyRange?: DateRange; previous?: HistoricalRecords;
   localOnly?: boolean; partitionCi?: boolean; onProgress?: (metrics: Metrics) => void;
   onWarning?: (message: string) => void;
 };
@@ -297,12 +297,12 @@ export async function loadMetrics(repository: string, token: string | undefined,
         : await completeHistory();
       const previous = new Map(options.previous?.runs.map((run) => [run.id, run]));
       let unchecked = 0;
-      await Promise.all([...rows.values()].filter(draftCandidate).map(async (run) => {
+      await Promise.all([...rows.values()].filter((run) => draftCandidate(run, options.draftRules)).map(async (run) => {
         const old = previous.get(run.id);
         if (run.draftDeferred === undefined && old?.updated_at === run.updated_at && old?.run_attempt === run.run_attempt) run.draftDeferred = old?.draftDeferred;
         if (run.draftDeferred !== undefined) return;
         if (options.localOnly) { unchecked++; return; }
-        try { run.draftDeferred = await classifyDraft(run, repository, request); }
+        try { run.draftDeferred = await classifyDraft(run, repository, request, options.draftRules); }
         catch { signal.throwIfAborted(); unchecked++; }
       }));
       historyData.runs = [...rows.values()];
@@ -373,7 +373,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
     settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
   ]);
-  if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];
+  if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run, options.draftRules) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];
   if (options.localOnly && result.pullRequestsCreated.value === null && !result.pullRequestsCreated.error) result.pending = [...(result.pending ?? []), "pullRequestsCreated"];
   if (!cached && result.deployments.error === null && result.ciOutcomes !== null && commitsComplete) onHistory?.(historicalRecordsSchema.parse(historyData));
   return result;
