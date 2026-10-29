@@ -20,6 +20,8 @@ it("exposes Work Board settings with links to tasks and management", () => {
   ]);
 });
 
+const openBadge = (count: number) => ({ count, counts: { open: count }, criteria: ["open" as const], timeBased: false });
+
 // Renders the navigation badge hook so its count can be asserted like the retired accessory.
 function badgeProbe() {
   const useBadge = app.navPanels[0]?.experimental_useBadge;
@@ -41,7 +43,7 @@ describe("Tasks nav panel open-task badge", () => {
       {},
       {
         rpc: {
-          sidebarOpenTaskCount: () => ({ openTaskCount }),
+          navigationBadge: () => openBadge(openTaskCount),
         },
       },
     );
@@ -61,7 +63,7 @@ describe("Tasks nav panel open-task badge", () => {
     await waitFor(() => expect(slot.getByText("7")).toBeDefined());
     expect(
       slot.inspection.rpcCalls.filter(
-        ({ method }) => method === "sidebarOpenTaskCount",
+        ({ method }) => method === "navigationBadge",
       ),
     ).toHaveLength(3);
   });
@@ -75,7 +77,7 @@ describe("Tasks nav panel open-task badge", () => {
       {},
       {
         rpc: {
-          sidebarOpenTaskCount: () => ({ openTaskCount }),
+          navigationBadge: () => openBadge(openTaskCount),
         },
       },
     );
@@ -83,7 +85,7 @@ describe("Tasks nav panel open-task badge", () => {
     await waitFor(() =>
       expect(
         slot.inspection.rpcCalls.filter(
-          ({ method }) => method === "sidebarOpenTaskCount",
+          ({ method }) => method === "navigationBadge",
         ),
       ).toHaveLength(1),
     );
@@ -108,9 +110,9 @@ describe("Tasks nav panel open-task badge", () => {
   it("coalesces a burst of task changes into one trailing count refresh", async () => {
     let calls = 0;
     let resolveFirstRequest:
-      | ((result: { openTaskCount: number }) => void)
+      | ((result: ReturnType<typeof openBadge>) => void)
       | undefined;
-    const firstRequest = new Promise<{ openTaskCount: number }>((resolve) => {
+    const firstRequest = new Promise<ReturnType<typeof openBadge>>((resolve) => {
       resolveFirstRequest = resolve;
     });
     const Accessory = badgeProbe();
@@ -120,9 +122,9 @@ describe("Tasks nav panel open-task badge", () => {
       {},
       {
         rpc: {
-          sidebarOpenTaskCount: () => {
+          navigationBadge: () => {
             calls += 1;
-            return calls === 1 ? firstRequest : { openTaskCount: 13 };
+            return calls === 1 ? firstRequest : openBadge(13);
           },
         },
       },
@@ -143,7 +145,7 @@ describe("Tasks nav panel open-task badge", () => {
     expect(calls).toBe(1);
 
     await act(async () => {
-      resolveFirstRequest?.({ openTaskCount: 12 });
+      resolveFirstRequest?.(openBadge(12));
       await firstRequest;
     });
 

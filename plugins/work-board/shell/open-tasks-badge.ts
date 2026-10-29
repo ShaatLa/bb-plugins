@@ -3,21 +3,30 @@ import {
   type ExperimentalBadge,
   useRealtime,
   useRealtimeConnectionState,
+  useSettings,
 } from "@get-bb/plugin-sdk/app";
+import { badgeLabel } from "../shared/badge.js";
 import { useTasksRpc } from "./data.js";
 
-/** Open-task count on the Work Board navigation entry. */
+const TIME_BASED_REFRESH_MS = 60_000;
+
+/** Work Board navigation badge: distinct tasks matching the criteria chosen in settings. */
 export function useOpenTasksBadge(): ExperimentalBadge | null {
   const rpc = useTasksRpc();
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
   const connectionState = useRealtimeConnectionState();
+  const settings = useSettings();
+  const settingsKey = JSON.stringify(settings.values ?? null);
   const requestState = useRef({
     isMounted: true,
     isRunning: false,
     refreshQueued: false,
   });
-  const [count, setCount] = useState<number | null>(null);
+  const [badge, setBadge] = useState<{ value: ExperimentalBadge | null; timeBased: boolean }>({
+    value: null,
+    timeBased: false,
+  });
 
   const refresh = useCallback(() => {
     const request = requestState.current;
@@ -31,10 +40,12 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
         while (request.isMounted && request.refreshQueued) {
           request.refreshQueued = false;
           try {
-            const { openTaskCount } = await rpcRef.current.call(
-              "sidebarOpenTaskCount",
-            );
-            if (request.isMounted) setCount(openTaskCount);
+            const { count, counts, criteria, timeBased } = await rpcRef.current.call("navigationBadge", null);
+            if (request.isMounted)
+              setBadge({
+                value: count > 0 ? { count, label: badgeLabel(count, counts, criteria) } : null,
+                timeBased,
+              });
           } catch {}
         }
       } finally {
@@ -54,11 +65,16 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
 
   useEffect(() => {
     if (connectionState === "connected") refresh();
-  }, [connectionState, refresh]);
+  }, [connectionState, refresh, settingsKey]);
+  // The idle-thread criterion depends on elapsed time, not only on events.
+  useEffect(() => {
+    if (!badge.timeBased) return;
+    const timer = setInterval(refresh, TIME_BASED_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [badge.timeBased, refresh]);
   useRealtime("tasks:changed", refresh);
   useRealtime("projects:changed", refresh);
+  useRealtime("threads:changed", refresh);
 
-  return count === null || count <= 0
-    ? null
-    : { count, label: `${count} open ${count === 1 ? "task" : "tasks"}` };
+  return badge.value;
 }
