@@ -76,7 +76,21 @@ export function Dashboard() {
     const previous = snapshots.get(key)?.result ?? { repositories: [], authSource: "anonymous" as const, discoveryError: null };
     const repositories = [...previous.repositories];
     const index = repositories.findIndex((repo) => repo.repository === metrics.repository);
-    if (index >= 0) repositories[index] = metrics;
+    if (index >= 0) {
+      const cached = repositories[index];
+      const merged = { ...metrics };
+      // Progress contains empty placeholders for unfinished fields, not replacement data.
+      for (const field of ["deployments", "pullRequests", "ci", "reviewQueue", "production", "pullRequestsCreated", "commitActivity"] as const) {
+        if (metrics.pending?.includes(field)) Object.assign(merged, { [field]: cached[field] });
+      }
+      if (metrics.pending?.includes("ci")) {
+        merged.ciOutcomes = cached.ciOutcomes;
+        merged.ciInsights = cached.ciInsights;
+      }
+      // Retained values still describe the previous collection until this refresh completes.
+      if (metrics.pending?.length) merged.updatedAt = cached.updatedAt;
+      repositories[index] = merged;
+    }
     else repositories.push(metrics);
     const entry = { configuration, selection, result: { ...previous, repositories } };
     rememberSnapshot(entry);

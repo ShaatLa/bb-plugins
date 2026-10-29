@@ -151,3 +151,5 @@ When the history charts are side by side, each header has an Expand button. Expa
 
 
 Timing aggregates from older versions are detected by their missing success basis and rebuilt locally from retained raw history, including exact cached ranges. Raw history and HTTP pages are preserved, and rebuilding does not advance the actual collection timestamp. If no raw coverage is available, normal collection is needed instead of returning the obsolete aggregate. CI outcome counts, failure signals and the pass-rate formula are unchanged.
+
+Refresh progress preserves cached values, CI diagnostics and charts for fields still pending; only settled fields replace displayed data. Skeletons appear only when that field has no available value. Last checked retains the previous collection timestamp while progress is incomplete.

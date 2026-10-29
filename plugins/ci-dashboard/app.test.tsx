@@ -140,6 +140,39 @@ test("progressive loading skeletons clear independently while ready cards and er
   } finally { slot.lifecycle.unmount(); }
 });
 
+test("slow refresh progress preserves cached cards, charts and timings instead of restoring skeletons", async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(repo.updatedAt));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const ciInsights = summarizeCi([{ id: 1, workflow_id: 1, name: "CI", head_branch: "main", event: "push", conclusion: "success",
+    created_at: "2026-10-20T00:00:00Z", run_started_at: "2026-10-20T00:00:00Z", updated_at: "2026-10-20T00:10:00Z" }], "main");
+  const cached = { ...data, repositories: [{ ...repo, ciInsights }] };
+  let finish!: (value: typeof cached) => void;
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => cached, metrics: () => new Promise<typeof cached>((resolve) => { finish = resolve; }) }, settings: {} });
+  try {
+    await act(async () => {});
+    fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
+    await act(async () => {});
+    const empty = { value: null, detail: "Loading…", series: null, error: null, seriesError: null };
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 1, metrics: {
+      ...repo, updatedAt: "2026-10-20T12:01:00Z", ci: empty, ciOutcomes: null, deployments: empty,
+      pullRequests: { ...metric, value: 25 }, pending: ["ci", "deployments", "commitActivity"],
+      commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: null },
+    } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+    expect(slot.queryByRole("status", { name: /^Loading/ })).toBeNull();
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    expect(slot.getByText("12.0 / day")).toBeTruthy();
+    expect(slot.getByRole("heading", { name: "Open pull requests" }).parentElement?.textContent).toContain("25");
+    expect(slot.getByRole("region", { name: "CI run timings" }).textContent).toContain("10m 0s");
+    expect(slot.getByRole("figure", { name: "CI pass rate over time" }).querySelector("button")).toBeTruthy();
+    await act(async () => { finish({ ...cached, repositories: [{ ...cached.repositories[0], ci: { ...metric, value: 96 } }] }); });
+    expect(slot.getByText("96.0%")).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("progress renders ready cards before the full RPC and rejects older or other-range events", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));
