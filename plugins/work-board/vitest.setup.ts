@@ -33,6 +33,8 @@ if (typeof window !== "undefined" && !window.matchMedia) {
 }
 
 beforeEach(() => {
+  // Thread panel routes are remembered per app session; each test starts fresh.
+  if (typeof sessionStorage !== "undefined") sessionStorage.clear();
   resetTaskDatasetCachesForTest();
   if (typeof window !== "undefined") window.localStorage.clear();
 });

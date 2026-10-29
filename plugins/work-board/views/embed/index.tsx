@@ -32,6 +32,28 @@ import { StatusIcon } from "../list/icons.js";
 const TASK_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
 
 type TaskTabTarget = { taskKey: string };
+
+const PANEL_ROUTE_KEY = (threadId: string) => `work-board:thread-panel-route:${threadId}`;
+
+/** What the thread's Work Board tab last showed in this app session. */
+function loadPanelRoute(threadId: string): TasksRoute | null {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem(PANEL_ROUTE_KEY(threadId)) ?? "null");
+    if (!isRecord(value)) return null;
+    if (value.kind === "all") return { kind: "all" };
+    if (value.kind === "task" && typeof value.taskKey === "string" && TASK_KEY_PATTERN.test(value.taskKey))
+      return { kind: "task", taskKey: value.taskKey };
+    if (value.kind === "project" && typeof value.projectId === "string")
+      return { kind: "project", projectId: value.projectId, view: (typeof value.view === "string" ? value.view : null) as Extract<TasksRoute, { kind: "project" }>["view"] };
+  } catch {}
+  return null;
+}
+
+function savePanelRoute(threadId: string, route: TasksRoute) {
+  try {
+    sessionStorage.setItem(PANEL_ROUTE_KEY(threadId), JSON.stringify(route));
+  } catch {}
+}
 /** The fixed Work Board tab of the thread side panel; a target opens one task in it. */
 export const TASK_TAB = {
   id: "task",
@@ -295,12 +317,16 @@ function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
   const navigate = useBbNavigate();
   const target = experimental_useFixedTabTarget(TASK_TAB);
   const [route, setRoute] = useState<TasksRoute>(() =>
-    target ? { kind: "task", taskKey: target.target.taskKey } : { kind: "all" },
+    target ? { kind: "task", taskKey: target.target.taskKey } : (loadPanelRoute(threadId) ?? { kind: "all" }),
   );
-  // Each open-from-message request carries a new sequence, even for the same task.
+  // A target is a one-shot "open this task" request: bb keeps it for the whole session until cleared,
+  // so consume it, or every remount of the panel would reopen that task.
   useEffect(() => {
-    if (target) setRoute({ kind: "task", taskKey: target.target.taskKey });
+    if (!target) return;
+    setRoute({ kind: "task", taskKey: target.target.taskKey });
+    target.clear();
   }, [target?.sequence]);
+  useEffect(() => savePanelRoute(threadId, route), [threadId, route]);
   const projects = useProjects();
   const threadProject = useTasksQuery(
     async () => (await sdk.threads.get({ threadId })).projectId,

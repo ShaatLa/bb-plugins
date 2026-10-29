@@ -266,6 +266,20 @@ describe("Task directive card", () => {
 });
 
 describe("Task embed panel", () => {
+  it("remembers the panel's last task per thread instead of replaying the open request", async () => {
+    sessionStorage.clear();
+    const first = renderSlot(taskTab(app), { threadId: "thr_mem", environment: null }, { rpc: taskDetailRpc(() => ({ task })), experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "OLD-4" } } });
+    await first.findByRole("textbox", { name: "Task title" });
+    expect(JSON.parse(sessionStorage.getItem("work-board:thread-panel-route:thr_mem")!)).toEqual({ kind: "task", taskKey: "OLD-4" });
+    cleanup();
+
+    sessionStorage.setItem("work-board:thread-panel-route:thr_mem", JSON.stringify({ kind: "task", taskKey: "TSK-4" }));
+    const again = renderSlot(taskTab(app), { threadId: "thr_mem", environment: null }, { rpc: taskDetailRpc(() => ({ task })) });
+    await again.findByRole("textbox", { name: "Task title" });
+    expect(again.rpcCalls.some((call) => call.method === "getTaskByKey" && rpcInput(call.input).taskKey === "TSK-4")).toBe(true);
+    sessionStorage.clear();
+  });
+
   it("keeps an aliased task in the side panel until the user opens Tasks", async () => {
     const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, { rpc: taskDetailRpc(() => ({ task })), experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "OLD-4" } } });
     await slot.findByRole("textbox", { name: "Task title" });
