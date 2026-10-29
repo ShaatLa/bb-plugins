@@ -1,0 +1,15 @@
+/* Local models have no quota: core usage rows tagged with U+2063 show ∞ instead of a bar and percent. */
+button[aria-label*="\2063:"] span.h-1 {
+  visibility: hidden;
+}
+button[aria-label*="\2063:"] span.text-right.tabular-nums:not([aria-hidden]) {
+  font-size: 0;
+}
+button[aria-label*="\2063:"] span.text-right.tabular-nums:not([aria-hidden])::after {
+  content: "∞";
+  font-size: 11px;
+}
+button[aria-label*="\2063:"] span.text-right.tabular-nums[aria-hidden] {
+  visibility: hidden;
+}
+
