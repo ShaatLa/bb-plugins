@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { UrlLink } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
@@ -42,17 +43,33 @@ export function CiSignals({ repo }: { repo: Metrics }) {
 
 export function CiTiming({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
+  const defaultWorkflow = data?.workflows.find((workflow) => workflow.name.trim().toLowerCase() === "ci");
+  const selection = selectedWorkflow ?? (defaultWorkflow ? String(defaultWorkflow.id) : "all");
+  const workflow = data?.workflows.find((row) => String(row.id) === selection);
+  const timing = workflow?.timing ?? data?.timing;
+  const successful = workflow?.passed ?? repo.ciOutcomes?.success ?? 0;
+  const total = workflow?.total ?? data?.total ?? 0;
   return <Card role="region" aria-label="CI run timings" className="space-y-4 border-primary/20 p-4 sm:p-5">
-    <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · successful completed runs only</p></div>
-    {!data ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · {workflow?.name ?? "All workflows"} · successful completed runs only</p></div>
+      {data && <label className="flex items-center gap-2 text-xs text-muted-foreground">Summary workflow
+        <select aria-label="Timing workflow" value={workflow ? String(workflow.id) : "all"} onChange={(event) => setSelectedWorkflow(event.target.value)} className="h-9 max-w-64 rounded-md border border-input bg-background px-3 text-sm text-foreground">
+          <option value="all">All workflows</option>
+          {data.workflows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+        </select>
+      </label>}
+    </div>
+    {!data || !timing ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
       <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
     </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
       <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">{([
-        ["Median", data.timing.medianMs], ["Average", data.timing.averageMs], ["P95", data.timing.p95Ms],
+        ["Median", timing.medianMs], ["Average", timing.averageMs], ["P95", timing.p95Ms],
       ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground" title={label === "P95" ? "95% of measured successful runs finish within this time or faster; about 5% take longer." : undefined}>{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
-      <p className="text-xs text-muted-foreground">Total elapsed: {elapsed(data.timing.count ? data.timing.totalMs : null)}</p>
-      <p className="text-xs text-muted-foreground">Timing available for {data.timing.count} of {repo.ciOutcomes?.success ?? 0} successful runs · {data.total - (repo.ciOutcomes?.success ?? 0)} non-successful runs excluded. Estimate from start to last update; reruns may inflate it. Totals add overlapping runs and are not billed runner time.</p>
+      {!workflow && <p className="text-xs text-muted-foreground">Combined distribution across all workflows: frequent short automation runs can dominate the median. Select a workflow to compare like-for-like durations.</p>}
+      <p className="text-xs text-muted-foreground">Total elapsed: {elapsed(timing.count ? timing.totalMs : null)}</p>
+      <p className="text-xs text-muted-foreground">Timing available for {timing.count} of {successful} successful runs · {total - successful} non-successful runs excluded. Estimate from start to last update; reruns may inflate it. Totals add overlapping runs and are not billed runner time.</p>
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
         <summary className="cursor-pointer text-sm">By workflow · {data.workflows.length}</summary>
@@ -61,6 +78,7 @@ export function CiTiming({ repo }: { repo: Metrics }) {
           <UrlLink href={`https://github.com/${repo.repository}/actions/workflows/${workflow.id}`} className="min-w-0 break-words text-sm font-medium leading-snug hover:underline">{workflow.name}</UrlLink>
           <span className="whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums">{elapsed(workflow.timing.averageMs)}</span>
           <div className="col-span-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>Median <span className="font-medium tabular-nums text-foreground">{elapsed(workflow.timing.medianMs)}</span></span>
             <span>P95 <span className="font-medium tabular-nums text-foreground">{elapsed(workflow.timing.p95Ms)}</span></span>
             <span className="tabular-nums">{workflow.timing.count}/{workflow.passed} successful timed</span>
             <span className="tabular-nums">{workflow.total - workflow.passed} excluded</span>
@@ -69,7 +87,7 @@ export function CiTiming({ repo }: { repo: Metrics }) {
         </li>)}</ul>
       </details>}
       {data.slowRuns.length > 0 && <details className="border-t border-border pt-3">
-        <summary className="cursor-pointer text-sm">Longest successful runs · top {data.slowRuns.length}</summary>
+        <summary className="cursor-pointer text-sm">Longest successful runs · all workflows · top {data.slowRuns.length}</summary>
         <ul aria-label="Longest CI runs" className="mt-3 space-y-2">{data.slowRuns.map((run) => <li key={run.id}>
           <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} aria-label={`${run.name} · ${run.branch ?? "Unknown branch"} · #${run.id} · ${elapsed(run.durationMs)}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted/40 p-3 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="min-w-0 break-words text-sm font-medium leading-snug">{run.name}</span>
