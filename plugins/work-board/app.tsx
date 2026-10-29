@@ -5,7 +5,7 @@ import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
-import { TaskLinkInterceptor } from "./components/task-link-interceptor.js";
+import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
 
 export default definePluginApp((app) => {
   app.slots.settingsSection({
@@ -46,6 +46,13 @@ export default definePluginApp((app) => {
     component: TaskEmbedPanel,
     layout: "flush",
   });
-  app.slots.experimental_appOverlay({ id: "task-links", component: TaskLinkInterceptor });
+  // Never shown: its useVisible hook hosts the chat task-link click handler inside each thread.
+  app.slots.experimental_threadContextSegment({
+    id: "task-links",
+    title: "Work Board task links",
+    group: "9_work-board",
+    summary: () => null,
+    useVisible: useTaskLinkInterception,
+  });
   app.slots.messageDirective({ id: "task", component: TaskDirectiveCard });
 });
