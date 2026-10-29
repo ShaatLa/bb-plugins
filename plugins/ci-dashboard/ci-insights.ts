@@ -5,6 +5,7 @@ export const ciRunSchema = z.object({
   id: z.number().int().positive(), created_at: timestamp, conclusion: z.string().nullable(),
   workflow_id: z.number().int().positive().optional(), name: z.string().nullable().optional(),
   head_branch: z.string().nullable().optional(), event: z.string().optional(),
+  run_attempt: z.number().int().positive().optional(), draftDeferred: z.boolean().optional(),
   run_started_at: timestamp.nullable().optional(), updated_at: timestamp.optional(),
 });
 type Run = z.infer<typeof ciRunSchema>;
@@ -20,6 +21,7 @@ const alertSchema = z.object({
   runId: z.number(), createdAt: timestamp, consecutive: z.number(),
 });
 export const ciInsightsSchema = z.object({
+  draftPolicy: z.literal("job-evidence-v1").optional(),
   total: z.number(), identified: z.number(), defaultBranch: z.string().nullable(),
   main: countsSchema.nullable(), pullRequests: countsSchema,
   alerts: z.array(alertSchema), timing: timingSchema,
@@ -33,8 +35,8 @@ const isPr = (run: Run) => ["pull_request", "pull_request_target", "pull_request
 const identified = (run: Run) => run.workflow_id !== undefined && run.name !== undefined && run.head_branch !== undefined && run.event !== undefined;
 function counts(runs: Run[]) {
   return { total: runs.length, passed: runs.filter((run) => run.conclusion === "success").length,
-    failed: runs.filter((run) => failures.has(run.conclusion ?? "")).length,
-    eligible: runs.filter((run) => !excluded.has(run.conclusion ?? "")).length };
+    failed: runs.filter((run) => !run.draftDeferred && failures.has(run.conclusion ?? "")).length,
+    eligible: runs.filter((run) => !run.draftDeferred && !excluded.has(run.conclusion ?? "")).length };
 }
 function duration(run: Run): number | null {
   if (!run.run_started_at || !run.updated_at) return null;
@@ -62,7 +64,7 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
   }
   const alerts: CiInsights["alerts"] = [];
   for (const rows of branches.values()) {
-    const relevant = rows.filter((run) => !excluded.has(run.conclusion ?? ""));
+    const relevant = rows.filter((run) => !run.draftDeferred && !excluded.has(run.conclusion ?? ""));
     const latest = relevant[0];
     if (!latest || !latest.head_branch || !failures.has(latest.conclusion ?? "")) continue;
     let consecutive = 0;
@@ -75,10 +77,10 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
   }
   alerts.sort((a, b) => Number(b.kind === "main") - Number(a.kind === "main") || b.consecutive - a.consecutive || b.runId - a.runId);
   const workflows = [...groups].map(([id, rows]) => ({ id, name: rows[0].name ?? `Workflow ${id}`,
-    ...counts(rows), timing: timings(rows), failureId: rows.find((run) => failures.has(run.conclusion ?? ""))?.id ?? null,
+    ...counts(rows), timing: timings(rows), failureId: rows.find((run) => !run.draftDeferred && failures.has(run.conclusion ?? ""))?.id ?? null,
   })).sort((a, b) => b.failed - a.failed || b.total - a.total || a.id - b.id);
   return {
-    total: runs.length, identified: known.length, defaultBranch,
+    draftPolicy: "job-evidence-v1", total: runs.length, identified: known.length, defaultBranch,
     main: defaultBranch ? counts(known.filter((run) => run.head_branch === defaultBranch && !isPr(run))) : null,
     pullRequests: counts(known.filter(isPr)), alerts, workflows, timing: timings(runs),
     slowRuns: runs.filter((run) => run.conclusion === "success").flatMap((run) => {

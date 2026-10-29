@@ -1,3 +1,4 @@
+import { classifyDraft, draftCandidate } from "./draft-deferrals";
 import { z } from "zod";
 import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
@@ -219,7 +220,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
         value: total === 0 ? null : successful / total * 100,
-        detail: total === 0 ? `No completed runs after excluding cancelled and skipped · ${range.label}` : `${successful} of ${total} completed workflow runs · cancelled and skipped excluded · ${range.label}`, error: null,
+        detail: total === 0 ? `No completed runs after excluding cancelled, skipped and deferred drafts · ${range.label}` : `${successful} of ${total} completed workflow runs · cancelled, skipped and deferred drafts excluded · ${range.label}`, error: null,
       };
     }
     async function incomplete(message: string) {
@@ -294,6 +295,16 @@ export async function loadMetrics(repository: string, token: string | undefined,
       const rows = cached
         ? new Map(cached.records.runs.filter((row) => bucket(row.created_at) >= 0).map((row) => [row.id, row]))
         : await completeHistory();
+      const previous = new Map(options.previous?.runs.map((run) => [run.id, run]));
+      let unchecked = 0;
+      await Promise.all([...rows.values()].filter(draftCandidate).map(async (run) => {
+        const old = previous.get(run.id);
+        if (run.draftDeferred === undefined && old?.updated_at === run.updated_at && old?.run_attempt === run.run_attempt) run.draftDeferred = old?.draftDeferred;
+        if (run.draftDeferred !== undefined) return;
+        if (options.localOnly) { unchecked++; return; }
+        try { run.draftDeferred = await classifyDraft(run, repository, request); }
+        catch { signal.throwIfAborted(); unchecked++; }
+      }));
       historyData.runs = [...rows.values()];
       const totals = emptySeries();
       const passed = Array<number>(bucketCount).fill(0);
@@ -301,15 +312,16 @@ export async function loadMetrics(repository: string, token: string | undefined,
       for (const row of rows.values()) {
         const index = bucket(row.created_at);
         if (index < 0) continue;
-        const state = row.conclusion ?? "unknown";
+        const state = row.draftDeferred ? "deferred_draft" : row.conclusion ?? "unknown";
         outcomes[state] = (outcomes[state] ?? 0) + 1;
-        if (state === "cancelled" || state === "skipped") continue;
+        if (["cancelled", "skipped", "deferred_draft"].includes(state)) continue;
         totals[index].value++;
         if (state === "success") passed[index]++;
       }
-      return { metric: { ...summary(Object.values(outcomes).reduce((sum, count) => sum + count, 0) - (outcomes.cancelled ?? 0) - (outcomes.skipped ?? 0), outcomes.success ?? 0), series: totals.map((point, index) => ({
+      if (unchecked) options.onWarning?.(`${unchecked} draft-rejection candidates could not be verified; retained as failures.`);
+      return { metric: { ...summary(Object.values(outcomes).reduce((sum, count) => sum + count, 0) - (outcomes.cancelled ?? 0) - (outcomes.skipped ?? 0) - (outcomes.deferred_draft ?? 0), outcomes.success ?? 0), series: totals.map((point, index) => ({
         date: point.date, value: point.value === 0 ? null : passed[index] / point.value * 100,
-      })), seriesError: null }, outcomes };
+      })), seriesError: null, ...(unchecked ? { detail: `${summary(totals.reduce((sum, point) => sum + point.value, 0), outcomes.success ?? 0).detail} · ${unchecked} draft candidates unverified (counted as failures)` } : {}) }, outcomes };
     } catch (error) {
       signal.throwIfAborted();
       options.onWarning?.(error instanceof Error && error.name !== "ZodError" ? error.message : "Invalid GitHub CI response");
@@ -361,7 +373,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
     settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
     settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
   ]);
-  if (options.localOnly && result.pullRequestsCreated.value === null && !result.pullRequestsCreated.error) result.pending = ["pullRequestsCreated"];
+  if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];
+  if (options.localOnly && result.pullRequestsCreated.value === null && !result.pullRequestsCreated.error) result.pending = [...(result.pending ?? []), "pullRequestsCreated"];
   if (!cached && result.deployments.error === null && result.ciOutcomes !== null && commitsComplete) onHistory?.(historicalRecordsSchema.parse(historyData));
   return result;
 }
