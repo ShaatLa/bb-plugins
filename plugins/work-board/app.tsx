@@ -5,6 +5,7 @@ import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
+import { TaskLinkInterceptor } from "./components/task-link-interceptor.js";
 
 export default definePluginApp((app) => {
   app.slots.settingsSection({
@@ -45,5 +46,6 @@ export default definePluginApp((app) => {
     component: TaskEmbedPanel,
     layout: "flush",
   });
+  app.slots.experimental_appOverlay({ id: "task-links", component: TaskLinkInterceptor });
   app.slots.messageDirective({ id: "task", component: TaskDirectiveCard });
 });
