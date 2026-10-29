@@ -17,7 +17,7 @@ function ageLabel(timestamp: string, checkedAt: string) {
 }
 
 const labels: Record<string, string> = {
-  success: "Passed", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped", timed_out: "Timed out",
+  deferred_draft: "Deferred: draft", success: "Passed", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped", timed_out: "Timed out",
   action_required: "Action required", neutral: "Neutral", stale: "Stale", startup_failure: "Startup failed", unknown: "Unknown",
 };
 

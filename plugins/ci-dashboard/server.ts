@@ -82,7 +82,7 @@ export default function plugin(bb: BbPluginApi) {
     } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
   }
   function currentTimings(result: DashboardData) {
-    return result.repositories.every((repo) => !repo.ciInsights || repo.ciInsights.timing.basis === "success");
+    return result.repositories.every((repo) => !repo.ciInsights || (repo.ciInsights.timing.basis === "success" && repo.ciInsights.draftPolicy === "job-evidence-v1"));
   }
   function touchSnapshot(result: DashboardData, selection: string, config: string) {
     database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ? AND configuration = ?").run(Date.now(), selection, config);
@@ -204,7 +204,9 @@ export default function plugin(bb: BbPluginApi) {
     if (!force && source && Date.now() - Date.parse(source.metrics.updatedAt) >= 0 && Date.now() - Date.parse(source.metrics.updatedAt) < ttl && Date.parse(asOf.since) >= Date.parse(source.coverage.since) && Date.parse(asOf.until) <= Date.parse(source.coverage.until)
       && (Date.parse(range.until) <= Date.parse(source.coverage.until) || Date.now() - Date.parse(source.coverage.until) < ttl)) {
       // One repository history serves every contained view; PR creation counts remain range-specific.
-      return loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, onProgress: progress });
+      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, onProgress: progress });
+      if (canWrite()) database.prepare("UPDATE repository_history SET data = ? WHERE repository = ? AND configuration = ?").run(JSON.stringify(source), repository, config);
+      return metrics;
     }
     let start = Date.parse(range.since), finish = Date.parse(range.until);
     if (source && start <= Date.parse(source.coverage.until) && finish >= Date.parse(source.coverage.since)) {

@@ -435,7 +435,7 @@ test("CI summary, chart, and breakdown use the same runs instead of racing a sec
   });
   const result = await load();
   expect(result.ci.value).toBe(25);
-  expect(result.ci.detail).toContain("1 of 4 completed workflow runs · cancelled and skipped excluded");
+  expect(result.ci.detail).toContain("1 of 4 completed workflow runs · cancelled, skipped and deferred drafts excluded");
   expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 25]);
   expect(result.ciOutcomes).toEqual({ success: 1, failure: 1, cancelled: 1, skipped: 1, timed_out: 1, unknown: 1 });
   expect(result.ci.seriesError).toBeNull();
@@ -807,7 +807,7 @@ test.each([
   expect(result.ci.error).toBeNull();
   expect(result.ci.seriesError).toBeNull();
   expect(result.ci.series?.every((point) => point.value === null)).toBe(true);
-  expect(result.ci.detail).toContain("No completed runs after excluding cancelled and skipped");
+  expect(result.ci.detail).toContain("No completed runs after excluding cancelled, skipped and deferred drafts");
   expect(result.ciOutcomes).toEqual(first === second ? { [first]: 2 } : { [first]: 1, [second]: 1 });
 });
 
@@ -849,4 +849,24 @@ test("derives narrower and custom ranges from persisted raw history without down
     expect(await harness.behavior.callRpc("snapshot", { start: "2026-07-01", end: "2026-07-02" })).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("confirmed deferred drafts are separate outcomes and never depress pass rates or chart buckets", async () => {
+  const baseline = await loadMetrics("acme/widgets", "token", new AbortController().signal);
+  const rows = [
+    { id: 1, created_at: recent, conclusion: "success", name: "CI", event: "pull_request", workflow_id: 1, head_branch: "main" },
+    { id: 2, created_at: recent, conclusion: "failure", name: "CI", event: "pull_request", workflow_id: 1, head_branch: "draft", run_attempt: 1 },
+    { id: 3, created_at: recent, conclusion: "failure", name: "CI", event: "pull_request", workflow_id: 1, head_branch: "real", run_attempt: 1 },
+  ];
+  const request = vi.fn(async (path: string) => ({ hasNext: false, body: { total_count: 1, jobs: [{ id: 1, name: "CI complete", conclusion: "failure", steps: [{ name: path.includes("/2/") ? "Reject draft pull request" : "Verify", conclusion: "failure" }] }] } }));
+  const records = { deployments: [], commits: [], branch: "main", runs: rows };
+  const result = await loadMetrics("acme/widgets", "token", new AbortController().signal, baseline.range, { metrics: baseline, records }, undefined, { request });
+  expect(result.ciOutcomes).toEqual({ success: 1, deferred_draft: 1, failure: 1 });
+  expect(result.ci.value).toBe(50);
+  expect(result.ci.series?.find((point) => point.value !== null)?.value).toBe(50);
+  expect(request.mock.calls.filter(([path]) => path.includes("/jobs?"))).toHaveLength(2);
+  request.mockClear();
+  await loadMetrics("acme/widgets", "token", new AbortController().signal, baseline.range, { metrics: baseline, records }, undefined, { request });
+  expect(request.mock.calls.filter(([path]) => path.includes("/jobs?"))).toHaveLength(0);
 });

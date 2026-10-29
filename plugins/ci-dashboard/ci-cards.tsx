@@ -22,7 +22,7 @@ export function CiSignals({ repo }: { repo: Metrics }) {
   const data = repo.ciInsights;
   const ready = data;
   return <section aria-label="CI signals" className="min-w-0 space-y-3">
-    <div><h5 className="text-sm font-medium">Needs attention</h5><p className="mt-1 text-xs text-muted-foreground">Latest completed runs within {repo.range.label} · cancelled and skipped excluded</p></div>
+    <div><h5 className="text-sm font-medium">Needs attention</h5><p className="mt-1 text-xs text-muted-foreground">Latest completed runs within {repo.range.label} · cancelled, skipped and deferred drafts excluded</p></div>
     {!ready ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI signals" /> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
       {data.identified < data.total && <p className="text-xs text-muted-foreground">Workflow details available for {data.identified} of {data.total} runs. Refresh to complete coverage.</p>}
       {!data.defaultBranch && <p className="text-xs text-muted-foreground">Default branch is unavailable; main-branch checks could not be evaluated.</p>}

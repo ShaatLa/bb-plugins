@@ -1,4 +1,5 @@
-import { expect, test } from "vitest";
+import { classifyDraft } from "./draft-deferrals";
+import { expect, test, vi } from "vitest";
 import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
 
 function run(id: number, overrides: Partial<ReturnType<typeof ciRunSchema.parse>> = {}) {
@@ -50,4 +51,20 @@ test("legacy metadata and empty histories never fabricate workflow identity or d
   expect(result).toMatchObject({ total: 1, identified: 0, alerts: [], workflows: [], timing: { count: 0, averageMs: null, medianMs: null, p95Ms: null } });
   expect(summarizeCi([run(1, { head_branch: null }), run(2, { head_branch: null }), run(3, { head_branch: null })], null).alerts).toEqual([]);
   expect(summarizeCi([], "main")).toMatchObject({ total: 0, identified: 0, alerts: [], timing: { count: 0 } });
+});
+
+
+test("only complete job evidence for an isolated draft rejection is deferred", async () => {
+  const candidate = run(1, { name: "CI", event: "pull_request", run_attempt: 2 });
+  const gate = { id: 1, name: "CI complete", conclusion: "failure", steps: [{ name: "Reject draft pull request", conclusion: "failure" }] };
+  const request = vi.fn(async () => ({ body: { total_count: 1, jobs: [gate] }, hasNext: false }));
+  expect(await classifyDraft(candidate, "acme/widgets", request)).toBe(true);
+  expect(request.mock.calls[0]).toEqual(["/repos/acme/widgets/actions/runs/1/attempts/2/jobs?filter=latest&per_page=100&page=1"]);
+  for (const jobs of [[{ ...gate, steps: [{ name: "Verify", conclusion: "failure" }] }], [gate, { ...gate, id: 2, name: "Tests" }]]) {
+    expect(await classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: jobs.length, jobs }, hasNext: false }))).toBe(false);
+  }
+  await expect(classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: 2, jobs: [gate] }, hasNext: false }))).rejects.toThrow("Incomplete");
+  expect(await classifyDraft({ ...candidate, event: "push" }, "acme/widgets", request)).toBe(false);
+  const rows = [run(1, { conclusion: "success" }), run(2, { draftDeferred: true }), run(3), run(4, { draftDeferred: true })];
+  expect(summarizeCi(rows, "trunk")).toMatchObject({ main: { eligible: 2, failed: 1 }, workflows: [{ failed: 1, failureId: 3 }], alerts: [{ consecutive: 1, runId: 3 }] });
 });
