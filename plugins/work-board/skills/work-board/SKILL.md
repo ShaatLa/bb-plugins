@@ -149,7 +149,7 @@ Fixed in [ABC-12](/plugins/work-board/work-board/task/ABC-12).
 ```
 
 `bb work-board show KEY` and `create` print this link (`link` in `--json`).
-bb opens it in the app. Use it only in bb chat; GitHub, Slack and task
+In a thread, clicking it opens the task in the side panel's Work Board tab. Use it only in bb chat; GitHub, Slack and task
 comments take plain keys.
 
 When the person needs the live status card, emit this leaf directive on its
