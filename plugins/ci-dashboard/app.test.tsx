@@ -873,5 +873,6 @@ test("draft settings start collapsed, keep native inputs and clean up on navigat
     controller.abort();
     expect(form.querySelector("button")).toBeNull();
     expect(form.querySelector("input")?.parentElement?.parentElement?.style.display).toBe("");
+    expect(form.querySelector("input")?.parentElement?.parentElement?.style.borderInlineStart).toBe("");
   } finally { dispose(); host.remove(); }
 });
