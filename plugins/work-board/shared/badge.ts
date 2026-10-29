@@ -9,15 +9,17 @@ export const BADGE_CRITERIA = [
 ] as const;
 export type BadgeCriterion = (typeof BADGE_CRITERIA)[number];
 
-/** Plugin setting (boolean) that enables each criterion. */
-export const BADGE_SETTING_KEYS = {
-  open: "badgeOpenTasks",
-  in_review: "badgeInReview",
-  needs_answer: "badgeNeedsAnswer",
-  owner: "badgeOwnerActions",
-  failed_thread: "badgeFailedThreads",
-  stale_idle: "badgeStaleIdle",
-} as const satisfies Record<BadgeCriterion, string>;
+export const DEFAULT_BADGE_CRITERIA: readonly BadgeCriterion[] = ["open"];
+
+/** Checkbox labels in Work Board settings. */
+export const BADGE_CRITERION_LABELS: Record<BadgeCriterion, string> = {
+  open: "Open tasks",
+  in_review: "Tasks in review",
+  needs_answer: "Tasks with unanswered questions",
+  owner: "Owner actions",
+  failed_thread: "Tasks with a failed thread",
+  stale_idle: "Tasks with an idle thread and no update",
+};
 
 const PHRASES: Record<BadgeCriterion, string> = {
   open: "open",

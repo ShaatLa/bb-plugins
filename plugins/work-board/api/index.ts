@@ -21,7 +21,7 @@ import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
 import { environmentPullRequests } from "../git-sync/environment-prs";
 import { navigationBadgeCounts } from "./badge";
-import type { BadgeCriterion } from "../shared/badge";
+import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
@@ -610,11 +610,18 @@ async function listTaskPullRequests(
 
 export const DEFAULT_STALE_IDLE_MINUTES = 45;
 
+const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
+
+async function readBadgeCriteria(bb: BbPluginApi) {
+  const stored = await bb.storage.kv.get<unknown>(BADGE_CRITERIA_KEY);
+  if (!Array.isArray(stored)) return [...DEFAULT_BADGE_CRITERIA];
+  return BADGE_CRITERIA.filter((criterion) => stored.includes(criterion));
+}
+
 export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
   staleIdleMinutes: () => Promise<number | null> = async () => DEFAULT_STALE_IDLE_MINUTES,
-  badgeCriteria: () => Promise<BadgeCriterion[]> = async () => ["open"],
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   return {
@@ -1253,8 +1260,18 @@ export function registerHandlers(
         })),
       };
     },
+    async getNavigationBadgeCriteria() {
+      return { criteria: await readBadgeCriteria(bb) };
+    },
+    async setNavigationBadgeCriteria({ criteria }) {
+      // Store in a stable order and without repeats so the badge never counts a criterion twice.
+      const saved = BADGE_CRITERIA.filter((criterion) => criteria.includes(criterion));
+      await bb.storage.kv.set(BADGE_CRITERIA_KEY, saved);
+      bb.realtime.publish("badge:changed", {});
+      return { criteria: saved };
+    },
     async navigationBadge() {
-      const criteria = await badgeCriteria();
+      const criteria = await readBadgeCriteria(bb);
       const threshold = criteria.includes("stale_idle") ? await staleIdleMinutes() : null;
       return {
         ...navigationBadgeCounts(bb, store, criteria, threshold, Date.now()),
@@ -1275,7 +1292,6 @@ export function registerTasksApi(
   bb: BbPluginApi,
   store: TasksApiStore,
   staleIdleMinutes?: () => Promise<number | null>,
-  badgeCriteria?: () => Promise<BadgeCriterion[]>,
 ): void {
-  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes, badgeCriteria));
+  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes));
 }

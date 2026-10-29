@@ -1081,6 +1081,14 @@ export const tasksRpcContract = {
       })
       .strict(),
   },
+  getNavigationBadgeCriteria: {
+    input: z.null(),
+    output: z.object({ criteria: z.array(z.enum(BADGE_CRITERIA)) }).strict(),
+  },
+  setNavigationBadgeCriteria: {
+    input: z.object({ criteria: z.array(z.enum(BADGE_CRITERIA)).max(BADGE_CRITERIA.length) }).strict(),
+    output: z.object({ criteria: z.array(z.enum(BADGE_CRITERIA)) }).strict(),
+  },
   navigationBadge: {
     input: z.null(),
     output: z
