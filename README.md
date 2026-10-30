@@ -5,6 +5,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
+| **Local models provider** | Local llama.cpp (OpenAI-compatible) models through the installed Codex CLI, with BB tools, a context indicator and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 
@@ -17,6 +18,7 @@ Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibi
 Additional requirements depend on the plugin:
 
 - **Antigravity:** an installed, signed-in **`agy` 1.4.6 or newer on each execution machine**. Login and the CLI installation remain managed by Antigravity.
+- **Local models:** an installed **`codex` CLI** and a running local OpenAI-compatible server (for example llama.cpp's `llama serve`) on each execution machine.
 - **Work Board:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Work Board installation**, as described below.
 - **CI Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
@@ -30,6 +32,7 @@ Install the plugins you need:
 
 ```sh
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 ```
 
@@ -85,6 +88,21 @@ bb antigravity diagnostics --host <machine-id>
 ```
 
 [Setup, permissions and limitations →](plugins/provider-antigravity/README.md)
+
+### Local models provider
+
+Select **Local models** in BB's provider picker. Models come from the local server's `/v1/models`; turns run through the installed `codex` CLI pointed at that server. Your global Codex config, MCP servers and Apps connectors are not loaded for local threads.
+
+- Streaming, resume, cancellation and BB agent tools; a request adapter handles strict chat templates such as Qwen and Gemma.
+- Context window indicator under the composer; provider usage shows each model with `∞`.
+- Settings for the server URL, `codex` path and default model.
+
+```sh
+bb provider models local-models
+bb plugin config local-models set defaultModel '<model-id>'
+```
+
+[Setup, behavior and limitations →](plugins/provider-local-models/README.md)
 
 ### Work Board
 
@@ -147,6 +165,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | Directory | Install development dependencies | Additional requirements/checks |
 | --- | --- | --- |
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
+| `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; `codex` and a running local model server for live checks. |
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 
@@ -170,8 +189,9 @@ bb plugin reload <plugin-id>
 
 ## License and attribution
 
-All three plugins retain MIT licenses and their upstream acknowledgements:
+All plugins retain MIT licenses and their upstream acknowledgements:
 
 - **Antigravity provider:** inspired by [amrtawfik160/bb-plugin-antigravity](https://github.com/amrtawfik160/bb-plugin-antigravity); original [MIT license](plugins/provider-antigravity/LICENSE) and vendored BB component attribution are retained in the plugin directory.
+- **Local models provider:** built on the Antigravity provider's ACP bridge and usage source; [MIT license](plugins/provider-local-models/LICENSE).
 - **Work Board:** forked from BB Tasks and required shared UI sources at `desktop-v0.46.1`; [MIT license](plugins/work-board/LICENSE), [upstream source details](plugins/work-board/UPSTREAM.md).
 - **CI Dashboard:** imported from the existing standalone dashboard repository and uses BB shared UI sources; [MIT license](plugins/ci-dashboard/LICENSE), [upstream source details](plugins/ci-dashboard/UPSTREAM.md).

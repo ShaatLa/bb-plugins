@@ -8,6 +8,10 @@
       "source": "./plugins/provider-antigravity"
     },
     {
+      "name": "local-models",
+      "source": "./plugins/provider-local-models"
+    },
+    {
       "name": "work-board",
       "source": "./plugins/work-board"
     },
