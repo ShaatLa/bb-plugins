@@ -12,7 +12,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.15.5";
+export const WORK_BOARD_PLUGIN_VERSION = "0.15.6";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -88,7 +88,9 @@ export default async function plugin(bb: BbPluginApi) {
       ? TASK_LINK_INSTRUCTIONS
       : null,
   );
-  await registerLifecycle(bb, store);
+  // Reconciling every attached thread takes one SDK call each; doing it before load completes
+  // made the plugin miss bb's 30 s load deadline on a busy server. Event handlers register synchronously.
+  void registerLifecycle(bb, store).catch((error) => bb.log.warn(`Thread reconcile failed: ${String(error)}`));
   bb.background.schedule("auto-archive-tasks", "0 * * * *", async () => {
     const { autoArchiveAfterDays } = await settings.get();
     if (autoArchiveAfterDays === "off") return;

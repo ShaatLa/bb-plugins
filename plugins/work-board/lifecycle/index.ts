@@ -118,13 +118,19 @@ async function reconcileTrackedThread(
   }
 }
 
+const RECONCILE_CONCURRENCY = 4;
+
 async function reconcileTrackedThreads(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): Promise<void> {
-  for (const trackedThread of trackedThreads(store)) {
-    await reconcileTrackedThread(bb, store, trackedThread);
-  }
+  // Each thread is fetched once per link today; bound the fan-out so startup does not flood bb.
+  const queue = trackedThreads(store);
+  const worker = async () => {
+    for (let next = queue.shift(); next; next = queue.shift())
+      await reconcileTrackedThread(bb, store, next);
+  };
+  await Promise.all(Array.from({ length: RECONCILE_CONCURRENCY }, worker));
 }
 
 export async function registerLifecycle(
