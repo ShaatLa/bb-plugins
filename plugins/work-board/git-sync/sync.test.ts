@@ -657,3 +657,23 @@ it("fetches files once per open head and refetches after the head changes", asyn
   await f.client.snapshot("example/service", 42, config, { ...second, headSha: b });
   expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(2);
 });
+
+it("abandons a sync run that hangs so later syncs are not blocked", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = setup();
+    await f.service.handlers.setGitSyncConfig({
+      projectId: f.project.id,
+      config: gitSyncConfigSchema.parse({ repositories: ["example/service"], enabled: true }),
+    });
+    f.client.discover.mockImplementationOnce(() => new Promise(() => {}));
+    const first = f.service.handlers.syncGit({ projectId: f.project.id });
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    await expect(first).resolves.toMatchObject({ checked: 0, errors: [expect.stringContaining("timed out during title discovery")] });
+    expect(f.harness.logEntries).toContainEqual(expect.objectContaining({ level: "warn", message: expect.stringContaining("during title discovery") }));
+    vi.useRealTimers();
+    await expect(f.service.handlers.syncGit({ projectId: f.project.id })).resolves.toMatchObject({ errors: [] });
+  } finally {
+    vi.useRealTimers();
+  }
+});

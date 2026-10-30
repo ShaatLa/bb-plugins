@@ -19,6 +19,8 @@ import {
   GithubError,
 } from "./github";
 
+const SYNC_DEADLINE_MS = 4 * 60_000;
+
 const services = new WeakMap<
   TasksApiStore,
   ReturnType<typeof createGitSyncService>
@@ -120,6 +122,9 @@ export function createGitSyncService(
     force = false,
   ): Promise<{ checked: number; errors: string[] }> {
     if (pending.has(projectId)) return pending.get(projectId)!;
+    // A run that never settles (an SDK or network await that hangs) must not block every later sync.
+    const run = new AbortController();
+    let phase = "start";
     const operation = (async () => {
       const project = requireProject(projectId);
       let config = data.config(projectId);
@@ -129,6 +134,7 @@ export function createGitSyncService(
           discovery.delete(`${repository}:${config.lookbackDays}`);
       const current = () =>
         !controller.signal.aborted &&
+        !run.signal.aborted &&
         Boolean(store.tasks.getProject(projectId)) &&
         JSON.stringify(data.config(projectId)) === fingerprint;
       data.attempted(projectId);
@@ -136,6 +142,7 @@ export function createGitSyncService(
       const report = (repository: string, error: unknown) =>
         `${repository}: ${error instanceof GithubError ? error.message : "GitHub synchronization unavailable; retry later"}`;
       const tasks = store.tasks.listTasks({ projectId });
+      phase = "title discovery";
       if (config.titleDiscovery)
         for (const repository of config.repositories) {
           try {
@@ -187,6 +194,7 @@ export function createGitSyncService(
         ).all(projectId);
         for (const row of evidence) remember(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
       }
+      phase = "worker thread lookup";
       const threadCache = new Map<string, ReturnType<typeof bb.sdk.threads.get>>();
       for (const task of tasks) {
         if (!current()) break;
@@ -208,6 +216,7 @@ export function createGitSyncService(
           }
         }
       }
+      phase = "environment PR read";
       const lookups = await environmentPullRequests(bb, environmentTasks.keys());
       for (const [environmentId, members] of environmentTasks) {
         const result = lookups.get(environmentId)!;
@@ -221,6 +230,7 @@ export function createGitSyncService(
           /* Environment discovery is optional; direct PR links keep working. */
         }
       }
+      phase = "PR snapshots";
       let checked = 0;
       const refreshed = new Set<string>();
       // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
@@ -306,9 +316,18 @@ export function createGitSyncService(
       }
       return { checked, errors: [...new Set(errors)] };
     })();
-    pending.set(projectId, operation);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<{ checked: number; errors: string[] }>((resolve) => {
+      timer = setTimeout(() => {
+        run.abort();
+        bb.log.warn(`Git sync for project ${projectId} exceeded ${SYNC_DEADLINE_MS / 60_000} min during ${phase}; abandoned`);
+        resolve({ checked: 0, errors: [`Git synchronization timed out during ${phase}; retry later`] });
+      }, SYNC_DEADLINE_MS);
+    });
+    const guarded = Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
+    pending.set(projectId, guarded);
     try {
-      return await operation;
+      return await guarded;
     } finally {
       pending.delete(projectId);
     }
