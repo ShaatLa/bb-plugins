@@ -5,7 +5,7 @@ if(process.env.AGY_TEST_ARGS)writeFileSync(process.env.AGY_TEST_ARGS,JSON.string
 const prompt=process.argv.includes('--input-format')?JSON.parse(readFileSync(0,'utf8')).message.content:process.argv.at(-1);
 if(process.env.AGY_TEST_INPUT&&process.argv.includes('--input-format'))writeFileSync(process.env.AGY_TEST_INPUT,prompt);
 if(process.env.AGY_TEST_CALLS&&process.argv.includes('--input-format')){const fs=await import('node:fs');fs.appendFileSync(process.env.AGY_TEST_CALLS,JSON.stringify({prompt,args:process.argv.slice(2)})+'\n');}
-if(process.argv.includes('--version'))console.log('1.4.6');
+if(process.argv.includes('--version'))console.log('1.4.12');
 else if(process.argv.includes('models'))console.log('gemini-new-low\tGemini New (Low)\ngemini-new-high\tGemini New (High)\nclaude-next-high\tClaude Next (High)\ngemini-4-argon-high\tGemini 4 Argon (High)\ngpt-oss-medium\tGPT OSS (Medium)');
 else if(prompt?.includes('wait-for-cancel')){
  process.on('SIGINT',()=>{});
