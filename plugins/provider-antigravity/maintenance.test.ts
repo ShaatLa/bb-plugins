@@ -62,13 +62,14 @@ test('uses only an existing CLI and exposes native verified update plans', async
   const originalFetch=globalThis.fetch;
   let calls=0;
   try {
-    await writeFile(command,'#!/usr/bin/env node\nif(process.argv.includes("--version"))console.log("1.0.0");else console.log('+JSON.stringify(quota())+');\n',{mode:0o700});
-    globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({tag_name:'1.4.6'})); }) as typeof fetch;
+    await writeFile(command,'#!/usr/bin/env node\nif(process.argv.includes("--version"))console.log("1.4.6");else console.log('+JSON.stringify(quota())+');\n',{mode:0o700});
+    globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({tag_name:'1.4.12'})); }) as typeof fetch;
     const local=await installationStatus(command,false);
+    assert.equal(local.versionUnsupported,true);assert.equal(local.minimumSupportedVersion,'1.4.12');
     assert.equal(calls,0);assert.equal(local.latestVersion,null);assert.equal(local.installAction,null);
     const status=await installationStatus(command);assert.equal(status.needsUpdate,true);assert.equal(status.installAction?.label,'Update');
     const plan=await installationRun(command,'update');assert.equal(plan.available,true);
-    if(plan.available){assert.deepEqual(plan.command.args,['update']);assert.equal(plan.command.command,command);assert.deepEqual(plan.verification,{kind:'version_at_least',version:'1.4.6'});}
+    if(plan.available){assert.deepEqual(plan.command.args,['update']);assert.equal(plan.command.command,command);assert.deepEqual(plan.verification,{kind:'version_at_least',version:'1.4.12'});}
     assert.equal((await installationRun(command,'install')).available,false);
     assert.equal((await readUsage(command)).status,'ok');
     globalThis.fetch = (async () => {throw Error('offline');}) as typeof fetch;

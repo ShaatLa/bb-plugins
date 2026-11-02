@@ -16,7 +16,8 @@ import {
 
 const exec = promisify(execFile);
 export const RELEASES = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest";
-export const MINIMUM_CLI_VERSION = "1.4.6";
+// Session-only --settings is verified on 1.4.12; 1.4.6 does not expose it.
+export const MINIMUM_CLI_VERSION = "1.4.12";
 
 export async function resolveAgy(command = ""): Promise<string | null> {
   const name = process.platform === "win32" ? "agy.exe" : "agy";
@@ -80,7 +81,7 @@ export async function readUsage(command = ""): Promise<ProviderUsage> {
     logDir = await mkdtemp(path.join(os.tmpdir(), "bb-antigravity-usage-"));
     const logPath = path.join(logDir, "cli.log");
     const usage = parseUsage(await runAgy(executable, ["--log-file", logPath, "--disable-slash-commands=false", "--output-format", "stream-json", "-p", "/usage"]));
-    // shortcut: agy 1.4.6 omits identity from /usage; use its login log until structured identity is available.
+    // shortcut: agy omits identity from /usage; use its login log until structured identity is available.
     const log = await readFile(logPath, "utf8").catch(() => "");
     const email = [...log.matchAll(/OAuth: authenticated successfully as ([^\s]+)/g)].at(-1)?.[1];
     if (usage.status === "ok") usage.accountEmail = z.email().safeParse(email).data ?? null;

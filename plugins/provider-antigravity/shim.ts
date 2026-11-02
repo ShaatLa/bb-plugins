@@ -1,3 +1,4 @@
+import { reviewMcpSource } from "./review-mcp.ts";
 import { GOOGLE_MODEL_PREFIX } from "./models.ts";
 
 // Materialized on each execution host so the host artifact is self-contained.
@@ -6,8 +7,8 @@ import {spawn,execFile,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,readFileSync,renameSync,mkdtempSync,rmSync} from 'node:fs';
-import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {join,dirname,basename,isAbsolute} from 'node:path';
+import {tmpdir,homedir} from 'node:os';
 
 const agy=process.env.AGY_BIN;
 if(!agy){process.stderr.write('Antigravity CLI is not configured.\n');process.exit(1);}
@@ -48,11 +49,30 @@ function attachMcp(session,servers=[]){
     if(typeof server.command!=='string'||!Array.isArray(server.args)||!Array.isArray(server.env))throw Error('Only stdio MCP is supported.');
     return [server.name,{command:server.command,args:server.args,env:Object.fromEntries(server.env.map(e=>[e.name,e.value]))}];
   }));
+  if(permissionMode==='accept-edits'){
+    const roots=[session.cwd],storage=process.env.BB_THREAD_STORAGE;
+    if(storage&&isAbsolute(storage)){
+      roots.push(storage);
+      // Trust BB metadata, never paths extracted from model-authored prompts.
+      try{
+        const {thread}=JSON.parse(execFileSync(process.env.BB_CLI||'bb',['thread','get','--self','--json'],{encoding:'utf8',timeout:10000,maxBuffer:1048576,stdio:['ignore','pipe','pipe']}));
+        if(thread.id===process.env.BB_THREAD_ID&&basename(storage)===thread.id&&/^thr_[a-z0-9]+$/.test(thread.parentThreadId))roots.push(join(dirname(storage),thread.parentThreadId));
+      }catch{ /* Unavailable metadata grants no parent access. */ }
+    }
+    const review=join(root,'review-mcp.mjs');
+    writeFileSync(review,${JSON.stringify(reviewMcpSource)},{mode:0o600});
+    if(Object.hasOwn(mcpServers,'bb_review'))throw Error('Reserved MCP server name.');
+    mcpServers.bb_review={command:process.execPath,args:[review,JSON.stringify([...new Set(roots)])],env:{ELECTRON_RUN_AS_NODE:'1'}};
+    let permissions={};
+    try{permissions=JSON.parse(readFileSync(join(homedir(),'.gemini','antigravity-cli','settings.json'),'utf8')).permissions||{};}catch(error){if(error.code!=='ENOENT')throw error;}
+    session.settings=join(root,'settings.json');
+    writeFileSync(session.settings,JSON.stringify({permissions:{...permissions,allow:[...(permissions.allow||[]),'mcp(bb_review/memory)','mcp(bb_review/git)','mcp(bb_review/read_file)']}}),{mode:0o600});
+  }
   writeFileSync(join(root,'.agents','mcp_config.json'),JSON.stringify({mcpServers}),{mode:0o600});
 }
 function getSession(id){const session=sessions.get(id);if(!session)throw Error('Unknown session.');return session;}
 function promptText(session,parts){
-  const text='Before using tools, if present, read and follow the applicable AGENTS.md at the workspace root and in the current directory, plus any nested AGENTS.md for files you touch. Read files in full if the native rules index only gives a pointer. GEMINI.md is not required. If a tool action is denied, respect the denial: never retry it or bypass it through another tool. Continue with permitted alternatives, or explicitly report what was denied and which requested work remains blocked. Do not silently stop or claim completion. Follow the BB instructions below.\n\n'+parts.map((part,index)=>{
+  const text=(permissionMode==='accept-edits'?'For read-only review use bb_review MCP tools first: memory (search/get/catalog), git (worktree inspection), read_file (worktree and BB current/parent storage). These grant no shell or write access. Other actions keep the native policy.\n\n':'')+'Before using tools, if present, read and follow the applicable AGENTS.md at the workspace root and in the current directory, plus any nested AGENTS.md for files you touch. Read files in full if the native rules index only gives a pointer. GEMINI.md is not required. If a tool action is denied, respect the denial: never retry it or bypass it through another tool. Continue with permitted alternatives, or explicitly report what was denied and which requested work remains blocked. Do not silently stop or claim completion. Follow the BB instructions below.\n\n'+parts.map((part,index)=>{
     if(part.type==='text'&&typeof part.text==='string')return part.text;
     if(part.type==='image'&&typeof part.data==='string'){
       const extension=new Map([['image/png','png'],['image/jpeg','jpg'],['image/webp','webp'],['image/gif','gif']]).get(part.mimeType);
@@ -70,7 +90,7 @@ function runPrompt(id,session,prompt,denialRecovery=false){
   const text=promptText(session,prompt);
   const args=['--input-format','stream-json','--output-format','stream-json','--disable-slash-commands','--model',session.selected,'--add-dir',session.cwd,'--add-dir',session.root];
   if(permissionMode==='full')args.push('--dangerously-skip-permissions');
-  else args.push('--mode','accept-edits','--sandbox');
+  else args.push('--mode','accept-edits','--sandbox','--settings',session.settings);
   if(session.conversationId)args.push('--conversation',session.conversationId);
   const child=spawn(agy,args,{cwd:session.cwd,stdio:['pipe','pipe','pipe'],detached:process.platform!=='win32'});session.child=child;session.cancelled=false;
   child.stdin.on('error',()=>{});

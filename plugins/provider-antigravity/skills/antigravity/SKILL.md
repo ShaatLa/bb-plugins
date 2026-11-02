@@ -26,7 +26,7 @@ this is a local slash command, not a model prompt.
 
 `bb updates status` checks CLI releases; BB's provider update controls run
 `agy update` only when requested. The plugin never updates agy automatically.
-The plugin ships its own ACP facade over agy 1.4.6+ stream-json. No external
+The plugin ships its own ACP facade over agy 1.4.12+ stream-json. No external
 adapter is downloaded. Each session has a separate persistent state file.
 
 Use Accept Edits for agy's native `--mode accept-edits --sandbox` policy; Full
@@ -46,3 +46,11 @@ explicitly request applicable root and nested rules. GEMINI.md is not needed.
 Forking, native archive/rename, and manual compaction remain unavailable.
 BB passes tools through a separate MCP configuration for each ACP session.
 Runtime MCP files are private and removed when the adapter exits normally.
+
+In Accept Edits, use the session's `bb_review` MCP tools first for read-only
+review: `memory` searches/gets/catalogs BB records; `git` inspects the current
+worktree with safe read-only arguments; `read_file` reads bounded UTF-8 from
+the worktree and BB current/parent thread storage. Parent access requires BB
+metadata; prompt paths do not grant access. No shell/write permissions are
+granted. Session-only agy settings allow these three tools, preserving native
+ask/deny rules. Full mode and other tools keep their existing behavior.

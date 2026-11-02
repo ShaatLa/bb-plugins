@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,writeFile,readFile,access,rm,readdir} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,access,rm,readdir,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
@@ -25,6 +25,7 @@ test('isolates MCP configs, preserves credentials privately, selects live model 
     const [a,b]=(await readdir(dir)).filter(name=>name.startsWith('agy-bb-session-')).map(name=>path.join(dir,name));assert.ok(a&&b);assert.notEqual(a,b);
     const config=JSON.parse(await readFile(path.join(a,'.agents','mcp_config.json'),'utf8'));
     assert.equal(config.mcpServers['bb-bridge'].env.PRIVATE_TOKEN,'secret');
+    assert.equal(config.mcpServers.bb_review,undefined,'Full mode keeps its existing MCP configuration');
     const models=first.configOptions.find((o:any)=>o.category==='model');
     assert.deepEqual(models.options.map((o:any)=>o.value),['gemini-new','gemini-4-argon']);
     const changed=await request('session/set_config_option',{sessionId:first.sessionId,configId:'thought_level',value:'high'});
@@ -82,7 +83,11 @@ test('restricted launch keeps sandbox on and never passes the full-permissions f
   const dir=await mkdtemp(path.join(tmpdir(),'agy-restricted-test-'));
   const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
   const record=path.join(dir,'args.json');
-  const child=spawn(process.execPath,[file,'--bb-permission-mode=accept-edits'],{env:{...process.env,AGY_BB_TEMP_DIR:dir,AGY_BB_DATA_DIR:dir,AGY_TEST_ARGS:record,AGY_TEST_DENY_RECOVERY:'1',AGY_TEST_CALLS:path.join(dir,'calls.jsonl'),AGY_BIN:fileURLToPath(new URL('./test/fake-agy.mjs',import.meta.url))},stdio:['pipe','pipe','pipe']});
+  const storage=path.join(dir,'thr_child'),parent=path.join(dir,'thr_parent');
+  await mkdir(storage);await mkdir(parent);
+  const bb=path.join(dir,'bb.mjs');
+  await writeFile(bb,'#!/usr/bin/env node\nconsole.log(JSON.stringify({thread:{id:"thr_child",parentThreadId:"thr_parent"}}));',{mode:0o700});
+  const child=spawn(process.execPath,[file,'--bb-permission-mode=accept-edits'],{env:{...process.env,AGY_BB_TEMP_DIR:dir,AGY_BB_DATA_DIR:dir,BB_CLI:bb,BB_THREAD_ID:'thr_child',BB_THREAD_STORAGE:storage,AGY_TEST_ARGS:record,AGY_TEST_DENY_RECOVERY:'1',AGY_TEST_CALLS:path.join(dir,'calls.jsonl'),AGY_BIN:fileURLToPath(new URL('./test/fake-agy.mjs',import.meta.url))},stdio:['pipe','pipe','pipe']});
   const lines=createInterface({input:child.stdout});
   try {
     child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'session/new',params:{cwd:dir}})+'\n');
@@ -99,6 +104,15 @@ test('restricted launch keeps sandbox on and never passes the full-permissions f
     const args=JSON.parse(await readFile(record,'utf8'));
     assert.ok(args.includes('--sandbox'));
     assert.equal(args[args.indexOf('--mode')+1],'accept-edits');
+    const settingsFile=args[args.indexOf('--settings')+1];
+    const settings=JSON.parse(await readFile(settingsFile,'utf8'));
+    assert.deepEqual(settings.permissions.allow.slice(-3),['mcp(bb_review/memory)','mcp(bb_review/git)','mcp(bb_review/read_file)']);
+    const root=path.dirname(settingsFile);
+    const mcp=JSON.parse(await readFile(path.join(root,'.agents','mcp_config.json'),'utf8'));
+    assert.equal(mcp.mcpServers.bb_review.command,process.execPath);
+    assert.ok((await readFile(mcp.mcpServers.bb_review.args[0],'utf8')).includes('GIT_OPTIONAL_LOCKS'));
+    assert.deepEqual(JSON.parse(mcp.mcpServers.bb_review.args[1]),[dir,storage,parent]);
+
     assert.ok(!args.includes('--dangerously-skip-permissions'));
   } finally {child.kill();await rm(dir,{recursive:true,force:true});}
 });
