@@ -24,7 +24,7 @@ Model, reasoning, and permission mode remain per-thread BB controls.
 
 ## Requirements and limits
 
-Requires BB 0.46.1, SDK 0.6.49, and an installed, signed-in agy 1.4.6 or newer. The plugin talks to the official
+Requires BB 0.46.1, SDK 0.6.49, and an installed, signed-in agy 1.4.12 or newer. The plugin talks to the official
 CLI directly; no external adapter is downloaded. Login stays managed by agy.
 
 Full and Accept Edits modes are available. Accept Edits uses agy's terminal

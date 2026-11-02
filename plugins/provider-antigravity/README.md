@@ -6,7 +6,7 @@ by https://github.com/amrtawfik160/bb-plugin-antigravity. The provider ID is
 `antigravity`; it does not edit the built-in ACP provider's settings.
 
 Requires BB 0.46.1 / Plugin SDK 0.6.49 or newer and an installed, signed-in `agy`.
-Requires agy 1.4.6 or newer. Set `agyCommand` in the plugin's native settings if it
+Requires agy 1.4.12 or newer. Set `agyCommand` in the plugin's native settings if it
 is outside PATH and `~/.local/bin`. The plugin does not install, replace, or
 copy agy or its credentials.
 
@@ -94,6 +94,44 @@ visible blocker notice. This recovery can use one additional model turn.
 This is not an ACL for role briefs or remote
 administration; restrict credentials, network access, and external tools
 separately before using a dev environment.
+
+Accept Edits sessions also receive a private `bb_review` stdio MCP server with
+three tools: `memory` (`search`, `get`, `catalog`), `git` (read-only inspection),
+and `read_file` (UTF-8, 256 KiB per call, byte offset pagination). Use these tools
+first for review work. Native shell approvals remain unchanged. Git supports
+`rev-parse`, `log`, `show`, `diff`, `status`, `ls-tree`, `cat-file`, `merge-base`,
+and `branch --show-current`; only safe refs and listed display flags are accepted.
+It rejects arbitrary options, shell text, config overrides and output files,
+and disables optional index writes, external diff/textconv, fsmonitor and lazy fetch.
+Command output is bounded to 256 KiB with a 15-second timeout.
+
+Read roots are the session worktree and BB's `BB_THREAD_STORAGE`. When BB's
+`thread get --self --json` confirms a parent, its sibling thread-storage directory
+is also granted read access. Missing metadata grants no parent access; paths
+in model prompts never expand the roots. Symlinks are resolved before containment
+checks; only regular files are read. Parent storage is never added as an agy
+workspace (which would also grant native writes).
+
+The adapter uses agy's session-only `--settings` to allow exactly
+`mcp(bb_review/memory)`, `mcp(bb_review/git)` and `mcp(bb_review/read_file)`.
+Existing native allow/ask/deny rules are preserved; explicit asks and denials
+still take precedence. Full mode is unchanged. No machine-wide settings are
+written. MCP was chosen over command-prefix allow rules because read-looking
+git commands also accept write/output options and can invoke external helpers.
+See Google's [permission matching](https://antigravity.google/docs/permissions?tab=cli)
+and [settings reference](https://antigravity.google/docs/settings?tab=cli), plus
+`agy --help`. The official 1.4.6 binary has no `--settings` option; this
+plugin now requires the verified 1.4.12 CLI for session-only permission rules.
+
+To verify after the owner releases and reloads the plugin, start a new Accept
+Edits child thread. Ask it to use `bb_review` to read `rev-parse HEAD`, `diff HEAD`,
+search and get a known BB memory, and read an artifact placed in its parent's
+thread storage. Compare the head with the parent's `git rev-parse HEAD`.
+Ask the MCP tools for `checkout`, `diff --output=...`, and an unrelated absolute
+file path: each must return an error without changing files. A native action
+outside these tools should retain its existing approval behavior. No new user
+settings are required; explicit native MCP ask/deny rules can still block these
+tools. Automated checks: `npm run typecheck`, `npm test`, `bb plugin build .`.
 
 Messages sent as a steer interrupt the current CLI process and resume its
 native conversation with the new input. The adapter terminates tracked descendant processes, including PTY children.
