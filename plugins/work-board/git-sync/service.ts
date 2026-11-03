@@ -305,7 +305,7 @@ export function createGitSyncService(
           });
           refreshed.add(prIdentity(link));
           refreshed.add(prIdentity(snapshot));
-          if (snapshot.headSha !== previous.snapshot?.headSha) filesChanged = true;
+          if (snapshot.headSha !== previous.snapshot?.headSha || snapshot.baseSha !== previous.snapshot?.baseSha) filesChanged = true;
           checked++;
         } catch (error) {
           if (!current()) break;

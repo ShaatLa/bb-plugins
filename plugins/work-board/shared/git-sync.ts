@@ -155,6 +155,7 @@ export const prSnapshotSchema = z
     title: z.string(),
     state: z.enum(["open", "draft", "merged", "closed"]),
     headSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    baseSha: z.string().regex(/^[a-f0-9]{40}$/i).optional(),
     mergeSha: z.string().nullable(),
     mergedAt: z.string().nullable(),
     baseBranch: z.string(),

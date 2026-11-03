@@ -33,7 +33,7 @@ const rawPull = (number = 42, title = "ABC-1 ABC-12 work") => ({
   mergeable: true,
   mergeable_state: "clean",
   head: { sha: a },
-  base: { ref: "trunk", repo: { full_name: "example/service", id: 123 } },
+  base: { ref: "trunk", sha: a, repo: { full_name: "example/service", id: 123 } },
 });
 const snapshot = (repository = "example/service", number = 42) =>
   prSnapshotSchema.parse({
@@ -242,6 +242,7 @@ function githubFixture(
     descendant?: boolean;
     queued?: boolean;
     headSha?: string;
+    baseSha?: string;
   } = {},
 ) {
   const requests: string[] = [];
@@ -253,6 +254,7 @@ function githubFixture(
       value = {
         ...rawPull(),
         head: { sha: options.headSha ?? a },
+        base: { ...rawPull().base, sha: options.baseSha ?? a },
         ...(options.merged
           ? {
               state: "closed",
@@ -656,6 +658,13 @@ it("fetches files once per open head and refetches after the head changes", asyn
   expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(1);
   await f.client.snapshot("example/service", 42, config, { ...second, headSha: b });
   expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(2);
+  const changedBase = githubFixture({ baseSha: b });
+  const refreshed = await changedBase.client.snapshot("example/service", 42, config, second);
+  expect(refreshed.baseSha).toBe(b);
+  expect(changedBase.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(1);
+  const { baseSha: _baseSha, ...legacy } = second;
+  await f.client.snapshot("example/service", 42, config, legacy);
+  expect(f.requests.filter(path => path.includes("/pulls/42/files"))).toHaveLength(3);
 });
 
 it("abandons a sync run that hangs so later syncs are not blocked", async () => {

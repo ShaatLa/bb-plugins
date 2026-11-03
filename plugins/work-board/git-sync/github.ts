@@ -25,6 +25,7 @@ const pull = z.object({
   head: z.object({ sha }),
   base: z.object({
     ref: z.string(),
+    sha,
     repo: z.object({ full_name: z.string(), id: z.number() }),
   }),
 });
@@ -342,9 +343,10 @@ export function createGithubClient(options: {
       await request(`/repos/${repository}/pulls/${number}`),
     );
     const repo = pr.base.repo.full_name;
-    let files: PrSnapshot["files"] = previous?.headSha === pr.head.sha ? previous.files : undefined;
+    const sameComparison = previous?.headSha === pr.head.sha && previous.baseSha === pr.base.sha;
+    let files: PrSnapshot["files"] = sameComparison ? previous.files : undefined;
     if (pr.state === "open") {
-      if (previous?.headSha === pr.head.sha && previous.files) files = previous.files;
+      if (sameComparison && previous.files) files = previous.files;
       else {
         const entries: NonNullable<PrSnapshot["files"]>["entries"] = [];
         let truncated = false;
@@ -618,6 +620,7 @@ export function createGithubClient(options: {
             ? "draft"
             : "open",
       headSha: pr.head.sha,
+      baseSha: pr.base.sha,
       mergeSha: pr.merged_at ? pr.merge_commit_sha : null,
       mergedAt: pr.merged_at ?? null,
       baseBranch: pr.base.ref,
