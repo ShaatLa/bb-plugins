@@ -307,6 +307,19 @@ export async function importProject(
       attachments: blobs.size,
     };
   } finally {
+    if (committed) {
+      for (const { previousPath } of blobs.values()) {
+        if (!previousPath) continue;
+        try {
+          const referenced = bb.storage.database()
+            .prepare<[string], { found: number }>("SELECT 1 AS found FROM attachments WHERE blob_path = ? LIMIT 1")
+            .get(previousPath);
+          if (!referenced) await rm(join(root, previousPath), { force: true });
+        } catch (error) {
+          bb.log.warn(`Could not remove replaced import blob ${previousPath}: ${errorMessage(error)}`);
+        }
+      }
+    }
     // Keep newly referenced blobs; failed imports never alter the previous blob files.
     for (const path of staged) {
       const id = path.split(sep)[1]!;

@@ -515,6 +515,36 @@ describe("project archives", () => {
     );
   });
 
+  it("cleans replaced blobs after commit and preserves originals on rollback", async () => {
+    const source = await seed();
+    const out = join(await directory(), "snapshot");
+    const database = source.bb.storage.database();
+    const root = dirname(database.prepare<[], { file: string }>("PRAGMA database_list").all()[0]!.file);
+    const id = source.attachment.id;
+    const original = source.store.tasks.getAttachment(id)!.blobPath;
+    await exportProject(source.bb, source.store, source.project.id, out);
+    await writeFile(join(root, original), Buffer.from([1, 2, 3, 4]));
+    await expect(importProject(source.bb, source.store, out, false)).rejects.toThrow("Import conflict");
+    expect(await readFile(join(root, original))).toEqual(Buffer.from([1, 2, 3, 4]));
+    expect(source.store.tasks.getAttachment(id)!.blobPath).toBe(original);
+    await importProject(source.bb, source.store, out, true);
+    const first = source.store.tasks.getAttachment(id)!.blobPath;
+    expect(first).not.toBe(original);
+    await expect(readFile(join(root, original))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(root, first), Buffer.from([5, 6, 7, 8]));
+    await importProject(source.bb, source.store, out, true);
+    const second = source.store.tasks.getAttachment(id)!.blobPath;
+    expect(second).not.toBe(first);
+    await expect(readFile(join(root, first))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, second))).toEqual(Buffer.from([0, 255, 42, 7]));
+    database.prepare(`INSERT INTO attachments
+      SELECT 'shared-blob-test', task_id, comment_id, file_name, mime, size_bytes, blob_path, is_image, created_at
+      FROM attachments WHERE id = ?`).run(id);
+    await writeFile(join(root, second), Buffer.from([9, 9, 9, 9]));
+    await importProject(source.bb, source.store, out, true);
+    expect(await readFile(join(root, second))).toEqual(Buffer.from([9, 9, 9, 9]));
+  });
+
   it("rejects conflicting changes atomically and allows explicit overwrite without deleting omitted records", async () => {
     const source = await seed();
     const out = join(await directory(), "snapshot");
