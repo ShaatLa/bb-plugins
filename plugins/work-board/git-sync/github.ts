@@ -74,12 +74,13 @@ export function createGithubClient(options: {
   fetcher?: typeof fetch;
 }) {
   const cached = new Map<string, { etag?: string; body: unknown }>();
+  let retryAt = 0;
+  function withSignal(runSignal: AbortSignal) {
+  // A shared request belongs to one run; aborting it must not fail another run.
   const branchRequirements = new Map<
     string,
     { expires: number; value: Promise<{ protection: unknown; rules: unknown[] | null }> }
   >();
-  let retryAt = 0;
-  function withSignal(runSignal: AbortSignal) {
   const signal = AbortSignal.any([options.signal, runSignal]);
   async function request(path: string, body?: unknown): Promise<unknown> {
     if (Date.now() < retryAt)

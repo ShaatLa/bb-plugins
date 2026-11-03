@@ -396,6 +396,19 @@ it("shares branch rule requests briefly per credential and refreshes them", asyn
   await snapshot();
   expect(paths()).toHaveLength(6);
 });
+it("keeps shared branch-rule requests inside their cancellation scope", async () => {
+  const f = githubFixture();
+  const config = gitSyncConfigSchema.parse({});
+  const first = new AbortController();
+  const run = f.client.withSignal(first.signal);
+  await run.snapshot("example/service", 42, config);
+  await run.snapshot("example/service", 42, config);
+  const paths = () => f.requests.filter((path) => path.includes("/protection/") || path.includes("/rules/branches/"));
+  expect(paths()).toHaveLength(2);
+  first.abort();
+  await f.client.withSignal(new AbortController().signal).snapshot("example/service", 42, config);
+  expect(paths()).toHaveLength(4);
+});
 it("uses the latest CI attempt on the current head and keeps CI success separate from merge/review blockers", async () => {
   const f = githubFixture();
   const value = await f.client.snapshot(
