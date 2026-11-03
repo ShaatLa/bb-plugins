@@ -116,6 +116,35 @@ describe("createDescriptionSaver", () => {
     expect(calls).toEqual(["draft v1", "draft v2"]);
   });
 
+  it("serializes an overdue newer draft and coalesces repeated flushes", async () => {
+    const calls: string[] = [];
+    const releases: Array<() => void> = [];
+    let stored = "";
+    const { saver } = setup(async (_taskId, markdown) => {
+      calls.push(markdown);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      stored = markdown;
+      return { ok: true };
+    });
+
+    saver.onChange("task-1", "v1");
+    await vi.advanceTimersByTimeAsync(DELAY_MS);
+    saver.onChange("task-1", "v2");
+    await vi.advanceTimersByTimeAsync(DELAY_MS);
+    saver.flush("task-1");
+    saver.flush("task-1");
+    expect(calls).toEqual(["v1"]);
+    releases[0]();
+    await flushMicrotasks();
+    expect(calls).toEqual(["v1", "v2"]);
+    saver.flush("task-1");
+    releases[1]();
+    await flushMicrotasks();
+    expect(stored).toBe("v2");
+    expect(calls).toEqual(["v1", "v2"]);
+    expect(saver.hasPending()).toBe(false);
+  });
+
   it("only flushes drafts belonging to the flushed task", async () => {
     const calls: Array<[string, string]> = [];
     const { saver } = setup(async (taskId, markdown) => {

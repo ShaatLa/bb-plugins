@@ -30,8 +30,15 @@ export function createDescriptionSaver(
   const drafts = options.drafts ?? new Map<string, string>();
   let cancelTimer: (() => void) | undefined;
   let pending: { taskId: string; markdown: string } | undefined;
+  let inFlight: typeof pending;
+  let queued = false;
 
   const runSave = async (attempt: { taskId: string; markdown: string }) => {
+    if (inFlight) {
+      if (inFlight !== attempt) queued = true;
+      return;
+    }
+    inFlight = attempt;
     try {
       const result = await options.save(attempt.taskId, attempt.markdown);
       if (result.ok) {
@@ -42,6 +49,14 @@ export function createDescriptionSaver(
       }
     } catch (error) {
       options.onError(errorMessage(error));
+    } finally {
+      inFlight = undefined;
+      if (queued && pending && pending !== attempt) {
+        queued = false;
+        void runSave(pending);
+      } else {
+        queued = false;
+      }
     }
   };
 
