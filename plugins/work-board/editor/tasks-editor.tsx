@@ -16,6 +16,8 @@ import type { SuggestionProps } from "@tiptap/suggestion";
 import { Button } from "@/components/ui/button";
 import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
+import { errorMessage } from "../shared/errors.js";
+import { toast } from "sonner";
 import {
   createEditorExtensions,
   type MentionItem,
@@ -272,12 +274,18 @@ export function TasksEditor({
       const handler = uploadRef.current;
       if (!handler || !file.type.startsWith("image/")) return false;
       const result = await handler(file);
+      if (editor.isDestroyed) return false;
       editor
         .chain()
         .focus()
         .setImage({ src: result.url, alt: file.name })
         .run();
       return true;
+    };
+    const uploadWithError = (file: File) => {
+      void upload(file).catch((error: unknown) => {
+        toast.error(`Image upload failed: ${errorMessage(error)}`);
+      });
     };
     const mentionHandle: MentionSuggestionHandle = {
       getItems: (query) =>
@@ -373,7 +381,7 @@ export function TasksEditor({
             candidate.type.startsWith("image/"),
           );
           if (!file) return false;
-          void upload(file);
+          uploadWithError(file);
           return true;
         },
         handleDrop(_view, event) {
@@ -390,7 +398,7 @@ export function TasksEditor({
           );
           if (!file) return false;
           event.preventDefault();
-          void upload(file);
+          uploadWithError(file);
           return true;
         },
       },

@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { POINTER_COARSE_QUERY } from "@/components/ui/hooks/use-pointer-coarse";
 import { createEditorExtensions } from "./extensions.js";
 import { TasksEditor } from "./tasks-editor.js";
@@ -411,6 +412,61 @@ describe("TasksEditor component", () => {
     ).toBe(true);
     expect(preventDefault).toHaveBeenCalled();
     expect(onAttachFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a notification when a pasted image upload fails", async () => {
+    const onUploadImage = vi.fn().mockRejectedValue(new Error("network down"));
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    let editor: Editor | null = null;
+    render(
+      <TasksEditor
+        value=""
+        onChange={() => undefined}
+        onUploadImage={onUploadImage}
+        onEditorReady={(ready) => (editor = ready)}
+      />,
+    );
+    const file = new File(["png"], "shot.png", { type: "image/png" });
+
+    editor!.options.editorProps.handlePaste!.call(
+      editor!.view,
+      editor!.view,
+      { clipboardData: { files: [file] } } as unknown as ClipboardEvent,
+      null as never,
+    );
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Image upload failed: network down"),
+    );
+  });
+
+  it("does not insert a pasted image after the editor unmounts during upload", async () => {
+    let finishUpload!: (result: { url: string; attachmentId: string }) => void;
+    const onUploadImage = vi.fn(
+      () => new Promise<{ url: string; attachmentId: string }>((resolve) => {
+        finishUpload = resolve;
+      }),
+    );
+    let editor: Editor | null = null;
+    const screen = render(
+      <TasksEditor
+        value=""
+        onChange={() => undefined}
+        onUploadImage={onUploadImage}
+        onEditorReady={(ready) => (editor = ready)}
+      />,
+    );
+    const file = new File(["png"], "shot.png", { type: "image/png" });
+    editor!.options.editorProps.handlePaste!.call(
+      editor!.view,
+      editor!.view,
+      { clipboardData: { files: [file] } } as unknown as ClipboardEvent,
+      null as never,
+    );
+
+    screen.unmount();
+    finishUpload({ url: "/uploaded.png", attachmentId: "attachment_1" });
+    await waitFor(() => expect(editor!.isDestroyed).toBe(true));
   });
 
   it("replaces the document when the value prop changes externally", async () => {
