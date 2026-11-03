@@ -24,7 +24,7 @@ import {
 } from "../attachments";
 import { exportProject, importProject, readProjectArchive } from ".";
 import { jsonText } from "./contract";
-import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
+import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
 
 const harnesses: FakePluginHarness[] = [];
@@ -770,7 +770,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(8);
+  expect(manifest.version).toBe(9);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -798,17 +798,17 @@ it("round-trips owner execution and requester by ID in the latest format and def
 });
 
 
-it("round-trips configurable project statuses, their order and custom task stages in v6", async () => {
+it("round-trips configurable project statuses, their order and custom task stages in v9", async () => {
   const source = await seed();
-  const statuses = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
+  const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
-  statuses.splice(4, 0, { id: "in_testing", name: "In testing" });
+  statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
   source.store.tasks.updateProject(source.project.id, { statuses });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(8);
+  expect(manifest.version).toBe(9);
   expect(manifest.project.statuses).toEqual(statuses);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
@@ -818,6 +818,18 @@ it("round-trips configurable project statuses, their order and custom task stage
   await exportProject(target.bb, target.store, source.project.id, again);
   expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
+  // Earlier exporters could already write status metadata under v8.
+  manifest.version = 8;
+  await writeFile(join(out, "project.json"), jsonText(manifest));
+  const legacy = setup();
+  await importProject(legacy.bb, legacy.store, out, false);
+  expect(legacy.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  delete manifest.project.statuses[4].icon;
+  delete manifest.project.statuses[4].color;
+  await writeFile(join(out, "project.json"), jsonText(manifest));
+  const plainLegacy = setup();
+  await importProject(plainLegacy.bb, plainLegacy.store, out, false);
+  expect(plainLegacy.store.tasks.getProject(source.project.id)?.statuses).toEqual(manifest.project.statuses);
   const prior = target.store.tasks.getProject(source.project.id);
   manifest.project.statuses = DEFAULT_TASK_STATUSES;
   await writeFile(join(out, "project.json"), jsonText(manifest));

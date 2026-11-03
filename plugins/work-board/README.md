@@ -31,7 +31,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; структура и версия **v8** прежние. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v8).
+Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v9**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v9).
 
 Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
 
@@ -513,7 +513,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v8; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate any downstream strict export checker before activating the v8 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v9; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v9 exporter.
 
 ## Dispatch и иерархия тредов
 
@@ -534,3 +534,7 @@ PR из окружений воркеров читаются через встр
 ## Счётчик на значке Work Board (0.15.1)
 
 В настройках Work Board (Settings → Plugins → Work Board или шестерёнка на странице Work Board) свёрнутый блок **Navigation badge** выбирает, что считает значок Work Board в навигации: открытые задачи (по умолчанию), задачи на ревью, задачи с вопросами без ответа, Owner actions, задачи с упавшим тредом и задачи с тредом в простое без обновлений (порог — настройка Flag idle threads without task updates). Можно выбрать несколько вариантов: значок показывает число уникальных задач, совпавших хотя бы с одним из них, задача считается один раз. Подсказка значка показывает разбивку, например «3 tasks: 2 with unanswered questions, 1 for the owner». Без выбранных вариантов значка нет. Учитываются незаархивированные задачи; `done` и `canceled` не считаются нигде. Выбор хранится в данных плагина на сервере и общий для всех устройств; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. Значок обновляется по событиям задач, тредов и смене выбора, а при включённом простое тредов ещё и раз в минуту.
+
+### Upgrade and rollback (0.16.0)
+
+Export v9 preserves optional workflow status icons and colors. Imports accept v1–v9, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
