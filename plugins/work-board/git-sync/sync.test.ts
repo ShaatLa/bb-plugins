@@ -246,6 +246,7 @@ function githubFixture(
   } = {},
 ) {
   const requests: string[] = [];
+  let token: string | undefined;
   const fetcher: typeof fetch = vi.fn(async (input, init) => {
     const url = new URL(String(input));
     requests.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
@@ -371,13 +372,30 @@ function githubFixture(
   });
   return {
     client: createGithubClient({
-      token: async () => undefined,
+      token: async () => token,
       signal: new AbortController().signal,
       fetcher,
     }),
     requests,
+    setToken: (value: string) => { token = value; },
   };
 }
+it("shares branch rule requests briefly per credential and refreshes them", async () => {
+  vi.useFakeTimers();
+  const f = githubFixture();
+  const config = gitSyncConfigSchema.parse({});
+  const snapshot = () => f.client.snapshot("example/service", 42, config);
+  await snapshot();
+  await snapshot();
+  const paths = () => f.requests.filter((path) => path.includes("/protection/") || path.includes("/rules/branches/"));
+  expect(paths()).toHaveLength(2);
+  f.setToken("another-account");
+  await snapshot();
+  expect(paths()).toHaveLength(4);
+  await vi.advanceTimersByTimeAsync(30_001);
+  await snapshot();
+  expect(paths()).toHaveLength(6);
+});
 it("uses the latest CI attempt on the current head and keeps CI success separate from merge/review blockers", async () => {
   const f = githubFixture();
   const value = await f.client.snapshot(

@@ -74,6 +74,10 @@ export function createGithubClient(options: {
   fetcher?: typeof fetch;
 }) {
   const cached = new Map<string, { etag?: string; body: unknown }>();
+  const branchRequirements = new Map<
+    string,
+    { expires: number; value: Promise<{ protection: unknown; rules: unknown[] | null }> }
+  >();
   let retryAt = 0;
   function withSignal(runSignal: AbortSignal) {
   const signal = AbortSignal.any([options.signal, runSignal]);
@@ -189,6 +193,26 @@ export function createGithubClient(options: {
       if (batch.length < 100) return rows;
     }
     throw new GithubError(422, "GitHub rule list exceeds 2000 entries");
+  }
+  async function requirements(repo: string, branch: string) {
+    const token = await options.token();
+    const scope = createHash("sha256").update(token ?? "anonymous").digest("hex");
+    const key = `${scope}:${repo}:${branch}`;
+    const existing = branchRequirements.get(key);
+    if (existing && existing.expires > Date.now()) return existing.value;
+    const value = Promise.all([
+      optional(`/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`),
+      optionalPages(`/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`),
+    ]).then(([protection, rules]) => ({ protection, rules }));
+    branchRequirements.set(key, { expires: Date.now() + 30_000, value });
+    while (branchRequirements.size > 128)
+      branchRequirements.delete(branchRequirements.keys().next().value!);
+    try {
+      return await value;
+    } catch (error) {
+      if (branchRequirements.get(key)?.value === value) branchRequirements.delete(key);
+      throw error;
+    }
   }
   async function discover(repository: string, days: number) {
     const rows = new Map<number, z.infer<typeof pull>>();
@@ -453,12 +477,7 @@ export function createGithubClient(options: {
       ? config.requiredChecks.map((context) => ({ context, appId: null }))
       : null;
     if (required === null) {
-      const protection = await optional(
-        `/repos/${repo}/branches/${encodeURIComponent(pr.base.ref)}/protection/required_status_checks`,
-      );
-      const rules = await optionalPages(
-        `/repos/${repo}/rules/branches/${encodeURIComponent(pr.base.ref)}`,
-      );
+      const { protection, rules } = await requirements(repo, pr.base.ref);
       requirementsKnown = protection !== null && rules !== null;
       if (protection !== null || rules !== null) {
         required = [];
