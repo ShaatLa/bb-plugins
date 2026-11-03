@@ -289,7 +289,7 @@ function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
         onClick={openInSidePanel}
       >
         <span aria-hidden>
-          <StatusIcon status={task.status} />
+          <StatusIcon projectId={task.projectId} status={task.status} />
         </span>
         <span
           aria-hidden

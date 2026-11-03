@@ -240,7 +240,7 @@ export function ListFilterBar({
               }
             >
               <span className="flex items-center gap-2">
-                <StatusIcon status={status} className="size-3" />
+                <StatusIcon projectId={projectId} status={status} className="size-3" />
                 {statusLabel(status)}
               </span>
             </DropdownMenuCheckboxItem>

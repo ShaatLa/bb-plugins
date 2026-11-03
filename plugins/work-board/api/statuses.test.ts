@@ -6,7 +6,7 @@ import {
 import { createStore, registerTasksApi } from ".";
 import { registerTasksCli } from "../cli";
 import { createTasksStore } from "../db";
-import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses";
+import { DEFAULT_TASK_STATUSES, taskStatusesSchema, type TaskStatusDefinition } from "../shared/statuses";
 import { tasksRpcContract } from "../shared/contract";
 import { listTasksOpenFirst } from "../shell/data";
 
@@ -189,6 +189,22 @@ it("guards status removal, immutable IDs, pagination and cross-project moves wit
   expect(() =>
     store.tasks.updateTask(child.id, { status: "in_testing" }),
   ).toThrow(/Unknown task status/);
+});
+
+it("persists status icons per project and rejects unavailable icons without overwriting them", async () => {
+  const { harness, store, project, other, statuses } = setup();
+  const configured: TaskStatusDefinition[] = statuses.map((status) => ({ ...status, icon: "testing", color: "indianred" }));
+  await harness.callRpc("updateProject", { projectId: project.id, statuses: configured });
+  expect(store.tasks.getProject(project.id)?.statuses).toEqual(configured);
+  expect(store.tasks.getProject(other.id)?.statuses).toEqual(DEFAULT_TASK_STATUSES);
+  expect(taskStatusesSchema.safeParse(statuses.map((status) => ({ ...status, icon: "missing_icon" }))).success).toBe(false);
+  await expect(harness.callRpc("updateProject", {
+    projectId: project.id,
+    statuses: configured.map((status) => ({ ...status, color: "url(https://invalid)" })),
+  })).rejects.toThrow();
+  expect(store.tasks.getProject(project.id)?.statuses).toEqual(configured);
+  await harness.callRpc("updateProject", { projectId: project.id, statuses });
+  expect(store.tasks.getProject(project.id)?.statuses).toEqual(statuses);
 });
 
 it("rebuilds the legacy status constraint without dropping task relationships, indexes or triggers", () => {

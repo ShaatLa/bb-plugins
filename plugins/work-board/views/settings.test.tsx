@@ -146,6 +146,19 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       ]),
     );
     expect(store.tasks.getProject(other.id)?.statuses).toHaveLength(6);
+    fireEvent.keyDown(settings.getByRole("combobox", { name: "Icon for In testing" }), { key: "ArrowDown" });
+    fireEvent.click(await settings.findByRole("option", { name: "Testing" }));
+    await waitFor(() => expect(
+      store.tasks.getProject(project.id)?.statuses?.find((status) => status.id === "in_testing")?.icon,
+    ).toBe("testing"));
+    fireEvent.click(settings.getByRole("button", { name: "Color for In testing" }));
+    expect(settings.queryByRole("button", { name: "Default" })).toBeNull();
+    expect(settings.queryByRole("button", { name: "Teal" })).toBeNull();
+    expect(settings.getByRole("dialog").querySelectorAll("button")).toHaveLength(10);
+    fireEvent.click(await settings.findByRole("button", { name: "Red" }));
+    await waitFor(() => expect(
+      store.tasks.getProject(project.id)?.statuses?.find((status) => status.id === "in_testing"),
+    ).toMatchObject({ icon: "testing", color: "indianred" }));
     settings.lifecycle.unmount();
     const task = store.tasks.createTask({
       projectId: project.id,
@@ -159,6 +172,8 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     );
     await list.findByText(task.title);
     expect(list.getByText("In testing")).toBeTruthy();
+    expect(list.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
+    expect((list.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
     list.lifecycle.unmount();
     const board = renderSlot(
       app.navPanels[0]!,
@@ -166,6 +181,8 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       { rpc },
     );
     await board.findByText(task.title);
+    expect(board.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
+    expect((board.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
     expect(
       board.getByRole("button", { name: "New In testing task" }),
     ).toBeTruthy();
@@ -194,6 +211,8 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       { rpc },
     );
     await detail.findByRole("textbox", { name: "Task title" });
+    expect(detail.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
+    expect((detail.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
     const status = await detail.findAllByRole("button", { name: "In testing" });
     fireEvent.keyDown(status[0]!, { key: "ArrowDown" });
     expect(

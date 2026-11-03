@@ -294,7 +294,7 @@ function TaskCard({
                 onClick={() => onOpenSubtask?.(child)}
                 className="flex w-full items-start gap-1.5 rounded-md p-1 text-left text-xs hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <StatusIcon status={child.status} className="mt-0.5" />
+                <StatusIcon projectId={child.projectId} status={child.status} className="mt-0.5" />
                 <span className="min-w-0 flex-1">
                   <span className="text-2xs tabular-nums text-muted-foreground">
                     {child.key}
@@ -728,7 +728,7 @@ export function BoardView({ projectId }: BoardViewProps) {
         className="flex max-h-full min-w-[230px] flex-1 basis-[230px] flex-col"
       >
         <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold">
-          <StatusIcon status={status} />
+          <StatusIcon projectId={projectId} status={status} />
           <span>{statusLabel(status)}</span>
           <span className="font-normal text-muted-foreground">
             {cards.length}

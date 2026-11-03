@@ -234,7 +234,7 @@ function SubTasksSection({
           title={statusLabel(subtask.status)}
           onClick={() => navigation.go({ kind: "task", taskKey: subtask.key })}
         >
-          <StatusIcon status={subtask.status} />
+          <StatusIcon projectId={subtask.projectId} status={subtask.status} />
           <span className="shrink-0 text-xs text-muted-foreground">
             {subtask.key}
           </span>
@@ -245,7 +245,7 @@ function SubTasksSection({
       ))}
       {adding ? (
         <div className="flex h-8 items-center gap-2 border-b border-border-hairline px-0.5">
-          <StatusIcon status="todo" className="opacity-60" />
+          <StatusIcon projectId={task.projectId} status="todo" className="opacity-60" />
           <input
             autoFocus
             value={title}
@@ -544,7 +544,7 @@ function TaskDetail({
                   }
                 >
                   Sub-task of
-                  <StatusIcon status={parentTask.status} className="size-3" />
+                  <StatusIcon projectId={parentTask.projectId} status={parentTask.status} className="size-3" />
                   <span className="font-medium text-foreground">
                     {parentTask.key}
                   </span>

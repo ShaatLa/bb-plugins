@@ -301,7 +301,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
             data-status-group-header={group.status}
             className="sticky top-0 z-20 isolate flex items-center gap-2 border-b border-border-hairline bg-background px-3.5 pb-1.5 pt-2.5 text-sm font-semibold"
           >
-            <StatusIcon status={group.status} />
+            <StatusIcon projectId={projectId} status={group.status} />
             {statusLabel(group.status)}
             <span className="text-xs font-normal tabular-nums text-subtle-foreground">
               {group.tasks.length}

@@ -101,14 +101,14 @@ function StatusMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" className={triggerClassName}>
-          <StatusIcon status={task.status} />
+          <StatusIcon projectId={task.projectId} status={task.status} />
           {statusLabel(task.status)}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         {statusIds.map((status) => (
           <DropdownMenuItem key={status} onSelect={() => onUpdate({ status })}>
-            <StatusIcon status={status} />
+            <StatusIcon projectId={task.projectId} status={status} />
             {statusLabel(status)}
             {status === task.status ? (
               <Icon name="Check" className="ml-auto size-3.5" />

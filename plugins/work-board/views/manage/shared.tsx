@@ -2,18 +2,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "../../shared/errors.js";
 
-const COLOR_PALETTE = [
-  { value: "slateblue", label: "Indigo" },
-  { value: "steelblue", label: "Blue" },
-  { value: "lightseagreen", label: "Teal" },
-  { value: "mediumseagreen", label: "Green" },
-  { value: "goldenrod", label: "Yellow" },
-  { value: "sandybrown", label: "Orange" },
-  { value: "indianred", label: "Red" },
-  { value: "palevioletred", label: "Pink" },
-  { value: "mediumpurple", label: "Purple" },
-  { value: "slategray", label: "Gray" },
-] as const;
+import { COLOR_PALETTE } from "../../shared/colors.js";
 
 export const DEFAULT_COLOR = COLOR_PALETTE[0].value;
 

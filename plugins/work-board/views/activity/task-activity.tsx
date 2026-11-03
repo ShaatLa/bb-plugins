@@ -375,6 +375,9 @@ export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
         mentionItems={mentionItems}
         onOpenThread={(threadId) => navigate.toThread(threadId)}
         onSubmit={() => void send()}
+        onAttachFiles={(files) =>
+          setPendingFiles((current) => [...current, ...stageFiles(files)])
+        }
       />
       {pendingFiles.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1.5">

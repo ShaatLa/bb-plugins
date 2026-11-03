@@ -11,12 +11,18 @@ import {
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/ui/icon";
+import { COLOR_PALETTE } from "../shared/colors.js";
+import { StatusIcon, StatusColorDot } from "../components/status-icon.js";
 import { useProjects, useTasksRpc } from "../shell/data.js";
 import {
   DEFAULT_TASK_STATUSES,
   TASK_STATUSES,
+  STATUS_ICONS,
+  statusIconSchema,
   taskStatusesSchema,
   type TaskStatusDefinition,
 } from "../shared/statuses.js";
@@ -29,6 +35,7 @@ function ProjectStatuses({ project }: { project: Project }) {
     () => project.statuses ?? DEFAULT_TASK_STATUSES,
   );
   const [saved, setSaved] = useState(statuses);
+  const [colorPicker, setColorPicker] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +229,62 @@ function ProjectStatuses({ project }: { project: Project }) {
                 <circle cx="8" cy="13" r="1" />
               </svg>
             </Button>
+            <Select
+              value={status.icon ?? "default"}
+              disabled={saving || adding || draggedId !== null}
+              onValueChange={(value) => {
+                const { icon: _icon, ...definition } = status;
+                const updated = value === "default"
+                  ? definition
+                  : { ...definition, icon: statusIconSchema.parse(value) };
+                void save(statuses.map((entry) => entry.id === status.id ? updated : entry));
+              }}
+            >
+              <SelectTrigger aria-label={`Icon for ${status.name}`} className="h-7 w-12 shrink-0 px-1.5">
+                <SelectValue>
+                  <StatusIcon status={status.id} icon={status.icon} color={status.color} />
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">
+                  <span className="flex items-center gap-2"><StatusIcon status={status.id} color={status.color} />Default</span>
+                </SelectItem>
+                {STATUS_ICONS.map((icon) => (
+                  <SelectItem key={icon.id} value={icon.id}>
+                    <span className="flex items-center gap-2"><StatusIcon status={status.id} icon={icon.id} color={status.color} />{icon.name}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Popover open={colorPicker === status.id} onOpenChange={(open) => setColorPicker(open ? status.id : null)}>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="outline" aria-label={`Color for ${status.name}`} className="h-7 w-12 shrink-0 gap-1 px-1.5" disabled={saving || adding || draggedId !== null}>
+                  <StatusColorDot status={status.id} color={status.color} />
+                  <Icon name="ChevronDown" className="size-3 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-auto p-2" mobileTitle={`Color for ${status.name}`}>
+                <div className="grid grid-cols-5 gap-1">
+                  {COLOR_PALETTE.filter((color) => color.value !== "lightseagreen").map((color) => (
+                    <button
+                      key={color.label}
+                      type="button"
+                      aria-label={color.label}
+                      title={color.label}
+                      aria-pressed={status.color === color.value}
+                      className={cn("flex size-8 items-center justify-center rounded-md hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", status.color === color.value && "ring-1 ring-ring")}
+                      onClick={() => {
+                        const updated = { ...status, color: color.value };
+                        setColorPicker(null);
+                        void save(statuses.map((entry) => entry.id === status.id ? updated : entry));
+                      }}
+                    >
+                      <StatusColorDot status={status.id} color={color.value} />
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
             <Input
               aria-label={`Status name ${status.id}`}
               className="h-7 min-w-0 flex-1 text-xs"
@@ -272,7 +335,7 @@ function ProjectStatuses({ project }: { project: Project }) {
               autoFocus
               aria-label="New status name"
               placeholder="Status name"
-              className="ml-[34px] h-7 min-w-0 flex-1 text-xs"
+              className="ml-[142px] h-7 min-w-0 flex-1 text-xs"
               value={name}
               onChange={(event) => setName(event.target.value)}
               onBlur={add}

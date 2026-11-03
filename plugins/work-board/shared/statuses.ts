@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { COLOR_PALETTE } from "./colors.js";
+
+export const statusColorSchema = z.enum(COLOR_PALETTE.map((color) => color.value));
+export type StatusColor = z.infer<typeof statusColorSchema>;
 
 export const TASK_STATUSES = [
   "backlog",
@@ -8,6 +12,31 @@ export const TASK_STATUSES = [
   "done",
   "canceled",
 ] as const;
+export const STATUS_ICONS = [
+  { id: "backlog", name: "Dashed circle" },
+  { id: "todo", name: "Circle" },
+  { id: "in_progress", name: "In progress" },
+  { id: "in_review", name: "In review" },
+  { id: "done", name: "Done" },
+  { id: "canceled", name: "Canceled" },
+  { id: "clock", name: "Waiting" },
+  { id: "pause", name: "Paused" },
+  { id: "play", name: "Ready" },
+  { id: "search", name: "Investigation" },
+  { id: "testing", name: "Testing" },
+  { id: "bug", name: "Bug" },
+  { id: "alert", name: "Attention" },
+  { id: "lock", name: "Blocked" },
+  { id: "flag", name: "Flag" },
+  { id: "rocket", name: "Release" },
+  { id: "star", name: "Star" },
+  { id: "hourglass", name: "Pending" },
+  { id: "checklist", name: "Checklist" },
+  { id: "archive", name: "Archive" },
+] as const;
+export const statusIconSchema = z.enum(STATUS_ICONS.map((icon) => icon.id));
+export type StatusIconName = z.infer<typeof statusIconSchema>;
+
 export const DEFAULT_TASK_STATUSES = [
   { id: "backlog", name: "Backlog" },
   { id: "todo", name: "Todo" },
@@ -28,6 +57,8 @@ export const taskStatusesSchema = z
       .object({
         id: taskStatusSchema,
         name: z.string().trim().min(1).max(80),
+        icon: statusIconSchema.optional(),
+        color: statusColorSchema.optional(),
       })
       .strict(),
   )

@@ -146,7 +146,7 @@ export function StatusEditor({
           aria-label={`Change status, currently ${statusLabel(task.status)}`}
           className={cn(TRIGGER_CLASS, className)}
         >
-          <StatusIcon status={task.status} />
+          <StatusIcon projectId={task.projectId} status={task.status} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -170,7 +170,7 @@ export function StatusEditor({
             onSelect={() => select(status)}
           >
             <PickerOption
-              icon={<StatusIcon status={status} />}
+              icon={<StatusIcon projectId={task.projectId} status={status} />}
               label={statusLabel(status)}
               active={status === task.status}
               shortcut={index < 9 ? index + 1 : undefined}
@@ -270,7 +270,7 @@ export function TaskContextMenu({
       <ContextMenuContent className="min-w-44">
         <ContextMenuSub>
           <ContextMenuSubTrigger>
-            <StatusIcon status={task.status} />
+            <StatusIcon projectId={task.projectId} status={task.status} />
             <span>Status</span>
             <ContextMenuShortcut>S</ContextMenuShortcut>
           </ContextMenuSubTrigger>
@@ -284,7 +284,7 @@ export function TaskContextMenu({
                 }}
               >
                 <span className="flex flex-1 items-center gap-2">
-                  <StatusIcon status={status} />
+                  <StatusIcon projectId={task.projectId} status={status} />
                   {statusLabel(status)}
                   {status === task.status ? (
                     <span className="sr-only"> (current)</span>

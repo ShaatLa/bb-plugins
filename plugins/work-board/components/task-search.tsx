@@ -142,7 +142,7 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
                     }}
                   >
                     <span className="mt-0.5">
-                      <StatusIcon status={task.status} />
+                      <StatusIcon projectId={task.projectId} status={task.status} />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">
