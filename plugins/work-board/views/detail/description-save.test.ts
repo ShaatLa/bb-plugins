@@ -145,6 +145,39 @@ describe("createDescriptionSaver", () => {
     expect(saver.hasPending()).toBe(false);
   });
 
+  it("serializes remounts sharing drafts and isolates separate stores", async () => {
+    const drafts = new Map<string, string>();
+    const calls: string[] = [];
+    const releases: Array<() => void> = [];
+    let stored = "";
+    const options = { delayMs: DELAY_MS, onError: vi.fn(),
+      save: async (_taskId: string, markdown: string) => {
+        calls.push(markdown);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        stored = markdown;
+        return { ok: true };
+      } };
+    const first = createDescriptionSaver({ ...options, drafts });
+    first.onChange("task-1", "v1");
+    first.flush("task-1");
+    const second = createDescriptionSaver({ ...options, drafts });
+    second.onChange("task-1", "v2");
+    second.flush("task-1");
+    const independent = createDescriptionSaver({ ...options, drafts: new Map() });
+    independent.onChange("task-1", "independent");
+    independent.flush("task-1");
+    expect(calls).toEqual(["v1", "independent"]);
+    releases[0]();
+    await flushMicrotasks();
+    expect(drafts.get("task-1")).toBe("v2");
+    expect(calls).toEqual(["v1", "independent", "v2"]);
+    releases[1]();
+    releases[2]();
+    await flushMicrotasks();
+    expect(stored).toBe("v2");
+    expect(drafts.has("task-1")).toBe(false);
+  });
+
   it("only flushes drafts belonging to the flushed task", async () => {
     const calls: Array<[string, string]> = [];
     const { saver } = setup(async (taskId, markdown) => {
