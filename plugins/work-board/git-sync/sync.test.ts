@@ -677,3 +677,39 @@ it("abandons a sync run that hangs so later syncs are not blocked", async () => 
     vi.useRealTimers();
   }
 });
+
+it("aborts a timed-out fetch and allows a later sync without late writes", async () => {
+  vi.useFakeTimers();
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  hosts.push(host);
+  const store = createStore(host.bb);
+  const service = gitSyncService(host.bb, store);
+  const project = store.tasks.createProject({ name: "Example", prefix: "ABC", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Work" });
+  service.handlers.setGitSyncConfig({ projectId: project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"] }) });
+  let signal: AbortSignal | undefined;
+  let release!: (response: Response) => void;
+  const fetcher = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+    if (!signal) {
+      signal = init?.signal as AbortSignal;
+      return new Promise<Response>((resolve) => { release = resolve; });
+    }
+    return Promise.resolve(new Response("[]"));
+  });
+  vi.stubGlobal("fetch", fetcher);
+  vi.stubEnv("GH_TOKEN", "test");
+  try {
+    const first = service.syncProject(project.id);
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect((await first).errors[0]).toContain("timed out");
+    expect(signal!.aborted).toBe(true);
+    expect((await service.syncProject(project.id)).errors).toEqual([]);
+    release(new Response(JSON.stringify([rawPull(42, "ABC-1 late")])));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await service.handlers.listPrLinks({ taskId: task.id })).links).toEqual([]);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  }
+});

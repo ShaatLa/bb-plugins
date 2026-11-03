@@ -48,18 +48,16 @@ export function createGitSyncService(
   bb.onDispose(() => controller.abort());
   let tokenAt = 0;
   let tokenPromise: Promise<string | undefined> | undefined;
-  const client =
-    clientOverride ??
-    createGithubClient({
-      signal: controller.signal,
-      token: () => {
-        if (!tokenPromise || Date.now() - tokenAt > 15_000) {
-          tokenAt = Date.now();
-          tokenPromise = githubToken(controller.signal);
-        }
-        return tokenPromise;
-      },
-    });
+  const github = createGithubClient({
+    signal: controller.signal,
+    token: () => {
+      if (!tokenPromise || Date.now() - tokenAt > 15_000) {
+        tokenAt = Date.now();
+        tokenPromise = githubToken(controller.signal);
+      }
+      return tokenPromise;
+    },
+  });
   const pending = new Map<
     string,
     Promise<{ checked: number; errors: string[] }>
@@ -124,6 +122,7 @@ export function createGitSyncService(
     if (pending.has(projectId)) return pending.get(projectId)!;
     // A run that never settles (an SDK or network await that hangs) must not block every later sync.
     const run = new AbortController();
+    const client = clientOverride ?? github.withSignal(run.signal);
     let phase = "start";
     const operation = (async () => {
       const project = requireProject(projectId);
@@ -137,6 +136,7 @@ export function createGitSyncService(
         !run.signal.aborted &&
         Boolean(store.tasks.getProject(projectId)) &&
         JSON.stringify(data.config(projectId)) === fingerprint;
+      if (!current()) return { checked: 0, errors: [] };
       data.attempted(projectId);
       const errors: string[] = [];
       const report = (repository: string, error: unknown) =>
@@ -153,7 +153,10 @@ export function createGitSyncService(
                 at: Date.now(),
                 promise: client.discover(repository, config.lookbackDays),
               };
-              discovery.set(key, scan);
+              const created = scan;
+              scan.promise.then(() => {
+                if (current()) discovery.set(key, created);
+              }, () => {});
             }
             const pulls = await scan.promise;
             if (!current())
@@ -181,10 +184,12 @@ export function createGitSyncService(
                   remember(task.id, pr.html_url, "title");
               }
           } catch (error) {
+            if (!current()) return { checked: 0, errors };
             discovery.delete(`${repository}:${config.lookbackDays}`);
             errors.push(report(repository, error));
           }
         }
+      if (!current()) return { checked: 0, errors };
       const environmentTasks = new Map<string, Set<string>>();
       if (config.repositories.length === 1) {
         const evidence = db.prepare<[string], { taskId: string; pr: number }>(
@@ -199,6 +204,7 @@ export function createGitSyncService(
       for (const task of tasks) {
         if (!current()) break;
         for (const link of store.tasks.listTaskThreads(task.id)) {
+          if (!current()) break;
           try {
             let lookup = threadCache.get(link.threadId);
             if (!lookup) {
@@ -216,8 +222,10 @@ export function createGitSyncService(
           }
         }
       }
+      if (!current()) return { checked: 0, errors };
       phase = "environment PR read";
-      const lookups = await environmentPullRequests(bb, environmentTasks.keys());
+      const lookups = await environmentPullRequests(bb, environmentTasks.keys(), () => current());
+      if (!current()) return { checked: 0, errors };
       for (const [environmentId, members] of environmentTasks) {
         const result = lookups.get(environmentId)!;
         if (result.outcome !== "available" || !current()) continue;

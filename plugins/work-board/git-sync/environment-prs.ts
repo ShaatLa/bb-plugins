@@ -27,10 +27,12 @@ export type EnvironmentPullRequest = z.infer<typeof environmentPullRequestSchema
 export async function environmentPullRequests(
   bb: BbPluginApi,
   environmentIds: Iterable<string>,
+  current: () => boolean = () => true,
 ): Promise<Map<string, EnvironmentPullRequest>> {
   const ids = [...new Set(environmentIds)];
   const result = new Map<string, EnvironmentPullRequest>();
   for (let start = 0; start < ids.length; start += MAX_KEYS) {
+    if (!current()) break;
     const keys = ids.slice(start, start + MAX_KEYS);
     let rows: z.infer<typeof outputSchema> = {};
     try {
@@ -43,6 +45,7 @@ export async function environmentPullRequests(
     } catch {
       /* Missing or disabled GitHub PR Status: every key stays unavailable. */
     }
+    if (!current()) break;
     for (const key of keys) result.set(key, rows[key] ?? { outcome: "unavailable" });
   }
   return result;

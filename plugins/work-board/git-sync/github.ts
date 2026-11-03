@@ -74,11 +74,14 @@ export function createGithubClient(options: {
 }) {
   const cached = new Map<string, { etag?: string; body: unknown }>();
   let retryAt = 0;
+  function withSignal(runSignal: AbortSignal) {
+  const signal = AbortSignal.any([options.signal, runSignal]);
   async function request(path: string, body?: unknown): Promise<unknown> {
     if (Date.now() < retryAt)
       throw new GithubError(429, "GitHub rate limit: retry later");
-    options.signal.throwIfAborted();
+    signal.throwIfAborted();
     const token = await options.token();
+    signal.throwIfAborted();
     const scope = createHash("sha256")
       .update(token ?? "anonymous")
       .digest("hex");
@@ -90,7 +93,7 @@ export function createGithubClient(options: {
       response = await (options.fetcher ?? fetch)(url, {
         method: body === undefined ? "GET" : "POST",
         redirect: "manual",
-        signal: AbortSignal.any([options.signal, AbortSignal.timeout(20_000)]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
         headers: {
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
@@ -111,6 +114,7 @@ export function createGithubClient(options: {
         throw new GithubError(502, "Unexpected GitHub redirect");
       url = target.href;
     }
+    signal.throwIfAborted();
     if (!response) throw new GithubError(502, "GitHub did not respond");
     if (response.status === 304 && previous) return previous.body;
     if (
@@ -132,6 +136,7 @@ export function createGithubClient(options: {
         `GitHub request failed (HTTP ${response.status})`,
       );
     const result: unknown = await response.json();
+    signal.throwIfAborted();
     if (body === undefined) {
       cached.delete(key);
       cached.set(key, {
@@ -637,5 +642,7 @@ export function createGithubClient(options: {
     });
   }
   return { discover, snapshot };
+  }
+  return { ...withSignal(options.signal), withSignal };
 }
-export type GithubClient = ReturnType<typeof createGithubClient>;
+export type GithubClient = Pick<ReturnType<typeof createGithubClient>, "discover" | "snapshot">;
