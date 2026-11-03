@@ -70,6 +70,29 @@ describe("createDescriptionSaver", () => {
     expect(saver.hasPending()).toBe(false);
   });
 
+  it("retains a domain-rejected draft and reports the error", async () => {
+    const { errors, saver } = setup(async () => ({ ok: false, errorMessage: "rejected" }));
+    saver.onChange("task-1", "draft");
+    await vi.advanceTimersByTimeAsync(DELAY_MS);
+    expect(errors).toEqual(["rejected"]);
+    expect(saver.hasPending()).toBe(true);
+    expect(saver.getDraft("task-1")).toBe("draft");
+  });
+
+  it("restores a draft after a failed unmount flush", async () => {
+    const drafts = new Map<string, string>();
+    const errors: string[] = [];
+    const options = { drafts, delayMs: DELAY_MS, onError: (message: string) => errors.push(message),
+      save: async () => { throw new Error("offline"); } };
+    const saver = createDescriptionSaver(options);
+    saver.onChange("task-1", "latest draft");
+    saver.flush("task-1");
+    await flushMicrotasks();
+    expect(errors).toEqual(["offline"]);
+    expect(saver.hasPending()).toBe(true);
+    expect(createDescriptionSaver(options).getDraft("task-1")).toBe("latest draft");
+  });
+
   it("does not clear a newer draft typed while a save is in flight", async () => {
     const calls: string[] = [];
     let release: (() => void) | undefined;

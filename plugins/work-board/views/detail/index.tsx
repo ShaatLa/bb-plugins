@@ -291,6 +291,8 @@ function DetailSkeleton() {
   );
 }
 
+const descriptionDrafts = new Map<string, string>();
+
 function TaskDetail({
   task,
   header,
@@ -324,6 +326,7 @@ function TaskDetail({
     },
     onError: (message) => pushRef.current(message),
     delayMs: DESCRIPTION_SAVE_DELAY_MS,
+    drafts: descriptionDrafts,
   });
 
   const projects = useTasksQuery(
@@ -497,7 +500,9 @@ function TaskDetail({
   const navigate = useBbNavigate();
 
   const descriptionValue =
-    draft && draft.taskId === task.id ? draft.markdown : task.description;
+    draft && draft.taskId === task.id
+      ? draft.markdown
+      : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
 
   return (

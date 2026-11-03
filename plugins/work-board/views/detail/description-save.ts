@@ -9,12 +9,14 @@ interface DescriptionSaverOptions {
   save(taskId: string, markdown: string): Promise<DescriptionSaveOutcome>;
   onError(message: string): void;
   delayMs: number;
+  drafts?: Map<string, string>;
 }
 
 export interface DescriptionSaver {
   onChange(taskId: string, markdown: string): void;
   flush(taskId: string): void;
   hasPending(): boolean;
+  getDraft(taskId: string): string | undefined;
 }
 
 export function createDescriptionSaver(
@@ -25,15 +27,18 @@ export function createDescriptionSaver(
     return () => clearTimeout(timer);
   };
 
+  const drafts = options.drafts ?? new Map<string, string>();
   let cancelTimer: (() => void) | undefined;
   let pending: { taskId: string; markdown: string } | undefined;
 
   const runSave = async (attempt: { taskId: string; markdown: string }) => {
     try {
       const result = await options.save(attempt.taskId, attempt.markdown);
-      if (pending === attempt) pending = undefined;
-      if (!result.ok && result.errorMessage !== undefined) {
-        options.onError(result.errorMessage);
+      if (result.ok) {
+        if (pending === attempt) pending = undefined;
+        if (drafts.get(attempt.taskId) === attempt.markdown) drafts.delete(attempt.taskId);
+      } else {
+        options.onError(result.errorMessage ?? "Failed to save description");
       }
     } catch (error) {
       options.onError(errorMessage(error));
@@ -43,6 +48,7 @@ export function createDescriptionSaver(
   return {
     onChange(taskId, markdown) {
       pending = { taskId, markdown };
+      drafts.set(taskId, markdown);
       cancelTimer?.();
       const attempt = pending;
       cancelTimer = schedule(() => {
@@ -54,11 +60,9 @@ export function createDescriptionSaver(
       cancelTimer = undefined;
       if (pending === undefined || pending.taskId !== taskId) return;
       const attempt = pending;
-      pending = undefined;
-      void options
-        .save(attempt.taskId, attempt.markdown)
-        .catch(() => undefined);
+      void runSave(attempt);
     },
     hasPending: () => pending !== undefined,
+    getDraft: (taskId) => drafts.get(taskId),
   };
 }
