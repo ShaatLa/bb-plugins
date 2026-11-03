@@ -1,0 +1,36 @@
+name: Work Board CI
+
+on:
+  push:
+    paths:
+      - "plugins/work-board/**"
+      - ".github/workflows/work-board.yml"
+  pull_request:
+    paths:
+      - "plugins/work-board/**"
+      - ".github/workflows/work-board.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  work-board:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/work-board
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: bun install --frozen-lockfile
+      - run: npm run typecheck
+      - run: npm test
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - run: npm install --global bb-app
+      - run: npm run build
