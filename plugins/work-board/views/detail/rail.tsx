@@ -609,6 +609,7 @@ const RAIL_ROW_CLASS =
   "-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-state-hover";
 
 export function PropertiesRail({
+  activityStatus,
   task,
   project,
   projects,
@@ -626,6 +627,7 @@ export function PropertiesRail({
   onError: (message: string) => void;
   className?: string;
   children?: ReactNode;
+  activityStatus?: ReactNode;
 }) {
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
@@ -644,6 +646,7 @@ export function PropertiesRail({
         className,
       )}
     >
+      {activityStatus}
       <div className="hidden @[45rem]:block">
         <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
           Properties

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -551,9 +551,15 @@ it.each(["central", "thread"])("explains activity and opens its evidence in the 
   const slot = surface === "central"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_context", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
-  const region = await slot.findByRole("region", { name: "Task activity status" });
-  await slot.findByText("Why this status?");
-  const disclosure = slot.getByText("Why this status?");
+  const regions = await slot.findAllByRole("region", { name: "Task activity status" });
+  expect(regions).toHaveLength(2);
+  const region = regions.find((item) => item.closest('aside[aria-label="Task details"]'))!;
+  expect(region).toBeTruthy();
+  expect(region.parentElement?.className).toContain("hidden @[45rem]:block");
+  expect(regions.find((item) => item !== region)?.parentElement?.className).toContain("@[45rem]:hidden");
+  await within(region).findByText("Why this status?");
+  const disclosure = within(region).getByText("Why this status?");
+  expect(disclosure.className).toContain("text-2xs");
   expect(disclosure.closest("details")?.open).toBe(false);
   fireEvent.click(disclosure);
   expect(disclosure.closest("details")?.open).toBe(true);
@@ -562,10 +568,10 @@ it.each(["central", "thread"])("explains activity and opens its evidence in the 
   expect(region.textContent).toContain("turn-evidence");
   expect(region.textContent).toContain("req-evidence");
   expect(region.textContent).toContain("archived; excluded from current activity");
-  fireEvent.click(slot.getByRole("button", { name: "Scoped worker" }));
+  fireEvent.click(within(region).getByRole("button", { name: "Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
-  await slot.findByText("Session data unavailable.");
+  await within(region).findByText("Session data unavailable.");
   expect(region.textContent).toContain("Some session data could not be read");
 });

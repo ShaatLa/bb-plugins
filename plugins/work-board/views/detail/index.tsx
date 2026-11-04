@@ -1,3 +1,4 @@
+import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
@@ -385,6 +386,13 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  const activity = useTasksQuery(
+    async (query) => (await query.call("listTaskCardMeta", { taskIds: [task.id] })).metadata[0]?.activity,
+    ["threads:changed", "tasks:changed"],
+    [task.id],
+    { relevantTaskIds: [task.id] },
+  );
+  useActivityPoll(activity.refresh, activity.isFetching, !!threads.data?.length);
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
@@ -506,6 +514,7 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
+  const activityStatus = <ActivityStatus task={task} activity={activity.data} isFetching={activity.isFetching} error={activity.error} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />;
 
   return (
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
@@ -577,7 +586,7 @@ function TaskDetail({
             onSave={(title) => void updateTask({ title })}
           />
 
-          <ActivityStatus task={task} hasSessions={!!threads.data?.length} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+          <div className="@[45rem]:hidden">{activityStatus}</div>
 
           <InlineProperties
             task={task}
@@ -700,6 +709,7 @@ function TaskDetail({
         </div>
 
         <PropertiesRail
+          activityStatus={<div className="hidden @[45rem]:block">{activityStatus}</div>}
           task={task}
           project={project}
           projects={projects.data}
