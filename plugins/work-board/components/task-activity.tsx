@@ -2,7 +2,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Icon } from "@/components/ui/icon";
 import type { TaskActivity } from "../shared/task-activity.js";
 
-const labels = { working: "Working", attached: "Attached", abandoned: "Брошена", error: "Ошибка", "waiting-owner": "Ждёт владельца", queued: "В очереди" } as const;
+const labels = { working: "Working", attached: "Attached", abandoned: "Abandoned", error: "Error", "waiting-owner": "Waiting for owner", queued: "Queued" } as const;
 const icons = { abandoned: "Unlink", error: "AlertCircle", "waiting-owner": "CircleHelp", queued: "Clock" } as const;
 
 export function TaskActivityIndicator({ activity, failureMarker = false }: { activity?: TaskActivity; failureMarker?: boolean }) {
@@ -10,8 +10,8 @@ export function TaskActivityIndicator({ activity, failureMarker = false }: { act
   const { state, sessions, workingCount, attachedCount, terminalWarning, hasFailure } = activity;
   const detail = [
     ...sessions.map((session) => `${session.title || session.threadId} (${session.role === "parent" ? "Parent thread" : "Worker"}): ${labels[session.state]}`),
-    ...(terminalWarning ? ["Внимание: работа продолжается на завершённой или отменённой карточке"] : []),
-    ...(hasFailure ? ["Ошибка связанного треда"] : []),
+    ...(terminalWarning ? ["Warning: work continues on a done or canceled card"] : []),
+    ...(hasFailure ? ["Linked thread failed"] : []),
   ].join("\n");
   const label = labels[state] + (state === "working" && attachedCount > 1 ? ` · ${workingCount}/${attachedCount}` : "");
   const color = state === "working" ? "text-success" : state === "error" ? "text-destructive" : state === "abandoned" ? "text-warning" : state === "waiting-owner" ? "text-warning" : "text-muted-foreground";

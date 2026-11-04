@@ -60,13 +60,13 @@ it("marks failed and stale-idle tasks in the list", async () => {
 });
 
 it("renders activity on a list row", async () => {
-  const task = makeTask({ id: "01HZT4", projectId: PROJECT_ID, number: 4, key: "TSK-4", title: "Queued", position: 1 });
+  const task = makeTask({ id: "01HZT4", projectId: PROJECT_ID, number: 4, key: "TSK-4", title: "Queued task", position: 1 });
   const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, { rpc: {
     listProjects: () => ({ projects: [project] }), listFolders: () => ({ folders: [] }),
     listPresets: () => ({ presets: [] }), sidebarSummary: () => ({ projects: [] }),
     listLabels: () => ({ labels: [] }), listTasks: () => ({ tasks: [task] }), listQuestions: () => ({ questions: [] }),
     listTaskCardMeta: () => ({ metadata: [{ taskId: task.id, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: { state: "queued", workingCount: 0, attachedCount: 1, sessions: [{ threadId: "t", title: "Worker", role: "worker", state: "queued" }], terminalWarning: false, hasFailure: false } }] }),
   } });
-  const badge = await slot.findByText("В очереди");
+  const badge = await slot.findByText("Queued");
   expect(slot.container.querySelector('[data-task-key="TSK-4"]')?.contains(badge)).toBe(true);
 });

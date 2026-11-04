@@ -13,11 +13,11 @@ it("shows counts, sessions, failure and terminal warning", () => {
   const badge = screen.getByText("Working · 2/5");
   expect(badge.getAttribute("aria-label")).toContain("Parent (Parent thread): Attached");
   expect(badge.getAttribute("aria-label")).toContain("Worker (Worker): Working");
-  expect(badge.getAttribute("aria-label")).toContain("Ошибка связанного треда");
-  expect(badge.getAttribute("aria-label")).toContain("работа продолжается");
+  expect(badge.getAttribute("aria-label")).toContain("Linked thread failed");
+  expect(badge.getAttribute("aria-label")).toContain("work continues");
   expect(container.querySelector(".animate-spin.motion-reduce\\:animate-none")).not.toBeNull();
 });
-it.each([["attached", "Attached"], ["abandoned", "Брошена"], ["error", "Ошибка"], ["waiting-owner", "Ждёт владельца"], ["queued", "В очереди"]] as const)("renders static %s", (state, label) => {
+it.each([["attached", "Attached"], ["abandoned", "Abandoned"], ["error", "Error"], ["waiting-owner", "Waiting for owner"], ["queued", "Queued"]] as const)("renders static %s", (state, label) => {
   const { container } = render(<TaskActivityIndicator activity={{ ...base, state, terminalWarning: false, hasFailure: false }} />);
   expect(screen.getByText(label)).toBeTruthy();
   expect(container.querySelector(".animate-spin, .animate-pulse")).toBeNull();
@@ -32,5 +32,5 @@ it("omits absent and never-worked activity", () => {
 it("does not duplicate an existing failure marker", () => {
   const { container } = render(<TaskActivityIndicator activity={base} failureMarker />);
   expect(container.querySelectorAll(".text-destructive")).toHaveLength(0);
-  expect(screen.getByText("Working · 2/5").getAttribute("aria-label")).toContain("Ошибка связанного треда");
+  expect(screen.getByText("Working · 2/5").getAttribute("aria-label")).toContain("Linked thread failed");
 });
