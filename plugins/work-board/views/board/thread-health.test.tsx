@@ -69,3 +69,15 @@ it.each(["main", "side", "kanban"])("marks failed and stale-idle threads on the 
   expect(card(idleTask.key).contains(idle)).toBe(true);
   expect(card(reviewTask.key).querySelector("[data-thread-health]")).toBeNull();
 });
+
+it("renders backend activity on a board card", async () => {
+  const { project, failedTask, rpc, sdk } = setup();
+  const original = rpc.listTaskCardMeta!;
+  rpc.listTaskCardMeta = async (input: unknown) => {
+    const result = await original(input) as { metadata: Array<{ taskId: string }> };
+    return { metadata: result.metadata.map((row) => row.taskId === failedTask.id ? { ...row, activity: { state: "working", workingCount: 1, attachedCount: 1, sessions: [{ threadId: "thr_failed", title: "Worker", role: "worker", state: "working" }], terminalWarning: false, hasFailure: true } } : row) };
+  };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=board` }, { rpc, sdk });
+  const badge = await slot.findByText("Working");
+  expect(slot.container.querySelector(`[data-task-key="${failedTask.key}"]`)?.contains(badge)).toBe(true);
+});

@@ -1,17 +1,17 @@
+import { TaskActivityIndicator } from "../../components/task-activity";
 import { PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { memo, useState } from "react";
 import type {
   Label,
   Project,
   Task,
-  TaskThread,
 } from "../../shared/contract.js";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ThreadHealthMarkers } from "../../components/thread-health-markers";
 import { QuestionCount } from "../../components/question-count";
 import type { TaskRowMeta } from "./data.js";
-import { activeWorkLabel, formatDueDate, partitionLabels } from "./lib.js";
+import { formatDueDate, partitionLabels } from "./lib.js";
 import type { EditFn } from "./property-menus.js";
 import {
   isBareKey,
@@ -22,19 +22,6 @@ import {
 
 const RAIL_CHIP_CLASS =
   "flex items-center gap-1 rounded-md border border-border px-1.5 py-px text-xs text-muted-foreground";
-
-function ActiveChip({ threads }: { threads: readonly TaskThread[] }) {
-  if (threads.length === 0) return null;
-  return (
-    <span title={activeWorkLabel(threads)} className={RAIL_CHIP_CLASS}>
-      <span
-        aria-hidden
-        className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
-      />
-      Active
-    </span>
-  );
-}
 
 function LabelChip({ label }: { label: Label }) {
   return (
@@ -193,7 +180,7 @@ export const TaskRow = memo(function TaskRow({
               Epic
             </span>
           ) : null}
-          {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
+          <TaskActivityIndicator activity={meta?.activity} failureMarker={!!meta?.threadHealth.failed.length} />
           <ThreadHealthMarkers health={meta?.threadHealth} />
           <QuestionCount count={unansweredQuestions} />
           <PullRequestSummary summary={prSummary} />

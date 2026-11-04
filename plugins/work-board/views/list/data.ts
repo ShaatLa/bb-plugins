@@ -1,3 +1,4 @@
+import { useActivityPoll } from "../../shell/activity-poll";
 import { tasksRpcContract } from "../../shared/contract";
 import { useMemo } from "react";
 import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
@@ -21,6 +22,8 @@ import type {
   ThreadHealth,
 } from "../../shared/contract.js";
 import { isActiveThread } from "../detail/meta.js";
+
+import type { TaskActivity } from "../../shared/task-activity.js";
 
 interface ListTaskFilters {
   type?: Task["type"];
@@ -119,6 +122,7 @@ export function useLabels(projectIds: readonly string[]) {
 }
 
 export interface TaskRowMeta {
+  activity?: TaskActivity;
   activeThreads: TaskThread[];
   threadHealth: ThreadHealth;
 }
@@ -126,8 +130,8 @@ export interface TaskRowMeta {
 async function readListMeta(rpc: TasksRpc, ids: string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("listTaskCardMeta", { taskIds })).metadata);
   return new Map(rows
-    .filter((row) => row.taskThreads.some(isActiveThread) || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
-    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth }]));
+    .filter((row) => row.activity?.state || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
+    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth, activity: row.activity }]));
 }
 async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRowMeta>, signals: readonly TaskSignal[]) {
   const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed")])];
@@ -137,18 +141,14 @@ async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRow
   return next;
 }
 
-export function useTaskListMeta(projectId: string | null) {
-  return useTasksQuery<Map<string, TaskRowMeta>>(
-    async (rpc) => {
-      const activeTasks = await listAllTasks(rpc, {
-        ...(projectId === null ? {} : { projectId }),
-        activeOnly: true,
-        parentTaskId: null,
-      });
-      return readListMeta(rpc, activeTasks.map((task) => task.id));
-    },
+export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]) {
+  const ids = tasks.map((task) => task.id).sort();
+  const query = useTasksQuery<Map<string, TaskRowMeta>>(
+    (rpc) => readListMeta(rpc, ids),
     ["threads:changed", "tasks:changed"],
-    [projectId],
+    [projectId, ids.join()],
     { applySignals: patchListMeta },
   );
+  useActivityPoll(query.refresh, query.isFetching, !!query.data && [...query.data.values()].some((meta) => (meta.activity?.attachedCount ?? 0) > 0));
+  return query;
 }
