@@ -301,6 +301,13 @@ it("enforces customizable workflow transitions for RPC, board and CLI", async ()
   const result = await harness.runCli(["update", `WF-${task.number}`, "--status", "done"]);
   expect(result.exitCode).not.toBe(0);
   expect(result.stderr + result.stdout).toMatch(/review or testing/);
+  expect(store.tasks.updateTask(task.id, { title: "Still editable" }).status).toBe("bugfix");
+  expect(store.tasks.updateTask(task.id, { status: "in_testing" }).status).toBe("in_testing");
+  store.tasks.updateTask(task.id, { status: "bugfix" });
+  await harness.callRpc("updateProject", { projectId: project.id, workflowPolicy: { bugfixStatus: "in_testing" } });
+  expect(store.tasks.updateTask(task.id, { status: "done" }).status).toBe("done");
+  store.tasks.updateTask(task.id, { status: "in_testing" });
+  expect(() => store.tasks.updateTask(task.id, { status: "done" })).toThrow(/review or testing/);
   await harness.callRpc("updateProject", { projectId: project.id, workflowPolicy: { bugfixStatus: null } });
   expect(store.tasks.updateTask(task.id, { status: "done" }).status).toBe("done");
 });

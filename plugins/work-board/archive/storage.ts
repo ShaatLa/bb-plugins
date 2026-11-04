@@ -45,7 +45,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 9,
+      version: 10,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,

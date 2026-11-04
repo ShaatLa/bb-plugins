@@ -29,6 +29,7 @@ export const archiveProjectSchema = z
       z.literal(7),
       z.literal(8),
       z.literal(9),
+      z.literal(10),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
