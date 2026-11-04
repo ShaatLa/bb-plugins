@@ -2,6 +2,7 @@ import { taskActivitySchema } from "./task-activity.js";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
+import { taskActivitySchema } from "./task-activity";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -982,6 +983,7 @@ export const tasksRpcContract = {
       taskThreads: z.array(taskThreadSchema),
       activity: taskActivitySchema.optional(),
       threadHealth: threadHealthSchema,
+      activity: taskActivitySchema.optional(),
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {
