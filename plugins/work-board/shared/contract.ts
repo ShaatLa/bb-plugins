@@ -90,8 +90,10 @@ export const EVIDENCE_KINDS = [
   "merge",
   "deploy",
   "exemption",
+  "outcome",
 ] as const;
 export const evidenceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("outcome"), recordedByThread: evidenceThreadSchema.nullable().optional() }).strict(),
   z
     .object({
       kind: z.literal("review"),
@@ -866,6 +868,7 @@ export const tasksRpcContract = {
         priorities: z.array(taskPrioritySchema).optional(),
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
+        staleStatus: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
         executionTarget: z.enum(EXECUTION_TARGETS).optional(),
@@ -885,6 +888,7 @@ export const tasksRpcContract = {
     output: z
       .object({
         tasks: z.array(taskSchema),
+        staleStatusFlags: z.array(z.object({ taskId: idSchema, flags: z.array(z.string()) }).strict()).default([]),
         nextCursor: z.string().nullable(),
       })
       .strict(),
@@ -981,6 +985,7 @@ export const tasksRpcContract = {
       attachmentCount: z.number().int().nonnegative(),
       taskThreads: z.array(taskThreadSchema),
       threadHealth: threadHealthSchema,
+      staleStatusFlags: z.array(z.string()).default([]),
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {

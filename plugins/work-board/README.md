@@ -125,7 +125,7 @@ bb work-board question delete EXA-8 --question <question-id> --revision 3
 
 ## Evidence и шаблоны описаний
 
-`bb work-board comment` без `--kind` остаётся обычным комментарием. `--kind review|qa|merge|deploy|exemption` добавляет проверенные структурированные данные; `--body` / `--body-file` по-прежнему содержит свободное замечание. Все SHA — ровно 40 hex-символов. Evidence сохраняется как необязательное поле `evidence` комментария; верхнеуровневый `kind` остаётся `user`, `agent` или `system`.
+`bb work-board comment` без `--kind` остаётся обычным комментарием. `--kind review|qa|merge|deploy|exemption|outcome` добавляет проверенные структурированные данные; `--body` / `--body-file` по-прежнему содержит свободное замечание. Все SHA — ровно 40 hex-символов. Evidence сохраняется как необязательное поле `evidence` комментария; верхнеуровневый `kind` остаётся `user`, `agent` или `system`.
 
 ```sh
 bb work-board comment EXA-8 --kind review --pr 123 --head <full-sha> --verdict approve --thread thr_review --lens correctness --body 'Ревью пройдено'
@@ -543,5 +543,6 @@ Each project can configure workflow rules with `bb work-board project update PRE
 
 ### Upgrade and rollback (0.17.0)
 
-Export v10 includes optional per-project workflow policy and deploy PR citations. Imports retain support for v1–v9. Update strict archive consumers before upgrading; keep a backup before rollback because older releases cannot read v10 archives. Diagnostic flags are calculated from local records and are not completion evidence.
+Export v10 includes optional per-project workflow policy, outcome evidence and deploy PR citations. Imports retain support for v1–v9. Update strict archive consumers before upgrading; keep a backup before rollback because older releases cannot read v10 archives. Diagnostic flags are calculated from local records and are not completion evidence.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
+`bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`; recorded active thread status may be out of date. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.

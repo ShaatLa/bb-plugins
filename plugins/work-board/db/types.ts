@@ -201,6 +201,7 @@ export interface ListTasksFilters extends TaskDateFilters {
   priorities?: readonly TaskPriority[];
   labelIds?: readonly string[];
   activeOnly?: boolean;
+  staleStatus?: boolean;
   parentTaskId?: string | null;
   type?: TaskType;
   executionTarget?: "agent" | "owner";
