@@ -544,3 +544,4 @@ Each project can configure workflow rules with `bb work-board project update PRE
 ### Upgrade and rollback (0.17.0)
 
 Export v10 includes optional per-project workflow policy and deploy PR citations. Imports retain support for v1–v9. Update strict archive consumers before upgrading; keep a backup before rollback because older releases cannot read v10 archives. Diagnostic flags are calculated from local records and are not completion evidence.
+Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
