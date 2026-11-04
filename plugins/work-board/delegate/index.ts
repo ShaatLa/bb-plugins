@@ -1,3 +1,4 @@
+import { dispatchMarker } from "../activity/dispatch.js";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { statusLabel } from "../shared/statuses.js";
@@ -106,7 +107,7 @@ function formatComments(comments: readonly Comment[]): string {
 
 export function buildSeedPrompt(input: SeedPromptInput): string {
   const sections = [
-    `# ${input.task.key} · ${input.task.title}`,
+    `${dispatchMarker(input.task.id)}\n# ${input.task.key} · ${input.task.title}`,
     markdownSection(
       "Description",
       input.task.description.trim() || "No description provided.",
@@ -134,7 +135,7 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
       : []),
     markdownSection(
       "Report-back contract",
-      `You are working on task ${input.task.key}. At the start of every turn actually working this card, run bb work-board activity start ${input.task.key}; run bb work-board activity stop ${input.task.key} before switching away. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
+      `You are working on task ${input.task.key}. Activity for this dispatch is tracked automatically; no activity start/stop commands are required. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
     ),
   ];
 

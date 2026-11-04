@@ -1,3 +1,4 @@
+import { dispatchMarker } from "./dispatch";
 import { expect, it } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { registerTasksCli } from "../cli";
@@ -21,7 +22,7 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   const thread = makeThreadResponse({ id: "thr_shared", status: "active", runtime: { displayStatus: "active" } });
   host.harness.sdk.stub("threads.get", async () => thread);
   host.harness.sdk.stub("threads.list", async () => { if (offline) throw new Error("offline"); return [thread] as never; });
-  host.harness.sdk.stub("threads.events.list", async () => [{ type: "turn/input/accepted", scope: { kind: "turn", turnId: turn }, data: { clientRequestId: "req", providerThreadId: "p" } }] as never);
+  host.harness.sdk.stub("threads.events.list", async ({ types }: { types?: readonly string[] }) => types?.includes("client/turn/requested") ? [] : [{ type: "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: turn }, data: { clientRequestId: "req", providerThreadId: "p" } }] as never);
   host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ turnId: turn, status: "pending" }] as never : []);
   host.harness.sdk.stub("threads.queuedMessages.list", async () => queue ? [{ id: "q1" }] as never : []);
   const service = activityService(host.bb, store);
@@ -57,7 +58,7 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
   await expect(service.start(b.id, "thr_shared")).rejects.toThrow("not actively executing");
   thread.runtime.displayStatus = "active";
-  service.stop(b.id, "thr_shared");
+  await service.stop(b.id, "thr_shared");
   expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
   for (const link of store.tasks.listTaskThreads(a.id)) store.tasks.deleteTaskThread(link.id);
   expect((await service.metadata([a.id])).get(a.id)?.state).toBe("abandoned");
@@ -88,4 +89,56 @@ it("recognizes historical per-card agent work without treating attachment as wor
   store.tasks.createComment({ taskId: assigned.id, kind: "agent", threadId: "thr_new", authorName: "Agent", body: "Investigated this card" });
   expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBe("abandoned");
   await host.harness.dispose();
+});
+
+it("automatically follows accepted dispatches without attributing queued or unrelated work", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    const project = store.tasks.createProject({ name: "Auto", prefix: "AUT", color: "blue" });
+    const a = store.tasks.createTask({ projectId: project.id, title: "A" });
+    const b = store.tasks.createTask({ projectId: project.id, title: "B" });
+    for (const task of [a, b]) store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_auto", title: "Shared", presetName: "Attached", liveStatus: "working" });
+    const thread = makeThreadResponse({ id: "thr_auto", status: "active", runtime: { displayStatus: "active" } });
+    let turn = "turn-1", request = "r1", body = "Unrelated work", pending = false, queued = true, completed = false;
+    host.harness.sdk.stub("threads.get", async () => thread);
+    host.harness.sdk.stub("threads.list", async () => [thread] as never);
+    host.harness.sdk.stub("threads.events.list", async ({ types }: { types?: readonly string[] }) => (types?.includes("client/turn/requested") ? [
+      { type: "client/turn/requested", seq: 11, data: { requestId: "newer-unaccepted", input: [{ type: "text", text: dispatchMarker(b.id) + "\n# B" }] } },
+      { type: "client/turn/requested", seq: 9, data: { requestId: request, input: [{ type: "text", text: body }] } },
+    ] : [{ type: completed ? "turn/completed" : "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: turn }, data: { clientRequestId: request } }]) as never);
+    host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ turnId: turn, status: "pending" }] as never : []);
+    host.harness.sdk.stub("threads.queuedMessages.list", async () => queued ? [{ id: "q" }] as never : []);
+    const service = activityService(host.bb, store);
+    service.queued(b.id, thread.id, "q");
+    let result = await service.metadata([a.id, b.id]);
+    expect(result.get(a.id)?.state).toBe("attached");
+    expect(result.get(b.id)?.state).toBe("queued");
+    body = dispatchMarker(a.id) + "\n# A";
+    result = await service.metadata([a.id, b.id]);
+    expect(result.get(a.id)?.state).toBe("working");
+    expect(result.get(b.id)?.state).toBe("queued");
+    expect(host.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(a.id)).toBeDefined();
+    pending = true;
+    expect((await service.metadata([a.id])).get(a.id)?.state).toBe("waiting-owner");
+    pending = false; queued = false; turn = "turn-2"; request = "r2"; body = dispatchMarker(b.id) + "\n# B";
+    result = await service.metadata([a.id, b.id]);
+    expect(result.get(a.id)?.state).toBe("attached");
+    expect(result.get(b.id)?.state).toBe("working");
+    await service.stop(b.id, thread.id);
+    expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
+    await service.start(b.id, thread.id);
+    expect((await service.metadata([b.id])).get(b.id)?.state).toBe("working");
+    turn = "turn-3"; request = "r3"; body = "A different task without a dispatch header";
+    expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
+    body = dispatchMarker(a.id) + "\n# A";
+    await service.start(b.id, thread.id);
+    expect((await service.metadata([a.id])).get(a.id)?.state).toBe("attached");
+    request = "r4";
+    result = await service.metadata([a.id, b.id]);
+    expect(result.get(a.id)?.state).toBe("working");
+    expect(result.get(b.id)?.state).toBe("attached");
+    completed = true;
+    expect((await service.metadata([a.id])).get(a.id)?.state).toBe("attached");
+  } finally { await host.harness.dispose(); }
 });
