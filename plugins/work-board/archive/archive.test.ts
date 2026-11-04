@@ -1,3 +1,4 @@
+import { workflowPolicySchema } from "../shared/workflow-policy";
 import { isUtf8 } from "node:buffer";
 import {
   mkdtemp,
@@ -833,7 +834,8 @@ it("round-trips configurable project statuses, their order and custom task stage
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
-  source.store.tasks.updateProject(source.project.id, { statuses });
+  const workflowPolicy = workflowPolicySchema.parse({ bugfixStatus: "repair" });
+  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
@@ -843,6 +845,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(target.store.tasks.getProject(source.project.id)?.workflowPolicy).toEqual(workflowPolicy);
   expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
   const again = join(await directory(), "again");
   await exportProject(target.bb, target.store, source.project.id, again);

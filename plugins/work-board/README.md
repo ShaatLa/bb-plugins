@@ -538,3 +538,5 @@ PR из окружений воркеров читаются через встр
 ### Upgrade and rollback (0.16.0)
 
 Export v9 preserves optional workflow status icons and colors. Imports accept v1–v9, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
+
+Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.

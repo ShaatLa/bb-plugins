@@ -1,3 +1,4 @@
+import { workflowPolicySchema } from "./workflow-policy.js";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
@@ -294,6 +295,7 @@ export const projectSchema = z
     name: z.string(),
     prefix: projectPrefixSchema,
     nextTaskNumber: z.number().int().positive(),
+    workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
@@ -539,6 +541,7 @@ const updateProjectInputSchema = z
   .object({
     projectId: idSchema,
     name: nonBlankStringSchema.optional(),
+    workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
@@ -547,6 +550,7 @@ const updateProjectInputSchema = z
   .strict()
   .refine(
     (input) =>
+      input.workflowPolicy !== undefined ||
       input.statuses !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||

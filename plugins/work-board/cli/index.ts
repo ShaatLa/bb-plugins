@@ -1,4 +1,5 @@
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
+import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -1718,6 +1719,7 @@ export function registerTasksCli(
             },
           ],
           options: {
+            "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
@@ -1772,8 +1774,16 @@ export function registerTasksCli(
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
                 try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
-              } else if (input.options.machine) throw new CliError("--machine requires --statuses-file");
+              } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
+              let workflowPolicy;
+              if (input.options["workflow-policy-file"]) {
+                const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
+                const text = await readTextOption(bb, ctx, hostId, undefined, input.options["workflow-policy-file"]);
+                try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
+                catch { throw new CliError("Invalid workflow policy file"); }
+              }
               const changes = {
+                workflowPolicy,
                 statuses,
                 name: input.options.name,
                 color: input.options.color,
@@ -1788,6 +1798,7 @@ export function registerTasksCli(
                 changes.name === undefined &&
                 changes.color === undefined &&
                 changes.folderId === undefined &&
+                changes.workflowPolicy === undefined &&
                 changes.statuses === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
@@ -1806,6 +1817,7 @@ export function registerTasksCli(
                 changes.name !== undefined ||
                 changes.color !== undefined ||
                 changes.folderId !== undefined ||
+                changes.workflowPolicy !== undefined ||
                 changes.statuses !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
@@ -1825,6 +1837,7 @@ export function registerTasksCli(
               const updated = store.transaction(() =>
                 store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
+                  workflowPolicy: updateInput?.workflowPolicy,
                   statuses: updateInput?.statuses,
                   name: updateInput?.name,
                   color: updateInput?.color,

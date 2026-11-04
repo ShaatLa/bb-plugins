@@ -1,3 +1,4 @@
+import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -74,6 +75,7 @@ interface FolderRow {
 }
 
 interface ProjectRow {
+  workflow_policy: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -373,6 +375,7 @@ function folderFromRow(row: FolderRow): Folder {
 
 function projectFromRow(row: ProjectRow): Project {
   return {
+    ...(row.workflow_policy == null ? {} : { workflowPolicy: workflowPolicySchema.parse(JSON.parse(row.workflow_policy)) }),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -737,6 +740,8 @@ export function createTasksStore(db: PluginDatabase) {
         input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
       );
       assertNoSecretsInValue(statuses, "statuses");
+      const policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
+      assertNoSecretsInValue(policy, "workflowPolicy");
       const ids = new Set(statuses.map((status) => status.id));
       if (listTasks({ projectId: id }).some((task) => !ids.has(task.status)))
         throw new Error(
@@ -746,11 +751,11 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string]
+        [string, string, string, string | null, string | null, string, string | null, string]
       >(
         `
       UPDATE projects
-      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?
+      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?
       WHERE id = ?
     `,
       ).run(
@@ -768,6 +773,7 @@ export function createTasksStore(db: PluginDatabase) {
           ? current.linkedBbProjectId
           : validateLinkedBbProjectId(input.linkedBbProjectId),
         JSON.stringify(statuses),
+        policy ? JSON.stringify(policy) : null,
         id,
       );
       return requireProject(id);
@@ -1308,11 +1314,17 @@ export function createTasksStore(db: PluginDatabase) {
       .map(taskFromRow);
   }
 
+  function validateWorkflowTransition(task: Task, status: string) {
+    const policy = getWorkflowPolicy(requireProject(task.projectId));
+    if (status !== task.status && policy.bugfixStatus && policy.doneStatus && task.status === policy.bugfixStatus && status === policy.doneStatus)
+      throw new Error("Cannot move directly from bugfix to done: failed review or testing must be resolved first");
+  }
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
       const status = input.status ?? current.status;
       validateTaskStatus(current.projectId, status);
+      validateWorkflowTransition(current, status);
       const parentTaskId =
         input.parentTaskId === undefined
           ? current.parentTaskId
@@ -1537,6 +1549,7 @@ export function createTasksStore(db: PluginDatabase) {
     (id: string, input: UpdateTaskPositionInput): Task => {
       const task = requireTask(id);
       validateTaskStatus(task.projectId, input.status);
+      validateWorkflowTransition(task, input.status);
       if (input.beforeTaskId === id || input.afterTaskId === id) {
         throw new Error("A task cannot be its own reorder neighbor");
       }

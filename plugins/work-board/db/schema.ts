@@ -340,6 +340,7 @@ const MIGRATIONS = [
     at TEXT NOT NULL
   );
   CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
+  `ALTER TABLE projects ADD COLUMN workflow_policy TEXT`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
