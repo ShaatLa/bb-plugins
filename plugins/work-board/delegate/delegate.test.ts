@@ -617,7 +617,7 @@ describe("delegation seed prompt", () => {
 
       ## Report-back contract
 
-      You are working on task TASK-1. Use the bb work-board CLI: comment substantive updates (bb work-board comment TASK-1 --body ...), attach result artifacts, set status when done (bb work-board update TASK-1 --status in_review) or explain blockage in a comment. Your thread is already attached to the task.
+      You are working on task TASK-1. At the start of every turn actually working this card, run bb work-board activity start TASK-1; run bb work-board activity stop TASK-1 before switching away. Use the bb work-board CLI: comment substantive updates (bb work-board comment TASK-1 --body ...), attach result artifacts, set status when done (bb work-board update TASK-1 --status in_review) or explain blockage in a comment. Your thread is already attached to the task.
 
       ## Preset instructions
 

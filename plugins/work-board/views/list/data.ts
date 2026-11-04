@@ -147,7 +147,7 @@ export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]
     (rpc) => readListMeta(rpc, ids),
     ["threads:changed", "tasks:changed"],
     [projectId, ids.join()],
-    { applySignals: patchListMeta },
+    { relevantTaskIds: ids, applySignals: patchListMeta },
   );
   useActivityPoll(query.refresh, query.isFetching, !!query.data && [...query.data.values()].some((meta) => (meta.activity?.attachedCount ?? 0) > 0));
   return query;

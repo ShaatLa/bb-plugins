@@ -1,14 +1,15 @@
 import { expect, it } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { createStore } from "../api";
+import { registerTasksCli } from "../cli";
+import { initializeTasksSchema } from "../db/schema";
+import { createStore, registerTasksApi } from "../api";
 import { activityService } from ".";
 
 it("scopes claims to the current turn, queues, failures, and real work history", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
   const store = createStore(host.bb);
-  host.bb.storage.database().exec(`CREATE TABLE task_activity_history(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
-    CREATE TABLE task_activity_claims(thread_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
-    CREATE TABLE task_activity_queue(thread_id TEXT, queue_id TEXT, task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id,queue_id));`);
+  registerTasksApi(host.bb, store);
+  registerTasksCli(host.bb, store, { name: "Work Board", version: "test" });
   const project = store.tasks.createProject({ name: "Activity", prefix: "ACT", color: "blue" });
   const a = store.tasks.createTask({ projectId: project.id, title: "A" });
   const b = store.tasks.createTask({ projectId: project.id, title: "B" });
@@ -25,7 +26,8 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   host.harness.sdk.stub("threads.queuedMessages.list", async () => queue ? [{ id: "q1" }] as never : []);
   const service = activityService(host.bb, store);
   service.queued(b.id, "thr_shared", "q1");
-  await service.start(a.id, "thr_shared");
+  const started = await host.harness.runCli(["activity", "start", a.key, "--thread", "thr_shared", "--json"]);
+  expect(started.exitCode, started.stderr).toBe(0);
   let result = await service.metadata([a.id, b.id]);
   expect(result.get(a.id)?.state).toBe("working");
   expect(result.get(b.id)?.state).toBe("queued");
@@ -41,6 +43,16 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   result = await service.metadata([a.id, b.id]);
   expect(result.get(a.id)?.state).toBe("attached");
   expect(result.get(b.id)?.state).toBe("working");
+  store.tasks.updateTask(b.id, { status: "done" });
+  const terminal = await host.harness.callRpc("listTaskCardMeta", { taskIds: [b.id] }) as { metadata: { activity: { state: string; terminalWarning: boolean } }[] };
+  expect(terminal.metadata[0]?.activity).toMatchObject({ state: "working", terminalWarning: true });
+  thread.status = "error";
+  thread.runtime.displayStatus = "error";
+  expect((await service.metadata([b.id])).get(b.id)).toMatchObject({ state: "error", hasFailure: true });
+  thread.status = "idle";
+  thread.runtime.displayStatus = "idle";
+  expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
+  thread.status = "active";
   thread.runtime.displayStatus = "waiting-for-host";
   expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
   await expect(service.start(b.id, "thr_shared")).rejects.toThrow("not actively executing");
@@ -51,5 +63,29 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   expect((await service.metadata([a.id])).get(a.id)?.state).toBe("abandoned");
   offline = true;
   expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
+  const fresh = store.tasks.createTask({ projectId: project.id, title: "Never worked" });
+  expect((await service.metadata([fresh.id])).get(fresh.id)?.state).toBeNull();
+  host.harness.sdk.stub("threads.list", async () => []);
+  store.tasks.updateTask(b.id, { status: "todo" });
+  expect((await service.metadata([b.id])).get(b.id)?.state).toBe("abandoned");
+  await host.harness.dispose();
+});
+
+it("recognizes historical per-card agent work without treating attachment as work", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(host.bb);
+  const project = store.tasks.createProject({ name: "History", prefix: "HIS", color: "blue" });
+  const worked = store.tasks.createTask({ projectId: project.id, title: "Worked" });
+  const assigned = store.tasks.createTask({ projectId: project.id, title: "Only assigned", status: "in_progress" });
+  store.tasks.createComment({ taskId: worked.id, kind: "agent", threadId: "thr_old", authorName: "Agent", body: "Implemented the change" });
+  store.tasks.createComment({ taskId: assigned.id, kind: "system", threadId: "thr_old", authorName: "Work Board", body: "Thread attached" });
+  const db = host.bb.storage.database();
+  db.exec("DROP TRIGGER task_activity_agent_comment; DROP TABLE task_activity_claims; DROP TABLE task_activity_queue; DROP TABLE task_activity_history; DELETE FROM schema_version WHERE version=17");
+  initializeTasksSchema(db);
+  const service = activityService(host.bb, store);
+  expect((await service.metadata([worked.id, assigned.id])).get(worked.id)?.state).toBe("abandoned");
+  expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBeNull();
+  store.tasks.createComment({ taskId: assigned.id, kind: "agent", threadId: "thr_new", authorName: "Agent", body: "Investigated this card" });
+  expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBe("abandoned");
   await host.harness.dispose();
 });

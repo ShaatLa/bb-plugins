@@ -341,6 +341,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
   `CREATE TABLE task_activity_history (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
+   INSERT INTO task_activity_history(task_id) SELECT DISTINCT task_id FROM comments WHERE kind='agent' AND thread_id IS NOT NULL;
+   CREATE TRIGGER task_activity_agent_comment AFTER INSERT ON comments
+   WHEN NEW.kind='agent' AND NEW.thread_id IS NOT NULL
+   BEGIN INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (NEW.task_id); END;
    CREATE TABLE task_activity_claims (thread_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
    CREATE TABLE task_activity_queue (thread_id TEXT NOT NULL, queue_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id, queue_id));`,
 ] as const;

@@ -835,6 +835,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
   source.store.tasks.updateProject(source.project.id, { statuses });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
+  source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
@@ -844,6 +845,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
   expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
+  expect(target.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(source.task.id)).toBeDefined();
   const again = join(await directory(), "again");
   await exportProject(target.bb, target.store, source.project.id, again);
   expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
