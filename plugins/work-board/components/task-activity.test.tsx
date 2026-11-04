@@ -15,7 +15,8 @@ it("shows counts, sessions, failure and terminal warning", () => {
   expect(badge.getAttribute("aria-label")).toContain("Worker (Worker): Working");
   expect(badge.getAttribute("aria-label")).toContain("Linked thread failed");
   expect(badge.getAttribute("aria-label")).toContain("work continues");
-  expect(container.querySelector(".animate-spin.motion-reduce\\:animate-none")).not.toBeNull();
+  expect(container.querySelector("svg.animate-spin.motion-reduce\\:animate-none")).not.toBeNull();
+  expect(container.querySelectorAll("svg")).toHaveLength(3);
 });
 it.each([["attached", "Attached"], ["abandoned", "Abandoned"], ["error", "Error"], ["waiting-owner", "Waiting for owner"], ["queued", "Queued"]] as const)("renders static %s", (state, label) => {
   const { container } = render(<TaskActivityIndicator activity={{ ...base, state, terminalWarning: false, hasFailure: false }} />);
@@ -33,4 +34,17 @@ it("does not duplicate an existing failure marker", () => {
   const { container } = render(<TaskActivityIndicator activity={base} failureMarker />);
   expect(container.querySelectorAll(".text-destructive")).toHaveLength(0);
   expect(screen.getByText("Working · 2/5").getAttribute("aria-label")).toContain("Linked thread failed");
+});
+
+it("renders distinct SVG artwork for activity states without host icon fallbacks", () => {
+  const { container, rerender } = render(<TaskActivityIndicator />);
+  const artwork = new Set<string>();
+  for (const state of ["working", "abandoned", "error", "waiting-owner", "queued"] as const) {
+    rerender(<TaskActivityIndicator activity={{ ...base, state, terminalWarning: false, hasFailure: false }} />);
+    const glyph = container.querySelector("svg");
+    expect(glyph).not.toBeNull();
+    expect(glyph!.querySelector("path, circle")).not.toBeNull();
+    artwork.add(glyph!.innerHTML);
+  }
+  expect(artwork.size).toBe(5);
 });
