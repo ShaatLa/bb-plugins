@@ -1,4 +1,3 @@
-import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState, type ReactNode } from "react";
 import type {
@@ -15,7 +14,6 @@ import { errorMessage } from "../../shared/errors.js";
 import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import {
   PriorityIcon,
-  StatusIcon,
   formatDueDate,
   isActiveThread,
 } from "./meta.js";
@@ -84,39 +82,6 @@ function LabelChip({ label }: { label: Label }) {
       />
       {label.name}
     </span>
-  );
-}
-
-function StatusMenu({
-  task,
-  onUpdate,
-  triggerClassName,
-}: {
-  task: Task;
-  onUpdate: (update: TaskPropertyUpdate) => void;
-  triggerClassName: string;
-}) {
-  const { ids: statusIds, label: statusLabel } = useTaskStatuses(task.projectId);
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button type="button" className={triggerClassName}>
-          <StatusIcon projectId={task.projectId} status={task.status} />
-          {statusLabel(task.status)}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
-        {statusIds.map((status) => (
-          <DropdownMenuItem key={status} onSelect={() => onUpdate({ status })}>
-            <StatusIcon projectId={task.projectId} status={status} />
-            {statusLabel(status)}
-            {status === task.status ? (
-              <Icon name="Check" className="ml-auto size-3.5" />
-            ) : null}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -669,11 +634,6 @@ export function PropertiesRail({
             className={RAIL_ROW_CLASS}
           />
         ) : null}
-        <StatusMenu
-          task={task}
-          onUpdate={onUpdate}
-          triggerClassName={RAIL_ROW_CLASS}
-        />
         <PriorityMenu
           task={task}
           onUpdate={onUpdate}
@@ -839,11 +799,6 @@ export function InlineProperties({
           className={CHIP_CLASS}
         />
       ) : null}
-      <StatusMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={CHIP_CLASS}
-      />
       <PriorityMenu
         task={task}
         onUpdate={onUpdate}

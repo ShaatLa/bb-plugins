@@ -514,7 +514,7 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
-  const activityStatus = <ActivityStatus task={task} activity={activity.data} isFetching={activity.isFetching} error={activity.error} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />;
+  const activityStatus = <ActivityStatus task={task} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />;
 
   return (
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">

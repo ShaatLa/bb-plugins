@@ -1,3 +1,5 @@
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Icon } from "@/components/ui/icon";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { TaskActivity } from "../../shared/task-activity.js";
 import type { Task } from "../../shared/contract.js";
@@ -7,20 +9,34 @@ import { StatusIcon } from "../../components/status-icon.js";
 import { useTasksNavigation } from "../../shell/routes.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 
-export function ActivityStatus({ task, activity, isFetching, error, onViewHistory }: { task: Task; activity?: TaskActivity; isFetching: boolean; error: string | null; onViewHistory: () => void }) {
+export function ActivityStatus({ task, activity, isFetching, error, onViewHistory, onStatusChange }: { task: Task; activity?: TaskActivity; isFetching: boolean; error: string | null; onViewHistory: () => void; onStatusChange: (status: Task["status"]) => void }) {
   const navigate = useBbNavigate();
   const navigation = useTasksNavigation();
   const workflow = useTaskStatuses(task.projectId);
   const diagnostics = activity?.diagnostics;
   return (
     <section aria-label="Task activity status" className="mb-4 rounded-md border border-border px-3 py-2 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1 text-muted-foreground" title="Workflow status">
-          <StatusIcon projectId={task.projectId} status={task.status} />
-          {workflow.label(task.status)}
-        </span>
-        <span aria-hidden className="text-muted-foreground">·</span>
-        {activity?.state ? <TaskActivityIndicator activity={activity} /> : <span className="text-muted-foreground">{error ? "Activity unavailable" : activity ? "No activity" : isFetching ? "Checking activity…" : "Activity unavailable"}</span>}
+      <div className="grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
+        <span className="text-muted-foreground">Status</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" aria-label="Change task status" className="inline-flex min-w-0 items-center gap-1 rounded px-1 py-1 text-left hover:bg-state-hover">
+              <StatusIcon projectId={task.projectId} status={task.status} />
+              {workflow.label(task.status)}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {workflow.ids.map((status) => <DropdownMenuItem key={status} onSelect={() => onStatusChange(status)}>
+              <StatusIcon projectId={task.projectId} status={status} />
+              {workflow.label(status)}
+              {status === task.status ? <Icon name="Check" className="ml-auto size-3.5" /> : null}
+            </DropdownMenuItem>)}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <span className="text-muted-foreground">Activity</span>
+        <div className="min-w-0 px-1 py-1">
+          {activity?.state ? <TaskActivityIndicator activity={activity} /> : <span className="text-muted-foreground">{error ? "Activity unavailable" : activity ? "No activity" : isFetching ? "Checking activity…" : "Activity unavailable"}</span>}
+        </div>
       </div>
       {error ? <p role="status" className="mt-2 text-warning">Could not refresh activity. Displayed details may be out of date.</p> : null}
       {activity ? <details className="mt-2">
