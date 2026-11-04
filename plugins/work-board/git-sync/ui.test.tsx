@@ -39,6 +39,7 @@ function setup() {
   const store = createStore(host.bb);
   gitSyncService(host.bb, store, {
     discover: vi.fn(async () => []),
+    referenceText: vi.fn(async () => ""),
     snapshot: vi.fn(async () =>
       prSnapshotSchema.parse({
         repository: "example/service",

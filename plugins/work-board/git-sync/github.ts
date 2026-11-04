@@ -664,8 +664,16 @@ export function createGithubClient(options: {
       coverage: await coverage(pr, config),
     });
   }
-  return { discover, snapshot };
+  async function referenceText(repository: string, number: number): Promise<string> {
+    const pr = z.object({
+      title: z.string(),
+      body: z.string().nullable(),
+      head: z.object({ ref: z.string() }),
+    }).parse(await request(`/repos/${repository}/pulls/${number}`));
+    return [pr.title, pr.head.ref, pr.body ?? ""].join("\n");
+  }
+  return { discover, snapshot, referenceText };
   }
   return { ...withSignal(options.signal), withSignal };
 }
-export type GithubClient = Pick<ReturnType<typeof createGithubClient>, "discover" | "snapshot">;
+export type GithubClient = Pick<ReturnType<typeof createGithubClient>, "discover" | "snapshot" | "referenceText">;

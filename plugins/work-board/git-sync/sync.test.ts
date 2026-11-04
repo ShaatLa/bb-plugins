@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import { gitSyncService } from "./service";
@@ -64,6 +64,7 @@ function setup() {
   const store = createStore(host.bb);
   const client = {
     discover: vi.fn(async () => [rawPull()]),
+    referenceText: vi.fn(async () => "ABC-1"),
     snapshot: vi.fn(async (repository: string, number: number) =>
       snapshot(repository, number),
     ),
@@ -84,6 +85,55 @@ function setup() {
   );
   return { ...host, store, project, task: tasks[0]!, tasks, client, service };
 }
+it.each([
+  ["ABC-1: implement", [0]],
+  ["feature/abc-2-fix", [1]],
+  ["Fixes ABC-1 and ABC-2", [0, 1]],
+  ["Another project DEF-1", []],
+  ["No card mentioned", []],
+  ["ABC-12 ABC-10 XABC-1 ABC-1_suffix", []],
+] as const)("limits a shared worker's environment PR to matching cards: %s", async (text, matches) => {
+  const f = setup();
+  f.harness.sdk.stub("threads.get", async ({ threadId }) =>
+    makeThreadResponse({ id: threadId, environmentId: "env_shared" }));
+  f.harness.sdk.stub("plugins.callRpc", async () => ({
+    env_shared: { outcome: "available", pullRequest: {
+      number: 42, title: "Worker PR", state: "open",
+      url: "https://github.com/example/service/pull/42", updatedAt: "2026-11-04T00:00:00.000Z",
+    } },
+  }));
+  for (const task of f.tasks.slice(0, 2))
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_shared_worker",
+      title: "Shared worker", presetName: "Default", liveStatus: "working" });
+  f.client.referenceText.mockResolvedValue(text);
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id,
+    config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.syncProject(f.project.id);
+  const data = createGitSyncStore(f.bb.storage.database());
+  for (const index of [0, 1]) {
+    expect(data.links(f.tasks[index]!.id)).toHaveLength(matches.some((value) => value === index) ? 1 : 0);
+    for (const link of data.links(f.tasks[index]!.id))
+      expect(link).toMatchObject({ source: "environment", confirmed: false, role: "related" });
+  }
+  expect(f.client.referenceText).toHaveBeenCalledTimes(1);
+  const url = "https://github.com/example/service/pull/42";
+  await f.service.handlers.unlinkPr({ taskId: f.task.id, url });
+  await f.service.syncProject(f.project.id);
+  expect(data.links(f.task.id)[0]).toMatchObject({ excluded: true });
+  await f.service.handlers.linkPr({ taskId: f.task.id, url, role: "design", part: null });
+  await f.service.syncProject(f.project.id);
+  expect(data.links(f.task.id)[0]).toMatchObject({ source: "manual", confirmed: true, excluded: false, role: "design" });
+});
+it.each([
+  ["ABC-1", "feature/other", null],
+  ["Work", "feature/ABC-1-fix", null],
+  ["Work", "feature/other", "Closes ABC-1"],
+])("reads PR reference metadata from GitHub: %s %s %s", async (title, branch, body) => {
+  const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ title, body, head: { ref: branch } })));
+  const client = createGithubClient({ token: async () => "token", signal: new AbortController().signal, fetcher });
+  expect(await client.referenceText("example/service", 42)).toContain("ABC-1");
+  expect(String(fetcher.mock.calls[0]?.[0])).toContain("/repos/example/service/pulls/42");
+});
 it("discovers whole title keys, persists links independently of workers and honors exclusions and explicit roles", async () => {
   const f = setup();
   await f.service.handlers.setGitSyncConfig({

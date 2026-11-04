@@ -142,6 +142,27 @@ export function createGitSyncService(
       const report = (repository: string, error: unknown) =>
         `${repository}: ${error instanceof GithubError ? error.message : "GitHub synchronization unavailable; retry later"}`;
       const tasks = store.tasks.listTasks({ projectId });
+      const aliases = db
+        .prepare<[string], { prefix: string }>(
+          "SELECT DISTINCT a.prefix FROM task_key_aliases a JOIN tasks t ON t.id=a.task_id WHERE t.project_id=?",
+        )
+        .all(projectId)
+        .map((row) => row.prefix);
+      const prefixes = [...new Set([project.prefix, ...aliases])].map(
+        (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      );
+      const pattern = new RegExp(
+        `(?<![\\p{L}\\p{N}_])(?:${prefixes.join("|")})-[1-9][0-9]*(?![\\p{L}\\p{N}_])`,
+        "giu",
+      );
+      const referencedTaskIds = (text: string) => {
+        const ids = new Set<string>();
+        for (const match of text.matchAll(pattern)) {
+          const task = store.tasks.getTaskByKey(match[0].toUpperCase());
+          if (task?.projectId === projectId) ids.add(task.id);
+        }
+        return ids;
+      };
       phase = "title discovery";
       if (config.titleDiscovery)
         for (const repository of config.repositories) {
@@ -164,25 +185,9 @@ export function createGitSyncService(
                 checked: 0,
                 errors: ["Configuration changed; retry sync"],
               };
-            const aliases = db
-              .prepare<[string], { prefix: string }>(
-                "SELECT DISTINCT a.prefix FROM task_key_aliases a JOIN tasks t ON t.id=a.task_id WHERE t.project_id=?",
-              )
-              .all(projectId)
-              .map((row) => row.prefix);
-            const prefixes = [...new Set([project.prefix, ...aliases])].map(
-              (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-            );
-            const pattern = new RegExp(
-              `(?<![\\p{L}\\p{N}_])(?:${prefixes.join("|")})-[1-9][0-9]*(?![\\p{L}\\p{N}_])`,
-              "giu",
-            );
             for (const pr of pulls)
-              for (const match of pr.title.matchAll(pattern)) {
-                const task = store.tasks.getTaskByKey(match[0].toUpperCase());
-                if (task?.projectId === projectId)
-                  remember(task.id, pr.html_url, "title");
-              }
+              for (const taskId of referencedTaskIds(pr.title))
+                remember(taskId, pr.html_url, "title");
           } catch (error) {
             if (!current()) return { checked: 0, errors };
             discovery.delete(`${repository}:${config.lookbackDays}`);
@@ -226,13 +231,24 @@ export function createGitSyncService(
       phase = "environment PR read";
       const lookups = await environmentPullRequests(bb, environmentTasks.keys(), () => current());
       if (!current()) return { checked: 0, errors };
+      const references = new Map<string, Promise<string>>();
       for (const [environmentId, members] of environmentTasks) {
         const result = lookups.get(environmentId)!;
         if (result.outcome !== "available" || !current()) continue;
         try {
           const parsed = parsePrUrl(result.pullRequest.url);
-          if (config.repositories.includes(parsed.repository))
-            for (const taskId of members)
+          if (!config.repositories.includes(parsed.repository)) continue;
+          const identity = prIdentity(parsed);
+          let text = references.get(identity);
+          if (!text) {
+            text = client.referenceText(parsed.repository, parsed.number);
+            references.set(identity, text);
+          }
+          const matching = referencedTaskIds(await text);
+          if (!current()) return { checked: 0, errors };
+          // Shared workers are not evidence that a PR belongs to every attached task.
+          for (const taskId of members)
+            if (matching.has(taskId))
               remember(taskId, result.pullRequest.url, "environment");
         } catch {
           /* Environment discovery is optional; direct PR links keep working. */
