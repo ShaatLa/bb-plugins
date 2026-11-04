@@ -29,6 +29,7 @@ export const archiveProjectSchema = z
       z.literal(7),
       z.literal(8),
       z.literal(9),
+      z.literal(10),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -42,6 +43,7 @@ export const archiveProjectSchema = z
 export const archiveTaskSchema = z
   .object({
     task: taskSchema,
+    activityHistory: z.boolean().optional(),
     pullRequests: z.array(prLinkSchema).optional(),
     comments: z.array(commentSchema),
     questions: z.array(questionSchema).default([]),

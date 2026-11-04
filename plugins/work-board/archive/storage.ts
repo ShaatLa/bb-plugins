@@ -45,7 +45,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 9,
+      version: 10,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -73,6 +73,7 @@ export function captureProject(
         >("SELECT prefix, number FROM task_key_aliases WHERE task_id = ? ORDER BY prefix, number")
         .all(task.id);
       return {
+        activityHistory: Boolean(bb.storage.database().prepare<[string], { task_id: string }>("SELECT task_id FROM task_activity_history WHERE task_id=?").get(task.id)),
         pullRequests: createGitSyncStore(bb.storage.database()).links(task.id),
         task: {
           ...task,
@@ -375,6 +376,9 @@ export function restoreProject(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
     }
+    for (const record of records)
+      if (record.activityHistory)
+        db.prepare<[string]>("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(record.task.id);
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
       const currentIds = store.tasks

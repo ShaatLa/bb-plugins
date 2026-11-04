@@ -1,3 +1,4 @@
+import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -133,7 +134,7 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
       : []),
     markdownSection(
       "Report-back contract",
-      `You are working on task ${input.task.key}. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
+      `You are working on task ${input.task.key}. At the start of every turn actually working this card, run bb work-board activity start ${input.task.key}; run bb work-board activity stop ${input.task.key} before switching away. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
     ),
   ];
 
@@ -361,7 +362,7 @@ export function handlers(
         presetInstructions: "",
         extraInstructions: input.extraInstructions,
       });
-      await bb.sdk.threads.send({
+      const delivery = await bb.sdk.threads.send({
         threadId: thread.id,
         mode: "queue-if-active",
         input: [{ type: "text", text: prompt, mentions: [] }],
@@ -387,6 +388,8 @@ export function handlers(
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
       });
+      if (delivery?.delivery === "queued")
+        activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
       publishThreadsChanged(bb, task.id);
       publishTasksChanged(bb, task.id, task.projectId);
       publishCommentsChanged(bb, task.id);

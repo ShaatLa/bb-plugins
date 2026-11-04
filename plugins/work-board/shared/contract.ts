@@ -1,3 +1,4 @@
+import { taskActivitySchema } from "./task-activity.js";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
@@ -969,12 +970,17 @@ export const tasksRpcContract = {
     input: z.object({ taskId: idSchema, reconcile: z.boolean().optional() }).strict(),
     output: z.object({ taskThreads: z.array(taskThreadSchema) }).strict(),
   },
+  setTaskActivity: {
+    input: z.object({ taskId: idSchema, threadId: z.string().startsWith("thr_"), active: z.boolean() }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   listTaskCardMeta: {
     input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
     output: z.object({ metadata: z.array(z.object({
       taskId: idSchema,
       attachmentCount: z.number().int().nonnegative(),
       taskThreads: z.array(taskThreadSchema),
+      activity: taskActivitySchema.optional(),
       threadHealth: threadHealthSchema,
     }).strict()) }).strict(),
   },

@@ -1595,6 +1595,35 @@ export function registerTasksCli(
             ["update", "Rename, recolor, refile, or relink a project"],
           ],
         ),
+        activity: groupCommand("activity", "Declare the card this turn is actually working on", [["start <key-or-id>", "Focus work on this card for the current turn"], ["stop <key-or-id>", "Release this card's current work claim"]]),
+        "activity start": cliCommand({
+          summary: "start card-scoped activity for the current turn",
+          positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
+          options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const threadId = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId) throw new CliError("Pass --thread or run this command from a session");
+              const result = await domain.setTaskActivity({ taskId: task.id, threadId, active: true });
+              return input.options.json ? JSON.stringify(result) : "Activity start: " + task.key;
+            });
+          },
+        }),
+        "activity stop": cliCommand({
+          summary: "stop card-scoped activity for the current turn",
+          positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
+          options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const threadId = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId) throw new CliError("Pass --thread or run this command from a session");
+              const result = await domain.setTaskActivity({ taskId: task.id, threadId, active: false });
+              return input.options.json ? JSON.stringify(result) : "Activity stop: " + task.key;
+            });
+          },
+        }),
         "project create": cliCommand({
           summary: "Create a tracker project",
           options: {

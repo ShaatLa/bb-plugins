@@ -538,3 +538,7 @@ PR из окружений воркеров читаются через встр
 ### Upgrade and rollback (0.16.0)
 
 Export v9 preserves optional workflow status icons and colors. Imports accept v1–v9, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
+
+## Card activity (0.18.0)
+
+Card activity is separate from task workflow status. Working means an active session has explicitly claimed this card for its current turn; a busy shared session alone is insufficient. Agents use `bb work-board activity start KEY` each turn they work a card and `activity stop KEY` before switching away. Dispatch prompts include this instruction. Unknown attribution falls back to Attached. Queued and waiting-owner states require card-scoped queue or pending-interaction evidence. Confirmed work history without remaining sessions gives Брошена, except on done/canceled cards. Active work on terminal cards is warned about. Activity exports in v10 preserve historical work but not live claims/queue IDs; imports v1–v9 are accepted.

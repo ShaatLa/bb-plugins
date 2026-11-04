@@ -1,3 +1,4 @@
+import { activityService } from "../activity/index.js";
 import { gitSyncService } from "../git-sync/service";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
@@ -1149,6 +1150,15 @@ export function registerHandlers(
       }
       return { archivedCount: changed.length };
     },
+    async setTaskActivity({ taskId, threadId, active }) {
+      const task = store.tasks.getTask(taskId);
+      if (!task) throw new Error("Task not found");
+      const service = activityService(bb, store);
+      if (active) await service.start(taskId, threadId);
+      else service.stop(taskId, threadId);
+      bb.realtime.publish("threads:changed", { taskId });
+      return { ok: true as const };
+    },
     async listTaskCardMeta({ taskIds }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
@@ -1162,6 +1172,7 @@ export function registerHandlers(
         threads.set(thread.taskId, entries);
       }
       const activity = store.tasks.listTaskActivity(ids);
+      const scopedActivity = await activityService(bb, store).metadata(ids);
       const threshold = await staleIdleMinutes();
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
@@ -1169,6 +1180,7 @@ export function registerHandlers(
         return {
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
+          activity: scopedActivity.get(taskId),
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
           threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", threshold),
         };

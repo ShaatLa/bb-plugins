@@ -340,6 +340,9 @@ const MIGRATIONS = [
     at TEXT NOT NULL
   );
   CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
+  `CREATE TABLE task_activity_history (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
+   CREATE TABLE task_activity_claims (thread_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
+   CREATE TABLE task_activity_queue (thread_id TEXT NOT NULL, queue_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id, queue_id));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
