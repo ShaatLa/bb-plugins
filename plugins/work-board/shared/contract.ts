@@ -143,6 +143,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("deploy"),
       recordedByThread: evidenceThreadSchema.nullable().optional(),
+      pr: z.number().int().positive().optional(),
       merge: shaSchema,
       run: nonBlankStringSchema,
       env: z.enum(["development", "production"]),

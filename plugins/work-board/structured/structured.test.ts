@@ -840,7 +840,7 @@ describe("evidence index", () => {
       merge: "b".repeat(40),
       part: "1/2",
     },
-    { kind: "deploy", merge: "b".repeat(40), run: "123", env: "production" },
+    { kind: "deploy", pr: 12, merge: "b".repeat(40), run: "123", env: "production" },
     {
       kind: "exemption",
       row: "qa",
