@@ -39,6 +39,10 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
     async metadata(taskIds: readonly string[]): Promise<Map<string, TaskActivity>> {
       const ids = [...new Set(taskIds)];
       if (!ids.length) return new Map();
+      const placeholders = ids.map(() => "?").join(",");
+      const history = new Set(db.prepare<string[], { task_id: string }>(`SELECT task_id FROM task_activity_history WHERE task_id IN (${placeholders})`).all(...ids).map((row) => row.task_id));
+      const claims = new Map(db.prepare<string[], { thread_id: string; task_id: string; turn_id: string }>(`SELECT thread_id, task_id, turn_id FROM task_activity_claims WHERE task_id IN (${placeholders})`).all(...ids).map((row) => [row.thread_id, row]));
+      const queues = db.prepare<string[], { thread_id: string; task_id: string; queue_id: string }>(`SELECT thread_id, task_id, queue_id FROM task_activity_queue WHERE task_id IN (${placeholders})`).all(...ids);
       const links = store.tasks.listTaskThreadsForTasks(ids);
       const threadIds = [...new Set(links.map((link) => link.threadId))];
       const snapshots = new Map<string, Snapshot>();
@@ -58,9 +62,9 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           const [id, snapshot] = item;
           try {
             const [turnId, pending, queue] = await Promise.all([
-              active(snapshot.thread!) ? latestTurn(id) : Promise.resolve(null),
-              bb.sdk.threads.interactions.list({ threadId: id }),
-              bb.sdk.threads.queuedMessages.list({ threadId: id }),
+              active(snapshot.thread!) && claims.has(id) ? latestTurn(id) : Promise.resolve(null),
+              active(snapshot.thread!) && claims.has(id) ? bb.sdk.threads.interactions.list({ threadId: id }) : Promise.resolve([]),
+              queues.some((row) => row.thread_id === id) ? bb.sdk.threads.queuedMessages.list({ threadId: id }) : Promise.resolve([]),
             ]);
             snapshot.turnId = turnId;
             snapshot.pending = !!turnId && pending.some((interaction: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["interactions"]["list"]>>[number]) => interaction.turnId === turnId && interaction.status === "pending");
@@ -69,10 +73,11 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
       };
       await Promise.all(Array.from({ length: Math.min(4, work.length) }, worker));
-      const placeholders = ids.map(() => "?").join(",");
-      const history = new Set(db.prepare<string[], { task_id: string }>(`SELECT task_id FROM task_activity_history WHERE task_id IN (${placeholders})`).all(...ids).map((row) => row.task_id));
-      const claims = new Map(db.prepare<string[], { thread_id: string; task_id: string; turn_id: string }>(`SELECT thread_id, task_id, turn_id FROM task_activity_claims WHERE task_id IN (${placeholders})`).all(...ids).map((row) => [row.thread_id, row]));
-      const queues = db.prepare<string[], { thread_id: string; task_id: string; queue_id: string }>(`SELECT thread_id, task_id, queue_id FROM task_activity_queue WHERE task_id IN (${placeholders})`).all(...ids);
+      for (const row of queues) {
+        const snapshot = snapshots.get(row.thread_id);
+        if (snapshot?.complete && snapshot.thread && !snapshot.queue.has(row.queue_id))
+          db.prepare("DELETE FROM task_activity_queue WHERE thread_id=? AND queue_id=?").run(row.thread_id, row.queue_id);
+      }
       const taskData = store.tasks.listTaskActivity(ids);
       return new Map(ids.map((id) => {
         const taskLinks = links.filter((link) => link.taskId === id);
@@ -83,7 +88,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           const claim = claims.get(link.threadId);
           const scoped = snapshot.complete && snapshot.turnId !== null && claim?.task_id === id && claim.turn_id === snapshot.turnId;
           const queued = snapshot.complete && queues.some((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id));
-          const state = scoped ? (snapshot.pending ? "waiting-owner" : "working") : queued ? "queued" : snapshot.thread?.status === "error" ? "error" : "attached";
+          const state = scoped ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
           sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state });
         }
         const status = taskData.get(id)?.status;

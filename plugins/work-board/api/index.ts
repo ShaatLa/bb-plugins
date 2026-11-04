@@ -1156,7 +1156,8 @@ export function registerHandlers(
       const service = activityService(bb, store);
       if (active) await service.start(taskId, threadId);
       else service.stop(taskId, threadId);
-      bb.realtime.publish("threads:changed", { taskId });
+      const affected = new Set([taskId, ...store.tasks.listTaskThreadsByThreadId(threadId).map((link) => link.taskId)]);
+      for (const id of affected) bb.realtime.publish("threads:changed", { taskId: id });
       return { ok: true as const };
     },
     async listTaskCardMeta({ taskIds }) {
