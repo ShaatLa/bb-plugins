@@ -191,6 +191,7 @@ function detailRpc(overrides: Record<string, unknown> = {}) {
     listQuestions: () => ({ questions: [] }),
     listComments: () => ({ comments: [] }),
     listBbProjects: () => ({ bbProjects: [] }),
+    listTaskCardMeta: () => ({ metadata: [] }),
     ...overrides,
   };
 }
@@ -537,4 +538,34 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");
   expect(activity.querySelector(".tiptap")).toBe(composer);
+});
+
+it.each(["central", "thread"])("explains activity and opens its evidence in the %s task view", async (surface) => {
+  const activity = {
+    state: "working", workingCount: 1, attachedCount: 1, terminalWarning: true, hasFailure: false,
+    diagnostics: { explanation: "An accepted dispatch is executing on this task.", hasWorked: true, complete: true, checkedAt: "2026-11-04T12:00:00.000Z", inactiveSessions: [{ threadId: "thr_old", title: "Archived worker", reason: "archived" }] },
+    sessions: [{ threadId: "thr_scoped", title: "Scoped worker", role: "worker", state: "working", diagnostics: { explanation: "Task dispatch matches the current accepted input.", threadStatus: "active", runtimeStatus: "active", turnId: "turn-evidence", requestId: "req-evidence", focusedTaskId: TASK_ID, focusedTaskKey: "TSK-5", queueIds: [], interactionIds: [] } }],
+  };
+  let current = activity;
+  const options = { rpc: detailRpc({ listTaskCardMeta: () => ({ metadata: [{ taskId: TASK_ID, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: current }] }) }) };
+  const slot = surface === "central"
+    ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+    : renderSlot(taskTab(app), { threadId: "thr_context", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
+  const region = await slot.findByRole("region", { name: "Task activity status" });
+  await slot.findByText("Why this status?");
+  const disclosure = slot.getByText("Why this status?");
+  expect(disclosure.closest("details")?.open).toBe(false);
+  fireEvent.click(disclosure);
+  expect(disclosure.closest("details")?.open).toBe(true);
+  expect(region.textContent).toContain("Working");
+  expect(region.textContent).toContain("An accepted dispatch is executing on this task.");
+  expect(region.textContent).toContain("turn-evidence");
+  expect(region.textContent).toContain("req-evidence");
+  expect(region.textContent).toContain("archived; excluded from current activity");
+  fireEvent.click(slot.getByRole("button", { name: "Scoped worker" }));
+  expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
+  current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
+  await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+  await slot.findByText("Session data unavailable.");
+  expect(region.textContent).toContain("Some session data could not be read");
 });

@@ -56,6 +56,7 @@ import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
 import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
 import { taskMarkdownLink } from "../shared/task-link";
+import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
@@ -2566,10 +2567,9 @@ export function registerTasksCli(
                   }),
                 ),
               ).taskThreads;
-              const threadHealth = threadHealthJson(
-                (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!.threadHealth,
-                Date.now(),
-              );
+              const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
+              const activity = cardMeta.activity;
+              const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
               const { pullRequests, unavailableThreadIds } =
                 tasksRpcContract.listTaskPullRequests.output.parse(
                   await domain.listTaskPullRequests(
@@ -2592,6 +2592,7 @@ export function registerTasksCli(
                   attachments,
                   taskThreads,
                   threadHealth,
+                  activity,
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   comments,
@@ -2634,6 +2635,11 @@ export function registerTasksCli(
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
+                ...(activity ? [`Activity: ${activity.state ? ACTIVITY_LABELS[activity.state] : "No activity"}
+${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activity.diagnostics && !activity.diagnostics.complete ? "\nWarning: session data is incomplete." : ""}
+${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
+${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
+                ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous scoped work is recorded; historical execution details were not retained."}`] : []),
                 `Description\n${task.description || "(none)"}`,
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],

@@ -6,15 +6,15 @@ import AlertCircleIcon from "@hugeicons/core-free-icons/AlertCircleIcon";
 import HelpCircleIcon from "@hugeicons/core-free-icons/HelpCircleIcon";
 import Clock01Icon from "@hugeicons/core-free-icons/Clock01Icon";
 import Alert01Icon from "@hugeicons/core-free-icons/Alert01Icon";
-import type { TaskActivity } from "../shared/task-activity.js";
+import { ACTIVITY_LABELS as labels, type TaskActivity } from "../shared/task-activity.js";
 
-const labels = { working: "Working", attached: "Attached", abandoned: "Abandoned", error: "Error", "waiting-owner": "Waiting for owner", queued: "Queued" } as const;
 const icons = { abandoned: Unlink01Icon, error: AlertCircleIcon, "waiting-owner": HelpCircleIcon, queued: Clock01Icon } as const;
 
 export function TaskActivityIndicator({ activity, failureMarker = false }: { activity?: TaskActivity; failureMarker?: boolean }) {
   if (!activity?.state) return null;
   const { state, sessions, workingCount, attachedCount, terminalWarning, hasFailure } = activity;
   const detail = [
+    ...(activity.diagnostics ? [activity.diagnostics.explanation] : []),
     ...sessions.map((session) => `${session.title || session.threadId} (${session.role === "parent" ? "Parent thread" : "Worker"}): ${labels[session.state]}`),
     ...(terminalWarning ? ["Warning: work continues on a done or canceled card"] : []),
     ...(hasFailure ? ["Linked thread failed"] : []),

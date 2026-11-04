@@ -5,7 +5,7 @@ import type { TasksApiStore } from "../api";
 import { evaluateTaskActivity, type TaskActivity, type TaskActivitySession } from "../shared/task-activity";
 
 type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
-type Snapshot = { thread: Thread | null; known: boolean; turnId: string | null; claimKey: string | null; dispatchTaskId: string | null; pending: boolean; queue: Set<string>; complete: boolean };
+type Snapshot = { thread: Thread | null; known: boolean; turnId: string | null; claimKey: string | null; requestId: string | null; dispatchTaskId: string | null; interactionIds: string[]; dispatchUnavailable: boolean; pending: boolean; queue: Set<string>; complete: boolean };
 
 export function activityService(bb: BbPluginApi, store: TasksApiStore) {
   const db = bb.storage.database();
@@ -75,9 +75,9 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         try {
           const rows = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true });
           const byId = new Map(rows.map((row) => [row.id, row]));
-          for (const id of batch) snapshots.set(id, { thread: byId.get(id) ?? null, known: true, turnId: null, claimKey: null, dispatchTaskId: null, pending: false, queue: new Set(), complete: true });
+          for (const id of batch) snapshots.set(id, { thread: byId.get(id) ?? null, known: true, turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: true });
         } catch {
-          for (const id of batch) snapshots.set(id, { thread: null, known: false, turnId: null, claimKey: null, dispatchTaskId: null, pending: false, queue: new Set(), complete: false });
+          for (const id of batch) snapshots.set(id, { thread: null, known: false, turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: false });
         }
       }
       const work = [...snapshots.entries()].filter(([, snapshot]) => snapshot.thread && snapshot.thread.archivedAt == null && snapshot.thread.deletedAt == null);
@@ -93,8 +93,11 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
             const turnId = accepted?.scope.kind === "turn" ? accepted.scope.turnId : null;
             snapshot.turnId = turnId;
             snapshot.claimKey = accepted ? turnKey(accepted) : null;
-            if (accepted) snapshot.dispatchTaskId = await dispatchForTurn(id, accepted).catch(() => null);
+            const request = z.object({ clientRequestId: z.string() }).safeParse(accepted?.data);
+            snapshot.requestId = request.success ? request.data.clientRequestId : null;
+            if (accepted) snapshot.dispatchTaskId = await dispatchForTurn(id, accepted).catch(() => { snapshot.dispatchUnavailable = true; return null; });
             snapshot.pending = !!turnId && pending.some((interaction: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["interactions"]["list"]>>[number]) => interaction.turnId === turnId && interaction.status === "pending");
+            snapshot.interactionIds = pending.filter((interaction) => interaction.turnId === turnId && interaction.status === "pending").map((interaction) => interaction.id);
             snapshot.queue = new Set(queue.map((row: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number]) => row.id));
           } catch { snapshot.complete = false; }
         }
@@ -107,12 +110,22 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       }
       const claims = new Map(threadIds.length ? db.prepare<string[], { thread_id: string; task_id: string; turn_id: string }>(`SELECT thread_id, task_id, turn_id FROM task_activity_claims WHERE thread_id IN (${threadIds.map(() => "?").join(",")})`).all(...threadIds).map((row) => [row.thread_id, row] as const) : []);
       const taskData = store.tasks.listTaskActivity(ids);
+      const focusedKeys = new Map<string, string | null>();
+      const focusedKey = (taskId: string | null) => {
+        if (!taskId) return null;
+        if (!focusedKeys.has(taskId)) focusedKeys.set(taskId, store.tasks.getTask(taskId)?.key ?? null);
+        return focusedKeys.get(taskId)!;
+      };
       return new Map(ids.map((id) => {
         const taskLinks = links.filter((link) => link.taskId === id);
         const sessions: TaskActivitySession[] = [];
+        const inactiveSessions: NonNullable<TaskActivity["diagnostics"]>["inactiveSessions"] = [];
         for (const link of taskLinks) {
           const snapshot = snapshots.get(link.threadId)!;
-          if (snapshot.known && (!snapshot.thread || snapshot.thread.archivedAt != null || snapshot.thread.deletedAt != null)) continue;
+          if (snapshot.known && (!snapshot.thread || snapshot.thread.archivedAt != null || snapshot.thread.deletedAt != null)) {
+            inactiveSessions.push({ threadId: link.threadId, title: link.title, reason: !snapshot.thread ? "missing" : snapshot.thread.deletedAt != null ? "deleted" : "archived" });
+            continue;
+          }
           const claim = claims.get(link.threadId);
           const explicit = claim?.turn_id === snapshot.claimKey || claim?.turn_id === `stopped:${snapshot.claimKey}`;
           const scoped = snapshot.complete && snapshot.turnId !== null && (explicit
@@ -124,10 +137,23 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           }
           const queued = snapshot.complete && queues.some((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id));
           const state = scoped ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
-          sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state });
+          const queueIds = queues.filter((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id)).map((row) => row.queue_id);
+          const focusedTaskId = explicit ? (claim!.turn_id === snapshot.claimKey ? claim!.task_id : null) : snapshot.dispatchTaskId;
+          const explanation = !snapshot.complete ? "Session data is unavailable; work on this task cannot be verified."
+            : scoped ? `${explicit ? "Manual focus" : "Task dispatch"} matches the current accepted input.${snapshot.pending ? " An owner interaction is pending in this turn." : " The session is actively executing."}`
+            : state === "error" ? "The attached session reports an error."
+            : queued ? "A request dispatched from this task is still queued; it is not the session's current work."
+            : !active(snapshot.thread!) ? "The session is attached but is not actively executing."
+            : explicit && claim!.turn_id.startsWith("stopped:") ? "Automatic attribution was explicitly stopped for the current accepted input."
+            : focusedTaskId && focusedTaskId !== id ? "The current accepted input is scoped to a different task."
+            : snapshot.dispatchUnavailable ? "The accepted request could not be read; task attribution is unavailable."
+            : !snapshot.turnId ? "No current accepted turn is available to verify work on this task."
+            : "The current accepted input has no verified work scope for this task.";
+          sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state,
+            diagnostics: { explanation, threadStatus: snapshot.thread?.status ?? null, runtimeStatus: snapshot.thread?.runtime.displayStatus ?? null, turnId: snapshot.turnId, requestId: snapshot.requestId, focusedTaskId, focusedTaskKey: focusedKey(focusedTaskId), queueIds, interactionIds: scoped ? snapshot.interactionIds : [] } });
         }
         const status = taskData.get(id)?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", complete: taskLinks.every((link) => snapshots.get(link.threadId)?.complete) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

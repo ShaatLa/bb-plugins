@@ -1,3 +1,4 @@
+import { ActivityStatus } from "./activity-status.js";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -306,6 +307,7 @@ function TaskDetail({
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const subtasksRef = useRef<HTMLElement>(null);
+  const activityRef = useRef<HTMLDivElement>(null);
   const [addingQuestion, setAddingQuestion] = useState<string | null>(null);
 
   const [draft, setDraft] = useState<{ taskId: string; markdown: string }>();
@@ -575,6 +577,8 @@ function TaskDetail({
             onSave={(title) => void updateTask({ title })}
           />
 
+          <ActivityStatus task={task} hasSessions={!!threads.data?.length} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+
           <InlineProperties
             task={task}
             project={project}
@@ -678,7 +682,7 @@ function TaskDetail({
             </div>
           ) : null}
 
-          <div className="mt-1">
+          <div ref={activityRef} className="mt-1">
             <QuestionsSection
               key={task.id}
               taskId={task.id}

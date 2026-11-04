@@ -23,19 +23,19 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   host.harness.sdk.stub("threads.get", async () => thread);
   host.harness.sdk.stub("threads.list", async () => { if (offline) throw new Error("offline"); return [thread] as never; });
   host.harness.sdk.stub("threads.events.list", async ({ types }: { types?: readonly string[] }) => types?.includes("client/turn/requested") ? [] : [{ type: "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: turn }, data: { clientRequestId: "req", providerThreadId: "p" } }] as never);
-  host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ turnId: turn, status: "pending" }] as never : []);
+  host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ id: "interaction-1", turnId: turn, status: "pending" }] as never : []);
   host.harness.sdk.stub("threads.queuedMessages.list", async () => queue ? [{ id: "q1" }] as never : []);
   const service = activityService(host.bb, store);
   service.queued(b.id, "thr_shared", "q1");
   const started = await host.harness.runCli(["activity", "start", a.key, "--thread", "thr_shared", "--json"]);
   expect(started.exitCode, started.stderr).toBe(0);
   let result = await service.metadata([a.id, b.id]);
-  expect(result.get(a.id)?.state).toBe("working");
-  expect(result.get(b.id)?.state).toBe("queued");
+  expect(result.get(a.id)).toMatchObject({ state: "working", diagnostics: { hasWorked: true, complete: true }, sessions: [{ diagnostics: { explanation: expect.stringContaining("Manual focus"), turnId: "turn-1", requestId: "req", focusedTaskKey: a.key } }] });
+  expect(result.get(b.id)).toMatchObject({ state: "queued", sessions: [{ diagnostics: { queueIds: ["q1"] } }] });
   expect(host.harness.sdk.callsTo("threads.list")).toHaveLength(1);
   pending = true;
   result = await service.metadata([a.id, b.id]);
-  expect(result.get(a.id)?.state).toBe("waiting-owner");
+  expect(result.get(a.id)).toMatchObject({ state: "waiting-owner", sessions: [{ diagnostics: { interactionIds: ["interaction-1"] } }] });
   pending = false; queue = false; turn = "turn-2";
   result = await service.metadata([a.id, b.id]);
   expect(result.get(a.id)?.state).toBe("attached");
@@ -63,12 +63,12 @@ it("scopes claims to the current turn, queues, failures, and real work history",
   for (const link of store.tasks.listTaskThreads(a.id)) store.tasks.deleteTaskThread(link.id);
   expect((await service.metadata([a.id])).get(a.id)?.state).toBe("abandoned");
   offline = true;
-  expect((await service.metadata([b.id])).get(b.id)?.state).toBe("attached");
+  expect((await service.metadata([b.id])).get(b.id)).toMatchObject({ state: "attached", diagnostics: { complete: false }, sessions: [{ diagnostics: { explanation: expect.stringContaining("unavailable"), threadStatus: null } }] });
   const fresh = store.tasks.createTask({ projectId: project.id, title: "Never worked" });
   expect((await service.metadata([fresh.id])).get(fresh.id)?.state).toBeNull();
   host.harness.sdk.stub("threads.list", async () => []);
   store.tasks.updateTask(b.id, { status: "todo" });
-  expect((await service.metadata([b.id])).get(b.id)?.state).toBe("abandoned");
+  expect((await service.metadata([b.id])).get(b.id)).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true, complete: true, inactiveSessions: [{ threadId: "thr_shared", reason: "missing" }] } });
   await host.harness.dispose();
 });
 
@@ -107,7 +107,7 @@ it("automatically follows accepted dispatches without attributing queued or unre
       { type: "client/turn/requested", seq: 11, data: { requestId: "newer-unaccepted", input: [{ type: "text", text: dispatchMarker(b.id) + "\n# B" }] } },
       { type: "client/turn/requested", seq: 9, data: { requestId: request, input: [{ type: "text", text: body }] } },
     ] : [{ type: completed ? "turn/completed" : "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: turn }, data: { clientRequestId: request } }]) as never);
-    host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ turnId: turn, status: "pending" }] as never : []);
+    host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ id: "interaction-1", turnId: turn, status: "pending" }] as never : []);
     host.harness.sdk.stub("threads.queuedMessages.list", async () => queued ? [{ id: "q" }] as never : []);
     const service = activityService(host.bb, store);
     service.queued(b.id, thread.id, "q");
@@ -116,7 +116,7 @@ it("automatically follows accepted dispatches without attributing queued or unre
     expect(result.get(b.id)?.state).toBe("queued");
     body = dispatchMarker(a.id) + "\n# A";
     result = await service.metadata([a.id, b.id]);
-    expect(result.get(a.id)?.state).toBe("working");
+    expect(result.get(a.id)).toMatchObject({ state: "working", sessions: [{ diagnostics: { explanation: expect.stringContaining("Task dispatch"), requestId: "r1", focusedTaskId: a.id } }] });
     expect(result.get(b.id)?.state).toBe("queued");
     expect(host.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(a.id)).toBeDefined();
     pending = true;
@@ -140,5 +140,32 @@ it("automatically follows accepted dispatches without attributing queued or unre
     expect(result.get(b.id)?.state).toBe("attached");
     completed = true;
     expect((await service.metadata([a.id])).get(a.id)?.state).toBe("attached");
+  } finally { await host.harness.dispose(); }
+});
+
+it("exposes abandonment evidence consistently in RPC, CLI JSON and human output", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    registerTasksApi(host.bb, store);
+    registerTasksCli(host.bb, store, { name: "Work Board", version: "test" });
+    const project = store.tasks.createProject({ name: "Explain", prefix: "WHY", color: "blue" });
+    const task = store.tasks.createTask({ projectId: project.id, title: "Find the cause" });
+    store.tasks.createComment({ taskId: task.id, kind: "agent", threadId: "thr_archived", authorName: "Worker", body: "Investigated the task" });
+    store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_archived", title: "Old worker", presetName: "Attached", liveStatus: "idle" });
+    const thread = makeThreadResponse({ id: "thr_archived", archivedAt: Date.parse("2026-11-04T12:00:00.000Z") });
+    host.harness.sdk.stub("threads.list", async () => [thread] as never);
+    host.harness.sdk.stub("threads.get", async () => thread);
+    const rpc = await host.harness.callRpc("listTaskCardMeta", { taskIds: [task.id] }) as { metadata: { activity: unknown }[] };
+    expect(rpc.metadata[0]!.activity).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true, complete: true, inactiveSessions: [{ threadId: "thr_archived", reason: "archived" }] } });
+    const json = await host.harness.runCli(["show", task.key, "--json"]);
+    expect(json.exitCode, json.stderr).toBe(0);
+    expect(JSON.parse(json.stdout).activity).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true, complete: true } });
+    expect(JSON.parse(json.stdout).comments).toContainEqual(expect.objectContaining({ kind: "agent", threadId: "thr_archived" }));
+    const shown = await host.harness.runCli(["show", task.key]);
+    expect(shown.exitCode, shown.stderr).toBe(0);
+    expect(shown.stdout).toContain("Activity: Abandoned");
+    expect(shown.stdout).toContain("Previous work is recorded");
+    expect(shown.stdout).toContain("@thread:thr_archived");
   } finally { await host.harness.dispose(); }
 });
