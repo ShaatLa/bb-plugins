@@ -102,6 +102,8 @@ async function reconcileTrackedThread(
       threadId: trackedThread.threadId,
     });
     for (const link of trackedThreads) {
+      const current = store.tasks.getTaskThread(link.id);
+      if (!current || current.updatedAt !== link.updatedAt || current.liveStatus !== link.liveStatus) continue;
       if (thread.archivedAt != null || thread.deletedAt != null) {
         await reconcileTaskThreads(bb, store.tasks, link.taskId, thread);
       } else {
