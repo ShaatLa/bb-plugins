@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { protectBlob } from "../storage/active-blobs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -363,6 +364,7 @@ async function persistAttachment(
   });
   const blobPath = join("blobs", attachment.id, safeFileName);
   const absolutePath = pathInside(requireStoreRoot(store), blobPath);
+  const release = protectBlob(absolutePath);
 
   try {
     await mkdir(dirname(absolutePath), { recursive: true });
@@ -374,7 +376,7 @@ async function persistAttachment(
     store.deleteAttachment(attachment.id);
     await rm(dirname(absolutePath), { recursive: true, force: true });
     throw error;
-  }
+  } finally { release(); }
 }
 
 export async function saveAttachmentFromBytes(
@@ -388,7 +390,8 @@ export async function saveAttachmentFromBytes(
     options.fileName,
     options.mime ?? inferMimeFromBytes(bytes, options.fileName),
     bytes.byteLength,
-    (destinationPath) => writeFile(destinationPath, bytes),
+    // Committed blobs may share an inode; writes must always create a fresh path.
+    (destinationPath) => writeFile(destinationPath, bytes, { flag: "wx" }),
   );
 }
 
@@ -506,7 +509,7 @@ export function registerAttachments(
           parameters.fileName,
           parameters.mime,
           body.byteLength,
-          (destinationPath) => writeFile(destinationPath, body),
+          (destinationPath) => writeFile(destinationPath, body, { flag: "wx" }),
         );
         publishAttachmentChanged(bb, store, attachment);
         return context.json(

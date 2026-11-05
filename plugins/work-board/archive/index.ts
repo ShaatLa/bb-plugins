@@ -1,4 +1,5 @@
 import { rewriteLegacyAttachmentLinks } from "../shared/attachments";
+import { protectBlob } from "../storage/active-blobs";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -264,6 +265,7 @@ export async function importProject(
   const root = dirname(database.file);
   const token = randomUUID();
   const staged: string[] = [];
+  const releases: Array<() => void> = [];
   const blobs = new Map<
     string,
     { path: string; previousPath: string | null; previousHash: string | null }
@@ -295,7 +297,9 @@ export async function importProject(
           }
         }
         const path = join("blobs", attachment.id, `import-${token}`);
+        releases.push(protectBlob(resolve(root, path)));
         await mkdir(dirname(join(root, path)), { recursive: true });
+        // Replacements get a new path: overwriting a deduplicated inode would change other attachments.
         await writeFile(join(root, path), bytes, { flag: "wx" });
         staged.push(path);
         blobs.set(attachment.id, {
@@ -319,39 +323,41 @@ export async function importProject(
       attachments: blobs.size,
     };
   } finally {
-    if (committed) {
-      // Check all references together so shared blobs survive replacement.
-      const previousPaths = new Set([...blobs.values()].flatMap(({ previousPath }) => previousPath ? [previousPath] : []));
-      try {
-        if (previousPaths.size) {
-          const referenced = new Set(bb.storage.database()
-            .prepare<[], { blob_path: string }>("SELECT DISTINCT blob_path FROM attachments")
-            .all().map((row) => row.blob_path));
-          for (const path of previousPaths) {
-            if (referenced.has(path)) continue;
-            try {
-              await rm(join(root, path), { force: true });
-            } catch (error) {
-              bb.log.warn(`Could not remove replaced import blob ${path}: ${errorMessage(error)}`);
+    try {
+      if (committed) {
+        // Check all references together so shared blobs survive replacement.
+        const previousPaths = new Set([...blobs.values()].flatMap(({ previousPath }) => previousPath ? [previousPath] : []));
+        try {
+          if (previousPaths.size) {
+            const referenced = new Set(bb.storage.database()
+              .prepare<[], { blob_path: string }>("SELECT DISTINCT blob_path FROM attachments")
+              .all().map((row) => row.blob_path));
+            for (const path of previousPaths) {
+              if (referenced.has(path)) continue;
+              try {
+                await rm(join(root, path), { force: true });
+              } catch (error) {
+                bb.log.warn(`Could not remove replaced import blob ${path}: ${errorMessage(error)}`);
+              }
             }
           }
+        } catch (error) {
+          bb.log.warn(`Could not check replaced import blobs: ${errorMessage(error)}`);
         }
-      } catch (error) {
-        bb.log.warn(`Could not check replaced import blobs: ${errorMessage(error)}`);
       }
-    }
-    // Keep newly referenced blobs; failed imports never alter the previous blob files.
-    for (const path of staged) {
-      const id = path.split(sep)[1]!;
-      if (committed && store.tasks.getAttachment(id)?.blobPath === path)
-        continue;
-      try {
-        await rm(join(root, path), { force: true });
-      } catch (error) {
-        bb.log.warn(
-          `Could not remove unused import blob ${path}: ${errorMessage(error)}`,
-        );
+      // Keep newly referenced blobs; failed imports never alter the previous blob files.
+      for (const path of staged) {
+        const id = path.split(sep)[1]!;
+        if (committed && store.tasks.getAttachment(id)?.blobPath === path)
+          continue;
+        try {
+          await rm(join(root, path), { force: true });
+        } catch (error) {
+          bb.log.warn(
+            `Could not remove unused import blob ${path}: ${errorMessage(error)}`,
+          );
+        }
       }
-    }
+    } finally { for (const release of releases) release(); }
   }
 }

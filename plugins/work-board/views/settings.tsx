@@ -1,4 +1,5 @@
 import { GitSyncSettings } from "./git-sync-settings";
+import { StorageSettings } from "./storage-settings";
 import { NavigationBadgeSettings } from "./navigation-badge-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
 import {
@@ -528,6 +529,7 @@ function TasksSettingsContent() {
         {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
       </p> : null}
       <GeneralSettings />
+      <StorageSettings />
       <div className="flex flex-wrap gap-2 border-t border-border pt-4">
         <Button size="sm" className="h-7 px-2.5" variant="outline"
           onClick={() => navigate.toPluginPanel("work-board", project ? { subPath: project.id } : undefined)}>Open Work Board</Button>

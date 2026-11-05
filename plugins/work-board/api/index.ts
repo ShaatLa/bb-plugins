@@ -1,6 +1,7 @@
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
+import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
@@ -651,6 +652,8 @@ export function registerHandlers(
   }
   return {
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
+    getStorageStatus: () => storageService(bb).status(),
+    maintainStorage: ({ optimize }) => storageService(bb).run(optimize),
     addTaskDependency: (input) => changeDependency(input, true),
     removeTaskDependency: (input) => changeDependency(input, false),
     createSequence: (input) => ({ sequence: store.tasks.createSequence(input.projectId, input.name, input.next, input.format) }),

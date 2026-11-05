@@ -362,6 +362,8 @@ const MIGRATIONS = [
 
 export function initializeTasksSchema(db: PluginDatabase): void {
   db.pragma("foreign_keys = ON");
+  // Fresh databases can reclaim pages incrementally without a blocking rebuild during startup.
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").get()) db.pragma("auto_vacuum = INCREMENTAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,

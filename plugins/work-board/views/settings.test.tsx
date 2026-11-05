@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({
   matches: false,
@@ -25,6 +26,20 @@ window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
 Element.prototype.setPointerCapture ??= () => {};
 
 const app = await loadPluginApp(() => import("../app"));
+it("loads shared storage statistics only when opened and performs maintenance", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    registerTasksApi(bb, createStore(bb));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    expect(settings.rpcCalls.some(call => call.method === "getStorageStatus")).toBe(false);
+    fireEvent.click(settings.getByText("Storage"));
+    await settings.findByText("Database / WAL");
+    fireEvent.click(settings.getByRole("button", { name: "Optimize storage" }));
+    await settings.findByText(/Cleanup complete\./);
+    expect(settings.rpcCalls.filter(call => call.method === "getStorageStatus")).toHaveLength(1);
+    expect(settings.rpcCalls).toContainEqual({ method: "maintainStorage", input: { optimize: true } });
+  } finally { cleanup(); await harness.dispose(); }
+});
 afterEach(() => {
   cleanup();
   window.localStorage.clear();

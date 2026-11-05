@@ -1,4 +1,5 @@
 import { migrateSettings } from "./settings";
+import { storageService } from "./storage";
 import { gitSyncService } from "./git-sync/service";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -13,7 +14,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.22.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.22.1";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -51,6 +52,10 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.background.schedule("git-pr-sync", "* * * * *", () => gitSyncService(bb, store).runDue());
+  bb.background.schedule("storage-maintenance", "17 3 * * *", async () => {
+    const result = await storageService(bb).run(false);
+    if (result.removedFiles || result.removedRows) bb.log.info(`Storage cleanup removed ${result.removedFiles} files and ${result.removedRows} cache rows`);
+  });
 
   bb.rpc.register(tasksRpcContract, {
     ping(): { ok: true; version: string } {

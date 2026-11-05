@@ -912,6 +912,22 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
+        ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
+          summary: `${action} storage across all projects; preserve accessible task history`,
+          options: { json: JSON_OPTION },
+          run(input) { return guard(async () => {
+            const result = action === "status" ? await domain.getStorageStatus(null) : await domain.maintainStorage({ optimize: action === "optimize" });
+            if (input.options.json) return JSON.stringify(result);
+            const status = "after" in result ? result.after : result;
+            return [
+              `Database: ${status.databaseBytes} B; WAL: ${status.walBytes} B; reclaimable pages: ${status.freeDatabaseBytes} B`,
+              `Blobs: ${status.blobLogicalBytes} B logical, ${status.blobPhysicalBytes} B allocated; ${status.blobFiles} files`,
+              `Orphans older than 24h: ${status.orphanFiles} (${status.orphanBytes} B); missing attachments: ${status.missingAttachments}`,
+              ...("removedFiles" in result ? [`Removed ${result.removedFiles} files / ${result.removedRows} cache rows; shared ${result.deduplicatedFiles} duplicate files; warnings: ${result.warnings}`] : []),
+            ].join("\n");
+          }); },
+        })])),
         dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done)", [["add KEY --blocked-by KEY", "Add a predecessor"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["list KEY", "Show both directions"]]),
         ...Object.fromEntries((["add", "remove", "list"] as const).map(action => [`dependency ${action}`, cliCommand({
           summary: `${action} task dependencies; only Done satisfies a predecessor`,

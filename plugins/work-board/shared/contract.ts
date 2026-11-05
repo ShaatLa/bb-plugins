@@ -1,4 +1,5 @@
 import { taskActivitySchema } from "./task-activity.js";
+import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
@@ -643,6 +644,7 @@ const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
 export const tasksRpcContract = {
+  ...storageMethods,
   listTaskDependencies: {
     input: z.object({ taskId: idSchema }).strict(),
     output: taskDependenciesSchema,
