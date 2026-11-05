@@ -13,7 +13,7 @@ it("exposes Work Board settings with links to tasks and management", () => {
   expect(section?.title).toBe("Work Board");
   const slot = renderSlot(section!, {});
   fireEvent.click(slot.getByRole("button", { name: "Open Work Board" }));
-  fireEvent.click(slot.getByRole("button", { name: "Manage projects and presets" }));
+  fireEvent.click(slot.getByRole("button", { name: "Manage labels and presets" }));
   expect(slot.navigateCalls).toEqual([
     { method: "toPluginPanel", path: "work-board", options: undefined },
     { method: "toPluginPanel", path: "work-board", options: { subPath: "manage" } },
