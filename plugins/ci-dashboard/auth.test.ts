@@ -5,13 +5,15 @@ const run = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ stdout: str
 vi.mock("node:child_process", () => ({
   execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: run }),
 }));
+let clock = Date.now();
 beforeEach(() => {
+  vi.useFakeTimers(); vi.setSystemTime(clock += 10_000_000);
   vi.stubEnv("GH_TOKEN", "");
   vi.stubEnv("GITHUB_TOKEN", "");
   run.mockReset();
   run.mockResolvedValue({ stdout: "keyring-token\n" });
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 const signal = () => new AbortController().signal;
 
 test("explicit override precedes system credentials", async () => {
@@ -38,6 +40,7 @@ test("tries BB's fallback executable paths and degrades to anonymous without CLI
   run.mockRejectedValueOnce(new Error("not on PATH"));
   expect(await resolveGithubToken(undefined, signal())).toMatchObject({ source: "gh" });
   expect(run.mock.calls[1][0]).toBe("/opt/homebrew/bin/gh");
+  vi.advanceTimersByTime(300_001);
   run.mockRejectedValue(new Error("sensitive-output"));
   expect(await resolveGithubToken(undefined, signal())).toEqual({ token: undefined, source: "anonymous" });
 });
@@ -47,4 +50,14 @@ test("abort never falls back to unauthenticated requests", async () => {
   controller.abort();
   await expect(resolveGithubToken(undefined, controller.signal)).rejects.toThrow();
   expect(run).not.toHaveBeenCalled();
+});
+
+test("shares lookups and expires successes and failures", async () => {
+  const a = resolveGithubToken(undefined, signal()), b = resolveGithubToken(undefined, signal());
+  await Promise.all([a, b]); expect(run).toHaveBeenCalledTimes(1);
+  await resolveGithubToken(undefined, signal()); expect(run).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(300_001); run.mockRejectedValue(new Error("private"));
+  await resolveGithubToken(undefined, signal()); expect(run).toHaveBeenCalledTimes(4);
+  await resolveGithubToken(undefined, signal()); expect(run).toHaveBeenCalledTimes(4);
+  vi.advanceTimersByTime(30_001); await resolveGithubToken(undefined, signal()); expect(run).toHaveBeenCalledTimes(7);
 });

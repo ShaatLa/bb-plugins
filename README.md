@@ -136,7 +136,7 @@ Open **CI Dashboard** in BB's navigation sidebar. Agents can use `ci_dashboard_m
 
 CI pass rates exclude cancelled and skipped runs; outcome counts still show them. Exact metric definitions, authentication fallbacks, cache coverage and pagination limits are documented in the plugin README.
 
-The Example production card also has a project-specific **Deploy production** action: after confirmation it requests `example-org/example-app`'s `deploy.yml` workflow on `main`. This requires existing GitHub Actions write access and is not a general-purpose deploy button for other repositories.
+An optional **Deploy to production** action appears on the production card when Settings → Plugins → CI Dashboard names a production repository and workflow file (blank by default). After confirmation it dispatches that workflow on the configured ref; this needs GitHub Actions write access for that repository. Job-level CI signals (runner pool stalls, runner losses, reruns, flaky jobs, network/tool failures) appear in the CI health card and through `ci_dashboard_metrics` views.
 
 [Configuration, metric definitions and deployment behavior →](plugins/ci-dashboard/README.md)
 

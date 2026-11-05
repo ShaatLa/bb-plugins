@@ -10,6 +10,8 @@ Deployment-throughput and CI-pass-rate charts use actual GitHub data, grouped in
 
 Each repository also shows completed CI outcomes (including failures, cancellations, and skips), the five oldest unreviewed non-draft PRs with their age and links, and the newest production deployment with its status, environment, ref, times, and a log link. CI cards and charts use one complete dataset to keep the figures consistent.
 
+Optional, configurable in settings and off by default: a **Deploy to production** action (`productionRepository`, `productionWorkflow`, `productionRef`) that dispatches one workflow after confirmation, a draft-deferral rule (`draftWorkflow`, `draftJob`, `draftStep`) that excludes verified draft-rejection failures from pass rates, and job-signal name lists (`aggregatorJobs`, `policyJobs`).
+
 The activity block counts PRs created in the selected date range, commits in the default branch, and cumulative lines added/deleted across those commits. Commit statistics use existing GitHub authorization, and unavailable data is clearly marked.
 
 Choose today from 00:00 UTC (1 day), 3 days, 1 week, 2 weeks, 1 month (30 days), 3 months (90 days), or custom inclusive UTC dates. Filters affect historical metrics for all repositories, while current open PRs, review queue, and latest production stay current. Changing ranges preserves previous results during background loading, and the selection survives sidebar navigation.

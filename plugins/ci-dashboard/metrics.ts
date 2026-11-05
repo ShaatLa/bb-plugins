@@ -113,7 +113,10 @@ export type LoadOptions = {
   draftRules?: DraftRules; request?: GitHubRequest; historyRange?: DateRange; previous?: HistoricalRecords;
   localOnly?: boolean; partitionCi?: boolean; onProgress?: (metrics: Metrics) => void;
   onWarning?: (message: string) => void;
+  /** Previous complete coverage plus per-window verification times, so old windows can skip the network. */
+  reuse?: { coverage: Pick<DateRange, "since" | "until">; checked: Map<string, number> };
 };
+const day = 86_400_000;
 export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void, options: LoadOptions = {}): Promise<Metrics> {
   repositorySchema.parse(repository);
   const now = new Date();
@@ -214,7 +217,10 @@ export async function loadMetrics(repository: string, token: string | undefined,
   async function ci() {
     const path = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${historyRange.since}..${historyRange.until}`)}`;
     const completedPath = `${path}&status=completed&per_page=100`;
-    const first = cached ? null : await request(`${completedPath}&page=1`);
+    // Partitioned loads read pages per window, so page 1 here only supplies total_count: ask for one row once history is known to be large.
+    const canPartition = Boolean(options.partitionCi) && historyEnd - historyStart > day;
+    const probe = canPartition && (options.previous?.runs.length ?? 0) > 1000;
+    const first = cached ? null : await request(probe ? `${path}&status=completed&per_page=1&page=1` : `${completedPath}&page=1`);
     const completed = cached ? cached.records.runs.length : countSchema.parse(first!.body).total_count;
     function summary(total: number, successful: number) {
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
@@ -273,17 +279,29 @@ export async function loadMetrics(repository: string, token: string | undefined,
     }
     try {
       async function completeHistory() {
-        if (!options.partitionCi || completed <= 1000 || historyEnd - historyStart <= 7 * 86_400_000) return history(historyStart, historyEnd, first!);
+        if (!canPartition || completed <= 1000) return history(historyStart, historyEnd, probe ? undefined : first!);
         const windows: [number, number][] = [];
         for (let start = historyStart; start <= historyEnd;) {
-          const finish = Math.min(historyEnd, (Math.floor(start / (7 * 86_400_000)) + 1) * 7 * 86_400_000 - 1);
+          const weekEnd = (Math.floor(start / (7 * day)) + 1) * 7 * day - 1;
+          // Only the open week is cut into days: closed windows keep stable cache keys and only today's window ends at `now`.
+          const finish = Math.min(historyEnd, weekEnd > historyEnd ? (Math.floor(start / day) + 1) * day - 1 : weekEnd);
           windows.push([start, finish]);
           start = finish + 1;
         }
+        const reuse = options.reuse, stored = options.previous?.runs, current = now.getTime();
+        const load = async ([start, finish]: [number, number]) => {
+          const key = `${start}-${finish}`;
+          // Accepted staleness: runs older than 48 h can still change (reruns) but are revalidated only hourly.
+          if (reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(key) ?? -Infinity) < 3_600_000) {
+            return new Map(stored.filter((row) => { const time = Date.parse(row.created_at); return time >= start && time <= finish; }).map((row) => [row.id, row]));
+          }
+          const rows = await history(start, finish);
+          reuse?.checked.set(key, current);
+          return rows;
+        };
         // Read the active tail after closed windows so its pages cannot queue behind old history.
-        const results = await Promise.all(windows.slice(0, -1).map(([start, finish]) => history(start, finish)));
-        const tail = windows[windows.length - 1];
-        results.push(await history(tail[0], tail[1]));
+        const results = await Promise.all(windows.slice(0, -1).map(load));
+        results.push(await load(windows[windows.length - 1]));
         const combined = new Map<number, z.infer<typeof runSchema>>();
         for (const result of results) for (const [id, row] of result) {
           if (combined.has(id)) throw new Error("GitHub returned overlapping CI search results.");

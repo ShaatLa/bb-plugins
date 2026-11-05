@@ -12,6 +12,7 @@ import { HistoryCharts } from "./history-chart";
 import { CiTiming } from "./ci-cards";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
 import { metricsProgressSchema } from "./metrics";
+import { useSignalsBadge } from "./signals-panel";
 
 type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
 // Keep the last view across sidebar navigation within this window; never persist repository data in browser storage.
@@ -36,7 +37,7 @@ export function Dashboard() {
   const { values, isLoading } = useSettings();
   const repository = typeof values?.repository === "string" ? values.repository : "";
   const importProjects = values?.importBbRepositories !== false;
-  const configuration = JSON.stringify([repository, importProjects, values?.draftWorkflow ?? "CI", values?.draftJob ?? "CI gate", values?.draftStep ?? "Reject draft PR"]);
+  const configuration = JSON.stringify([repository, importProjects, values?.draftWorkflow ?? "", values?.draftJob ?? "", values?.draftStep ?? ""]);
   const seconds = typeof values?.refreshSeconds === "number" ? values.refreshSeconds : 300;
   const [range, setRange] = useState<RangeInput>(() => lastSelection);
   const selection = JSON.stringify(range);
@@ -260,5 +261,6 @@ export default definePluginApp((app) => {
   app.contentScripts.register({ id: "draft-settings-disclosure", mount: ({ signal }) => mountDraftSettingsDisclosure(signal) });
   app.slots.navPanel({
     id: "ci-dashboard", title: "CI Dashboard", icon: "delivery-dashboard/pipeline", path: "dashboard", component: DashboardPage,
+    ...{ experimental_useBadge: useSignalsBadge },
   });
 });

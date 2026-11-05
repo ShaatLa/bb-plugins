@@ -6,7 +6,11 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
 import { minimumDate, resolveRange } from "./date-range";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp, renderSlot as renderSdkSlot } from "@get-bb/plugin-sdk/testing/app";
+
+const renderSlot: typeof renderSdkSlot = (registration, props, options) => renderSdkSlot(registration, props, {
+  ...options, rpc: { signals: () => ({ repositories: [], actors: { owner_sre: "SRE", pr_author: "Author", lead: "Lead", manager: "Manager" } }), navigationBadge: () => ({ count: 0, critical: 0 }), ...options?.rpc },
+});
 
 const app = await loadPluginApp(() => import("./app"));
 const metric = { value: 12, detail: "Fixture metric", error: null, seriesError: null,
@@ -56,7 +60,7 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
 test("timing summary separates CI from frequent short automation without refetching", async () => {
   const started = "2026-10-20T00:00:00Z";
   const ciInsights = summarizeCi([10, 14, 16, 1000, 1100].map((seconds, index) => ({
-    id: index + 1, workflow_id: index < 3 ? 2 : 1, name: index < 3 ? "PR checks" : "CI",
+    id: index + 1, workflow_id: index < 3 ? 2 : 1, name: index < 3 ? "Docs check" : "CI",
     head_branch: "main", event: "push", conclusion: "success", created_at: started, run_started_at: started,
     updated_at: new Date(Date.parse(started) + seconds * 1000).toISOString(),
   })), "main");
@@ -221,7 +225,8 @@ test("side-card details load only when expanded, reuse the response and allow re
   const isolated = await loadPluginApp(() => import("./app"));
   const result = { checkedAt: repo.updatedAt, items: [{ id: 1, title: "Tests · broken build", createdAt: repo.updatedAt, state: "failure", url: "https://github.com/acme/widgets/actions/runs/1", compareUrl: null }] };
   const cardDetails = vi.fn().mockRejectedValueOnce(new Error("private error")).mockResolvedValue(result);
-  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data, cardDetails }, settings: {} });
+  let refreshed = false;
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => refreshed ? { ...data, repositories: [{ ...repo, updatedAt: "2026-10-20T13:00:00Z" }] } : data, cardDetails }, settings: {} });
   try {
     const summary = await slot.findByText("Latest failed runs");
     const details = summary.closest("details")!;
@@ -246,6 +251,10 @@ test("side-card details load only when expanded, reuse the response and allow re
     fireEvent(production, new Event("toggle"));
     expect((await slot.findByRole("link", { name: "Changes since previous deployment" })).getAttribute("href")).toBe(compareUrl);
     expect(cardDetails).toHaveBeenLastCalledWith({ kind: "production", repository: repo.repository, environment: "production" });
+    refreshed = true; fireEvent.click(slot.getByRole("button", { name: "Refresh" })); await act(async () => {});
+    expect(slot.getByText("Latest failed runs").closest("details")).toBe(details);
+    expect(slot.getByText("Recent production deployments").closest("details")).toBe(production);
+    expect(cardDetails).toHaveBeenCalledTimes(3);
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -722,16 +731,16 @@ test("shows a server snapshot in a fresh window while GitHub is still pending", 
 
 
 test("production dispatch needs confirmation, supports cancel, and links the requested run", async () => {
-  const deploymentData = { ...data, repositories: [{ ...repo, repository: "example-org/example-app" }] };
+  const deploymentData = { ...data, repositories: [{ ...repo, repository: "acme/widgets" }] };
   let finish!: (value: { url: string }) => void;
   const deployProduction = vi.fn(() => new Promise<{ url: string }>((resolve) => { finish = resolve; }));
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => deploymentData, deployProduction }, settings: { repository: "example-org/example-app" },
+    rpc: { snapshot: () => null, metrics: () => deploymentData, deployProduction }, settings: { repository: "acme/widgets", productionRepository: "acme/widgets", productionWorkflow: "deploy.yaml", productionRef: "release" },
   });
   try {
-    const deploy = await slot.findByRole("button", { name: "Deploy production" });
+    const deploy = await slot.findByRole("button", { name: "Deploy to production" });
     fireEvent.click(deploy);
-    expect(slot.getByRole("group", { name: "Confirm production deployment" }).textContent).toContain("example-org/example-app from main");
+    expect(slot.getByRole("group", { name: "Confirm production deployment" }).textContent).toContain("acme/widgets from release");
     expect(deployProduction).not.toHaveBeenCalled();
     fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
     expect(slot.queryByRole("group", { name: "Confirm production deployment" })).toBeNull();
@@ -741,23 +750,33 @@ test("production dispatch needs confirmation, supports cancel, and links the req
     await act(async () => {});
     expect(slot.getByRole("button", { name: "Requesting…" }).hasAttribute("disabled")).toBe(true);
     expect(deployProduction).toHaveBeenCalledTimes(1);
-    await act(async () => { finish({ url: "https://github.com/example-org/example-app/actions/runs/123" }); });
+    await act(async () => { finish({ url: "https://github.com/acme/widgets/actions/runs/123" }); });
     expect(slot.getByText("Production workflow requested.")).toBeTruthy();
     expect(slot.getByRole("link", { name: "View workflow" }).getAttribute("href")).toContain("/actions/runs/123");
-    expect(slot.queryByRole("button", { name: "Deploy production" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Deploy to production" })).toBeNull();
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("the deploy action stays hidden until a repository and workflow are configured for this repository", async () => {
+  for (const settings of [{ repository: "acme/widgets" }, { repository: "acme/widgets", productionRepository: "acme/widgets" }, { repository: "acme/widgets", productionRepository: "acme/other", productionWorkflow: "deploy.yaml" }] as Record<string, string>[]) {
+    const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "acme/widgets" }] }), deployProduction: vi.fn() }, settings });
+    try {
+      await slot.findByText("Latest production deployment");
+      expect(slot.queryByRole("button", { name: "Deploy to production" })).toBeNull();
+    } finally { slot.lifecycle.unmount(); }
+  }
 });
 
 test("unconfirmed production requests explain how to check status without exposing error content", async () => {
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "example-org/example-app" }] }), deployProduction: () => { throw new Error("private-token"); } },
-    settings: { repository: "example-org/example-app" },
+    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "acme/widgets" }] }), deployProduction: () => { throw new Error("private-token"); } },
+    settings: { repository: "acme/widgets", productionRepository: "acme/widgets", productionWorkflow: "deploy.yaml" },
   });
   try {
-    fireEvent.click(await slot.findByRole("button", { name: "Deploy production" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Deploy to production" }));
     fireEvent.click(slot.getByRole("button", { name: "Start deployment" }));
     const alert = await slot.findByRole("alert");
-    expect(alert.textContent).toContain("Check the Production workflow");
+    expect(alert.textContent).toContain("Check the production workflow");
     expect(alert.textContent).not.toContain("private-token");
     expect(slot.getByRole("button", { name: "Start deployment" }).hasAttribute("disabled")).toBe(false);
   } finally { slot.lifecycle.unmount(); }
@@ -875,4 +894,120 @@ test("draft settings start collapsed, keep native inputs and clean up on navigat
     expect(form.querySelector("input")?.parentElement?.parentElement?.style.display).toBe("");
     expect(form.querySelector("input")?.parentElement?.parentElement?.style.borderInlineStart).toBe("");
   } finally { dispose(); host.remove(); }
+});
+
+// --- job-level signals merged into the CI health card ---
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+const jobSignal = (id: string, kind: string, severity: string, minutes: number, where: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  ({ id, kind, severity, title: `server ${id}`, what: `what ${id}`, impact: "", where, since: ago(minutes), until: null, actor: "owner_sre", open: true, ...extra });
+const jobRepo = (extra: Record<string, unknown> = {}) => ({
+  repository: "acme/widgets", updatedAt: ago(1), error: null, live: { pools: [
+    { pool: "idle-pool", queued: 0, inProgress: 0, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
+    { pool: "self-hosted", queued: 0, inProgress: 12, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
+    { pool: "stuck-pool", queued: 3, inProgress: 0, oldestQueuedAt: ago(30), lastStartedAt: null, queuedRunIds: [1] }], truncated: false, polledAt: null },
+  signals: [
+    jobSignal("runner_loss:90", "runner_loss", "warning", 12.5, { jobName: "Integration tests", branch: "main", url: "https://github.com/acme/widgets/actions/runs/9/job/90" }),
+    jobSignal("pool_stall:stuck-pool", "pool_stall", "critical", 5, { pool: "stuck-pool" }),
+    jobSignal("flake:1", "flake", "info", 30, { jobName: "Unit tests" }),
+    jobSignal("old", "runner_loss", "warning", 120, { jobName: "Lint", branch: "main" }, { open: false, until: ago(60) }),
+  ],
+  window: { since: "2026-10-16T12:00:00.000Z", until: "2026-10-30T12:00:00.000Z" },
+  failureCounts: { runner_loss: 2, flake: 1, transient: 3, real: 4, timeout: 1, superseded: 5, manual_cancel: 6, collateral_cancel: 7, consequence: 8, unknown: 0 },
+  runnerLosses: { byPool: { "self-hosted": { count: 2, runnerMs: 51 * 60000 } }, byJob: { "Integration tests": { count: 2, runnerMs: 51 * 60000 } }, byDay: {} },
+  massCancels: [{ since: "2026-10-19T12:00:00.000Z", until: "2026-10-19T12:01:00.000Z", runners: ["r1", "r2", "r3"], runIds: [1, 2], jobs: 3 }],
+  failures: [], reruns: [{ runId: 7, workflowName: "CI", headSha: "a", headBranch: "feature", attempts: 2, outcomes: ["failure", "success"], finalConclusion: "success", repeatedRunnerMs: 4 * 60000, url: "https://github.com/acme/widgets/actions/runs/7" }],
+  backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: "2026-10-16T12:00:00.000Z" },
+  ...extra,
+});
+// "Latest failed runs" is the separate CI details view that closes the column.
+const blocks = (card: HTMLElement) => Array.from(card.querySelectorAll("details > summary")).map((summary) => summary.textContent).filter((name) => name !== "Latest failed runs");
+const actors = { owner_sre: "Runner owner / SRE", pr_author: "Author", lead: "Lead", manager: "Manager" };
+const failingMain = () => summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
+  created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z` })), "main");
+const healthSlot = (signals: (input: unknown) => unknown, ciInsights: unknown = failingMain(), panels = app.navPanels) => renderSlot(panels[0], { subPath: "" }, { rpc: { snapshot: () => null, signals, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 2, failure: 3 } }] }) }, settings: {} });
+
+test("CI health merges run-level alerts and open job-level signals into one list, stalled pool first, in the card's own markup", async () => {
+  const signals = vi.fn(() => ({ repositories: [jobRepo()], actors }));
+  const slot = healthSlot(signals);
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    await vi.waitFor(() => expect(within(card).getByRole("link", { name: "Runner pool stalled: stuck-pool" })).toBeTruthy());
+    expect(slot.queryByRole("region", { name: "Signals" })).toBeNull();
+    const list = within(within(card).getByRole("region", { name: "CI signals" })).getByRole("list");
+    expect(Array.from(list.querySelectorAll("li a")).map((a) => a.textContent)).toEqual(["Runner pool stalled: stuck-pool", "Unit tests · main: latest run failed", "Runner lost on main: Integration tests"]);
+    expect(list.className).toBe("divide-y divide-border");
+    expect(list.querySelector("li a")?.className).toContain("text-destructive");
+    expect(list.querySelectorAll("li")[2].querySelector("p")?.textContent).toBe("what runner_loss:90 · Who acts: Runner owner / SRE · 12 min ago");
+    expect(within(card).queryByText(/Resolved \(/)).toBeNull();
+    // The signals request carries the dashboard range, so job-level numbers match the card subtitle.
+    expect(signals).toHaveBeenCalledWith({ repository: "acme/widgets", since: repo.range.since, until: repo.range.until });
+    await slot.behavior.emitRealtime("signals-changed", null);
+    await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThan(1));
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI health shows failure causes, what is not counted and the secondary blocks", async () => {
+  const slot = healthSlot(() => ({ repositories: [jobRepo()], actors }));
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const causes = await within(card).findByRole("region", { name: "Failure causes" });
+    const values: Record<string, Element | null> = Object.fromEntries(Array.from(causes.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")]));
+    expect(Object.entries(values).map(([key, dd]) => [key, dd?.textContent])).toEqual([["Runner losses", "2"], ["Flaky jobs", "1"], ["Network/tool errors", "3"], ["Real failures", "4"]]);
+    expect(causes.textContent).toContain("Also: 1 timed out, 0 without a recognizable cause");
+    expect(values["Runner losses"]?.className).toContain("text-destructive");
+    expect(causes.textContent).toContain("Not counted: 5 superseded by newer runs, 6 cancelled manually, 7 cancelled with the run, 8 aggregator jobs");
+    const summaries = blocks(card);
+    expect(summaries).toEqual(["Top failing workflows", "Runner pools · 3", "Runner losses · 2", "Reruns · 1", "Lower-priority events · 1", "Resolved incidents · 1", "Mass runner losses · 1"]);
+    const text = (name: string) => Array.from(card.querySelectorAll("details")).find((item) => item.querySelector("summary")?.textContent === name)?.textContent;
+    expect(text("Runner pools · 3")).toContain("stuck-pool — 0 running, 3 waiting");
+    expect(text("Runner pools · 3")?.indexOf("stuck-pool")).toBeLessThan(text("Runner pools · 3")!.indexOf("self-hosted"));
+    expect(text("Runner pools · 3")).toContain("self-hosted — 12 running, 0 waiting");
+    expect(text("Runner pools · 3")).toContain("Idle: idle-pool");
+    expect(text("Runner losses · 2")).toContain("2 losses · 51 min of runner time");
+    expect(text("Reruns · 1")).toContain("feature · failed → passed · 4 min repeated runner time");
+    expect(text("Lower-priority events · 1")).toContain("Flaky jobs");
+    expect(text("Resolved incidents · 1")).toContain("Runner lost on main: Lint");
+    expect(text("Mass runner losses · 1")).toContain("r1, r2, r3 · 2 runs");
+    expect(causes.textContent).toContain("Job-level causes are kept for the last 14 days");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI health hides empty secondary blocks and the zero causes stay in plain style", async () => {
+  const empty = jobRepo({ live: { pools: [], truncated: false, polledAt: null }, signals: [], runnerLosses: { byPool: {}, byJob: {}, byDay: {} }, massCancels: [], reruns: [], failureCounts: {},
+    window: { since: "2026-10-01T00:00:00.000Z", until: "2026-10-15T00:00:00.000Z" } });
+  const slot = healthSlot(() => ({ repositories: [empty], actors }), { ...failingMain(), alerts: [] });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const causes = await within(card).findByRole("region", { name: "Failure causes" });
+    expect(Array.from(causes.querySelectorAll("dd")).map((dd) => dd.textContent)).toEqual(["0", "0", "0", "0"]);
+    expect(causes.querySelector("dd")?.className).not.toContain("text-destructive");
+    expect(blocks(card)).toEqual(["Top failing workflows"]);
+    expect(causes.textContent).not.toContain("Job-level causes");
+    expect(within(card).getByText("No failed latest default-branch runs or repeated failures in this range.")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI health explains a range older than the job history and the running backfill", async () => {
+  const loading = jobRepo({ backfill: { remaining: 4640, failed: 0, pausedUntil: null, coveredSince: "2026-10-18T00:00:00.000Z" } });
+  const slot = healthSlot(() => ({ repositories: [loading], actors }));
+  try {
+    await vi.waitFor(() => expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toContain("Loading job history: 4,640 attempts left"));
+    expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toMatch(/Job-level causes cover .* onward — history is still loading/);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a failing signals request leaves the run-level part of the card and offers one retry", async () => {
+  vi.resetModules(); // fresh module: no cached job-level answer from an earlier test
+  const signals = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ repositories: [jobRepo()], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels);
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const retry = await within(card).findByRole("button", { name: "Retry" });
+    expect(within(card).getAllByRole("alert")).toHaveLength(1);
+    expect(card.textContent).toContain("Unit tests · main: latest run failed");
+    expect(within(card).queryByRole("region", { name: "Failure causes" })).toBeNull();
+    fireEvent.click(retry);
+    expect(await within(card).findByRole("region", { name: "Failure causes" })).toBeTruthy();
+    expect(within(card).queryByRole("alert")).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
 });

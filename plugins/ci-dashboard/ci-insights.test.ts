@@ -55,16 +55,18 @@ test("legacy metadata and empty histories never fabricate workflow identity or d
 
 
 test("only complete job evidence for an isolated draft rejection is deferred", async () => {
-  const candidate = run(1, { name: "CI", event: "pull_request", run_attempt: 2 });
-  const gate = { id: 1, name: "CI gate", conclusion: "failure", steps: [{ name: "Reject draft PR", conclusion: "failure" }] };
+  const candidate = run(1, { name: "CI", event: "pull_request", run_attempt: 2 }), rules = { workflow: "CI", job: "CI summary", step: "Draft gate" };
+  const gate = { id: 1, name: "CI summary", conclusion: "failure", steps: [{ name: "Draft gate", conclusion: "failure" }] };
   const request = vi.fn(async () => ({ body: { total_count: 1, jobs: [gate] }, hasNext: false }));
-  expect(await classifyDraft(candidate, "acme/widgets", request)).toBe(true);
+  expect(await classifyDraft(candidate, "acme/widgets", request, rules)).toBe(true);
   expect(request.mock.calls[0]).toEqual(["/repos/acme/widgets/actions/runs/1/attempts/2/jobs?filter=latest&per_page=100&page=1"]);
   for (const jobs of [[{ ...gate, steps: [{ name: "Verify", conclusion: "failure" }] }], [gate, { ...gate, id: 2, name: "Tests" }]]) {
-    expect(await classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: jobs.length, jobs }, hasNext: false }))).toBe(false);
+    expect(await classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: jobs.length, jobs }, hasNext: false }), rules)).toBe(false);
   }
-  await expect(classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: 2, jobs: [gate] }, hasNext: false }))).rejects.toThrow("Incomplete");
-  expect(await classifyDraft({ ...candidate, event: "push" }, "acme/widgets", request)).toBe(false);
+  expect(await classifyDraft(candidate, "acme/widgets", request, { ...rules, step: "" })).toBe(false); // a blank name disables the rule
+  expect(request).toHaveBeenCalledTimes(1);
+  await expect(classifyDraft(candidate, "acme/widgets", async () => ({ body: { total_count: 2, jobs: [gate] }, hasNext: false }), rules)).rejects.toThrow("Incomplete");
+  expect(await classifyDraft({ ...candidate, event: "push" }, "acme/widgets", request, rules)).toBe(false);
   const rows = [run(1, { conclusion: "success" }), run(2, { draftDeferred: true }), run(3), run(4, { draftDeferred: true })];
   expect(summarizeCi(rows, "trunk")).toMatchObject({ main: { eligible: 2, failed: 1 }, workflows: [{ failed: 1, failureId: 3 }], alerts: [{ consecutive: 1, runId: 3 }] });
 });

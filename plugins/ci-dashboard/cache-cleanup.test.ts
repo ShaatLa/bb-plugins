@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
-import { cacheMaxBytes, cleanupCache } from "./cache-cleanup";
+import { cacheMaxBytes, cleanupCache, compress, decompress, purgeDeadResponses, shallowFloor } from "./cache-cleanup";
 
 afterEach(() => vi.useRealTimers());
 async function setup() {
@@ -109,5 +109,74 @@ test("count limits retain recently used entries even when their freshness timest
     expect(database.prepare("SELECT COUNT(*) AS count FROM github_responses").get()).toEqual({ count: 512 });
     expect(database.prepare("SELECT cache_key FROM github_responses WHERE cache_key = '0'").get()).toEqual({ cache_key: "0" });
     expect(database.prepare("SELECT COUNT(*) AS count FROM dashboard_snapshots").get()).toEqual({ count: 8 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("compressed history rows are pruned and trimmed like legacy text rows and stay compressed", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-24T12:00:00Z"));
+  const { database, harness } = await setup();
+  try {
+    const dates = ["2025-10-23T23:59:59.999Z", "2025-10-24T00:00:00.000Z", "2026-10-23T00:00:00.000Z"];
+    const history = (range: string, until = dates[2]) => ({ checkedAt: Date.now(), metrics: { range: { since: range } }, coverage: { since: dates[0], until }, records: {
+      deployments: [], runs: dates.map((created_at, id) => ({ id: id + 1, created_at, conclusion: "success" })), commits: [], branch: "main", head: "head",
+    } });
+    for (const [name, data] of [["trim", history(dates[2])], ["obsolete range", history(dates[0])], ["obsolete coverage", history(dates[2], dates[0])]] as const) {
+      database.prepare("INSERT INTO repository_history VALUES (?, ?, ?, ?)").run(name, "config", compress(JSON.stringify(data)), Date.now());
+    }
+    database.prepare("INSERT INTO repository_history VALUES (?, ?, ?, ?)").run("corrupt", "config", Buffer.from("not gzip"), Date.now());
+    expect(cleanupCache(database).removed).toBe(3);
+    const row = database.prepare("SELECT repository, typeof(data) AS type, data FROM repository_history").get() as { repository: string; type: string; data: Buffer };
+    expect(row).toMatchObject({ repository: "trim", type: "blob" });
+    const kept = JSON.parse(decompress(row.data));
+    expect(kept.coverage.since).toBe("2025-10-24T00:00:00.000Z");
+    expect(kept.records.runs).toHaveLength(2);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("the startup purge drops old metadata versions and long-gone 'now' ranges but keeps reusable rows", async () => {
+  const { database, harness } = await setup();
+  try {
+    const now = Date.parse("2026-10-24T12:00:00Z"), hour = 3_600_000;
+    const runs = (until: string) => `/repos/acme/widgets/actions/runs?created=2026-10-01T00%3A00%3A00.000Z..${encodeURIComponent(until)}&status=completed&per_page=100&page=1`;
+    const search = (until: string) => `/search/issues?q=${encodeURIComponent(`repo:acme/widgets is:pr created:2026-10-01T00:00:00.000Z..${until}`)}&per_page=1`;
+    const rows: [string, string, number, boolean][] = [
+      ["config:ci-metadata-v2", runs("2026-10-23T23:59:59.999Z"), now, true],
+      ["config", runs("2026-10-23T23:59:59.999Z"), now, true],
+      ["config:ci-metadata-v3", runs("2026-10-24T09:47:23.412Z"), now - 2 * hour, true],
+      ["config", search("2026-10-24T09:47:23.412Z"), now - 2 * hour, true],
+      ["config:ci-metadata-v3", runs("2026-10-24T11:47:23.412Z"), now - hour / 2, false],
+      ["config:ci-metadata-v3", runs("2026-10-23T23:59:59.999Z"), now - 3 * hour, false],
+      ["config:ci-metadata-v3", runs("2026-10-23T12:34:56.000Z"), now - 3 * hour, false],
+      ["config", search("2026-10-23T23:59:59.999Z"), now - 3 * hour, false],
+      ["config", "/repos/acme/widgets/deployments?per_page=100&page=1", now - 3 * hour, false],
+    ];
+    for (const [scope, path, checked] of rows) database.prepare("INSERT INTO github_responses VALUES (?, ?, ?, ?)").run(JSON.stringify([scope, path]), "{}", checked, checked);
+    expect(purgeDeadResponses(database, now)).toBe(rows.filter((row) => row[3]).length);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM github_responses").get()).toEqual({ n: rows.filter((row) => !row[3]).length });
+    expect(purgeDeadResponses(database, now)).toBe(0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("trimming to the 90-day floor shortens coverage and records of text and compressed rows without deleting them", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-24T12:00:00Z"));
+  const { database, harness } = await setup();
+  try {
+    expect(shallowFloor()).toBe("2026-07-26T00:00:00.000Z");
+    const dates = ["2026-02-01T00:00:00.000Z", "2026-07-25T23:59:59.000Z", "2026-07-26T00:00:00.000Z", "2026-10-23T00:00:00.000Z"];
+    const history = { checkedAt: Date.now(), metrics: { range: { since: dates[0] } }, coverage: { since: dates[0], until: dates[3] }, records: {
+      deployments: [], runs: dates.map((created_at, id) => ({ id: id + 1, created_at, conclusion: "success" })), commits: [], branch: "main", head: "head" } };
+    database.prepare("INSERT INTO repository_history VALUES ('text', 'c', ?, ?)").run(JSON.stringify(history), Date.now());
+    database.prepare("INSERT INTO repository_history VALUES ('blob', 'c', ?, ?)").run(compress(JSON.stringify(history)), Date.now());
+    cleanupCache(database);
+    const since = () => (database.prepare("SELECT data FROM repository_history").all() as { data: string | Uint8Array }[]).map((row) => JSON.parse(decompress(row.data)).coverage.since);
+    expect(since()).toEqual([dates[0], dates[0]]); // untrimmed without the floor
+    expect(cleanupCache(database, undefined, false, shallowFloor()).removed).toBe(0);
+    for (const row of database.prepare("SELECT data FROM repository_history").all() as { data: string | Uint8Array }[]) {
+      const kept = JSON.parse(decompress(row.data));
+      expect(kept.coverage.since).toBe("2026-07-26T00:00:00.000Z");
+      expect(kept.records.runs.map((run: { id: number }) => run.id)).toEqual([3, 4]);
+    }
   } finally { await harness.lifecycle.dispose(); }
 });

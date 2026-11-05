@@ -8,13 +8,22 @@ function pick(value: unknown, keys: string[]) {
   return Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, (value as Record<string, unknown>)[key]]));
 }
 
+// GitHub returns PR objects; the cache keeps only their numbers.
+function pullRequestNumbers(row: unknown) {
+  const list = row && typeof row === "object" && "pull_requests" in row ? row.pull_requests : undefined;
+  if (!Array.isArray(list)) return {};
+  return { pull_requests: list.flatMap((pr) => typeof pr === "number" ? [pr] : pr && typeof pr.number === "number" ? [pr.number] : []) };
+}
+
 export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["database"]>) {
   const pending = new Map<string, Promise<GitHubResponse>>();
+  let inserts = 0;
   return (configuration: string, token: string | undefined, signal: AbortSignal, ttl: number, force: boolean, canWrite: () => boolean): GitHubRequest => async (path, init) => {
     if (init?.method && init.method !== "GET") return githubRequest(path, token, signal, init);
-    const key = JSON.stringify([path.includes("/actions/runs?") ? `${configuration}:ci-metadata-v2` : configuration, path]);
-    const row = database.prepare("SELECT data, checked_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number } | undefined;
-    if (row) database.prepare("UPDATE github_responses SET last_used_at = ? WHERE cache_key = ?").run(Date.now(), key);
+    const key = JSON.stringify([path.includes("/actions/runs?") ? `${configuration}:ci-metadata-v3` : configuration, path]);
+    const row = database.prepare("SELECT data, checked_at, last_used_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number; last_used_at: number } | undefined;
+    // LRU order needs only coarse timestamps; a write per read is not worth it.
+    if (row && Date.now() - row.last_used_at > 600_000) database.prepare("UPDATE github_responses SET last_used_at = ? WHERE cache_key = ?").run(Date.now(), key);
     let previous: GitHubResponse | undefined;
     if (row) {
       try { previous = responseSchema.parse(JSON.parse(row.data)); } catch { /* Invalid cache entries are refetched. */ }
@@ -22,11 +31,14 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
     const metadata = path.startsWith("/search/issues?") || path.includes("/statuses?");
     if (!force && metadata && previous && row && Date.now() - row.checked_at >= 0 && Date.now() - row.checked_at < ttl) return previous;
     if (pending.has(key)) return pending.get(key)!;
-    const operation = githubRequest(path, token, signal, init, previous).then((result) => {
+    const slim = (result: GitHubResponse): GitHubResponse => {
       // Workflow responses contain large unused nested objects; retain only metric inputs.
       if (path.includes("/actions/runs?") && result.body && typeof result.body === "object" && "workflow_runs" in result.body && Array.isArray(result.body.workflow_runs)) {
         const body = result.body as { total_count?: unknown; workflow_runs: unknown[] };
-        result = { ...result, body: { total_count: body.total_count, workflow_runs: body.workflow_runs.map((row) => pick(row, ["id", "created_at", "conclusion", "workflow_id", "name", "head_branch", "event", "run_started_at", "updated_at", "run_attempt"])) } };
+        result = { ...result, body: { total_count: body.total_count, workflow_runs: body.workflow_runs.map((row) => ({
+          ...pick(row, ["id", "created_at", "conclusion", "workflow_id", "name", "head_branch", "event", "run_started_at", "updated_at", "run_attempt", "head_sha"]) as object,
+          ...pullRequestNumbers(row),
+        })) } };
       }
       if (path.includes("/jobs?") && result.body && typeof result.body === "object" && "jobs" in result.body && Array.isArray(result.body.jobs)) {
         const body = result.body as { total_count?: unknown; jobs: Record<string, unknown>[] };
@@ -42,10 +54,21 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
         const body = result.body as { total_count?: unknown; incomplete_results?: unknown; items?: unknown };
         result = { ...result, body: { total_count: body.total_count, incomplete_results: body.incomplete_results, ...(Array.isArray(body.items) ? { items: body.items.map((row) => pick(row, ["number", "title", "created_at"])) } : {}) } };
       }
+      return result;
+    };
+    const operation = githubRequest(path, token, signal, init, previous).then((result) => {
+      // A 304 returns the stored body: it is already slim, so only the check time needs to be written.
+      const unchanged = previous !== undefined && result.body === previous.body && result.hasNext === previous.hasNext;
+      if (!unchanged) result = slim(result);
       if (canWrite()) {
-        database.prepare("INSERT INTO github_responses (cache_key, data, checked_at, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET data = excluded.data, checked_at = excluded.checked_at, last_used_at = excluded.last_used_at")
-          .run(key, JSON.stringify(result), Date.now(), Date.now());
-        database.prepare("DELETE FROM github_responses WHERE cache_key NOT IN (SELECT cache_key FROM github_responses ORDER BY last_used_at DESC, rowid DESC LIMIT 512)").run();
+        if (!unchanged || database.prepare("UPDATE github_responses SET checked_at = ?, last_used_at = ? WHERE cache_key = ?").run(Date.now(), Date.now(), key).changes === 0) {
+          database.prepare("INSERT INTO github_responses (cache_key, data, checked_at, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET data = excluded.data, checked_at = excluded.checked_at, last_used_at = excluded.last_used_at")
+            .run(key, JSON.stringify(result), Date.now(), Date.now());
+          // Count rows every 64 new keys and trim only past 512 + 64; cleanupCache enforces the hard 512 cap.
+          if (!row && ++inserts % 64 === 0 && (database.prepare("SELECT COUNT(*) AS n FROM github_responses").get() as { n: number }).n > 576) {
+            database.prepare("DELETE FROM github_responses WHERE cache_key NOT IN (SELECT cache_key FROM github_responses ORDER BY last_used_at DESC, rowid DESC LIMIT 512)").run();
+          }
+        }
       }
       return result;
     });

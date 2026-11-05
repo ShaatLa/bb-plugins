@@ -7,6 +7,9 @@ export const ciRunSchema = z.object({
   head_branch: z.string().nullable().optional(), event: z.string().optional(),
   run_attempt: z.number().int().positive().optional(), draftDeferred: z.boolean().optional(),
   run_started_at: timestamp.nullable().optional(), updated_at: timestamp.optional(),
+  // Optional so snapshots stored before 0.2.0 still parse; raw GitHub rows carry PR objects, the cache stores plain numbers.
+  head_sha: z.string().optional(),
+  pull_requests: z.array(z.union([z.number(), z.object({ number: z.number() }).transform((pr) => pr.number)])).optional(),
 });
 type Run = z.infer<typeof ciRunSchema>;
 const timingSchema = z.object({

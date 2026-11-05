@@ -1,12 +1,13 @@
 import { useRef, useState } from "react";
-import { productionTarget } from "./production";
+import { productionTargetFrom, type ProductionTarget } from "./production";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
-import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, UrlLink, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
-import { CiSignals, passRate } from "./ci-cards";
+import { CiJobCauses, CiSignals, passRate } from "./ci-cards";
+import { useRepositorySignals, type JobSignals } from "./signals-panel";
 import { CardDetailsView } from "./card-details-view";
 
 function ageLabel(timestamp: string, checkedAt: string) {
@@ -24,6 +25,7 @@ const labels: Record<string, string> = {
 export function RepositoryDetails({ repo }: { repo: Metrics }) {
   const { reviewQueue, production } = repo;
   const deployment = production.deployment;
+  const target = productionTargetFrom(useSettings().values);
   return <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
     <Card role="region" aria-label="PRs awaiting review" className="space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -48,15 +50,15 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
           <p className="text-xs text-muted-foreground" title={new Date(deployment.createdAt).toLocaleString()}>Created {ageLabel(deployment.createdAt, repo.updatedAt)} ago</p>
           <p className="text-xs text-muted-foreground">Updated {new Date(deployment.updatedAt).toLocaleString()}</p>
           <UrlLink href={deployment.url} className="inline-flex items-center gap-1 text-sm hover:underline">View deployment<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
-          <CardDetailsView key={`${repo.repository}:${deployment.environment}:${repo.updatedAt}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
+          <CardDetailsView key={`${repo.repository}:${deployment.environment}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}
-      {repo.repository.toLowerCase() === productionTarget.repository && <ProductionDeployButton />}
+      {target?.repository.toLowerCase() === repo.repository.toLowerCase() && <ProductionDeployButton target={target} />}
     </Card>
   </div>;
 }
 
 
-function ProductionDeployButton() {
+function ProductionDeployButton({ target }: { target: ProductionTarget }) {
   const rpc = useRpc<typeof rpcContract>();
   const trigger = useRef<HTMLButtonElement>(null);
   const [confirm, setConfirm] = useState(false);
@@ -75,11 +77,11 @@ function ProductionDeployButton() {
     <p>Production workflow requested.</p><UrlLink href={url} className="inline-flex items-center gap-1 hover:underline">View workflow<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
   </div>;
   return <div className="space-y-3 border-t border-border pt-3">
-    <Button ref={trigger} size="sm" variant="outline" disabled={pending} aria-expanded={confirm} onClick={() => setConfirm(true)}>Deploy production</Button>
+    <Button ref={trigger} size="sm" variant="outline" disabled={pending} aria-expanded={confirm} onClick={() => setConfirm(true)}>Deploy to production</Button>
     {confirm && <div role="group" aria-label="Confirm production deployment" className="space-y-3">
-      <p className="break-all text-sm">Deploy {productionTarget.repository} from {productionTarget.ref}?</p>
-      <p className="text-xs text-muted-foreground">Starts the Production workflow with its existing checks and approvals.</p>
-      {error && <p role="alert" className="text-sm text-destructive">Request not confirmed. Check the Production workflow and Actions write access before retrying.</p>}
+      <p className="break-all text-sm">Deploy {target.repository} from {target.ref}?</p>
+      <p className="text-xs text-muted-foreground">Starts the production workflow with its existing checks and approvals.</p>
+      {error && <p role="alert" className="text-sm text-destructive">Request not confirmed. Check the production workflow and Actions write access before retrying.</p>}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" autoFocus disabled={pending} onClick={() => { setConfirm(false); setError(false); trigger.current?.focus(); }}>Cancel</Button>
         <Button size="sm" disabled={pending} aria-busy={pending} onClick={() => void deploy()}>{pending ? "Requesting…" : "Start deployment"}</Button>
@@ -114,10 +116,19 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
 }
 
 export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showDetails?: boolean }) {
+  return showDetails ? <CiHealth repo={repo} /> : <CiOutcomesCard repo={repo} />;
+}
+
+function CiHealth({ repo }: { repo: Metrics }) {
+  return <CiOutcomesCard repo={repo} signals={useRepositorySignals(repo.repository, repo.range)} />;
+}
+
+function CiOutcomesCard({ repo, signals }: { repo: Metrics; signals?: JobSignals }) {
+  const showDetails = !!signals;
   return <Card role="region" aria-label={showDetails ? "CI health" : "CI outcomes"} className="space-y-4 p-4">
       <div><h4 className="text-sm font-medium">{showDetails ? "CI health" : "CI outcomes"}</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
       <div className={showDetails ? "grid grid-cols-1 items-start gap-5 lg:grid-cols-2" : undefined}>
-      {showDetails && <CiSignals repo={repo} />}
+      {showDetails && <CiSignals repo={repo} signals={signals} />}
       <div className="min-w-0 space-y-3">
       {repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
         {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
@@ -125,6 +136,7 @@ export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showD
           <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
         </div>)}
       </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>}
+      {signals && <CiJobCauses repo={repo} signals={signals} part="causes" />}
       {showDetails && !repo.pending?.includes("ci") && repo.ciInsights && repo.ciInsights.workflows.some((workflow) => workflow.failed > 0) && <details className="space-y-2 border-t border-border pt-3">
         <summary className="cursor-pointer text-sm">Top failing workflows</summary>
         {repo.ciInsights.workflows.filter((workflow) => workflow.failed > 0).slice(0, 3).map((workflow) => <p key={workflow.id} className="text-sm">
@@ -132,7 +144,8 @@ export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showD
           <span className="block text-xs text-muted-foreground">{workflow.failed} failed · {passRate(workflow)} passed · {workflow.eligible} counted runs</span>
         </p>)}
       </details>}
-      {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}:${repo.updatedAt}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
+      {signals && <CiJobCauses repo={repo} signals={signals} part="details" />}
+      {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
       </div></div>
     </Card>;
 }
