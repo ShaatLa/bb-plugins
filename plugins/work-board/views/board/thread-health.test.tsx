@@ -67,6 +67,8 @@ it.each(["main", "side", "kanban"])("marks failed and stale-idle threads on the 
   expect(card(failedTask.key).contains(failed)).toBe(true);
   const idle = await slot.findByRole("img", { name: "Thread idle 52 min, task not updated" });
   expect(card(idleTask.key).contains(idle)).toBe(true);
+  expect(idle.querySelector("svg")).not.toBeNull();
+  expect(idle.className).not.toContain("rounded-full");
   expect(card(reviewTask.key).querySelector("[data-thread-health]")).toBeNull();
 });
 

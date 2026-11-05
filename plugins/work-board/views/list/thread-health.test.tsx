@@ -56,6 +56,8 @@ it("marks failed and stale-idle tasks in the list", async () => {
   expect(row("TSK-1").querySelector('[data-thread-health="failed"]')).not.toBeNull();
   const idleMarker = await slot.findByRole("img", { name: "Thread idle 52 min, task not updated" });
   expect(row("TSK-2").contains(idleMarker)).toBe(true);
+  expect(idleMarker.querySelector("svg")).not.toBeNull();
+  expect(idleMarker.className).not.toContain("rounded-full");
   expect(row("TSK-3").querySelector("[data-thread-health]")).toBeNull();
 });
 
