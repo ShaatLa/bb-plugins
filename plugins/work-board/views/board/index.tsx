@@ -768,7 +768,6 @@ export function BoardView({ projectId }: BoardViewProps) {
         )}
       />
       {board.error ? <p role="alert" className="px-4 pt-1 text-xs text-destructive">Couldn't finish updating the board. <Button size="sm" variant="ghost" onClick={board.refresh}>Retry</Button></p> : null}
-      {board.isFetching || metadata.isFetching || labelQuery.isFetching ? <p role="status" className="px-4 pt-1 text-xs text-muted-foreground">Updating board…</p> : null}
       {filters.unansweredOnly && questionCounts.error ? (
         <p role="alert" className="px-4 py-2 text-sm text-destructive">
           Couldn't load question counts.{" "}

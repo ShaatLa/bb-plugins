@@ -347,6 +347,7 @@ it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { cou
   await waitFor(() => expect(slot.container.querySelectorAll("[data-task-key]").length).toBeGreaterThan(0), { timeout: 500 });
   const coldReadyMs = performance.now() - started;
   expect(coldReadyMs).toBeLessThan(500);
+  expect(slot.queryByText("Updating board…")).toBeNull();
   expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
   release();
   await slot.findByText(`${count} tasks`);
@@ -359,6 +360,7 @@ it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { cou
     f.store.tasks.updateTask(lastBacklog.id, { title: "Changed while metadata is blocked" });
     await slot.behavior.emitRealtime("tasks:changed", { taskId: lastBacklog.id, projectId: f.project.id });
     await slot.findByText("Changed while metadata is blocked", {}, { timeout: 500 });
+    expect(slot.queryByText("Updating board…")).toBeNull();
     const todo = slot.container.querySelector('[data-board-column="todo"]')!;
     fireEvent.click(slot.getByRole("button", { name: `Sub-tasks of ${f.parent.key}` }));
     await slot.findByRole("list", { name: `Sub-tasks of ${f.parent.key}` });
