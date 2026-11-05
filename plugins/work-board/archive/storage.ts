@@ -55,42 +55,60 @@ export function captureProject(
       taskIds: tasks.map((task) => task.id),
       templates: structured.listTemplates(projectId),
     });
-    const records = tasks.map((task) => {
-      const comments = store.tasks
-        .listComments(task.id)
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const attachments = [
-        ...store.tasks.listAttachmentsForTask(task.id),
-        ...comments.flatMap((comment) =>
-          store.tasks.listAttachmentsForComment(comment.id),
-        ),
-      ].sort((a, b) => a.id.localeCompare(b.id));
-      const aliases = bb.storage
-        .database()
-        .prepare<
-          [string],
-          { prefix: string; number: number }
-        >("SELECT prefix, number FROM task_key_aliases WHERE task_id = ? ORDER BY prefix, number")
-        .all(task.id);
-      return {
-        activityHistory: Boolean(bb.storage.database().prepare<[string], { task_id: string }>("SELECT task_id FROM task_activity_history WHERE task_id=?").get(task.id)),
-        pullRequests: createGitSyncStore(bb.storage.database()).links(task.id),
-        task: {
-          ...task,
-          labelIds: store.tasks
-            .listTaskLabels(task.id)
-            .map((link) => link.labelId)
-            .sort(),
-        },
-        comments,
-        questions: structured.listQuestions(task.id),
-        attachments,
-        threads: store.tasks
-          .listTaskThreads(task.id)
-          .sort((a, b) => a.id.localeCompare(b.id)),
-        aliases,
-      };
-    });
+    // Resource invariant: every related table is read once per project (constant statement count),
+    // grouped in memory; statements must not scale with task or comment count.
+    const db = bb.storage.database();
+    const group = <T>(items: T[], owner: (item: T) => string) => {
+      const byOwner = new Map<string, T[]>();
+      for (const item of items) {
+        const list = byOwner.get(owner(item)) ?? [];
+        list.push(item);
+        byOwner.set(owner(item), list);
+      }
+      return byOwner;
+    };
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    const commentsByTask = group(store.tasks.listCommentsForProject(projectId), (c) => c.taskId);
+    const commentTask = new Map<string, string>();
+    for (const [taskId, list] of commentsByTask)
+      for (const comment of list) commentTask.set(comment.id, taskId);
+    const attachmentsByTask = group(
+      store.tasks.listAttachmentsForProject(projectId),
+      (a) => (a.taskId ?? commentTask.get(a.commentId!))!,
+    );
+    const labelsByTask = group(store.tasks.listTaskLabelsForProject(projectId), (l) => l.taskId);
+    const threadsByTask = group(store.tasks.listTaskThreadsForProject(projectId), (t) => t.taskId);
+    const questionsByTask = structured.listQuestionsForProject(projectId);
+    const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
+    const aliasesByTask = group(
+      db
+        .prepare<[string], { task_id: string; prefix: string; number: number }>(
+          "SELECT a.task_id, a.prefix, a.number FROM task_key_aliases a JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ? ORDER BY a.prefix, a.number",
+        )
+        .all(projectId),
+      (a) => a.task_id,
+    );
+    const historyTasks = new Set(
+      db
+        .prepare<[string], { task_id: string }>(
+          "SELECT h.task_id FROM task_activity_history h JOIN tasks t ON t.id = h.task_id WHERE t.project_id = ?",
+        )
+        .all(projectId)
+        .map((row) => row.task_id),
+    );
+    const records = tasks.map((task) => ({
+      activityHistory: historyTasks.has(task.id),
+      pullRequests: linksByTask.get(task.id) ?? [],
+      task: {
+        ...task,
+        labelIds: (labelsByTask.get(task.id) ?? []).map((link) => link.labelId).sort(),
+      },
+      comments: [...(commentsByTask.get(task.id) ?? [])].sort(byId),
+      questions: questionsByTask.get(task.id) ?? [],
+      attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
+      threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
+      aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
+    }));
     return { manifest, records };
   });
 }

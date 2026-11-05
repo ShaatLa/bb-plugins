@@ -1760,6 +1760,18 @@ export function createTasksStore(db: PluginDatabase) {
       .map(taskLabelFromRow);
   }
 
+  // Project-wide batch reads for archive capture: one statement per table instead of one per task.
+  function listTaskLabelsForProject(projectId: string): TaskLabel[] {
+    return db
+      .prepare<[string], TaskLabelRow>(
+        `SELECT tl.task_id, tl.label_id FROM task_labels tl
+         JOIN tasks t ON t.id = tl.task_id WHERE t.project_id = ?
+         ORDER BY tl.task_id, tl.label_id`,
+      )
+      .all(projectId)
+      .map(taskLabelFromRow);
+  }
+
   function listLabelsForTask(taskId: string): Label[] {
     return db
       .prepare<[string], LabelRow>(
@@ -1835,6 +1847,16 @@ export function createTasksStore(db: PluginDatabase) {
       `,
       )
       .all(taskId)
+      .map(commentFromRow);
+  }
+
+  function listCommentsForProject(projectId: string): Comment[] {
+    return db
+      .prepare<[string], CommentRow>(
+        `SELECT c.* FROM comments c JOIN tasks t ON t.id = c.task_id
+         WHERE t.project_id = ? ORDER BY c.task_id, c.created_at, c.rowid`,
+      )
+      .all(projectId)
       .map(commentFromRow);
   }
 
@@ -1956,6 +1978,19 @@ export function createTasksStore(db: PluginDatabase) {
       .map(attachmentFromRow);
   }
 
+  // Task-owned and comment-owned attachments of a project; the owner is task_id or the comment's task.
+  function listAttachmentsForProject(projectId: string): Attachment[] {
+    return db
+      .prepare<[string, string], AttachmentRow>(
+        `SELECT a.* FROM attachments a JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ?
+         UNION ALL
+         SELECT a.* FROM attachments a JOIN comments c ON c.id = a.comment_id
+         JOIN tasks t ON t.id = c.task_id WHERE t.project_id = ?`,
+      )
+      .all(projectId, projectId)
+      .map(attachmentFromRow);
+  }
+
   function updateAttachment(
     id: string,
     input: UpdateAttachmentInput,
@@ -2069,6 +2104,16 @@ export function createTasksStore(db: PluginDatabase) {
          (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
     ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, lastActivityAt: row.at }]));
+  }
+
+  function listTaskThreadsForProject(projectId: string): TaskThread[] {
+    return db
+      .prepare<[string], TaskThreadRow>(
+        `SELECT th.* FROM task_threads th JOIN tasks t ON t.id = th.task_id
+         WHERE t.project_id = ? ORDER BY th.task_id, th.id`,
+      )
+      .all(projectId)
+      .map(taskThreadFromRow);
   }
 
   function listTaskThreads(taskId: string): TaskThread[] {
@@ -2331,10 +2376,12 @@ export function createTasksStore(db: PluginDatabase) {
     addTaskLabel,
     removeTaskLabel,
     listTaskLabels,
+    listTaskLabelsForProject,
     listLabelsForTask,
     createComment,
     getComment,
     listComments,
+    listCommentsForProject,
     getLatestAgentComment,
     updateComment,
     createAttachment,
@@ -2342,6 +2389,7 @@ export function createTasksStore(db: PluginDatabase) {
     listAttachmentsForTask,
     listAttachmentsForComment,
     listAttachmentsForTaskComments,
+    listAttachmentsForProject,
     updateAttachment,
     deleteAttachment,
     upsertTaskThread,
@@ -2349,6 +2397,7 @@ export function createTasksStore(db: PluginDatabase) {
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
     listTaskThreads,
+    listTaskThreadsForProject,
     listTaskThreadsForTasks,
     listTaskActivity,
     updateTaskThreadStatus,
