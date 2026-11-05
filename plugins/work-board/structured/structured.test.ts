@@ -56,6 +56,27 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("keeps the decision label until the last open question is answered or deleted", async () => {
+    const { structured, store, project, task } = setup();
+    const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });
+    store.tasks.addTaskLabel(task.id, keep.id);
+    const create = async () => (await structured.handlers.createQuestion({ taskId: task.id, prompt: "Choose?", mode: "single", options: ["A", "B"] })).question;
+    const first = await create();
+    const second = await create();
+    const names = () => store.tasks.listLabelsForTask(task.id).map((label) => label.name).sort();
+    expect(names()).toEqual(["Keep", "решение владельца"]);
+    const answered = (await structured.handlers.answerQuestion({ questionId: first.id, revision: first.revision, selectedOptionIds: [first.options[0]!.id], authorName: "Owner" })).question;
+    expect(names()).toContain("решение владельца");
+    await structured.handlers.deleteQuestion({ questionId: second.id, revision: second.revision });
+    expect(names()).toEqual(["Keep"]);
+    const reopened = (await structured.handlers.updateQuestion({ questionId: first.id, revision: answered.revision, prompt: answered.prompt, mode: answered.mode, options: answered.options, reopen: true, authorName: "Owner" })).question;
+    expect(names()).toContain("решение владельца");
+    await structured.handlers.answerQuestion({ questionId: first.id, revision: reopened.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
+    expect(names()).toContain("решение владельца");
+    await structured.handlers.deleteQuestion({ questionId: first.id, revision: reopened.revision });
+    expect(names()).toEqual(["Keep"]);
+  });
+
   it("sets and clears recommendations through stable IDs without selecting an answer", async () => {
     const { cli, task, structured, harness } = setup();
     const { question } = await cli(
@@ -840,7 +861,7 @@ describe("evidence index", () => {
       merge: "b".repeat(40),
       part: "1/2",
     },
-    { kind: "deploy", merge: "b".repeat(40), run: "123", env: "production" },
+    { kind: "deploy", pr: 12, merge: "b".repeat(40), run: "123", env: "production" },
     {
       kind: "exemption",
       row: "qa",

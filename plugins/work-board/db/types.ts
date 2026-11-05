@@ -29,6 +29,7 @@ export interface Folder {
 }
 
 export interface Project {
+  workflowPolicy?: import("../shared/workflow-policy.js").WorkflowPolicy;
   id: string;
   name: string;
   prefix: string;
@@ -150,6 +151,7 @@ export interface CreateProjectInput {
 }
 
 export interface UpdateProjectInput {
+  workflowPolicy?: import("../shared/workflow-policy.js").WorkflowPolicy;
   name?: string;
   prefix?: string;
   color?: string;
@@ -199,6 +201,7 @@ export interface ListTasksFilters extends TaskDateFilters {
   priorities?: readonly TaskPriority[];
   labelIds?: readonly string[];
   activeOnly?: boolean;
+  staleStatus?: boolean;
   parentTaskId?: string | null;
   type?: TaskType;
   executionTarget?: "agent" | "owner";

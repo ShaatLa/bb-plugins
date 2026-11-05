@@ -45,7 +45,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 9,
+      version: 10,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -126,7 +126,7 @@ function dbRow(value: object): Row {
   return Object.fromEntries(
     Object.entries(value).map(([key, value]) => [
       key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
-      key === "statuses"
+      key === "statuses" || key === "workflowPolicy"
         ? JSON.stringify(value)
         : typeof value === "boolean"
           ? Number(value)

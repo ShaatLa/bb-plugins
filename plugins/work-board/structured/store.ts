@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { deliverCommentToLatestAgent } from "../steer";
 import {
   questionSchema,
@@ -40,6 +41,21 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       )
       .all(taskId)
       .map((row) => questionSchema.parse(JSON.parse(row.payload)));
+  const syncDecisionLabel = (taskId: string) => {
+    const task = store.tasks.getTask(taskId)!;
+    const name = getWorkflowPolicy(store.tasks.getProject(task.projectId)!).ownerDecisionLabel;
+    if (!name) return;
+    const open = listQuestions(taskId).some(
+      (question) => question.selectedOptionIds.length === 0 && !question.answerText,
+    );
+    let label = store.tasks.listLabels(task.projectId).find((item) => item.name === name);
+    if (open) {
+      label ??= store.tasks.createLabel({ projectId: task.projectId, name, color: "blue" });
+      store.tasks.addTaskLabel(taskId, label.id);
+    } else if (label) {
+      store.tasks.removeTaskLabel(taskId, label.id);
+    }
+  };
   const listTemplates = (projectId: string): DescriptionTemplate[] =>
     db
       .prepare<
@@ -136,9 +152,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         updatedAt: now,
       });
       assertNoSecretsInValue(question, "question");
-      db.prepare<[string, string, string]>(
-        "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
-      ).run(question.id, question.taskId, JSON.stringify(question));
+      store.transaction(() => {
+        db.prepare<[string, string, string]>(
+          "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
+        ).run(question.id, question.taskId, JSON.stringify(question));
+        syncDecisionLabel(question.taskId);
+      });
       changed(question.taskId);
       return { question };
     },
@@ -171,6 +190,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
+        syncDecisionLabel(next.taskId);
         const selected = next.options.filter((option) =>
           next.selectedOptionIds.includes(option.id),
         );
@@ -256,6 +276,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
+        syncDecisionLabel(next.taskId);
         store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
@@ -272,10 +293,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const question = getQuestion(input.questionId);
       if (question.revision !== input.revision)
         throw new Error("Question changed; reload it before deleting");
-      const deleted =
-        db
-          .prepare<[string]>("DELETE FROM task_questions WHERE id = ?")
+      const deleted = store.transaction(() => {
+        const result = db.prepare<[string]>("DELETE FROM task_questions WHERE id = ?")
           .run(question.id).changes > 0;
+        syncDecisionLabel(question.taskId);
+        return result;
+      });
       changed(question.taskId);
       return { deleted };
     },

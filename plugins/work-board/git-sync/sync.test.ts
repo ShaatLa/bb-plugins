@@ -254,7 +254,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(9);
+  expect(capture.manifest.version).toBe(10);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(
@@ -802,4 +802,37 @@ it("aborts a timed-out fetch and allows a later sync without late writes", async
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   }
+});
+
+it("advances only confirmed delivering open PRs from early statuses", async () => {
+  const f = setup();
+  const url = "https://github.com/example/service/pull/42";
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const task of f.tasks.slice(0, 8)) f.store.tasks.updateTask(task.id, { status: "todo" });
+  for (const task of f.tasks.slice(0, 8)) await f.service.handlers.linkPr({ taskId: task.id, url, role: "delivers", part: null });
+  await f.service.handlers.linkPr({ taskId: f.tasks[1]!.id, url, role: "related", part: null });
+  await f.service.handlers.linkPr({ taskId: f.tasks[2]!.id, url, role: "design", part: null });
+  await f.service.handlers.unlinkPr({ taskId: f.tasks[3]!.id, url });
+  const data = createGitSyncStore(f.bb.storage.database());
+  data.saveLink({ ...data.links(f.tasks[4]!.id)[0]!, confirmed: false });
+  f.store.tasks.updateTask(f.tasks[5]!.id, { status: "done" });
+  f.store.tasks.updateTask(f.tasks[6]!.id, { status: "canceled" });
+  f.store.tasks.updateTask(f.tasks[7]!.id, { status: "in_review" });
+  await f.service.syncProject(f.project.id);
+  expect(f.tasks.slice(0, 8).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["in_review", "todo", "todo", "todo", "todo", "done", "canceled", "in_review"]);
+});
+
+it("uses custom workflow status IDs and does not reverse a closed PR", async () => {
+  const f = setup();
+  const statuses = [...f.project.statuses!, { id: "ready_custom", name: "Ready custom" }, { id: "review_custom", name: "Review custom" }];
+  f.store.tasks.updateProject(f.project.id, { statuses, workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: null, reviewStatus: "review_custom", testingStatus: null, earlyStatuses: ["ready_custom"], ownerDecisionLabel: null } });
+  f.store.tasks.updateTask(f.task.id, { status: "ready_custom" });
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
+  f.client.snapshot.mockResolvedValueOnce({ ...snapshot(), state: "draft" });
+  await f.service.syncProject(f.project.id);
+  expect(f.store.tasks.getTask(f.task.id)!.status).toBe("review_custom");
+  f.client.snapshot.mockResolvedValueOnce({ ...snapshot(), state: "closed" });
+  await f.service.syncProject(f.project.id, true);
+  expect(f.store.tasks.getTask(f.task.id)!.status).toBe("review_custom");
 });
