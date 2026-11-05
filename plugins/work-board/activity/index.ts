@@ -61,7 +61,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
     queued(taskId: string, threadId: string, queueId: string): void {
       db.prepare("INSERT OR IGNORE INTO task_activity_queue(thread_id, queue_id, task_id) VALUES (?, ?, ?)").run(threadId, queueId, taskId);
     },
-    async metadata(taskIds: readonly string[]): Promise<Map<string, TaskActivity>> {
+    async metadata(taskIds: readonly string[], discoveryComplete = true): Promise<Map<string, TaskActivity>> {
       const ids = [...new Set(taskIds)];
       if (!ids.length) return new Map();
       const placeholders = ids.map(() => "?").join(",");
@@ -146,7 +146,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
             diagnostics: { explanation, threadStatus: snapshot.thread?.status ?? null, runtimeStatus: snapshot.thread?.runtime.displayStatus ?? null, turnId: snapshot.turnId, requestId: snapshot.requestId, focusedTaskId, focusedTaskKey: focusedKey(focusedTaskId), queueIds, interactionIds: executing ? snapshot.interactionIds : [] } });
         }
         const status = taskData.get(id)?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

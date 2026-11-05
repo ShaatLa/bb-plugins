@@ -2556,6 +2556,13 @@ export function registerTasksCli(
                     : { parentTaskId: task.id }),
                 }),
               );
+              const taskThreads = tasksRpcContract.listTaskThreads.output.parse(
+                await domain.listTaskThreads(
+                  tasksRpcContract.listTaskThreads.input.parse({
+                    taskId: task.id,
+                  }),
+                ),
+              ).taskThreads;
               const comments = tasksRpcContract.listComments.output.parse(
                 await domain.listComments(
                   tasksRpcContract.listComments.input.parse({
@@ -2572,13 +2579,6 @@ export function registerTasksCli(
                 task.id,
                 comments,
               );
-              const taskThreads = tasksRpcContract.listTaskThreads.output.parse(
-                await domain.listTaskThreads(
-                  tasksRpcContract.listTaskThreads.input.parse({
-                    taskId: task.id,
-                  }),
-                ),
-              ).taskThreads;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
               const activity = cardMeta.activity;
               const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());

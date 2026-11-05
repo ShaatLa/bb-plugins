@@ -19,6 +19,7 @@ import {
 } from "../attachments";
 import { deliverCommentToLatestAgent } from "../steer";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
 import { environmentPullRequests } from "../git-sync/environment-prs";
@@ -1169,6 +1170,7 @@ export function registerHandlers(
     async listTaskCardMeta({ taskIds }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
+      const discoveryComplete = await discoverRunningTaskThreads(bb, store);
       const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
@@ -1179,7 +1181,7 @@ export function registerHandlers(
         threads.set(thread.taskId, entries);
       }
       const activity = store.tasks.listTaskActivity(ids);
-      const scopedActivity = await activityService(bb, store).metadata(ids);
+      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
@@ -1194,6 +1196,7 @@ export function registerHandlers(
       }) };
     },
     async listTaskThreads(input) {
+      if (input.reconcile !== false) await discoverRunningTaskThreads(bb, store);
       return { taskThreads: input.reconcile === false
         ? store.tasks.listTaskThreads(input.taskId)
         : await reconcileTaskThreads(bb, store.tasks, input.taskId) };

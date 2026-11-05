@@ -303,3 +303,8 @@ Activity follows attached sessions automatically: a live thread with runtime act
 
 
 To investigate a card indicator, use `bb work-board show KEY --json`: `activity.state` is separate from `task.status`. `activity.diagnostics` explains the rule and includes `hasWorked`, `complete`, `checkedAt`, and any archived/deleted/missing linked sessions still present before reconciliation. Session diagnostics name the attribution source and include runtime/thread status, focused task key/ID, accepted turn/request, queue and pending interaction IDs. Open the named thread, or follow agent reports in `comments`; human `show` links recent reports. Treat incomplete data as unknown, never as proof that work stopped. Historical work may retain only a fact flag and agent comments, not original execution or detach details. The task UI keeps status/activity and attached-session links compact; use CLI diagnostics for the underlying evidence.
+
+
+## Automatic session attachment
+
+For a task-specific session created directly with BB, start its title with the single task key: `ABC-12 Research scout`. In the linked BB project, created/active sessions are automatically attached to that unfinished agent task. Metadata/thread reads also discover running sessions, shared for 10 seconds; they never scan idle history. Working still requires an active runtime. Multiple-key titles, prose mentions, unrelated projects, existing assignments, terminal/archived cards and owner actions are not inferred. Manual detachment takes priority and survives rediscovery; explicitly attach again when desired. `show --json` includes the attachment and its system-comment reason on the first read. General-purpose or ambiguous sessions need explicit attachment.

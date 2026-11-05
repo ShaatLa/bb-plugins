@@ -4,6 +4,7 @@ import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
 import { reconcileTaskThreads } from "./thread-links";
+import { attachNamedTaskThread } from "./discovery";
 
 const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
 
@@ -149,9 +150,11 @@ export async function registerLifecycle(
   store: TasksApiStore,
 ): Promise<void> {
   bb.events.on("thread.created", ({ thread }) => {
+    attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, liveStatusFromThread(thread));
   });
   bb.events.on("thread.active", ({ thread }) => {
+    attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, "working");
   });
   bb.events.on("thread.idle", ({ thread }) => {
