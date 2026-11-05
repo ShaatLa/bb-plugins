@@ -1,4 +1,6 @@
-import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth } from "../../shared/contract.js";
+import type { TaskAdvisory } from "../../shared/task-advisories";
+import { useActivityPoll } from "../../shell/activity-poll";
+import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth, type DependencyTask } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
 import {
   signalTaskIds,
@@ -8,7 +10,12 @@ import { taskBatches } from "../../shell/task-batches";
 import { loadTaskDataset, taskDatasetEpoch } from "../../shell/task-dataset";
 import { isActiveThread } from "../detail/meta.js";
 
+import type { TaskActivity } from "../../shared/task-activity.js";
+
 export interface BoardCardMeta {
+  blockedBy?: DependencyTask[];
+  advisories?: TaskAdvisory[];
+  activity?: TaskActivity;
   workingThreads: TaskThread[];
   threadHealth?: ThreadHealth;
   attachmentCount: number;
@@ -80,9 +87,9 @@ type MetadataRow = (typeof tasksRpcContract.listTaskCardMeta.output._output.meta
 export function useBoardMetadata(tasks: readonly Task[], projectId: string, enabled: boolean) {
   const ids = tasks.map((task) => task.id).sort();
   const read = (rpc: TasksRpc, taskIds: string[]) => taskBatches(taskIds, async (batch) => (await rpc.call("listTaskCardMeta", { taskIds: batch })).metadata);
-  return useTasksQuery<MetadataRow[]>(
+  const query = useTasksQuery<MetadataRow[]>(
     (rpc) => read(rpc, ids),
-    enabled ? ["tasks:changed", "threads:changed"] : [],
+    enabled ? ["tasks:changed", "threads:changed", "prs:changed"] : [],
     [projectId, ids.join()],
     {
       enabled,
@@ -90,7 +97,7 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
       snapshot: { name: `board-metadata:${projectId}`, schema: tasksRpcContract.listTaskCardMeta.output.shape.metadata },
       relevantTaskIds: ids,
       applySignals: async (rpc, current, signals) => {
-        const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "threads:changed")])].filter((id) => ids.includes(id));
+        const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "prs:changed")])].filter((id) => ids.includes(id));
         const rows = await read(rpc, changed);
         const next = new Map(current.map((row) => [row.taskId, row]));
         for (const id of changed) next.delete(id);
@@ -99,6 +106,8 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
       },
     },
   );
+  useActivityPoll(query.refresh, query.isFetching, enabled && !!query.data?.some((row) => (row.activity?.attachedCount ?? 0) > 0));
+  return query;
 }
 
 async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
@@ -109,6 +118,9 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
     ...EMPTY_META,
     workingThreads: entry.taskThreads.filter(isActiveThread),
     threadHealth: entry.threadHealth,
+    activity: entry.activity,
+    blockedBy: entry.blockedBy,
+    advisories: entry.advisories,
     attachmentCount: entry.attachmentCount,
   });
   return metadata;
@@ -151,6 +163,7 @@ export async function patchBoard(
   const threadIds = signalTaskIds(signals, "threads:changed").filter(
     (taskId) => topLevelIds.has(taskId) && !changed.has(taskId),
   );
+  if (refreshMetadata) for (const id of threadIds) metaByTaskId.delete(id);
   const metadata = refreshMetadata ? await cardMetadata(rpc, [
     ...refreshedCards.map((task) => task.id), ...threadIds,
   ]) : new Map<string, BoardCardMeta>();

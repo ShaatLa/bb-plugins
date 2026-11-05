@@ -34,6 +34,61 @@ import {
   type PresetDraft,
 } from "./preset-dialog.js";
 import { ColorSwatchPicker, DEFAULT_COLOR } from "./shared.js";
+import { NewProjectDialog } from "./new-project-dialog.js";
+import { useTasksNavigation } from "../../shell/routes.js";
+
+function ProjectsSection() {
+  const projects = useProjects();
+  const navigation = useTasksNavigation();
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <Button size="sm" onClick={() => setNewProjectOpen(true)}>
+        <Icon name="Plus" className="size-4" />
+        New project
+      </Button>
+      {projects.error ? (
+        <div role="alert" className="text-sm text-destructive">
+          {projects.error}
+          <Button size="sm" variant="ghost" onClick={projects.refresh}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {projects.data === undefined && !projects.error ? (
+        <p className="text-sm text-muted-foreground">Loading projects…</p>
+      ) : projects.data?.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No projects yet.</p>
+      ) : null}
+      {projects.data?.length ? (
+        <div className="divide-y divide-border-hairline rounded-md border border-border">
+          {projects.data.map((project) => (
+            <button
+              key={project.id}
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
+              onClick={() =>
+                navigation.go({ kind: "project", projectId: project.id, view: null })
+              }
+            >
+              <span
+                aria-hidden
+                className="size-2.5 shrink-0 rounded-sm"
+                style={{ backgroundColor: project.color }}
+              />
+              <span className="min-w-0 flex-1 truncate">{project.name}</span>
+              <span className="text-xs text-muted-foreground">{project.prefix}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {newProjectOpen ? (
+        <NewProjectDialog open onOpenChange={setNewProjectOpen} />
+      ) : null}
+    </div>
+  );
+}
 
 function useActionError() {
   const [error, setError] = useState<string | null>(null);
@@ -671,15 +726,19 @@ export function ManagePanel() {
       <header className="space-y-1">
         <h2 className="text-base font-semibold">Manage</h2>
         <p className="text-sm text-muted-foreground">
-          Labels, agent presets, and folders.
+          Projects, labels, agent presets, and folders.
         </p>
       </header>
       <Tabs defaultValue="labels">
         <TabsList>
+          <TabsTrigger value="projects">Projects</TabsTrigger>
           <TabsTrigger value="labels">Labels</TabsTrigger>
           <TabsTrigger value="presets">Presets</TabsTrigger>
           <TabsTrigger value="folders">Folders</TabsTrigger>
         </TabsList>
+        <TabsContent value="projects" className="pt-3">
+          <ProjectsSection />
+        </TabsContent>
         <TabsContent value="labels" className="pt-3">
           <LabelsSection />
         </TabsContent>

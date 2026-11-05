@@ -83,6 +83,23 @@ function stdout(result: {
 }
 
 describe("bb work-board CLI", () => {
+  it("updates project archiving and idle thresholds independently", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      await plugin(bb);
+      const store = createStore(bb);
+      const first = store.tasks.createProject({ name: "One", prefix: "ONE", color: "blue" });
+      const other = store.tasks.createProject({ name: "Two", prefix: "TWO", color: "red" });
+      const result = await harness.runCli(["project", "update", "ONE", "--auto-archive", "14", "--stale-idle", "off", "--json"]);
+      expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ project: { id: first.id, autoArchiveAfterDays: "14", staleIdleMinutes: "off" } });
+      expect(store.tasks.getProject(other.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
+      expect((await harness.runCli(["project", "update", "ONE", "--auto-archive", "1"])).exitCode).toBe(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("lists seed-demo in help while retaining the explicit confirmation guard", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

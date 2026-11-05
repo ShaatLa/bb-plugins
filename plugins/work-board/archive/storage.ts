@@ -45,7 +45,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 9,
+      version: 12,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -55,41 +55,66 @@ export function captureProject(
       taskIds: tasks.map((task) => task.id),
       templates: structured.listTemplates(projectId),
     });
-    const records = tasks.map((task) => {
-      const comments = store.tasks
-        .listComments(task.id)
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const attachments = [
-        ...store.tasks.listAttachmentsForTask(task.id),
-        ...comments.flatMap((comment) =>
-          store.tasks.listAttachmentsForComment(comment.id),
-        ),
-      ].sort((a, b) => a.id.localeCompare(b.id));
-      const aliases = bb.storage
-        .database()
-        .prepare<
-          [string],
-          { prefix: string; number: number }
-        >("SELECT prefix, number FROM task_key_aliases WHERE task_id = ? ORDER BY prefix, number")
-        .all(task.id);
-      return {
-        pullRequests: createGitSyncStore(bb.storage.database()).links(task.id),
-        task: {
-          ...task,
-          labelIds: store.tasks
-            .listTaskLabels(task.id)
-            .map((link) => link.labelId)
-            .sort(),
-        },
-        comments,
-        questions: structured.listQuestions(task.id),
-        attachments,
-        threads: store.tasks
-          .listTaskThreads(task.id)
-          .sort((a, b) => a.id.localeCompare(b.id)),
-        aliases,
-      };
-    });
+    // Resource invariant: every related table is read once per project (constant statement count),
+    // grouped in memory; statements must not scale with task or comment count.
+    const db = bb.storage.database();
+    const group = <T>(items: T[], owner: (item: T) => string) => {
+      const byOwner = new Map<string, T[]>();
+      for (const item of items) {
+        const list = byOwner.get(owner(item)) ?? [];
+        list.push(item);
+        byOwner.set(owner(item), list);
+      }
+      return byOwner;
+    };
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    const commentsByTask = group(store.tasks.listCommentsForProject(projectId), (c) => c.taskId);
+    const commentTask = new Map<string, string>();
+    for (const [taskId, list] of commentsByTask)
+      for (const comment of list) commentTask.set(comment.id, taskId);
+    const attachmentsByTask = group(
+      store.tasks.listAttachmentsForProject(projectId),
+      (a) => (a.taskId ?? commentTask.get(a.commentId!))!,
+    );
+    const labelsByTask = group(store.tasks.listTaskLabelsForProject(projectId), (l) => l.taskId);
+    const threadsByTask = group(store.tasks.listTaskThreadsForProject(projectId), (t) => t.taskId);
+    const questionsByTask = structured.listQuestionsForProject(projectId);
+    const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
+    const dependenciesByTask = group(db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
+      SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId
+      FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
+      WHERE t.project_id=? ORDER BY d.blocking_task_id
+    `).all(projectId), row => row.taskId);
+    const aliasesByTask = group(
+      db
+        .prepare<[string], { task_id: string; prefix: string; number: number }>(
+          "SELECT a.task_id, a.prefix, a.number FROM task_key_aliases a JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ? ORDER BY a.prefix, a.number",
+        )
+        .all(projectId),
+      (a) => a.task_id,
+    );
+    const historyTasks = new Set(
+      db
+        .prepare<[string], { task_id: string }>(
+          "SELECT h.task_id FROM task_activity_history h JOIN tasks t ON t.id = h.task_id WHERE t.project_id = ?",
+        )
+        .all(projectId)
+        .map((row) => row.task_id),
+    );
+    const records = tasks.map((task) => ({
+      activityHistory: historyTasks.has(task.id),
+      dependencies: (dependenciesByTask.get(task.id) ?? []).map(row => row.blockingTaskId),
+      pullRequests: linksByTask.get(task.id) ?? [],
+      task: {
+        ...task,
+        labelIds: (labelsByTask.get(task.id) ?? []).map((link) => link.labelId).sort(),
+      },
+      comments: [...(commentsByTask.get(task.id) ?? [])].sort(byId),
+      questions: questionsByTask.get(task.id) ?? [],
+      attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
+      threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
+      aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
+    }));
     return { manifest, records };
   });
 }
@@ -169,6 +194,21 @@ export function restoreProject(
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
   store.transaction(() => {
+    const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
+    const localDependencies = new Map<string, string[]>();
+    for (const row of db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
+      SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId FROM task_dependencies d
+      JOIN tasks t ON t.id=d.task_id WHERE t.project_id=? ORDER BY d.blocking_task_id
+    `).all(projectId)) {
+      const group = localDependencies.get(row.taskId) ?? [];
+      group.push(row.blockingTaskId);
+      localDependencies.set(row.taskId, group);
+    }
+    for (const record of records) if (record.dependencies && localTaskIds.has(record.task.id)) {
+      const current = localDependencies.get(record.task.id) ?? [];
+      if (!overwrite && JSON.stringify(current) !== JSON.stringify([...record.dependencies].sort()))
+        throw new Error(`Import conflict: dependencies ${record.task.key}; use --overwrite`);
+    }
     const changes: Array<{ table: string; row: Row; keys: string[] }> = [];
     const plan = (
       table: string,
@@ -375,6 +415,14 @@ export function restoreProject(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
     }
+    for (const record of records)
+      if (record.activityHistory)
+        db.prepare<[string]>("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(record.task.id);
+    // validateArchive already checks the complete, project-local graph; never traverse it once per edge.
+    for (const record of records) if (record.dependencies !== undefined)
+      db.prepare<[string]>("DELETE FROM task_dependencies WHERE task_id=?").run(record.task.id);
+    const insertDependency = db.prepare<[string, string]>("INSERT INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)");
+    for (const record of records) for (const blocker of record.dependencies ?? []) insertDependency.run(record.task.id, blocker);
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
       const currentIds = store.tasks

@@ -126,7 +126,7 @@ describe("patchTasks", () => {
 });
 
 describe("patchBoard", () => {
-  it("loads 250 cards with three RPCs and no SDK metadata calls", async () => {
+  it("loads 250 cards with three RPCs and one shared thread list", async () => {
     const { store, project, rpc, callsTo, harness } = setup();
     const tasks = Array.from({ length: 250 }, (_, index) => store.tasks.createTask({ projectId: project.id, title: `Card ${index}` }));
     store.tasks.upsertTaskThread({ taskId: tasks[0]!.id, threadId: "thr_cached", presetName: "Attached", title: "Cached worker", liveStatus: "working" });
@@ -140,7 +140,7 @@ describe("patchBoard", () => {
     expect(callsTo("listTaskCardMeta")).toHaveLength(1);
     expect(callsTo("listAttachments")).toHaveLength(0);
     expect(callsTo("listTaskThreads")).toHaveLength(0);
-    expect(harness.sdk.calls).toHaveLength(0);
+    expect(harness.sdk.calls.map((call) => call.path)).toEqual(["threads.list"]);
   });
 
   it("shows subtasks promoted by deleting their parent as cards", async () => {
@@ -274,4 +274,15 @@ it("continues a live UI dataset across worker revision changes while default cur
   const page = store.tasks.listTasksPage({ projectId: project.id, limit: 1 });
   store.tasks.updateTask(tasks[0]!.id, { title: "Changed again" });
   expect(() => store.tasks.listTasksPage({ projectId: project.id, limit: 1, cursor: page.nextCursor! })).toThrow(/changed after this cursor/);
+});
+
+it("clears previous activity when refreshed metadata has no activity", async () => {
+  const { store, project, rpc } = setup();
+  const task = store.tasks.createTask({ projectId: project.id, title: "Refresh activity" });
+  const current = await fetchBoard(rpc, project.id);
+  current.metaByTaskId.set(task.id, { ...current.metaByTaskId.get(task.id)!, activity: {
+    state: "working", workingCount: 1, attachedCount: 1, sessions: [], terminalWarning: false, hasFailure: false,
+  } });
+  const next = await patchBoard(rpc, project.id, current, [{ channel: "threads:changed", taskId: task.id }]);
+  expect(next?.metaByTaskId.get(task.id)?.activity?.state).not.toBe("working");
 });

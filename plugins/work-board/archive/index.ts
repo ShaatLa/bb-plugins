@@ -1,4 +1,5 @@
 import { rewriteLegacyAttachmentLinks } from "../shared/attachments";
+import { protectBlob } from "../storage/active-blobs";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -74,6 +75,18 @@ function clientFiles(bb: BbPluginApi, hostId: string | undefined) {
   };
 }
 
+// Limit metadata I/O and drain failed batches before staging cleanup.
+async function mapJson<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += 4) {
+    const batch = await Promise.allSettled(items.slice(i, i + 4).map(fn));
+    const failure = batch.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    for (const result of batch) if (result.status === "fulfilled") results.push(result.value);
+  }
+  return results;
+}
+
 function parseArchiveJson(text: string): unknown {
   return JSON.parse(rewriteLegacyAttachmentLinks(JSON.stringify(JSON.parse(text))));
 }
@@ -89,8 +102,7 @@ export async function readProjectArchive(
       (await files.read(join(root, "project.json"), root)).toString("utf8"),
     ),
   );
-  const records = [];
-  for (const id of manifest.taskIds) {
+  const records = await mapJson(manifest.taskIds, async (id) => {
     const record = archiveTaskSchema.parse(
       parseArchiveJson(
         (await files.read(join(root, "tasks", `${id}.json`), root)).toString(
@@ -100,8 +112,8 @@ export async function readProjectArchive(
     );
     if (record.task.id !== id)
       throw new Error(`Task ID does not match its filename: ${id}`);
-    records.push(record);
-  }
+    return record;
+  });
   const archive = { manifest, records };
   validateArchive(archive);
   return archive;
@@ -176,11 +188,12 @@ export async function exportProject(
     );
     const archive = { manifest: capture.manifest, records };
     validateArchive(archive);
-    for (const record of records)
-      await files.write(
+    await mapJson(records, (record) =>
+      files.write(
         join(staged, "tasks", `${record.task.id}.json`),
         Buffer.from(jsonText(record)),
-      );
+      ),
+    );
     await files.write(
       join(staged, "project.json"),
       Buffer.from(jsonText(archive.manifest)),
@@ -252,6 +265,7 @@ export async function importProject(
   const root = dirname(database.file);
   const token = randomUUID();
   const staged: string[] = [];
+  const releases: Array<() => void> = [];
   const blobs = new Map<
     string,
     { path: string; previousPath: string | null; previousHash: string | null }
@@ -283,7 +297,9 @@ export async function importProject(
           }
         }
         const path = join("blobs", attachment.id, `import-${token}`);
+        releases.push(protectBlob(resolve(root, path)));
         await mkdir(dirname(join(root, path)), { recursive: true });
+        // Replacements get a new path: overwriting a deduplicated inode would change other attachments.
         await writeFile(join(root, path), bytes, { flag: "wx" });
         staged.push(path);
         blobs.set(attachment.id, {
@@ -307,31 +323,41 @@ export async function importProject(
       attachments: blobs.size,
     };
   } finally {
-    if (committed) {
-      for (const { previousPath } of blobs.values()) {
-        if (!previousPath) continue;
+    try {
+      if (committed) {
+        // Check all references together so shared blobs survive replacement.
+        const previousPaths = new Set([...blobs.values()].flatMap(({ previousPath }) => previousPath ? [previousPath] : []));
         try {
-          const referenced = bb.storage.database()
-            .prepare<[string], { found: number }>("SELECT 1 AS found FROM attachments WHERE blob_path = ? LIMIT 1")
-            .get(previousPath);
-          if (!referenced) await rm(join(root, previousPath), { force: true });
+          if (previousPaths.size) {
+            const referenced = new Set(bb.storage.database()
+              .prepare<[], { blob_path: string }>("SELECT DISTINCT blob_path FROM attachments")
+              .all().map((row) => row.blob_path));
+            for (const path of previousPaths) {
+              if (referenced.has(path)) continue;
+              try {
+                await rm(join(root, path), { force: true });
+              } catch (error) {
+                bb.log.warn(`Could not remove replaced import blob ${path}: ${errorMessage(error)}`);
+              }
+            }
+          }
         } catch (error) {
-          bb.log.warn(`Could not remove replaced import blob ${previousPath}: ${errorMessage(error)}`);
+          bb.log.warn(`Could not check replaced import blobs: ${errorMessage(error)}`);
         }
       }
-    }
-    // Keep newly referenced blobs; failed imports never alter the previous blob files.
-    for (const path of staged) {
-      const id = path.split(sep)[1]!;
-      if (committed && store.tasks.getAttachment(id)?.blobPath === path)
-        continue;
-      try {
-        await rm(join(root, path), { force: true });
-      } catch (error) {
-        bb.log.warn(
-          `Could not remove unused import blob ${path}: ${errorMessage(error)}`,
-        );
+      // Keep newly referenced blobs; failed imports never alter the previous blob files.
+      for (const path of staged) {
+        const id = path.split(sep)[1]!;
+        if (committed && store.tasks.getAttachment(id)?.blobPath === path)
+          continue;
+        try {
+          await rm(join(root, path), { force: true });
+        } catch (error) {
+          bb.log.warn(
+            `Could not remove unused import blob ${path}: ${errorMessage(error)}`,
+          );
+        }
       }
-    }
+    } finally { for (const release of releases) release(); }
   }
 }

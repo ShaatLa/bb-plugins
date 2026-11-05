@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({
   matches: false,
@@ -25,9 +26,101 @@ window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
 Element.prototype.setPointerCapture ??= () => {};
 
 const app = await loadPluginApp(() => import("../app"));
+it("loads shared storage statistics only when opened and performs maintenance", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    registerTasksApi(bb, createStore(bb));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    expect(settings.rpcCalls.some(call => call.method === "getStorageStatus")).toBe(false);
+    fireEvent.click(settings.getByText("Storage"));
+    await settings.findByText("Database / WAL");
+    fireEvent.click(settings.getByRole("button", { name: "Optimize storage" }));
+    await settings.findByText(/Cleanup complete\./);
+    expect(settings.rpcCalls.filter(call => call.method === "getStorageStatus")).toHaveLength(1);
+    expect(settings.rpcCalls).toContainEqual({ method: "maintainStorage", input: { optimize: true } });
+  } finally { cleanup(); await harness.dispose(); }
+});
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+});
+
+it("switches automation, statuses and Git settings together without changing the other project", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const first = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    const second = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
+    store.tasks.updateProject(first.id, { autoArchiveAfterDays: "7", staleIdleMinutes: "30" });
+    store.tasks.updateProject(second.id, { autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
+    const methods = ["getBoardPreferences", "listProjects", "updateProject", "getGitSyncConfig"];
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(
+      methods.map((method) => [method, (input: unknown) => harness.callRpc(method, input)]),
+    ) });
+    const archiveSelect = () => settings.getByRole("combobox", { name: "Automatically archive completed tasks" });
+    const idleSelect = () => settings.getByRole("combobox", { name: "Flag idle threads without task updates" });
+    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
+    expect(idleSelect().textContent).toContain("After 30 minutes");
+    fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
+    await waitFor(() => expect(archiveSelect().textContent).toContain("After 14 days"));
+    expect(idleSelect().textContent).toContain("After 2 hours");
+    await waitFor(() => expect(settings.rpcCalls).toContainEqual(expect.objectContaining({ method: "getGitSyncConfig", input: { projectId: second.id } })));
+    fireEvent.click(archiveSelect());
+    fireEvent.click(await settings.findByRole("option", { name: "Off" }));
+    await waitFor(() => expect(store.tasks.getProject(second.id)?.autoArchiveAfterDays).toBe("off"));
+    expect(store.tasks.getProject(first.id)).toMatchObject({ autoArchiveAfterDays: "7", staleIdleMinutes: "30" });
+    fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Alpha" }));
+    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
+    expect(settings.getAllByRole("combobox", { name: "Settings project" })).toHaveLength(1);
+    expect(settings.queryByRole("combobox", { name: "Statuses project" })).toBeNull();
+  } finally {
+    cleanup();
+    await harness.dispose();
+  }
+});
+
+it.each([false, true])("creates a project directly in settings (existing project: %s)", async (hasProject) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    if (hasProject) {
+      store.tasks.createProject({ name: "Existing", prefix: "EX", color: "blue" });
+    }
+    const methods = ["listProjects", "listFolders", "createProject", "getGitSyncConfig", "getBoardPreferences"];
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: {
+        ...Object.fromEntries(methods.map((method) => [
+          method, (input: unknown) => harness.callRpc(method, input),
+        ])),
+        listBbProjects: () => ({ bbProjects: [] }),
+      },
+    });
+    fireEvent.click(await settings.findByRole("button", { name: "New project" }));
+    await settings.findByRole("dialog", { name: "New project" });
+    expect(settings.navigateCalls).toHaveLength(0);
+    fireEvent.change(settings.getByPlaceholderText("e.g. Tasks Plugin"), {
+      target: { value: "Home Lab" },
+    });
+    fireEvent.click(settings.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(store.tasks.listProjects().some(
+      (project) => project.name === "Home Lab" && project.prefix === "HL",
+    )).toBe(true));
+    const project = store.tasks.listProjects().find((entry) => entry.prefix === "HL")!;
+    await waitFor(() => expect(settings.getByRole("combobox", { name: "Settings project" }).textContent).toContain(project.name));
+    expect(settings.navigateCalls).toHaveLength(0);
+    expect(settings.queryByRole("dialog")).toBeNull();
+    fireEvent.click(settings.getByRole("button", { name: "Manage labels and presets" }));
+    expect(settings.navigateCalls).toContainEqual({
+      method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
+    });
+  } finally {
+    cleanup();
+    await harness.dispose();
+  }
 });
 
 it("saves a project workflow in compact settings and uses it in the list, board and task picker", async () => {
@@ -46,6 +139,7 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       color: "blue",
     });
     const methods = [
+      "getBoardPreferences",
       "getGitSyncConfig",
       "listProjects",
       "updateProject",
@@ -213,7 +307,9 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     await detail.findByRole("textbox", { name: "Task title" });
     expect(detail.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
     expect((detail.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
-    const status = await detail.findAllByRole("button", { name: "In testing" });
+    const status = await detail.findAllByRole("button", { name: "Change task status" });
+    expect(status).toHaveLength(2);
+    for (const trigger of status) expect(trigger.textContent).toContain("In testing");
     fireEvent.keyDown(status[0]!, { key: "ArrowDown" });
     expect(
       await detail.findByRole("menuitem", { name: "In testing" }),
@@ -239,7 +335,7 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
       {},
       {
         rpc: Object.fromEntries(
-          ["getGitSyncConfig", "listProjects", "updateProject"].map((method) => [
+          ["getBoardPreferences", "getGitSyncConfig", "listProjects", "updateProject"].map((method) => [
             method,
             (input: unknown) => harness.callRpc(method, input),
           ]),

@@ -1,3 +1,6 @@
+import { useActivityPoll } from "../../shell/activity-poll.js";
+import { ActivityStatus } from "./activity-status.js";
+import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -40,7 +43,7 @@ import {
   PropertiesRail,
   type TaskPropertyUpdate,
 } from "./rail.js";
-import { ThreadsSection } from "./threads.js";
+import { DispatchControl, ThreadsSection } from "./threads.js";
 import { DetailToasts, useDetailToasts } from "./toast.js";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
@@ -222,7 +225,7 @@ function SubTasksSection({
   };
 
   return (
-    <section ref={ref} className="mt-5">
+    <section ref={ref} className="mt-5 border-t border-border pt-6">
       {task.type === "epic" ? (
         <h2 className="mb-2 text-sm font-semibold">Tasks in this epic</h2>
       ) : null}
@@ -383,6 +386,17 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  const activity = useTasksQuery(
+    async (query) => (await query.call("listTaskCardMeta", { taskIds: [task.id] })).metadata[0],
+    ["threads:changed", "tasks:changed", "prs:changed"],
+    [task.id],
+    { relevantTaskIds: [task.id] },
+  );
+  const dependencies = useTasksQuery(
+    async query => query.call("listTaskDependencies", { taskId: task.id }),
+    ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
+  );
+  useActivityPoll(activity.refresh, activity.isFetching, !!threads.data?.length);
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
@@ -504,6 +518,12 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
+  const activityStatus = <>
+    <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
+      <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
+    </div> : null}
+  </>;
 
   return (
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
@@ -575,16 +595,15 @@ function TaskDetail({
             onSave={(title) => void updateTask({ title })}
           />
 
+          <div className="@[45rem]:hidden">{activityStatus}</div>
+
           <InlineProperties
             task={task}
             project={project}
             projects={projects.data}
             labels={labels.data}
-            threads={threads.data ?? []}
-            presets={presets.data}
             onUpdate={(update) => void updateTask(update)}
             onMoveToProject={(projectId) => void moveToProject(projectId)}
-            onError={(message) => push(message)}
             onAddQuestion={() => setAddingQuestion(task.id)}
             className="mb-4 @[45rem]:hidden"
           />
@@ -648,6 +667,8 @@ function TaskDetail({
             onError={(message) => push(message)}
           />
 
+          <DependenciesSection task={task} query={dependencies} onError={push} />
+
           {task.parentTaskId === null ? (
             <SubTasksSection
               ref={subtasksRef}
@@ -696,12 +717,11 @@ function TaskDetail({
         </div>
 
         <PropertiesRail
+          activityStatus={<div className="hidden @[45rem]:block">{activityStatus}</div>}
           task={task}
           project={project}
           projects={projects.data}
           labels={labels.data}
-          threads={threads.data ?? []}
-          presets={presets.data}
           onUpdate={(update) => void updateTask(update)}
           onMoveToProject={(projectId) => void moveToProject(projectId)}
           onError={(message) => push(message)}

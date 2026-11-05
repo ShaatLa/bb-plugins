@@ -76,10 +76,16 @@ export function createGitSyncService(
     if (!project) throw new Error("Project not found");
     return project;
   };
-  const publishProjectPrs = (projectId: string) => {
-    for (const taskId of new Set(data.linksForProject(projectId).map(link => link.taskId)))
-      bb.realtime.publish("prs:changed", { taskId, projectId });
+  const publishPrs = (projectId: string, tasks: Iterable<string>) => {
+    const affected = new Set(tasks), ids = [...affected];
+    // A predecessor PR refresh also invalidates advice on its dependents, without broad board refreshes.
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500);
+      for (const row of db.prepare<string[], { taskId: string }>(`SELECT DISTINCT task_id AS taskId FROM task_dependencies WHERE blocking_task_id IN (${batch.map(() => "?").join(",")})`).all(...batch)) affected.add(row.taskId);
+    }
+    for (const taskId of affected) bb.realtime.publish("prs:changed", { taskId, projectId });
   };
+  const publishProjectPrs = (projectId: string) => publishPrs(projectId, data.linksForProject(projectId).map(link => link.taskId));
   const remember = (
     taskId: string,
     url: string,
@@ -205,27 +211,27 @@ export function createGitSyncService(
         for (const row of evidence) remember(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
       }
       phase = "worker thread lookup";
-      const threadCache = new Map<string, ReturnType<typeof bb.sdk.threads.get>>();
-      for (const task of tasks) {
-        if (!current()) break;
-        for (const link of store.tasks.listTaskThreads(task.id)) {
+      // Resolve each attached thread once, in bounded batches, while retaining persistent links on failure.
+      const links = store.tasks.listTaskThreadsForTasks(tasks.map((task) => task.id));
+      const ids = [...new Set(links.map((link) => link.threadId))];
+      const environments = new Map<string, string>();
+      for (let offset = 0; offset < ids.length && current(); offset += 200) {
+        const batch = ids.slice(offset, offset + 200);
+        try {
+          const threads = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true, signal: AbortSignal.any([controller.signal, run.signal]) });
           if (!current()) break;
-          try {
-            let lookup = threadCache.get(link.threadId);
-            if (!lookup) {
-              lookup = bb.sdk.threads.get({ threadId: link.threadId });
-              threadCache.set(link.threadId, lookup);
-            }
-            const thread = await lookup;
-            if (!thread.environmentId || !current()) continue;
-            const members =
-              environmentTasks.get(thread.environmentId) ?? new Set<string>();
-            members.add(task.id);
-            environmentTasks.set(thread.environmentId, members);
-          } catch {
-            /* A retired worker must not erase a persistent link. */
-          }
+          for (const thread of threads)
+            if (thread.environmentId) environments.set(thread.id, thread.environmentId);
+        } catch {
+          /* Unavailable workers must not erase persistent links. */
         }
+      }
+      for (const link of links) {
+        const environmentId = environments.get(link.threadId);
+        if (!environmentId) continue;
+        const members = environmentTasks.get(environmentId) ?? new Set<string>();
+        members.add(link.taskId);
+        environmentTasks.set(environmentId, members);
       }
       if (!current()) return { checked: 0, errors };
       phase = "environment PR read";
@@ -335,7 +341,7 @@ export function createGitSyncService(
         if (filesChanged) publishProjectPrs(projectId);
         else {
           const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
-          for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+          publishPrs(projectId, linked);
         }
       }
       return { checked, errors: [...new Set(errors)] };

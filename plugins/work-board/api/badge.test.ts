@@ -17,10 +17,10 @@ describe("navigation badge", () => {
       .prepare("INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)")
       .run("q1", owner.id, JSON.stringify({ selectedOptionIds: [], answerText: "" }));
 
-    const picked = navigationBadgeCounts(bb, store, ["needs_answer", "owner", "in_review"], null, Date.now());
+    const picked = navigationBadgeCounts(bb, store, ["needs_answer", "owner", "in_review"], Date.now());
     expect(picked).toEqual({ count: 2, counts: { needs_answer: 1, owner: 1, in_review: 1 } });
-    expect(navigationBadgeCounts(bb, store, ["open"], null, Date.now())).toEqual({ count: 3, counts: { open: 3 } });
-    expect(navigationBadgeCounts(bb, store, ["stale_idle"], null, Date.now())).toEqual({ count: 0, counts: {} });
+    expect(navigationBadgeCounts(bb, store, ["open"], Date.now())).toEqual({ count: 3, counts: { open: 3 } });
+    expect(navigationBadgeCounts(bb, store, ["stale_idle"], Date.now())).toEqual({ count: 0, counts: { stale_idle: 0 } });
     await harness.dispose();
   });
 

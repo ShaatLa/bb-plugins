@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -97,14 +97,19 @@ describe("existing thread dispatch", () => {
   });
 });
 
-it("opens the attached thread instead of sending the task again, including with a saved default", async () => {
+it.each(["working", "idle", "failed"])("opens an attached %s thread and hides new-session dispatch until detachment", async (liveStatus) => {
   storeDefaultThread(PROJECT_ID, { id: "thr_other", title: "Other default" });
   let attached = true;
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
-    rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: attached ? [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] : [] }) }),
+    rpc: detailRpc({
+      listPresets: () => ({ presets: [{ id: "01HZZZZZZZZZZZZZZZZZZZZZE1", name: "New worker", providerId: "claude-code", modelId: "claude-sonnet-5", reasoningLevel: "medium", serviceTier: null, permissionMode: "accept-edits", environmentKind: "new-worktree", baseBranch: "main", machineId: null, instructions: "", builtin: false, createdAt: "2026-07-15T00:00:00.000Z" }] }),
+      listTaskThreads: () => ({ taskThreads: attached ? [{ ...taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker"), liveStatus }] : [] }),
+    }),
   });
   const buttons = await slot.findAllByRole("button", { name: "Go to thread" });
   expect(buttons).toHaveLength(2);
+  expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
+  expect(slot.queryByRole("button", { name: "Choose dispatch preset" })).toBeNull();
   fireEvent.click(buttons[0]!);
   expect(slot.navigateCalls).toEqual([{ method: "toThread", threadId: "thr_worker000" }]);
   expect(slot.rpcCalls.filter(({ method }) => method === "delegateToThread")).toHaveLength(0);
@@ -112,6 +117,12 @@ it("opens the attached thread instead of sending the task again, including with 
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await slot.findAllByRole("button", { name: "Send task to Other default" });
   expect(slot.queryByRole("button", { name: "Go to thread" })).toBeNull();
+  expect(await slot.findAllByRole("button", { name: "New worker" })).toHaveLength(2);
+  expect(slot.getAllByRole("button", { name: "Choose dispatch preset" })).toHaveLength(2);
+  attached = true;
+  await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+  await slot.findAllByRole("button", { name: "Go to thread" });
+  expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
 });
 
 function taskThreadRow(id: string, threadId: string, title: string) {
@@ -146,8 +157,9 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
-  fireEvent.click(await slot.findByRole("button", { name: "Open thread Correctness review" }));
-  fireEvent.click(slot.getByRole("button", { name: "Open thread QA verification" }));
+  const rail = await slot.findByRole("complementary", { name: "Task details" });
+  fireEvent.click(await within(rail).findByRole("button", { name: "Open thread Correctness review" }));
+  fireEvent.click(within(rail).getByRole("button", { name: "Open thread QA verification" }));
   expect(slot.navigateCalls).toEqual([
     { method: "toThread", threadId: "thr_review" },
     { method: "toThread", threadId: "thr_qa" },
@@ -157,6 +169,7 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
 
 function detailRpc(overrides: Record<string, unknown> = {}) {
   return {
+    listTaskDependencies: () => ({ blockedBy: [], blocks: [] }),
     listProjects: () => ({
       projects: [
         {
@@ -191,6 +204,7 @@ function detailRpc(overrides: Record<string, unknown> = {}) {
     listQuestions: () => ({ questions: [] }),
     listComments: () => ({ comments: [] }),
     listBbProjects: () => ({ bbProjects: [] }),
+    listTaskCardMeta: () => ({ metadata: [] }),
     ...overrides,
   };
 }
@@ -484,7 +498,7 @@ it.each(["main", "side"])("renders an EXA-71-sized card within 500 ms while Git 
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   await slot.findByRole("textbox", { name: "Task title" }, { timeout: 500 });
-  await slot.findByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
+  await slot.findAllByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
   await slot.findByText("Showing 20 of 80", {}, { timeout: 500 });
   expect(performance.now() - started).toBeLessThan(500);
   const syncButton = slot.getByRole("button", { name: "Sync PRs" });
@@ -537,4 +551,53 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");
   expect(activity.querySelector(".tiptap")).toBe(composer);
+});
+
+it.each(["central", "thread"])("groups status, linked sessions and dispatch in the %s task view", async (surface) => {
+  const activity = {
+    state: "working", workingCount: 1, attachedCount: 1, terminalWarning: true, hasFailure: false,
+    diagnostics: { explanation: "An accepted dispatch is executing on this task.", hasWorked: true, complete: true, checkedAt: "2026-11-04T12:00:00.000Z", inactiveSessions: [{ threadId: "thr_old", title: "Archived worker", reason: "archived" }] },
+    sessions: [{ threadId: "thr_scoped", title: "Scoped worker", role: "worker", state: "working", diagnostics: { explanation: "Task dispatch matches the current accepted input.", threadStatus: "active", runtimeStatus: "active", turnId: "turn-evidence", requestId: "req-evidence", focusedTaskId: TASK_ID, focusedTaskKey: "TSK-5", queueIds: [], interactionIds: [] } }],
+  };
+  let current = activity;
+  const options = { rpc: detailRpc({ updateTask: (input: unknown) => ({ ok: true, task: { ...task, ...rpcInput(input) } }), listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_scoped", "Scoped worker")] }), listTaskCardMeta: () => ({ metadata: [{ taskId: TASK_ID, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: current }] }) }) };
+  const slot = surface === "central"
+    ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
+    : renderSlot(taskTab(app), { threadId: "thr_context", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
+  const regions = await slot.findAllByRole("region", { name: "Task activity status" });
+  expect(regions).toHaveLength(2);
+  const region = regions.find((item) => item.closest('aside[aria-label="Task details"]'))!;
+  expect(region).toBeTruthy();
+  expect(region.parentElement?.className).toContain("hidden @[45rem]:block");
+  expect(regions.find((item) => item !== region)?.parentElement?.className).toContain("@[45rem]:hidden");
+  expect(slot.getAllByRole("button", { name: "Change task status" })).toHaveLength(2);
+  expect(slot.queryByRole("button", { name: "Backlog" })).toBeNull();
+  expect(within(region).getByText("Status")).toBeTruthy();
+  expect(within(region).getByText("Activity")).toBeTruthy();
+  fireEvent.keyDown(within(region).getByRole("button", { name: "Change task status" }), { key: "ArrowDown" });
+  fireEvent.click(await slot.findByRole("menuitem", { name: "Todo" }));
+  await waitFor(() => expect(slot.rpcCalls).toContainEqual({ method: "updateTask", input: { taskId: TASK_ID, status: "todo" } }));
+  expect(region.textContent).toContain("Working");
+  expect(within(region).queryByText("Why this status?")).toBeNull();
+  expect(region.querySelector("details")).toBeNull();
+  expect(region.textContent).not.toContain("turn-evidence");
+  expect(region.textContent).not.toContain("req-evidence");
+  expect(within(region).getByText("Sessions")).toBeTruthy();
+  const rail = region.closest("aside")!;
+  expect(within(rail).queryByText("Agents")).toBeNull();
+  expect(within(rail).getByRole("button", { name: "Go to thread" })).toBeTruthy();
+  expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
+  const dependencies = slot.getByRole("region", { name: "Task dependencies" });
+  const attachmentControls = slot.getByRole("button", { name: "Add reaction" }).parentElement!;
+  expect(attachmentControls.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
+  expect(attachmentControls.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(dependencies.className).toContain("border-t");
+  expect(dependencies.className).not.toContain("rounded");
+  fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
+  expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
+  current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
+  await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+  await within(region).findAllByText("Attached");
+  expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
 });

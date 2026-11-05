@@ -40,11 +40,22 @@ afterEach(async () => {
 
 function setup() {
   const faults = { write: false, promote: false };
+  const io = { active: 0, peak: 0, blobs: 0, blobPeak: 0 };
+  async function track(path: string) {
+    const json = /\/tasks\/.*\.json$/.test(path);
+    const blob = path.includes("/attachments/");
+    if (json) io.peak = Math.max(io.peak, ++io.active);
+    if (blob) io.blobPeak = Math.max(io.blobPeak, ++io.blobs);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (json) io.active--;
+    if (blob) io.blobs--;
+  }
   const { bb, harness } = createFakePluginHost({
     pluginId: "work-board",
     sdk: {
       files: {
         read: async ({ path }: { path: string }) => {
+          await track(path);
           const bytes = await readFile(path);
           const contentEncoding = isUtf8(bytes) ? "utf8" : "base64";
           return {
@@ -63,6 +74,7 @@ function setup() {
           content: string;
           contentEncoding?: "base64" | "utf8";
         }) => {
+          await track(path);
           if (
             faults.write &&
             path.includes("staging-") &&
@@ -135,7 +147,7 @@ function setup() {
   registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
-  return { bb, harness, store, faults };
+  return { bb, harness, store, faults, io };
 }
 
 async function directory() {
@@ -375,6 +387,7 @@ describe("project archives", () => {
       const record = JSON.parse(await readFile(path, "utf8"));
       delete record.questions;
       delete record.pullRequests;
+      delete record.dependencies;
       await writeFile(path, jsonText(record));
     }
     const target = setup();
@@ -401,7 +414,7 @@ describe("project archives", () => {
     const manifest = JSON.parse(await readFile(path, "utf8"));
     manifest.version = 2;
     delete manifest.gitSync;
-    for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.pullRequests; await writeFile(taskFile, jsonText(row)); }
+    for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.pullRequests; delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
     delete manifest.project.statuses;
     await writeFile(path, jsonText(manifest));
     const taskPath = join(out, "tasks", `${source.task.id}.json`);
@@ -513,6 +526,16 @@ describe("project archives", () => {
     expect(Object.keys(await fileTree(out)).sort()).toEqual(
       Object.keys(first).sort(),
     );
+  });
+
+  it("bounds concurrent task JSON reads and writes", async () => {
+    const source = await seed();
+    for (let i = 0; i < 9; i++) source.store.tasks.createTask({ projectId: source.project.id, title: `Task ${i}` });
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    await exportProject(source.bb, source.store, source.project.id, out);
+    expect(source.io.peak).toBe(4);
+    expect(source.io.blobPeak).toBe(1);
   });
 
   it("cleans replaced blobs after commit and preserves originals on rollback", async () => {
@@ -800,7 +823,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(9);
+  expect(manifest.version).toBe(12);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -815,6 +838,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
     const path = join(out, "tasks", `${id}.json`);
     const record = JSON.parse(await readFile(path, "utf8"));
     delete record.pullRequests;
+      delete record.dependencies;
     delete record.task.executionTarget;
     delete record.task.requesterThreadId;
     await writeFile(path, jsonText(record));
@@ -833,27 +857,37 @@ it("round-trips configurable project statuses, their order and custom task stage
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
-  source.store.tasks.updateProject(source.project.id, { statuses });
+  source.store.tasks.updateProject(source.project.id, { statuses, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
+  source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(9);
+  expect(manifest.version).toBe(12);
   expect(manifest.project.statuses).toEqual(statuses);
+  expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
+  expect(target.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(source.task.id)).toBeDefined();
   const again = join(await directory(), "again");
   await exportProject(target.bb, target.store, source.project.id, again);
   expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
   // Earlier exporters could already write status metadata under v8.
   manifest.version = 8;
+  for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
+  delete manifest.project.autoArchiveAfterDays;
+  delete manifest.project.staleIdleMinutes;
   await writeFile(join(out, "project.json"), jsonText(manifest));
   const legacy = setup();
   await importProject(legacy.bb, legacy.store, out, false);
   expect(legacy.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(legacy.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   delete manifest.project.statuses[4].icon;
   delete manifest.project.statuses[4].color;
   await writeFile(join(out, "project.json"), jsonText(manifest));

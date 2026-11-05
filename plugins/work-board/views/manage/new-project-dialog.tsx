@@ -6,7 +6,7 @@ import {
   useTasksRpc,
 } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
-import { PROJECT_PREFIX_PATTERN } from "../../shared/contract.js";
+import { PROJECT_PREFIX_PATTERN, type Project } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import {
   Dialog,
@@ -42,11 +42,13 @@ const NEW_FOLDER = "__new__";
 interface NewProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCreated?: (project: Project) => void;
 }
 
 export function NewProjectDialog({
   open,
   onOpenChange,
+  onCreated,
 }: NewProjectDialogProps) {
   const rpc = useTasksRpc();
   const navigation = useTasksNavigation();
@@ -142,7 +144,8 @@ export function NewProjectDialog({
         linkedBbProjectId,
       });
       onOpenChange(false);
-      navigation.go({ kind: "project", projectId: project.id, view: null });
+      if (onCreated) onCreated(project);
+      else navigation.go({ kind: "project", projectId: project.id, view: null });
     } catch (submitError) {
       setError(describeCreateProjectError(submitError));
     } finally {

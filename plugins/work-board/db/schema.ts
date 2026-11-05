@@ -340,10 +340,32 @@ const MIGRATIONS = [
     at TEXT NOT NULL
   );
   CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
+  `CREATE TABLE task_activity_history (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
+   INSERT INTO task_activity_history(task_id) SELECT DISTINCT task_id FROM comments WHERE kind='agent' AND thread_id IS NOT NULL;
+   CREATE TRIGGER task_activity_agent_comment AFTER INSERT ON comments
+   WHEN NEW.kind='agent' AND NEW.thread_id IS NOT NULL
+   BEGIN INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (NEW.task_id); END;
+   CREATE TABLE task_activity_claims (thread_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
+   CREATE TABLE task_activity_queue (thread_id TEXT NOT NULL, queue_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id, queue_id));`,
+  `ALTER TABLE projects ADD COLUMN auto_archive_after_days TEXT
+     CHECK (auto_archive_after_days IN ('off', '7', '14', '30'));
+   ALTER TABLE projects ADD COLUMN stale_idle_minutes TEXT
+     CHECK (stale_idle_minutes IN ('off', '30', '45', '60', '120'));`,
+  `CREATE TABLE task_dependencies (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     blocking_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     PRIMARY KEY (task_id, blocking_task_id),
+     CHECK (task_id <> blocking_task_id)
+   );
+   CREATE INDEX idx_task_dependencies_blocker ON task_dependencies(blocking_task_id, task_id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
   db.pragma("foreign_keys = ON");
+  // A large transaction must not retain its peak WAL allocation after checkpoints can reset it.
+  db.pragma("journal_size_limit = 4194304");
+  // Fresh databases can reclaim pages incrementally without a blocking rebuild during startup.
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").get()) db.pragma("auto_vacuum = INCREMENTAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,

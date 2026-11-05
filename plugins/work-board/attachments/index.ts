@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { protectBlob } from "../storage/active-blobs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -362,6 +364,7 @@ async function persistAttachment(
   });
   const blobPath = join("blobs", attachment.id, safeFileName);
   const absolutePath = pathInside(requireStoreRoot(store), blobPath);
+  const release = protectBlob(absolutePath);
 
   try {
     await mkdir(dirname(absolutePath), { recursive: true });
@@ -373,7 +376,7 @@ async function persistAttachment(
     store.deleteAttachment(attachment.id);
     await rm(dirname(absolutePath), { recursive: true, force: true });
     throw error;
-  }
+  } finally { release(); }
 }
 
 export async function saveAttachmentFromBytes(
@@ -387,7 +390,8 @@ export async function saveAttachmentFromBytes(
     options.fileName,
     options.mime ?? inferMimeFromBytes(bytes, options.fileName),
     bytes.byteLength,
-    (destinationPath) => writeFile(destinationPath, bytes),
+    // Committed blobs may share an inode; writes must always create a fresh path.
+    (destinationPath) => writeFile(destinationPath, bytes, { flag: "wx" }),
   );
 }
 
@@ -505,7 +509,7 @@ export function registerAttachments(
           parameters.fileName,
           parameters.mime,
           body.byteLength,
-          (destinationPath) => writeFile(destinationPath, body),
+          (destinationPath) => writeFile(destinationPath, body, { flag: "wx" }),
         );
         publishAttachmentChanged(bb, store, attachment);
         return context.json(
@@ -531,16 +535,31 @@ export function registerAttachments(
       return context.json({ error: "attachment not found" }, 404);
 
     const absolutePath = pathInside(root, attachment.blobPath);
+    let blobStat;
     try {
-      await stat(absolutePath);
+      blobStat = await stat(absolutePath, { bigint: true });
     } catch {
       return context.json({ error: "attachment not found" }, 404);
     }
+    // Imports replace blobs at new paths; include file identity to detect other replacements.
+    const etag = `"${createHash("sha256")
+      .update(JSON.stringify([attachment.blobPath, attachment.mime, attachment.fileName, attachment.sizeBytes, ...[blobStat.dev, blobStat.ino, blobStat.size, blobStat.mtimeNs, blobStat.ctimeNs].map(String)]))
+      .digest("hex")}"`;
+    const condition = context.req.raw.headers.get("if-none-match")?.trim();
+    const matches = condition === "*" || Array.from(
+      condition?.matchAll(/(?:^|,)\s*(?:W\/)?("[\x21\x23-\x7e\x80-\xff]*")\s*(?=,|$)/g) ?? [],
+    ).some((match) => match[1] === etag);
+    const cacheHeaders = { ETag: etag, "Cache-Control": "private, no-cache" };
+    if (matches) return new Response(null, { status: 304, headers: cacheHeaders });
+
     const disposition = isInlineRasterMime(attachment.mime)
       ? "inline"
       : "attachment";
-    return new Response(new Uint8Array(await readFile(absolutePath)), {
+    // Keep the Buffer backing store instead of making another full-size copy.
+    const content = await readFile(absolutePath);
+    return new Response(new Uint8Array(content.buffer as ArrayBuffer, content.byteOffset, content.byteLength), {
       headers: {
+        ...cacheHeaders,
         "Content-Type": attachment.mime,
         "Content-Length": String(attachment.sizeBytes),
         "Content-Disposition": buildContentDisposition(

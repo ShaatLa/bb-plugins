@@ -1425,6 +1425,62 @@ describe("Manage folders", () => {
   });
 });
 
+describe("Manage projects", () => {
+  async function renderProjects(overrides: Record<string, unknown> = {}) {
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "manage" }, {
+      rpc: {
+        listProjects: () => ({ projects: [project] }),
+        listFolders: () => ({ folders: [] }),
+        listPresets: () => ({ presets: [] }),
+        listLabels: () => ({ labels: [] }),
+        listBbProjects: () => ({ bbProjects: [] }),
+        ...overrides,
+      },
+    });
+    fireEvent.mouseDown(await slot.findByRole("tab", { name: "Projects" }));
+    return slot;
+  }
+
+  it("opens an existing project from Manage", async () => {
+    const slot = await renderProjects();
+    const projects = within(await slot.findByRole("tabpanel", { name: "Projects" }));
+    fireEvent.click(await projects.findByRole("button", { name: /Tasks Plugin/ }));
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: PROJECT_ID },
+    });
+  });
+
+  it("creates another project from Manage using the existing dialog", async () => {
+    const createCalls: Array<Record<string, unknown>> = [];
+    const slot = await renderProjects({
+      createProject: (input: Record<string, unknown>) => {
+        createCalls.push(input);
+        return { project: { ...project, ...input } };
+      },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "New project" }));
+    fireEvent.change(await slot.findByPlaceholderText("e.g. Tasks Plugin"), {
+      target: { value: "Home Lab" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(createCalls).toHaveLength(1));
+    expect(createCalls[0]).toMatchObject({ name: "Home Lab", prefix: "HL" });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toPluginPanel", path: "work-board", options: { subPath: PROJECT_ID },
+    });
+  });
+
+  it("offers creation when there are no projects", async () => {
+    const slot = await renderProjects({ listProjects: () => ({ projects: [] }) });
+    await slot.findByText("No projects yet.");
+    fireEvent.click(slot.getByRole("button", { name: "New project" }));
+    await slot.findByRole("dialog", { name: "New project" });
+  });
+});
+
 describe("NewProjectDialog", () => {
   function renderEmptyState(overrides: Record<string, unknown> = {}) {
     return renderSlot(

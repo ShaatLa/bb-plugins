@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { afterEach, expect, it, vi } from "vitest";
 import { createStore, registerTasksApi } from ".";
 import { registerTasksCli } from "../cli";
 import plugin from "../server";
@@ -196,7 +196,8 @@ it("automatically archives only inactive completed families without unanswered q
   });
   const fresh = create("Fresh task");
   clock("2026-10-10T12:00:00.000Z");
-  expect(autoArchiveTasks(f.bb, f.store, 7)).toBe(2);
+  f.store.tasks.updateProject(f.project.id, { autoArchiveAfterDays: "7" });
+  expect(autoArchiveTasks(f.bb, f.store)).toBe(2);
   for (const task of [eligible, child])
     expect(f.store.tasks.getTask(task.id)?.archivedAt).toBeTruthy();
   for (const task of [
@@ -211,13 +212,13 @@ it("automatically archives only inactive completed families without unanswered q
   expect(f.store.tasks.listComments(eligible.id).at(-1)?.body).toContain(
     "automatically archived",
   );
-  expect(autoArchiveTasks(f.bb, f.store, 7)).toBe(0);
+  expect(autoArchiveTasks(f.bb, f.store)).toBe(0);
   f.store.tasks.setTaskArchived(eligible.id, false);
-  expect(autoArchiveTasks(f.bb, f.store, 7)).toBe(0);
-  expect(() => autoArchiveTasks(f.bb, f.store, 0)).toThrow("interval");
+  expect(autoArchiveTasks(f.bb, f.store)).toBe(0);
+
 });
 
-it("defaults automatic archival to off and reads the setting again on each hourly run", async () => {
+it("defaults automatic archival to off and reads project settings again on each hourly run", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
   hosts.push(host);
   await plugin(host.bb);
@@ -236,10 +237,27 @@ it("defaults automatic archival to off and reads the setting again on each hourl
   clock("2026-10-10T12:00:00.000Z");
   await host.harness.behavior.runSchedule("auto-archive-tasks");
   expect(store.tasks.getTask(task.id)?.archivedAt).toBeNull();
-  await host.harness.behavior.setSettings({ autoArchiveAfterDays: "14" });
+  store.tasks.updateProject(project.id, { autoArchiveAfterDays: "14" });
   await host.harness.behavior.runSchedule("auto-archive-tasks");
   expect(store.tasks.getTask(task.id)?.archivedAt).toBeNull();
-  await host.harness.behavior.setSettings({ autoArchiveAfterDays: "7" });
+  store.tasks.updateProject(project.id, { autoArchiveAfterDays: "7" });
   await host.harness.behavior.runSchedule("auto-archive-tasks");
   expect(store.tasks.getTask(task.id)?.archivedAt).toBeTruthy();
+});
+
+it("archives projects independently with their own retention intervals", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  hosts.push(host);
+  await plugin(host.bb);
+  const store = createStore(host.bb);
+  clock("2026-10-01T12:00:00.000Z");
+  const tasks = (["7", "14", "off"] as const).map((days, index) => {
+    const project = store.tasks.createProject({ name: `Project ${index}`, prefix: `P${index}`, color: "blue" });
+    store.tasks.updateProject(project.id, { autoArchiveAfterDays: days });
+    return store.tasks.createTask({ projectId: project.id, title: "Done", status: "done" });
+  });
+  clock("2026-10-10T12:00:00.000Z");
+  await host.harness.behavior.runSchedule("auto-archive-tasks");
+  expect(tasks.map((task) => Boolean(store.tasks.getTask(task.id)?.archivedAt))).toEqual([true, false, false]);
+  expect(store.tasks.listComments(tasks[0]!.id).at(-1)?.body).toContain("7 days");
 });

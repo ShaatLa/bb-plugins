@@ -1,3 +1,8 @@
+import { taskAdvisories } from "../advisories";
+import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
+import { activityService } from "../activity/index.js";
+import { createDependencyStore } from "../dependencies/store";
+import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
@@ -17,6 +22,7 @@ import {
 } from "../attachments";
 import { deliverCommentToLatestAgent } from "../steer";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
 import { environmentPullRequests } from "../git-sync/environment-prs";
@@ -191,6 +197,13 @@ export function publishTasksChanged(
 ): void {
   const payload: TasksChangedEvent = { taskId, projectId };
   bb.realtime.publish("tasks:changed", payload);
+  // A predecessor's status/key changes must refresh its neighbours without board-wide polling.
+  const neighbours = bb.storage.database().prepare<[string, string, string], { taskId: string; projectId: string }>(`
+    SELECT DISTINCT t.id AS taskId, t.project_id AS projectId FROM task_dependencies d JOIN tasks t
+      ON t.id=CASE WHEN d.task_id=? THEN d.blocking_task_id ELSE d.task_id END
+    WHERE d.task_id=? OR d.blocking_task_id=?
+  `).all(taskId, taskId, taskId);
+  for (const neighbour of neighbours) bb.realtime.publish("tasks:changed", neighbour);
 }
 
 export function publishProjectsChanged(
@@ -608,8 +621,6 @@ async function listTaskPullRequests(
   };
 }
 
-export const DEFAULT_STALE_IDLE_MINUTES = 45;
-
 const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
 
 async function readBadgeCriteria(bb: BbPluginApi) {
@@ -621,10 +632,31 @@ async function readBadgeCriteria(bb: BbPluginApi) {
 export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
-  staleIdleMinutes: () => Promise<number | null> = async () => DEFAULT_STALE_IDLE_MINUTES,
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
+  const dependencies = createDependencyStore(bb.storage.database(), store.tasks);
+  function changeDependency(input: { taskId: string; blockingTaskId: string; authorName: string }, add: boolean) {
+    const changed = store.transaction(() => {
+      const changed = add ? dependencies.add(input.taskId, input.blockingTaskId) : dependencies.remove(input.taskId, input.blockingTaskId);
+      if (changed) {
+        const task = store.tasks.getTask(input.taskId)!, blocker = store.tasks.getTask(input.blockingTaskId)!;
+        writeSystemComments(store, task.id, input.authorName, [`${add ? "Dependency added" : "Dependency removed"}: blocked by ${blocker.key} (until Done) by ${input.authorName}`]);
+        writeSystemComments(store, blocker.id, input.authorName, [`${add ? "Dependency added" : "Dependency removed"}: blocks ${task.key} (until Done) by ${input.authorName}`]);
+      }
+      return changed;
+    });
+    if (changed) for (const id of [input.taskId, input.blockingTaskId]) {
+      publishTasksChanged(bb, id, store.tasks.getTask(id)!.projectId);
+      publishCommentsChanged(bb, id);
+    }
+    return { changed };
+  }
   return {
+    listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
+    getStorageStatus: () => storageService(bb).status(),
+    maintainStorage: ({ optimize }) => storageService(bb).run(optimize),
+    addTaskDependency: (input) => changeDependency(input, true),
+    removeTaskDependency: (input) => changeDependency(input, false),
     createSequence: (input) => ({ sequence: store.tasks.createSequence(input.projectId, input.name, input.next, input.format) }),
     listSequences: (input) => ({ sequences: store.tasks.listSequences(input.projectId) }),
     showSequence: (input) => { const sequence = store.tasks.getSequence(input.projectId, input.name); if (!sequence) throw new Error("Sequence not found"); return { sequence, claims: store.tasks.listSequenceClaims(input.projectId, input.name) }; },
@@ -662,6 +694,14 @@ export function registerHandlers(
     },
     listFolders() {
       return { folders: store.tasks.listFolders() };
+    },
+    async getBoardPreferences() {
+      return boardPreferencesSchema.parse(await bb.storage.kv.get(BOARD_PREFERENCES_KEY) ?? DEFAULT_BOARD_PREFERENCES);
+    },
+    async setBoardPreferences(input) {
+      await bb.storage.kv.set(BOARD_PREFERENCES_KEY, input);
+      publishProjectsChanged(bb, null);
+      return input;
     },
     createProject(input) {
       const project = store.tasks.createProject(input);
@@ -919,6 +959,7 @@ export function registerHandlers(
           ]
         : [];
       const attachments = attachmentsForTasks(store.tasks, [input.taskId]);
+      const dependencyNeighbours = dependencies.related(input.taskId);
       const deleted = store.tasks.deleteTask(input.taskId);
       if (deleted && task) {
         await removeAttachmentBlobs(bb, store.tasks, attachments);
@@ -926,6 +967,7 @@ export function registerHandlers(
         for (const dependent of dependents) {
           publishTasksChanged(bb, dependent.id, dependent.projectId);
         }
+        for (const neighbour of dependencyNeighbours) publishTasksChanged(bb, neighbour.id, neighbour.projectId);
       }
       return { deleted };
     },
@@ -997,6 +1039,10 @@ export function registerHandlers(
           current.id,
           input.projectId,
         );
+        if (bb.storage.database().prepare<[], { found: number }>(`
+          SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
+          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id LIMIT 1
+        `).get()) throw new Error("Remove dependencies outside the moving task family before changing projects");
         for (const { previousKey, task } of outcome.moved) {
           writeSystemComments(store, task.id, input.authorName, [
             `Moved from ${previousKey} to ${task.key} by ${input.authorName}`,
@@ -1149,9 +1195,20 @@ export function registerHandlers(
       }
       return { archivedCount: changed.length };
     },
+    async setTaskActivity({ taskId, threadId, active }) {
+      const task = store.tasks.getTask(taskId);
+      if (!task) throw new Error("Task not found");
+      const service = activityService(bb, store);
+      if (active) await service.start(taskId, threadId);
+      else await service.stop(taskId, threadId);
+      const affected = new Set([taskId, ...store.tasks.listTaskThreadsByThreadId(threadId).map((link) => link.taskId)]);
+      for (const id of affected) bb.realtime.publish("threads:changed", { taskId: id });
+      return { ok: true as const };
+    },
     async listTaskCardMeta({ taskIds }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
+      const discoveryComplete = await discoverRunningTaskThreads(bb, store);
       const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
@@ -1162,19 +1219,26 @@ export function registerHandlers(
         threads.set(thread.taskId, entries);
       }
       const activity = store.tasks.listTaskActivity(ids);
-      const threshold = await staleIdleMinutes();
+      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
+      const blockedBy = dependencies.blockers(ids);
+      const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
+      const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
         const task = activity.get(taskId);
         return {
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
+          activity: scopedActivity.get(taskId),
+          blockedBy: blockedBy.get(taskId) ?? [],
+          advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", threshold),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
         };
       }) };
     },
     async listTaskThreads(input) {
+      if (input.reconcile !== false) await discoverRunningTaskThreads(bb, store);
       return { taskThreads: input.reconcile === false
         ? store.tasks.listTaskThreads(input.taskId)
         : await reconcileTaskThreads(bb, store.tasks, input.taskId) };
@@ -1272,11 +1336,10 @@ export function registerHandlers(
     },
     async navigationBadge() {
       const criteria = await readBadgeCriteria(bb);
-      const threshold = criteria.includes("stale_idle") ? await staleIdleMinutes() : null;
       return {
-        ...navigationBadgeCounts(bb, store, criteria, threshold, Date.now()),
+        ...navigationBadgeCounts(bb, store, criteria, Date.now()),
         criteria,
-        timeBased: threshold !== null,
+        timeBased: criteria.includes("stale_idle") && store.tasks.listProjects().some((project) => idleThreshold(project) !== null),
       };
     },
     sidebarOpenTaskCount() {
@@ -1291,7 +1354,6 @@ export function registerHandlers(
 export function registerTasksApi(
   bb: BbPluginApi,
   store: TasksApiStore,
-  staleIdleMinutes?: () => Promise<number | null>,
 ): void {
-  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes));
+  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store));
 }

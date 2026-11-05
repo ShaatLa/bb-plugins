@@ -2,8 +2,8 @@ import { ArchiveView } from "../views/archive/index";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
-import { useSettings } from "@get-bb/plugin-sdk/app";
-import { useProjects } from "./data.js";
+import { useProjects, useTasksQuery } from "./data.js";
+import { DEFAULT_BOARD_PREFERENCES } from "../shared/project-settings";
 import {
   parseTasksRoute,
   tasksRouteToSubPath,
@@ -110,11 +110,11 @@ function resolveRoute(route: TasksRoute): ResolvedTasksRoute {
 
 function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
-  const settings = useSettings();
   const isRoot = subPath === "" || subPath === "/";
-  const opening = isRoot && (projects.data === undefined || settings.isLoading);
+  const settings = useTasksQuery((rpc) => isRoot ? rpc.call("getBoardPreferences", null) : Promise.resolve(DEFAULT_BOARD_PREFERENCES), ["projects:changed"], [isRoot]);
+  const opening = isRoot && (projects.data === undefined || (projects.data.length > 0 && settings.data === undefined && settings.error === null));
   const route = isRoot
-    ? startupRoute(settings.values?.defaultScreen, projects.data ?? [], loadLastProjectId())
+    ? startupRoute(settings.data?.defaultScreen, projects.data ?? [], loadLastProjectId())
     : resolveRoute(parseTasksRoute(subPath));
   const tasksNavigation = useTasksNavigation();
   const resolvedSubPath = tasksRouteToSubPath(route);

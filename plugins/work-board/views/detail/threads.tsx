@@ -314,7 +314,7 @@ export function DispatchControl(props: DispatchControlProps) {
           <Icon name="ChevronDown" className="size-3.5" />
         </Button>
       </div>
-      <PresetDispatchControl {...props} className="w-full" />
+      {!attachedThread ? <PresetDispatchControl {...props} className="w-full" /> : null}
       {choosingThread ? <ExistingThreadDialog taskId={props.taskId} projectId={props.projectId} onClose={() => setChoosingThread(false)} /> : null}
     </div>
   );

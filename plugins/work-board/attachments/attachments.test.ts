@@ -1,7 +1,12 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, readFile: vi.fn(original.readFile) };
+});
 import { createTasksStore } from "../db";
 import {
   attachmentDownloadUrl,
@@ -28,7 +33,7 @@ function setup(options?: Parameters<typeof registerAttachments>[2]) {
     .all()
     .find((entry) => entry.name === "main");
   if (!database) throw new Error("test database path is missing");
-  return { harness, store, task, root: dirname(database.file) };
+  return { bb, harness, store, task, root: dirname(database.file) };
 }
 
 async function upload(
@@ -46,6 +51,47 @@ async function upload(
 }
 
 describe("task attachments", () => {
+  it("revalidates downloads without reading the body and detects replacement", async () => {
+    const { bb, harness, root, store, task } = setup();
+    try {
+      const uploaded = await upload(harness, task.id, "first");
+      const { attachmentId } = await uploaded.json() as { attachmentId: string };
+      const url = `/attachments/download?attachmentId=${attachmentId}`;
+      vi.mocked(readFile).mockClear();
+      const first = await harness.fetchHttp("GET", url);
+      expect(await first.text()).toBe("first");
+      const etag = first.headers.get("etag")!;
+      expect(first.headers.get("cache-control")).toBe("private, no-cache");
+      expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
+      for (const condition of [etag, `"other", W/${etag}`, "*"]) {
+        const response = await harness.fetchHttp("GET", url, { headers: { "if-none-match": condition } });
+        expect(response.status).toBe(304);
+        expect(await response.text()).toBe("");
+      }
+      expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
+      bb.storage.database().prepare("UPDATE attachments SET file_name=? WHERE id=?").run("renamed.txt", attachmentId);
+      const renamed = await harness.fetchHttp("GET", url, { headers: { "if-none-match": etag } });
+      expect(renamed.status).toBe(200);
+      expect(renamed.headers.get("etag")).not.toBe(etag);
+      expect(renamed.headers.get("content-disposition")).toContain("renamed.txt");
+      const other = await harness.fetchHttp("GET", url, { headers: { "if-none-match": `"prefix${etag.slice(1)}` } });
+      expect(other.status).toBe(200);
+      const attachment = store.getAttachment(attachmentId)!;
+      const replacement = join(dirname(attachment.blobPath), "import-replacement");
+      await writeFile(join(root, replacement), "other");
+      store.updateAttachment(attachmentId, { blobPath: replacement });
+      const changed = await harness.fetchHttp("GET", url, { headers: { "if-none-match": etag } });
+      expect(changed.status).toBe(200);
+      expect(changed.headers.get("etag")).not.toBe(etag);
+      expect(await changed.text()).toBe("other");
+      await rm(join(root, replacement));
+      expect((await harness.fetchHttp("GET", url, { headers: { "if-none-match": "*" } })).status).toBe(404);
+      expect((await harness.fetchHttp("GET", "/attachments/download?attachmentId=missing", { headers: { "if-none-match": "*" } })).status).toBe(404);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("uploads a raw body into the plugin blob directory and creates its row", async () => {
     const { harness, root, store, task } = setup();
     try {
