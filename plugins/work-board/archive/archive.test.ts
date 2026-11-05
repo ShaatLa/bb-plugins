@@ -40,11 +40,22 @@ afterEach(async () => {
 
 function setup() {
   const faults = { write: false, promote: false };
+  const io = { active: 0, peak: 0, blobs: 0, blobPeak: 0 };
+  async function track(path: string) {
+    const json = /\/tasks\/.*\.json$/.test(path);
+    const blob = path.includes("/attachments/");
+    if (json) io.peak = Math.max(io.peak, ++io.active);
+    if (blob) io.blobPeak = Math.max(io.blobPeak, ++io.blobs);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (json) io.active--;
+    if (blob) io.blobs--;
+  }
   const { bb, harness } = createFakePluginHost({
     pluginId: "work-board",
     sdk: {
       files: {
         read: async ({ path }: { path: string }) => {
+          await track(path);
           const bytes = await readFile(path);
           const contentEncoding = isUtf8(bytes) ? "utf8" : "base64";
           return {
@@ -63,6 +74,7 @@ function setup() {
           content: string;
           contentEncoding?: "base64" | "utf8";
         }) => {
+          await track(path);
           if (
             faults.write &&
             path.includes("staging-") &&
@@ -135,7 +147,7 @@ function setup() {
   registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
-  return { bb, harness, store, faults };
+  return { bb, harness, store, faults, io };
 }
 
 async function directory() {
@@ -513,6 +525,16 @@ describe("project archives", () => {
     expect(Object.keys(await fileTree(out)).sort()).toEqual(
       Object.keys(first).sort(),
     );
+  });
+
+  it("bounds concurrent task JSON reads and writes", async () => {
+    const source = await seed();
+    for (let i = 0; i < 9; i++) source.store.tasks.createTask({ projectId: source.project.id, title: `Task ${i}` });
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    await exportProject(source.bb, source.store, source.project.id, out);
+    expect(source.io.peak).toBe(4);
+    expect(source.io.blobPeak).toBe(1);
   });
 
   it("cleans replaced blobs after commit and preserves originals on rollback", async () => {
