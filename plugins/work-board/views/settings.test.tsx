@@ -213,7 +213,9 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     await detail.findByRole("textbox", { name: "Task title" });
     expect(detail.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
     expect((detail.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
-    const status = await detail.findAllByRole("button", { name: "In testing" });
+    const status = await detail.findAllByRole("button", { name: "Change task status" });
+    expect(status).toHaveLength(2);
+    for (const trigger of status) expect(trigger.textContent).toContain("In testing");
     fireEvent.keyDown(status[0]!, { key: "ArrowDown" });
     expect(
       await detail.findByRole("menuitem", { name: "In testing" }),
