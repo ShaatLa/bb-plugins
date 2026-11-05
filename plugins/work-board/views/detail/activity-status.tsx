@@ -1,3 +1,5 @@
+import { TaskAdvisories } from "../../components/task-advisories";
+import type { TaskAdvisory } from "../../shared/task-advisories";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
@@ -7,7 +9,7 @@ import { TaskActivityIndicator } from "../../components/task-activity.js";
 import { StatusIcon } from "../../components/status-icon.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 
-export function ActivityStatus({ task, activity, isFetching, error, threads, onStatusChange }: { task: Task; activity?: TaskActivity; isFetching: boolean; error: string | null; threads: TaskThread[]; onStatusChange: (status: Task["status"]) => void }) {
+export function ActivityStatus({ task, activity, advisories, isFetching, error, threads, onStatusChange }: { task: Task; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; threads: TaskThread[]; onStatusChange: (status: Task["status"]) => void }) {
   const navigate = useBbNavigate();
   const workflow = useTaskStatuses(task.projectId);
   return (
@@ -34,6 +36,7 @@ export function ActivityStatus({ task, activity, isFetching, error, threads, onS
           {activity?.state ? <TaskActivityIndicator activity={activity} /> : <span className="text-muted-foreground">{error ? "Activity unavailable" : activity ? "No activity" : isFetching ? "Checking activity…" : "Activity unavailable"}</span>}
         </div>
       </div>
+      <TaskAdvisories items={advisories} />
       {error ? <p role="status" className="mt-2 text-warning">Could not refresh activity. Status may be out of date.</p> : null}
       {threads.length ? <div className="mt-2 border-t border-border pt-2">
         <div className="mb-1 text-2xs text-muted-foreground">Sessions</div>

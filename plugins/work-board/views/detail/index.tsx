@@ -387,8 +387,8 @@ function TaskDetail({
     { relevantTaskIds: [task.id] },
   );
   const activity = useTasksQuery(
-    async (query) => (await query.call("listTaskCardMeta", { taskIds: [task.id] })).metadata[0]?.activity,
-    ["threads:changed", "tasks:changed"],
+    async (query) => (await query.call("listTaskCardMeta", { taskIds: [task.id] })).metadata[0],
+    ["threads:changed", "tasks:changed", "prs:changed"],
     [task.id],
     { relevantTaskIds: [task.id] },
   );
@@ -519,7 +519,7 @@ function TaskDetail({
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
   const activityStatus = <>
-    <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} />
+    <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
     {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}

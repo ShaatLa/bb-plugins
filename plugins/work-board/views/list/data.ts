@@ -1,3 +1,4 @@
+import type { TaskAdvisory } from "../../shared/task-advisories";
 import { useActivityPoll } from "../../shell/activity-poll";
 import { tasksRpcContract } from "../../shared/contract";
 import { useMemo } from "react";
@@ -124,6 +125,7 @@ export function useLabels(projectIds: readonly string[]) {
 
 export interface TaskRowMeta {
   blockedBy?: DependencyTask[];
+  advisories?: TaskAdvisory[];
   activity?: TaskActivity;
   activeThreads: TaskThread[];
   threadHealth: ThreadHealth;
@@ -132,11 +134,11 @@ export interface TaskRowMeta {
 async function readListMeta(rpc: TasksRpc, ids: string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("listTaskCardMeta", { taskIds })).metadata);
   return new Map(rows
-    .filter((row) => row.blockedBy?.length || row.activity?.state || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
-    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth, activity: row.activity, blockedBy: row.blockedBy }]));
+    .filter((row) => row.advisories?.length || row.blockedBy?.length || row.activity?.state || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
+    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth, activity: row.activity, advisories: row.advisories, blockedBy: row.blockedBy }]));
 }
 async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRowMeta>, signals: readonly TaskSignal[]) {
-  const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed")])];
+  const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "prs:changed")])];
   const next = new Map(current);
   for (const id of ids) next.delete(id);
   for (const [id, meta] of await readListMeta(rpc, ids)) next.set(id, meta);
@@ -147,7 +149,7 @@ export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]
   const ids = tasks.map((task) => task.id).sort();
   const query = useTasksQuery<Map<string, TaskRowMeta>>(
     (rpc) => readListMeta(rpc, ids),
-    ["threads:changed", "tasks:changed"],
+    ["threads:changed", "tasks:changed", "prs:changed"],
     [projectId, ids.join()],
     { relevantTaskIds: ids, applySignals: patchListMeta },
   );

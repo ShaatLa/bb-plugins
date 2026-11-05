@@ -1,3 +1,4 @@
+import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
@@ -2504,6 +2505,7 @@ export function registerTasksCli(
               );
               const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
               const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
+              const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
                 metadata.map(
                   (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
@@ -2529,6 +2531,7 @@ export function registerTasksCli(
                   ).length,
                   threadHealth: health.get(task.id),
                   blockedBy: blockedBy.get(task.id) ?? [],
+                  advisories: advisories.get(task.id) ?? [],
                 });
               }
               if (input.options.json) {
@@ -2549,6 +2552,7 @@ export function registerTasksCli(
                   "LABELS",
                   "AGENTS",
                   "BLOCKED BY",
+                  "ADVISORIES",
                 ],
                 tasks.map((task) => [
                   task.key,
@@ -2560,6 +2564,7 @@ export function registerTasksCli(
                   task.labels.join(", ") || "-",
                   task.agentsWorking,
                   task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
+                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
                 ]),
                 "No tasks.",
               );
@@ -2649,6 +2654,7 @@ export function registerTasksCli(
                   taskThreads,
                   threadHealth,
                   activity,
+                  advisories: cardMeta.advisories ?? [],
                   dependencies,
                   blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
@@ -2695,6 +2701,7 @@ export function registerTasksCli(
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
+                ...(cardMeta.advisories?.length ? [`Advisories\n${cardMeta.advisories.map(item => advisoryText(item) + (item.kind === "merged-predecessor" ? ` \n${item.pr.url}` : "")).join("\n")}`] : []),
                 ...(activity ? [`Activity: ${activity.state ? ACTIVITY_LABELS[activity.state] : "No activity"}
 ${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activity.diagnostics && !activity.diagnostics.complete ? "\nWarning: session data is incomplete." : ""}
 ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}

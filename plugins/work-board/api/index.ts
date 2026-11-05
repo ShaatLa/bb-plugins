@@ -1,3 +1,4 @@
+import { taskAdvisories } from "../advisories";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
@@ -1220,6 +1221,7 @@ export function registerHandlers(
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const blockedBy = dependencies.blockers(ids);
+      const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
@@ -1229,6 +1231,7 @@ export function registerHandlers(
           attachmentCount: counts.get(taskId) ?? 0,
           activity: scopedActivity.get(taskId),
           blockedBy: blockedBy.get(taskId) ?? [],
+          advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
           threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
         };

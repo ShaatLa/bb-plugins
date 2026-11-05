@@ -1,3 +1,4 @@
+import type { TaskAdvisory } from "../../shared/task-advisories";
 import { useActivityPoll } from "../../shell/activity-poll";
 import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth, type DependencyTask } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
@@ -13,6 +14,7 @@ import type { TaskActivity } from "../../shared/task-activity.js";
 
 export interface BoardCardMeta {
   blockedBy?: DependencyTask[];
+  advisories?: TaskAdvisory[];
   activity?: TaskActivity;
   workingThreads: TaskThread[];
   threadHealth?: ThreadHealth;
@@ -87,7 +89,7 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
   const read = (rpc: TasksRpc, taskIds: string[]) => taskBatches(taskIds, async (batch) => (await rpc.call("listTaskCardMeta", { taskIds: batch })).metadata);
   const query = useTasksQuery<MetadataRow[]>(
     (rpc) => read(rpc, ids),
-    enabled ? ["tasks:changed", "threads:changed"] : [],
+    enabled ? ["tasks:changed", "threads:changed", "prs:changed"] : [],
     [projectId, ids.join()],
     {
       enabled,
@@ -95,7 +97,7 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
       snapshot: { name: `board-metadata:${projectId}`, schema: tasksRpcContract.listTaskCardMeta.output.shape.metadata },
       relevantTaskIds: ids,
       applySignals: async (rpc, current, signals) => {
-        const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "threads:changed")])].filter((id) => ids.includes(id));
+        const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "prs:changed")])].filter((id) => ids.includes(id));
         const rows = await read(rpc, changed);
         const next = new Map(current.map((row) => [row.taskId, row]));
         for (const id of changed) next.delete(id);
@@ -118,6 +120,7 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
     threadHealth: entry.threadHealth,
     activity: entry.activity,
     blockedBy: entry.blockedBy,
+    advisories: entry.advisories,
     attachmentCount: entry.attachmentCount,
   });
   return metadata;

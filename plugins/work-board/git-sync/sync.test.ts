@@ -734,6 +734,20 @@ it("refreshes only PR subscribers after polling and leaves unrelated task indexe
   expect(summary.summaries).toMatchObject([{ taskId: f.task.id, total: 1, stale: false }]);
 });
 
+it("refreshes dependency advice when a predecessor PR changes without moving either task", async () => {
+  const f = setup();
+  const dependent = f.tasks.find(task => task.id !== f.task.id)!;
+  const { createDependencyStore } = await import("../dependencies/store");
+  const dependencies = createDependencyStore(f.bb.storage.database(), f.store.tasks);
+  dependencies.add(dependent.id, f.task.id);
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
+  const before = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id);
+  expect(f.harness.realtimeSignals.slice(before)).toContainEqual({ channel: "prs:changed", payload: { taskId: dependent.id, projectId: f.project.id } });
+  expect(dependencies.list(dependent.id).blockedBy).toHaveLength(1);
+});
+
 it("fetches files once per open head and refetches after the head changes", async () => {
   const f = githubFixture();
   const config = gitSyncConfigSchema.parse({});

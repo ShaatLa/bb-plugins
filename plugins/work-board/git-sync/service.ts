@@ -76,10 +76,16 @@ export function createGitSyncService(
     if (!project) throw new Error("Project not found");
     return project;
   };
-  const publishProjectPrs = (projectId: string) => {
-    for (const taskId of new Set(data.linksForProject(projectId).map(link => link.taskId)))
-      bb.realtime.publish("prs:changed", { taskId, projectId });
+  const publishPrs = (projectId: string, tasks: Iterable<string>) => {
+    const affected = new Set(tasks), ids = [...affected];
+    // A predecessor PR refresh also invalidates advice on its dependents, without broad board refreshes.
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500);
+      for (const row of db.prepare<string[], { taskId: string }>(`SELECT DISTINCT task_id AS taskId FROM task_dependencies WHERE blocking_task_id IN (${batch.map(() => "?").join(",")})`).all(...batch)) affected.add(row.taskId);
+    }
+    for (const taskId of affected) bb.realtime.publish("prs:changed", { taskId, projectId });
   };
+  const publishProjectPrs = (projectId: string) => publishPrs(projectId, data.linksForProject(projectId).map(link => link.taskId));
   const remember = (
     taskId: string,
     url: string,
@@ -335,7 +341,7 @@ export function createGitSyncService(
         if (filesChanged) publishProjectPrs(projectId);
         else {
           const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
-          for (const taskId of linked) bb.realtime.publish("prs:changed", { taskId, projectId });
+          publishPrs(projectId, linked);
         }
       }
       return { checked, errors: [...new Set(errors)] };

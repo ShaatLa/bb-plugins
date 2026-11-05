@@ -1,3 +1,4 @@
+import { taskAdvisorySchema } from "./task-advisories";
 import { taskActivitySchema } from "./task-activity.js";
 import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
@@ -1020,6 +1021,7 @@ export const tasksRpcContract = {
       taskThreads: z.array(taskThreadSchema),
       activity: taskActivitySchema.optional(),
       blockedBy: z.array(dependencyTaskSchema).optional(),
+      advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
     }).strict()) }).strict(),
   },
