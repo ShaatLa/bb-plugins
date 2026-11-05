@@ -214,7 +214,7 @@ export function TasksTopbar({
           <span className="flex items-center gap-2">
             <span className="whitespace-nowrap font-semibold">Manage</span>
             <span className="hidden text-xs font-normal text-muted-foreground @md:inline">
-              labels, presets, folders
+              projects, labels, presets, folders
             </span>
           </span>
         );

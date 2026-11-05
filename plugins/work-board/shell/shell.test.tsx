@@ -1119,7 +1119,7 @@ describe("tasks app shell", () => {
         rpc: seededRpc({ listLabels: () => ({ labels: [] }) }),
       },
     );
-    await slot.findByText("Labels, agent presets, and folders.");
+    await slot.findByText("Projects, labels, agent presets, and folders.");
   });
 
   it("opens quick-create on bare 'c' but not from editable targets or dialogs", async () => {
