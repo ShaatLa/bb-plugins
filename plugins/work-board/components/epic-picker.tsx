@@ -14,17 +14,20 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Icon } from "@/components/ui/icon";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 export function EpicPicker({
   projectId,
   value,
   onChange,
+  onOpen,
   className,
 }: {
   projectId: string | null;
   value: string | null;
   onChange: (epicId: string | null) => void;
+  onOpen?: (epicKey: string) => void;
   className: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -41,61 +44,65 @@ export function EpicPicker({
   );
   const selected = epics.find((epic) => epic.id === value);
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="Epic"
-          className={cn("inline-flex items-center whitespace-nowrap", className)}
-        >
-          <Icon name="Zap" className="size-3.5 shrink-0" />
-          <span className="truncate">
-            {selected
-              ? `Epic: ${selected.key} · ${selected.title}`
-              : value
-                ? "Epic…"
-                : "Add to epic"}
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-0">
-        <Command>
-          <CommandInput placeholder="Choose an epic…" />
-          <CommandList>
-            <CommandEmpty>
-              {query.error ??
-                (query.isLoading ? "Loading epics…" : "No matching epics.")}
-            </CommandEmpty>
-            <CommandGroup>
-              <CommandItem
-                onSelect={() => {
-                  onChange(null);
-                  setOpen(false);
-                }}
-              >
-                No epic
-              </CommandItem>
-              {epics.map((epic) => (
+    <div className="relative min-w-0 max-w-full">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label="Epic"
+            title={selected ? `${selected.key} · ${selected.title}` : undefined}
+            className={cn("inline-flex min-w-0 max-w-full items-center whitespace-nowrap", className, selected && onOpen && "pr-8")}
+          >
+            <Icon name="Zap" className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {selected
+                ? `Epic: ${selected.key} · ${selected.title}`
+                : value
+                  ? "Epic…"
+                  : "Add to epic"}
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-72 p-0">
+          <Command>
+            <CommandInput placeholder="Choose an epic…" />
+            <CommandList>
+              <CommandEmpty>
+                {query.error ??
+                  (query.isLoading ? "Loading epics…" : "No matching epics.")}
+              </CommandEmpty>
+              <CommandGroup>
                 <CommandItem
-                  key={epic.id}
-                  value={`${epic.key} ${epic.title}`}
                   onSelect={() => {
-                    onChange(epic.id);
+                    onChange(null);
                     setOpen(false);
                   }}
                 >
-                  <span className="flex-1 truncate">
-                    {epic.key} · {epic.title}
-                  </span>
-                  {epic.id === value ? (
-                    <Icon name="Check" className="size-3.5" />
-                  ) : null}
+                  No epic
                 </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+                {epics.map((epic) => (
+                  <CommandItem
+                    key={epic.id}
+                    value={`${epic.key} ${epic.title}`}
+                    onSelect={() => {
+                      onChange(epic.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="flex-1 truncate">
+                      {epic.key} · {epic.title}
+                    </span>
+                    {epic.id === value ? (
+                      <Icon name="Check" className="size-3.5" />
+                    ) : null}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    {selected && onOpen ? <Button type="button" variant="ghost" size="icon" className="absolute right-0 top-1/2 size-6 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label={`Open epic ${selected.key}`} onClick={() => onOpen(selected.key)}><Icon name="ArrowUpRight" className="size-3.5" /></Button> : null}
+    </div>
   );
 }

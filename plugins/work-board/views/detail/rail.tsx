@@ -1,3 +1,4 @@
+import { useTasksNavigation } from "../../shell/routes";
 import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState, type ReactNode } from "react";
 import type {
@@ -593,6 +594,7 @@ export function PropertiesRail({
     async (query) => (await query.call("listBbProjects")).bbProjects,
     ["projects:changed"],
   );
+  const navigation = useTasksNavigation();
   return (
     <aside
       aria-label="Task details"
@@ -621,6 +623,7 @@ export function PropertiesRail({
             projectId={task.projectId}
             value={task.epicId}
             onChange={(epicId) => onUpdate({ epicId })}
+            onOpen={(taskKey) => navigation.go({ kind: "task", taskKey })}
             className={RAIL_ROW_CLASS}
           />
         ) : null}
@@ -717,6 +720,7 @@ export function InlineProperties({
 }: TaskPropertiesProps & {
   className?: string;
 }) {
+  const navigation = useTasksNavigation();
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
   );
@@ -740,6 +744,7 @@ export function InlineProperties({
           projectId={task.projectId}
           value={task.epicId}
           onChange={(epicId) => onUpdate({ epicId })}
+            onOpen={(taskKey) => navigation.go({ kind: "task", taskKey })}
           className={CHIP_CLASS}
         />
       ) : null}

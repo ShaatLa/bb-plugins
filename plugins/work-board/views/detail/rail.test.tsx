@@ -34,7 +34,7 @@ if (!window.matchMedia) {
 }
 
 installTestPluginRuntime();
-const { PropertiesRail } = await import("./rail");
+const { PropertiesRail, InlineProperties } = await import("./rail");
 const { TasksRefreshProvider } = await import("../../shell/refresh");
 
 function RailHarness(props: ComponentProps<typeof PropertiesRail>) {
@@ -243,4 +243,16 @@ describe("Owner action controls", () => {
     );
     expect(updates).toEqual([{ requesterThreadId: "thr_initiator" }]);
   });
+});
+
+it.each(["rail", "inline"])("opens the selected epic independently of its picker in %s properties", async layout => {
+  const epic = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT6", number: 6, key: "TSK-6", title: "Big initiative", type: "epic" });
+  const props = { ...railProps(null), task: { ...task, epicId: epic.id } };
+  function Harness() { return <TasksRefreshProvider>{layout === "rail" ? <PropertiesRail {...props} /> : <InlineProperties {...props} />}</TasksRefreshProvider>; }
+  const slot = renderSlot({ component: Harness }, {}, { rpc: { listBbProjects: () => ({ bbProjects: [] }), listTasks: () => ({ tasks: [epic], nextCursor: null }) } });
+  fireEvent.click(await slot.findByRole("button", { name: "Open epic TSK-6" }));
+  expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "task/TSK-6" } });
+  expect(slot.queryByPlaceholderText("Choose an epic…")).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Epic" }));
+  expect(await slot.findByRole("option", { name: "No epic" })).toBeTruthy();
 });
