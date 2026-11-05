@@ -1,4 +1,4 @@
-/** Process-local read sharing for activity sampling. Every structure here has a hard size bound. */
+/** Bounded result caches and shared concurrency for process-local activity sampling. */
 export const SAMPLE_TTL_MS = 1_000; // runtime / interactions / queues may lag by at most this long
 export const MAX_CACHE_ENTRIES = 256; // per cache; oldest inserted entry is dropped first
 export const MAX_SDK_READS = 4; // simultaneous event/interaction/queue reads for one plugin host

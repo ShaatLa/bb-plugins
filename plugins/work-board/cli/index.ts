@@ -912,6 +912,28 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done)", [["add KEY --blocked-by KEY", "Add a predecessor"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["list KEY", "Show both directions"]]),
+        ...Object.fromEntries((["add", "remove", "list"] as const).map(action => [`dependency ${action}`, cliCommand({
+          summary: `${action} task dependencies; only Done satisfies a predecessor`,
+          positionals: [KEY_POSITIONAL],
+          options: { json: JSON_OPTION, ...(action === "list" ? {} : { "blocked-by": { type: "string" as const, required: true as const, description: "Predecessor task key or ID (same project)" } }) },
+          run(input, ctx) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            if (action !== "list") {
+              const blocker = await resolveTask(domain, String(input.options["blocked-by"]));
+              const args = { taskId: task.id, blockingTaskId: blocker.id, authorName: taskAuthor(ctx) };
+              const result = action === "add"
+                ? await domain.addTaskDependency(tasksRpcContract.addTaskDependency.input.parse(args))
+                : await domain.removeTaskDependency(tasksRpcContract.removeTaskDependency.input.parse(args));
+              return input.options.json ? JSON.stringify(result) : `${task.key}: ${action === "add" ? "blocked by" : "removed dependency on"} ${blocker.key}${result.changed ? "" : " (unchanged)"}`;
+            }
+            const result = await domain.listTaskDependencies({ taskId: task.id });
+            return input.options.json ? JSON.stringify(result) : [
+              `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
+              `Blocks: ${result.blocks.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
+            ].join("\n");
+          }); },
+        })])),
         seq: groupCommand("seq", "Manage project sequences", [["create", "Create a sequence"], ["list", "List sequences"], ["show", "Show sequence and claims"], ["set-next", "Resync next value"], ["delete", "Delete a sequence"]]),
         ...Object.fromEntries((["create", "list", "show", "set-next", "delete"] as const).map(action => [`seq ${action}`, cliCommand({
           summary: `${action} a project sequence`,
@@ -2464,8 +2486,10 @@ export function registerTasksCli(
                   }),
                 ),
               );
+              const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
+              const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
               const health = new Map(
-                (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata.map(
+                metadata.map(
                   (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
                 ),
               );
@@ -2488,6 +2512,7 @@ export function registerTasksCli(
                     ACTIVE_THREAD_STATUSES.has(thread.liveStatus),
                   ).length,
                   threadHealth: health.get(task.id),
+                  blockedBy: blockedBy.get(task.id) ?? [],
                 });
               }
               if (input.options.json) {
@@ -2507,6 +2532,7 @@ export function registerTasksCli(
                   "TITLE",
                   "LABELS",
                   "AGENTS",
+                  "BLOCKED BY",
                 ],
                 tasks.map((task) => [
                   task.key,
@@ -2517,6 +2543,7 @@ export function registerTasksCli(
                   task.title,
                   task.labels.join(", ") || "-",
                   task.agentsWorking,
+                  task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
                 ]),
                 "No tasks.",
               );
@@ -2591,6 +2618,7 @@ export function registerTasksCli(
                   ),
                 );
               const { links: prLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const dependencies = await domain.listTaskDependencies({ taskId: task.id });
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
@@ -2605,6 +2633,8 @@ export function registerTasksCli(
                   taskThreads,
                   threadHealth,
                   activity,
+                  dependencies,
+                  blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   comments,
@@ -2636,6 +2666,8 @@ export function registerTasksCli(
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
+                  ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
+                  ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
                   ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),
                   ["Priority", task.priority],
                   ["Due", task.dueDate ?? "-"],

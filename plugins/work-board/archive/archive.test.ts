@@ -387,6 +387,7 @@ describe("project archives", () => {
       const record = JSON.parse(await readFile(path, "utf8"));
       delete record.questions;
       delete record.pullRequests;
+      delete record.dependencies;
       await writeFile(path, jsonText(record));
     }
     const target = setup();
@@ -413,7 +414,7 @@ describe("project archives", () => {
     const manifest = JSON.parse(await readFile(path, "utf8"));
     manifest.version = 2;
     delete manifest.gitSync;
-    for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.pullRequests; await writeFile(taskFile, jsonText(row)); }
+    for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.pullRequests; delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
     delete manifest.project.statuses;
     await writeFile(path, jsonText(manifest));
     const taskPath = join(out, "tasks", `${source.task.id}.json`);
@@ -822,7 +823,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(11);
+  expect(manifest.version).toBe(12);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -837,6 +838,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
     const path = join(out, "tasks", `${id}.json`);
     const record = JSON.parse(await readFile(path, "utf8"));
     delete record.pullRequests;
+      delete record.dependencies;
     delete record.task.executionTarget;
     delete record.task.requesterThreadId;
     await writeFile(path, jsonText(record));
@@ -861,7 +863,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(11);
+  expect(manifest.version).toBe(12);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -876,6 +878,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
   // Earlier exporters could already write status metadata under v8.
   manifest.version = 8;
+  for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
   delete manifest.project.autoArchiveAfterDays;
   delete manifest.project.staleIdleMinutes;
   await writeFile(join(out, "project.json"), jsonText(manifest));

@@ -1,5 +1,5 @@
 import { useActivityPoll } from "../../shell/activity-poll";
-import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth } from "../../shared/contract.js";
+import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth, type DependencyTask } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
 import {
   signalTaskIds,
@@ -12,6 +12,7 @@ import { isActiveThread } from "../detail/meta.js";
 import type { TaskActivity } from "../../shared/task-activity.js";
 
 export interface BoardCardMeta {
+  blockedBy?: DependencyTask[];
   activity?: TaskActivity;
   workingThreads: TaskThread[];
   threadHealth?: ThreadHealth;
@@ -116,6 +117,7 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
     workingThreads: entry.taskThreads.filter(isActiveThread),
     threadHealth: entry.threadHealth,
     activity: entry.activity,
+    blockedBy: entry.blockedBy,
     attachmentCount: entry.attachmentCount,
   });
   return metadata;

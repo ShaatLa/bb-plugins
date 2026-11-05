@@ -1,5 +1,6 @@
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
+import { createDependencyStore } from "../dependencies/store";
 import { gitSyncService } from "../git-sync/service";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
@@ -194,6 +195,13 @@ export function publishTasksChanged(
 ): void {
   const payload: TasksChangedEvent = { taskId, projectId };
   bb.realtime.publish("tasks:changed", payload);
+  // A predecessor's status/key changes must refresh its neighbours without board-wide polling.
+  const neighbours = bb.storage.database().prepare<[string, string, string], { taskId: string; projectId: string }>(`
+    SELECT DISTINCT t.id AS taskId, t.project_id AS projectId FROM task_dependencies d JOIN tasks t
+      ON t.id=CASE WHEN d.task_id=? THEN d.blocking_task_id ELSE d.task_id END
+    WHERE d.task_id=? OR d.blocking_task_id=?
+  `).all(taskId, taskId, taskId);
+  for (const neighbour of neighbours) bb.realtime.publish("tasks:changed", neighbour);
 }
 
 export function publishProjectsChanged(
@@ -624,7 +632,27 @@ export function registerHandlers(
   store: TasksApiStore,
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
+  const dependencies = createDependencyStore(bb.storage.database(), store.tasks);
+  function changeDependency(input: { taskId: string; blockingTaskId: string; authorName: string }, add: boolean) {
+    const changed = store.transaction(() => {
+      const changed = add ? dependencies.add(input.taskId, input.blockingTaskId) : dependencies.remove(input.taskId, input.blockingTaskId);
+      if (changed) {
+        const task = store.tasks.getTask(input.taskId)!, blocker = store.tasks.getTask(input.blockingTaskId)!;
+        writeSystemComments(store, task.id, input.authorName, [`${add ? "Dependency added" : "Dependency removed"}: blocked by ${blocker.key} (until Done) by ${input.authorName}`]);
+        writeSystemComments(store, blocker.id, input.authorName, [`${add ? "Dependency added" : "Dependency removed"}: blocks ${task.key} (until Done) by ${input.authorName}`]);
+      }
+      return changed;
+    });
+    if (changed) for (const id of [input.taskId, input.blockingTaskId]) {
+      publishTasksChanged(bb, id, store.tasks.getTask(id)!.projectId);
+      publishCommentsChanged(bb, id);
+    }
+    return { changed };
+  }
   return {
+    listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
+    addTaskDependency: (input) => changeDependency(input, true),
+    removeTaskDependency: (input) => changeDependency(input, false),
     createSequence: (input) => ({ sequence: store.tasks.createSequence(input.projectId, input.name, input.next, input.format) }),
     listSequences: (input) => ({ sequences: store.tasks.listSequences(input.projectId) }),
     showSequence: (input) => { const sequence = store.tasks.getSequence(input.projectId, input.name); if (!sequence) throw new Error("Sequence not found"); return { sequence, claims: store.tasks.listSequenceClaims(input.projectId, input.name) }; },
@@ -927,6 +955,7 @@ export function registerHandlers(
           ]
         : [];
       const attachments = attachmentsForTasks(store.tasks, [input.taskId]);
+      const dependencyNeighbours = dependencies.related(input.taskId);
       const deleted = store.tasks.deleteTask(input.taskId);
       if (deleted && task) {
         await removeAttachmentBlobs(bb, store.tasks, attachments);
@@ -934,6 +963,7 @@ export function registerHandlers(
         for (const dependent of dependents) {
           publishTasksChanged(bb, dependent.id, dependent.projectId);
         }
+        for (const neighbour of dependencyNeighbours) publishTasksChanged(bb, neighbour.id, neighbour.projectId);
       }
       return { deleted };
     },
@@ -1005,6 +1035,10 @@ export function registerHandlers(
           current.id,
           input.projectId,
         );
+        if (bb.storage.database().prepare<[], { found: number }>(`
+          SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
+          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id LIMIT 1
+        `).get()) throw new Error("Remove dependencies outside the moving task family before changing projects");
         for (const { previousKey, task } of outcome.moved) {
           writeSystemComments(store, task.id, input.authorName, [
             `Moved from ${previousKey} to ${task.key} by ${input.authorName}`,
@@ -1182,6 +1216,7 @@ export function registerHandlers(
       }
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
+      const blockedBy = dependencies.blockers(ids);
       const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
@@ -1190,6 +1225,7 @@ export function registerHandlers(
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
           activity: scopedActivity.get(taskId),
+          blockedBy: blockedBy.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
           threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
         };

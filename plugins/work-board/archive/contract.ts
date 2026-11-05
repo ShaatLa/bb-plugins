@@ -31,6 +31,7 @@ export const archiveProjectSchema = z
       z.literal(9),
       z.literal(10),
       z.literal(11),
+      z.literal(12),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -45,6 +46,7 @@ export const archiveTaskSchema = z
   .object({
     task: taskSchema,
     activityHistory: z.boolean().optional(),
+    dependencies: z.array(idSchema).optional(),
     pullRequests: z.array(prLinkSchema).optional(),
     comments: z.array(commentSchema),
     questions: z.array(questionSchema).default([]),
@@ -108,6 +110,29 @@ function unique(ids: readonly string[], label: string) {
 
 export function validateArchive({ manifest, records }: ProjectArchive): void {
   const projectId = manifest.project.id;
+  const taskIds = new Set(manifest.taskIds);
+  const incoming = new Map(manifest.taskIds.map(id => [id, 0]));
+  const successors = new Map<string, string[]>();
+  for (const record of records) {
+    if (manifest.version >= 12 && !record.dependencies) throw new Error("Archive v12 requires dependencies");
+    if (manifest.version < 12 && record.dependencies !== undefined) throw new Error("Task dependencies require archive v12");
+    unique(record.dependencies ?? [], "task dependency");
+    for (const blocker of record.dependencies ?? []) {
+      if (blocker === record.task.id || !taskIds.has(blocker)) throw new Error("Invalid task dependency in archive");
+      incoming.set(record.task.id, (incoming.get(record.task.id) ?? 0) + 1);
+      const group = successors.get(blocker) ?? [];
+      group.push(record.task.id);
+      successors.set(blocker, group);
+    }
+  }
+  // Iterative topological validation avoids recursion limits on long dependency chains.
+  const ready = [...incoming].filter(([, count]) => count === 0).map(([id]) => id);
+  for (let i = 0; i < ready.length; i++) for (const successor of successors.get(ready[i]!) ?? []) {
+    const count = incoming.get(successor)! - 1;
+    incoming.set(successor, count);
+    if (count === 0) ready.push(successor);
+  }
+  if (ready.length !== incoming.size) throw new Error("Dependency cycle in archive");
   if (manifest.version >= 8 && !manifest.gitSync) throw new Error("Archive v8 requires gitSync");
   if (manifest.version < 8 && (manifest.gitSync || records.some(record => record.pullRequests !== undefined))) throw new Error("Git/PR links require archive v8");
   for (const record of records) {

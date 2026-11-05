@@ -1,5 +1,6 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
+import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -391,6 +392,10 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  const dependencies = useTasksQuery(
+    async query => query.call("listTaskDependencies", { taskId: task.id }),
+    ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
+  );
   useActivityPoll(activity.refresh, activity.isFetching, !!threads.data?.length);
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
@@ -515,6 +520,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} />
+    <DependenciesSection task={task} query={dependencies} onError={push} />
     {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}

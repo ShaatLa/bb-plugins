@@ -1,5 +1,14 @@
 # Work Board
 
+## Task dependencies (0.22.0)
+
+Use the task's **Dependencies** section to add or remove **Blocked by / Blocks** links and search predecessors by key or title. Board cards and list rows show **Blocked** with the unfinished predecessors; task details retain satisfied links and their status. A predecessor satisfies its links only in **Done**. Canceled does not satisfy them, and reopening Done restores the warning. These are warnings: dispatch and status changes remain available, and workflow status is never replaced automatically.
+
+Agents can use `bb work-board dependency add ABC-2 --blocked-by ABC-1`, `dependency list ABC-2 --json`, and `dependency remove ABC-2 --blocked-by ABC-1`. `show --json` includes `dependencies` and `blocked`; `list --json` includes unresolved `blockedBy`. Dispatch prompts include the current blockers. Add/remove operations record history on both cards. Self-links and cycles are refused. Links currently stay within one project; moving a task family is allowed only if it carries all its dependency endpoints. Export v12 preserves outgoing dependency IDs; imports v1–v11 preserve existing local dependencies.
+
+Performance: activity consumers share bounded SDK reads and immutable dispatch attribution; Git sync batches attached sessions and shares post-merge pages within each run; archive capture batches SQL and limits JSON I/O while keeping blobs sequential; downloads revalidate privately with ETags and avoid an extra full-size buffer copy. Browser snapshot writes are coalesced and bounded, and PR overlap preparation is reused. Small English comments describe the resource invariants beside these paths.
+
+
 Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
 
 ## Project settings
@@ -45,7 +54,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v11**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v11).
+Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v12**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v12).
 
 Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
 
@@ -527,7 +536,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v11; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v11 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v12; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v12 exporter.
 
 ## Dispatch и иерархия тредов
 

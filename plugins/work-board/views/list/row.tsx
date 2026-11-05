@@ -1,4 +1,5 @@
 import { TaskActivityIndicator } from "../../components/task-activity";
+import { DependencyWarning } from "../../components/dependency-warning";
 import { PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { memo, useState } from "react";
 import type {
@@ -181,6 +182,7 @@ export const TaskRow = memo(function TaskRow({
             </span>
           ) : null}
           <TaskActivityIndicator activity={meta?.activity} failureMarker={!!meta?.threadHealth.failed.length} />
+          <DependencyWarning blockedBy={meta?.blockedBy} />
           <ThreadHealthMarkers health={meta?.threadHealth} />
           <QuestionCount count={unansweredQuestions} />
           <PullRequestSummary summary={prSummary} />

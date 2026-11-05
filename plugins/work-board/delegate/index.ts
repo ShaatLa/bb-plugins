@@ -1,4 +1,6 @@
 import { dispatchMarker } from "../activity/dispatch.js";
+import { createDependencyStore } from "../dependencies/store";
+import type { DependencyTask } from "../shared/contract";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { statusLabel } from "../shared/statuses.js";
@@ -57,6 +59,7 @@ class DelegationError extends Error {
 }
 
 interface SeedPromptInput {
+  blockedBy?: readonly DependencyTask[];
   questions?: readonly TaskQuestion[];
   task: Task;
   project: Project;
@@ -130,6 +133,7 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
     ),
     markdownSection("Attachments", formatAttachments(input.attachments)),
     markdownSection("Recent comments", formatComments(input.recentComments)),
+    ...(input.blockedBy?.length ? [markdownSection("Dependency warning", `This task is blocked by unfinished predecessors:\n${input.blockedBy.map(task => `- ${task.key} · ${task.title} (${task.status})`).join("\n")}\nOnly Done satisfies a dependency. Work and status changes are allowed, but respect this ordering and report any blocker. Recheck with bb work-board dependency list ${input.task.key}.`)] : []),
     ...(input.questions?.length
       ? [markdownSection("Questions", JSON.stringify(input.questions, null, 2))]
       : []),
@@ -350,6 +354,7 @@ export function handlers(
       }
       const comments = store.tasks.listComments(task.id);
       const prompt = buildSeedPrompt({
+        blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,
@@ -415,6 +420,7 @@ export function handlers(
         permissionMode: preset.permissionMode,
       });
       const prompt = buildSeedPrompt({
+        blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,

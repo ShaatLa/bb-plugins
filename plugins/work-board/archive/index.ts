@@ -323,15 +323,17 @@ export async function importProject(
       // Check all references together so shared blobs survive replacement.
       const previousPaths = new Set([...blobs.values()].flatMap(({ previousPath }) => previousPath ? [previousPath] : []));
       try {
-        const referenced = new Set(bb.storage.database()
-          .prepare<[], { blob_path: string }>("SELECT DISTINCT blob_path FROM attachments")
-          .all().map((row) => row.blob_path));
-        for (const path of previousPaths) {
-          if (referenced.has(path)) continue;
-          try {
-            await rm(join(root, path), { force: true });
-          } catch (error) {
-            bb.log.warn(`Could not remove replaced import blob ${path}: ${errorMessage(error)}`);
+        if (previousPaths.size) {
+          const referenced = new Set(bb.storage.database()
+            .prepare<[], { blob_path: string }>("SELECT DISTINCT blob_path FROM attachments")
+            .all().map((row) => row.blob_path));
+          for (const path of previousPaths) {
+            if (referenced.has(path)) continue;
+            try {
+              await rm(join(root, path), { force: true });
+            } catch (error) {
+              bb.log.warn(`Could not remove replaced import blob ${path}: ${errorMessage(error)}`);
+            }
           }
         }
       } catch (error) {

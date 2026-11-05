@@ -540,7 +540,7 @@ export function registerAttachments(
     }
     // Imports replace blobs at new paths; include file identity to detect other replacements.
     const etag = `"${createHash("sha256")
-      .update(JSON.stringify([attachment.blobPath, ...[blobStat.dev, blobStat.ino, blobStat.size, blobStat.mtimeNs, blobStat.ctimeNs].map(String)]))
+      .update(JSON.stringify([attachment.blobPath, attachment.mime, attachment.fileName, attachment.sizeBytes, ...[blobStat.dev, blobStat.ino, blobStat.size, blobStat.mtimeNs, blobStat.ctimeNs].map(String)]))
       .digest("hex")}"`;
     const condition = context.req.raw.headers.get("if-none-match")?.trim();
     const matches = condition === "*" || Array.from(

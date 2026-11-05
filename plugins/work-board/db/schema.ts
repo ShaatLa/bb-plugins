@@ -351,6 +351,13 @@ const MIGRATIONS = [
      CHECK (auto_archive_after_days IN ('off', '7', '14', '30'));
    ALTER TABLE projects ADD COLUMN stale_idle_minutes TEXT
      CHECK (stale_idle_minutes IN ('off', '30', '45', '60', '120'));`,
+  `CREATE TABLE task_dependencies (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     blocking_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     PRIMARY KEY (task_id, blocking_task_id),
+     CHECK (task_id <> blocking_task_id)
+   );
+   CREATE INDEX idx_task_dependencies_blocker ON task_dependencies(blocking_task_id, task_id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

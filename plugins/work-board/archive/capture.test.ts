@@ -87,6 +87,7 @@ function legacyRecords(h: Host, projectId: string) {
     .map((task) => {
       const comments = store.tasks.listComments(task.id).sort((a, b) => a.id.localeCompare(b.id));
       return {
+        dependencies: [],
         activityHistory: Boolean(db.prepare<[string], { task_id: string }>("SELECT task_id FROM task_activity_history WHERE task_id=?").get(task.id)),
         pullRequests: createGitSyncStore(db).links(task.id),
         task: { ...task, labelIds: store.tasks.listTaskLabels(task.id).map((link) => link.labelId).sort() },
@@ -135,7 +136,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    // Per-task reads cost 96 / 906 statements for these fixtures; batching measures 14.
+    // Per-task reads cost 96 / 906 statements for these fixtures; batching plus dependency rows measures 15.
     expect(counts[0]).toBeLessThanOrEqual(20);
   });
 

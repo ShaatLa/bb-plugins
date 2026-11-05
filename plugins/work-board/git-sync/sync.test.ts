@@ -254,7 +254,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(11);
+  expect(capture.manifest.version).toBe(12);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(
@@ -842,4 +842,29 @@ it("loads unique attached threads in batches of at most 200", async () => {
   await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
   await f.service.syncProject(f.project.id);
   expect(sizes).toEqual([200, 1]);
+});
+
+it("aborts an in-flight thread batch and does not start another after the sync deadline", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = setup();
+    for (let i = 0; i < 201; i++) f.store.tasks.upsertTaskThread({ taskId: f.task.id, threadId: `thr_batch_${i}`, title: "Worker", presetName: "Default", liveStatus: "working" });
+    let signal: AbortSignal | undefined;
+    let release!: (rows: never[]) => void;
+    let calls = 0;
+    f.harness.sdk.stub("threads.list", async (input: { signal?: AbortSignal }) => {
+      calls++;
+      signal = input.signal;
+      return new Promise<never[]>(resolve => { release = resolve; });
+    });
+    await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+    const result = f.service.syncProject(f.project.id);
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect((await result).errors[0]).toContain("timed out during worker thread lookup");
+    expect(signal!.aborted).toBe(true);
+    release([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+  } finally { vi.useRealTimers(); }
 });

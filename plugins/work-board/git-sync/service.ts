@@ -212,7 +212,7 @@ export function createGitSyncService(
       for (let offset = 0; offset < ids.length && current(); offset += 200) {
         const batch = ids.slice(offset, offset + 200);
         try {
-          const threads = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true });
+          const threads = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true, signal: AbortSignal.any([controller.signal, run.signal]) });
           if (!current()) break;
           for (const thread of threads)
             if (thread.environmentId) environments.set(thread.id, thread.environmentId);

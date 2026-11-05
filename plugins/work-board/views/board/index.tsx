@@ -1,6 +1,7 @@
 import { displayName } from "../../shared/display-name.js";
 import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { TaskActivityIndicator } from "../../components/task-activity";
+import { DependencyWarning } from "../../components/dependency-warning";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
   useEffect,
@@ -184,6 +185,7 @@ function TaskCard({
               </span>
             ) : null}
             <TaskActivityIndicator activity={meta.activity} failureMarker={!!meta.threadHealth?.failed.length} />
+            <DependencyWarning blockedBy={meta.blockedBy} />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
           {childQuestions > 0 && !ghost ? (
@@ -359,7 +361,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     const map = new Map(board.data?.metaByTaskId);
     if (metadata.data) for (const [id, value] of map) map.set(id, { ...value, activity: undefined });
     for (const row of metadata.data ?? []) map.set(row.taskId, {
-      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
     });
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);

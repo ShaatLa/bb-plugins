@@ -169,6 +169,7 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
 
 function detailRpc(overrides: Record<string, unknown> = {}) {
   return {
+    listTaskDependencies: () => ({ blockedBy: [], blocks: [] }),
     listProjects: () => ({
       projects: [
         {
@@ -585,7 +586,8 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   const rail = region.closest("aside")!;
   expect(within(rail).queryByText("Agents")).toBeNull();
   expect(within(rail).getByRole("button", { name: "Go to thread" })).toBeTruthy();
-  expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  expect(region.nextElementSibling?.getAttribute("aria-label")).toBe("Task dependencies");
+  expect(region.nextElementSibling?.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
   fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };

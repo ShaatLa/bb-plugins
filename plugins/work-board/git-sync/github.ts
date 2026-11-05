@@ -253,6 +253,7 @@ export function createGithubClient(options: {
     let value = branchPages.get(key);
     if (!value) {
       value = request(path, undefined, { value: token });
+      if (branchPages.size >= 256) branchPages.delete(branchPages.keys().next().value!);
       branchPages.set(key, value);
       value.catch(() => { if (branchPages.get(key) === value) branchPages.delete(key); });
     }

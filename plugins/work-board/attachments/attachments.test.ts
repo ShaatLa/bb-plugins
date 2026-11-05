@@ -33,7 +33,7 @@ function setup(options?: Parameters<typeof registerAttachments>[2]) {
     .all()
     .find((entry) => entry.name === "main");
   if (!database) throw new Error("test database path is missing");
-  return { harness, store, task, root: dirname(database.file) };
+  return { bb, harness, store, task, root: dirname(database.file) };
 }
 
 async function upload(
@@ -52,7 +52,7 @@ async function upload(
 
 describe("task attachments", () => {
   it("revalidates downloads without reading the body and detects replacement", async () => {
-    const { harness, root, store, task } = setup();
+    const { bb, harness, root, store, task } = setup();
     try {
       const uploaded = await upload(harness, task.id, "first");
       const { attachmentId } = await uploaded.json() as { attachmentId: string };
@@ -69,6 +69,11 @@ describe("task attachments", () => {
         expect(await response.text()).toBe("");
       }
       expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
+      bb.storage.database().prepare("UPDATE attachments SET file_name=? WHERE id=?").run("renamed.txt", attachmentId);
+      const renamed = await harness.fetchHttp("GET", url, { headers: { "if-none-match": etag } });
+      expect(renamed.status).toBe(200);
+      expect(renamed.headers.get("etag")).not.toBe(etag);
+      expect(renamed.headers.get("content-disposition")).toContain("renamed.txt");
       const other = await harness.fetchHttp("GET", url, { headers: { "if-none-match": `"prefix${etag.slice(1)}` } });
       expect(other.status).toBe(200);
       const attachment = store.getAttachment(attachmentId)!;

@@ -329,6 +329,15 @@ export const taskSchema = z
   })
   .strict();
 
+export const dependencyTaskSchema = taskSchema.pick({
+  id: true, projectId: true, key: true, title: true, status: true,
+});
+export type DependencyTask = z.infer<typeof dependencyTaskSchema>;
+export const taskDependenciesSchema = z.object({
+  blockedBy: z.array(dependencyTaskSchema),
+  blocks: z.array(dependencyTaskSchema),
+}).strict();
+
 export const labelSchema = z
   .object({
     id: idSchema,
@@ -634,6 +643,18 @@ const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
 export const tasksRpcContract = {
+  listTaskDependencies: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: taskDependenciesSchema,
+  },
+  addTaskDependency: {
+    input: z.object({ taskId: idSchema, blockingTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
+  removeTaskDependency: {
+    input: z.object({ taskId: idSchema, blockingTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
   ...gitSyncMethods,
   createSequence: { input: sequenceKeySchema.extend({ next: sequenceNumberSchema, format: z.string().max(40).default("{n}") }), output: z.object({ sequence: sequenceSchema }).strict() },
   listSequences: { input: z.object({ projectId: idSchema }).strict(), output: z.object({ sequences: z.array(sequenceSchema) }).strict() },
@@ -996,6 +1017,7 @@ export const tasksRpcContract = {
       attachmentCount: z.number().int().nonnegative(),
       taskThreads: z.array(taskThreadSchema),
       activity: taskActivitySchema.optional(),
+      blockedBy: z.array(dependencyTaskSchema).optional(),
       threadHealth: threadHealthSchema,
     }).strict()) }).strict(),
   },
