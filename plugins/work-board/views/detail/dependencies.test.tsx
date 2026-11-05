@@ -36,10 +36,11 @@ it("lets the owner add, inspect, open and remove dependencies inside the task", 
   fireEvent.click(await slot.findByRole("option", { name: new RegExp(h.a.key) }));
   await within(section).findByText("Blocked");
   expect(h.dependencies.list(h.b.id).blockedBy[0]?.id).toBe(h.a.id);
-  const dependencyLink = within(section).getByRole("button", { name: `${h.a.key} · Predecessor Ready for QA` });
+  const dependencyLink = within(section).getByRole("button", { name: `Ready for QA ${h.a.key} · Predecessor` });
   const status = within(dependencyLink).getByText("Ready for QA");
   expect(status.previousElementSibling?.getAttribute("data-status-glyph")).toBe("testing");
-  expect(dependencyLink.firstElementChild?.querySelector("[data-status-icon]")).toBeNull();
+  expect(dependencyLink.firstElementChild).toBe(status.parentElement);
+  expect(dependencyLink.lastElementChild?.querySelector("[data-status-icon]")).toBeNull();
   expect(within(section).queryByText("Waiting for Done")).toBeNull();
   expect(within(section).getByText("Waiting for predecessors to reach Done. Work is still allowed.")).toBeTruthy();
   fireEvent.click(within(section).getByRole("button", { name: `Remove dependency on ${h.a.key}` }));

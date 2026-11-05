@@ -58,13 +58,13 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
   }
   const blockedBy = query.data?.blockedBy.filter(row => row.status !== "done");
   function rows(items: DependencyTask[], direction: "blockedBy" | "blocks") {
-    return items.map(row => <div key={row.id} className="flex min-w-0 items-start gap-1 py-1">
+    return <div className="divide-y divide-border-hairline">{items.map(row => <div key={row.id} className="flex min-w-0 items-start gap-1 py-2 first:pt-1 last:pb-1">
       <button type="button" className="min-w-0 flex-1 text-left hover:underline" title={`${row.key} · ${row.title} (${statusLabel(row.status)})`} onClick={() => navigation.go({ kind: "task", taskKey: row.key })}>
-        <span className="block truncate">{row.key} · {row.title}</span>{" "}
-        <span className="mt-0.5 flex items-center gap-1 text-2xs text-muted-foreground"><StatusIcon projectId={row.projectId} status={row.status} className="size-3" /><span className="truncate">{statusLabel(row.status)}</span></span>
+        <span className="mb-0.5 flex items-center gap-1 text-2xs text-muted-foreground"><StatusIcon projectId={row.projectId} status={row.status} className="size-3" /><span className="truncate">{statusLabel(row.status)}</span></span>{" "}
+        <span className="block truncate">{row.key} · {row.title}</span>
       </button>
       {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : "blocking link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
-    </div>);
+    </div>)}</div>;
   }
   return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="@container mb-6 mt-5 border-t border-border pt-6 text-xs">
     <div className="mb-1 flex flex-wrap items-center gap-2"><h3 className="font-medium">Dependencies</h3><DependencyWarning blockedBy={blockedBy} /></div>
