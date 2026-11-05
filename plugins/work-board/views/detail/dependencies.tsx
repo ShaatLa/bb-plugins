@@ -25,7 +25,7 @@ function AddDependency({ task, direction, onSelect }: { task: Task; direction: "
     [], [task.projectId, search], { enabled: open },
   );
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="ghost" size="sm" className="h-6 px-1.5 text-2xs" aria-label={direction === "blockedBy" ? "+ Blocked by" : "+ Blocks"}><Icon name="Plus" className="size-3" />Add</Button></PopoverTrigger>
+    <PopoverTrigger asChild><Button variant="outline" size="sm" className="h-6 px-2 text-2xs" aria-label={direction === "blockedBy" ? "+ Blocked by" : "+ Blocks"}><Icon name="Plus" className="size-3" />Add</Button></PopoverTrigger>
     <PopoverContent align="start" className="w-80 p-0">
       <Command shouldFilter={false}>
         <CommandInput placeholder="Search task key or title…" value={input} onValueChange={setInput} />
@@ -70,7 +70,7 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
     {query.error ? <p role="status" className="text-warning">Could not load dependencies.</p> : null}
     <div className="grid gap-4 @[36rem]:grid-cols-2">
       {(["blockedBy", "blocks"] as const).map(direction => <div key={direction} className="min-w-0">
-        <div className="mb-1 flex items-center gap-2">
+        <div className="mb-2 flex items-center justify-between gap-3">
           <h4 className="text-2xs font-medium text-muted-foreground">{direction === "blockedBy" ? "Blocked by" : "Blocks"}</h4>
           {!task.archivedAt ? <fieldset disabled={pending}><AddDependency task={task} direction={direction} onSelect={id => change(id, direction, false)} /></fieldset> : null}
         </div>
