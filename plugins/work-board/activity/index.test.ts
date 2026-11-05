@@ -1,10 +1,17 @@
 import { dispatchMarker } from "./dispatch";
-import { expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { registerTasksCli } from "../cli";
 import { initializeTasksSchema } from "../db/schema";
 import { createStore, registerTasksApi } from "../api";
 import { activityService } from ".";
+
+// Only Date is faked: samples are shared for a ~1s TTL, so tests move the clock explicitly.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); });
+afterEach(() => { vi.useRealTimers(); });
+const later = (ms = 1_100) => vi.setSystemTime(Date.now() + ms);
+// Legacy scenarios mutate SDK state between calls and expect fresh samples each time.
+const uncached = <T extends { metadata: (...args: never[]) => Promise<unknown> }>(service: T): T => ({ ...service, metadata: async (...args: never[]) => { later(); return service.metadata(...args); } });
 
 it("follows live attached sessions on every linked card without requiring request scope", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
@@ -23,7 +30,7 @@ it("follows live attached sessions on every linked card without requiring reques
     });
     host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ id: "i1", turnId: "t1", status: "pending" }] as never : []);
     host.harness.sdk.stub("threads.queuedMessages.list", async () => [{ id: "q1" }] as never);
-    const service = activityService(host.bb, store);
+    const service = uncached(activityService(host.bb, store));
     service.queued(b.id, thread.id, "q1");
     let result = await service.metadata([a.id, b.id]);
     for (const id of [a.id, b.id]) expect(result.get(id)).toMatchObject({ state: "working", workingCount: 1, diagnostics: { hasWorked: true, complete: true } });
@@ -87,7 +94,7 @@ it("recognizes historical per-card agent work without treating attachment as wor
   const db = host.bb.storage.database();
   db.exec("DROP TRIGGER task_activity_agent_comment; DROP TABLE task_activity_claims; DROP TABLE task_activity_queue; DROP TABLE task_activity_history; DELETE FROM schema_version WHERE version=17");
   initializeTasksSchema(db);
-  const service = activityService(host.bb, store);
+  const service = uncached(activityService(host.bb, store));
   expect((await service.metadata([worked.id, assigned.id])).get(worked.id)?.state).toBe("abandoned");
   expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBeNull();
   store.tasks.createComment({ taskId: assigned.id, kind: "agent", threadId: "thr_new", authorName: "Agent", body: "Investigated this card" });
@@ -113,14 +120,15 @@ it("keeps request diagnostics without letting claims or unrelated inputs suppres
     ] : [{ type: completed ? "turn/completed" : "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: turn }, data: { clientRequestId: request } }]) as never);
     host.harness.sdk.stub("threads.interactions.list", async () => pending ? [{ id: "interaction-1", turnId: turn, status: "pending" }] as never : []);
     host.harness.sdk.stub("threads.queuedMessages.list", async () => queued ? [{ id: "q" }] as never : []);
-    const service = activityService(host.bb, store);
+    const service = uncached(activityService(host.bb, store));
     service.queued(b.id, thread.id, "q");
     let result = await service.metadata([a.id, b.id]);
     expect(result.get(a.id)?.state).toBe("working");
     expect(result.get(b.id)?.state).toBe("working");
-    body = dispatchMarker(a.id) + "\n# A";
+    // An accepted request is immutable, so a changed header only counts under a new request id.
+    body = dispatchMarker(a.id) + "\n# A"; request = "r1b";
     result = await service.metadata([a.id, b.id]);
-    expect(result.get(a.id)).toMatchObject({ state: "working", sessions: [{ diagnostics: { explanation: expect.stringContaining("actively executing"), requestId: "r1", focusedTaskId: a.id } }] });
+    expect(result.get(a.id)).toMatchObject({ state: "working", sessions: [{ diagnostics: { explanation: expect.stringContaining("actively executing"), requestId: "r1b", focusedTaskId: a.id } }] });
     expect(result.get(b.id)?.state).toBe("working");
     expect(host.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(a.id)).toBeDefined();
     pending = true;
@@ -174,4 +182,161 @@ it("exposes abandonment evidence consistently in RPC, CLI JSON and human output"
     expect(shown.stdout).toContain("Previous work is recorded");
     expect(shown.stdout).toContain("@thread:thr_archived");
   } finally { await host.harness.dispose(); }
+});
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+/** Cards each linked to `threadOf(i)`; counts SDK reads and the largest number of simultaneous sampling reads. */
+async function fixture(cards: number, threadOf: (index: number) => string, options: { delay?: boolean } = {}) {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(host.bb);
+  const project = store.tasks.createProject({ name: "Shared", prefix: "SHR", color: "blue" });
+  const tasks = Array.from({ length: cards }, () => store.tasks.createTask({ projectId: project.id, title: "Card" }));
+  tasks.forEach((task, index) => store.tasks.upsertTaskThread({ taskId: task.id, threadId: threadOf(index), title: "Worker", presetName: "Attached", liveStatus: "working" }));
+  const threads = new Map([...new Set(tasks.map((_, index) => threadOf(index)))].map((id) => [id, makeThreadResponse({ id, status: "active", runtime: { displayStatus: "active" } })]));
+  const state = { turn: "turn1", request: "req1", pending: false, failEvents: false, failHistory: false, failInteractions: false, queue: [] as string[], batches: [] as string[][], history: 0, accepted: 0, interactions: 0, inflight: 0, peak: 0, historyIds: [] as string[] };
+  const track = async <T>(run: () => T | Promise<T>) => {
+    state.peak = Math.max(state.peak, ++state.inflight);
+    try { if (options.delay) await new Promise((resolve) => setTimeout(resolve, 0)); return await run(); } finally { state.inflight--; }
+  };
+  host.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds: string[] }) => { state.batches.push([...threadIds]); return threadIds.map((id) => threads.get(id)!) as never; });
+  host.harness.sdk.stub("threads.events.list", async ({ threadId, types }: { threadId: string; types?: readonly string[] }) => track(() => {
+    if (types?.includes("client/turn/requested")) {
+      state.history++; state.historyIds.push(threadId);
+      if (state.failHistory) throw new Error("history unavailable");
+      // Stands in for large request events: the accepted request carries the dispatch header for the first card.
+      return [{ type: "client/turn/requested", seq: 9, data: { requestId: state.request, input: [{ type: "text", text: dispatchMarker(tasks[0]!.id) + "\n" + "x".repeat(8192) }] } }] as never;
+    }
+    state.accepted++;
+    if (state.failEvents) throw new Error("events unavailable");
+    return [{ type: "turn/input/accepted", seq: 10, scope: { kind: "turn", turnId: state.turn }, data: { clientRequestId: state.request } }] as never;
+  }));
+  host.harness.sdk.stub("threads.interactions.list", async () => track(() => {
+    state.interactions++;
+    if (state.failInteractions) throw new Error("interactions unavailable");
+    return (state.pending ? [{ id: "owner-1", turnId: state.turn, status: "pending" }] : []) as never;
+  }));
+  host.harness.sdk.stub("threads.queuedMessages.list", async () => track(() => state.queue.map((id) => ({ id })) as never));
+  return { host, store, tasks, threads, state, service: activityService(host.bb, store) };
+}
+const reads = ({ state }: Fixture) => state.batches.length + state.accepted + state.interactions + state.history;
+
+it("shares simultaneous metadata reads between consumers and isolates their results", async () => {
+  // Baseline before sharing: two consumers x 10 cards x 5 threads = 32 SDK calls, 10 history reads, 4.16 MB of history.
+  const f = await fixture(10, (index) => `thr_${index % 5}`);
+  try {
+    f.state.pending = true;
+    const ids = f.tasks.map((task) => task.id);
+    const [first, second, subset] = await Promise.all([f.service.metadata(ids), f.service.metadata(ids), f.service.metadata(ids.slice(0, 3))]);
+    expect(f.state).toMatchObject({ accepted: 5, interactions: 5, history: 5 });
+    expect(f.state.batches).toHaveLength(1);
+    expect(reads(f)).toBe(16);
+    expect(first.get(ids[0]!)).toMatchObject({ state: "waiting-owner", sessions: [{ diagnostics: { interactionIds: ["owner-1"], focusedTaskId: ids[0] } }] });
+    expect(second).toEqual(first);
+    // Mutating one consumer's result cannot leak into another consumer or a later call.
+    first.get(ids[0]!)!.sessions[0]!.diagnostics!.interactionIds.push("tampered");
+    expect(second.get(ids[0]!)!.sessions[0]!.diagnostics!.interactionIds).toEqual(["owner-1"]);
+    expect(subset.get(ids[0]!)!.sessions[0]!.diagnostics!.interactionIds).toEqual(["owner-1"]);
+    expect((await f.service.metadata(ids)).get(ids[0]!)!.sessions[0]!.diagnostics!.interactionIds).toEqual(["owner-1"]);
+    expect(reads(f)).toBe(16);
+  } finally { await f.host.harness.dispose(); }
+});
+
+it("joins overlapping task sets so every thread is requested once", async () => {
+  const f = await fixture(5, (index) => `thr_${index}`);
+  try {
+    const ids = f.tasks.map((task) => task.id);
+    await Promise.all([f.service.metadata(ids.slice(0, 3)), f.service.metadata(ids.slice(2))]);
+    expect(f.state.batches).toEqual([["thr_0", "thr_1", "thr_2"], ["thr_3", "thr_4"]]);
+    expect(f.state).toMatchObject({ accepted: 5, interactions: 5, history: 5 });
+  } finally { await f.host.harness.dispose(); }
+});
+
+it("expires runtime and owner interactions but keeps attribution of an unchanged accepted request", async () => {
+  const f = await fixture(2, () => "thr_one");
+  try {
+    const ids = f.tasks.map((task) => task.id);
+    expect((await f.service.metadata(ids)).get(ids[0]!)?.state).toBe("working");
+    f.state.pending = true;
+    expect((await f.service.metadata(ids)).get(ids[0]!)?.state).toBe("working"); // still inside the TTL
+    expect(f.state.interactions).toBe(1);
+    later();
+    const owner = await f.service.metadata(ids);
+    expect(owner.get(ids[1]!)).toMatchObject({ state: "waiting-owner", sessions: [{ diagnostics: { focusedTaskId: ids[0] } }] });
+    expect(f.state).toMatchObject({ accepted: 2, interactions: 2, history: 1 }); // repeated history: one read
+    for (let i = 0; i < 3; i++) { later(); await f.service.metadata(ids); }
+    expect(f.state.history).toBe(1);
+    // A later turn is a different accepted request and is read again.
+    f.state.pending = false; f.state.turn = "turn2"; f.state.request = "req2"; later();
+    expect((await f.service.metadata(ids)).get(ids[0]!)).toMatchObject({ state: "working", sessions: [{ diagnostics: { requestId: "req2", interactionIds: [] } }] });
+    expect(f.state.history).toBe(2);
+    // The runtime itself also refreshes after expiry.
+    f.threads.get("thr_one")!.status = "idle"; f.threads.get("thr_one")!.runtime.displayStatus = "idle"; later();
+    expect((await f.service.metadata(ids)).get(ids[0]!)?.state).toBe("attached");
+  } finally { await f.host.harness.dispose(); }
+});
+
+it("sees a newly queued message immediately instead of deleting it from a stale sample", async () => {
+  const f = await fixture(1, () => "thr_queue");
+  try {
+    const [task] = f.tasks;
+    f.threads.get("thr_queue")!.status = "idle"; f.threads.get("thr_queue")!.runtime.displayStatus = "idle";
+    f.service.queued(task!.id, "thr_queue", "q0");
+    f.state.queue = ["q0"];
+    expect((await f.service.metadata([task!.id])).get(task!.id)?.state).toBe("queued");
+    f.state.queue = ["q0", "q1"];
+    f.service.queued(task!.id, "thr_queue", "q1"); // inside the TTL: the cached [q0] sample is invalidated
+    const result = await f.service.metadata([task!.id]);
+    expect(result.get(task!.id)).toMatchObject({ state: "queued", sessions: [{ diagnostics: { queueIds: ["q0", "q1"] } }] });
+    expect(f.host.bb.storage.database().prepare("SELECT queue_id FROM task_activity_queue ORDER BY queue_id").all()).toEqual([{ queue_id: "q0" }, { queue_id: "q1" }]);
+  } finally { await f.host.harness.dispose(); }
+});
+
+it("keeps verified Working and queue records when an optional read fails, and retries without poisoning", async () => {
+  const f = await fixture(2, () => "thr_flaky");
+  try {
+    const ids = f.tasks.map((task) => task.id);
+    const queueRows = () => f.host.bb.storage.database().prepare("SELECT queue_id FROM task_activity_queue").all();
+    f.service.queued(ids[0]!, "thr_flaky", "gone"); // the SDK queue no longer has it, so a complete sample removes it
+    f.state.failEvents = true;
+    const failed = await Promise.all([f.service.metadata(ids), f.service.metadata(ids)]);
+    for (const result of failed) for (const id of ids) expect(result.get(id)).toMatchObject({ state: "working", diagnostics: { complete: false } });
+    expect(queueRows()).toEqual([{ queue_id: "gone" }]);
+    expect(f.state.accepted).toBe(1); // simultaneous failures share one read
+    f.state.failEvents = false; // retry inside the TTL: the failure was not cached
+    expect((await f.service.metadata(ids)).get(ids[0]!)).toMatchObject({ state: "working", diagnostics: { complete: true } });
+    expect(queueRows()).toEqual([]);
+    // Interactions failing keeps Working but is reported incomplete, then recovers.
+    later(); f.state.failInteractions = true;
+    expect((await f.service.metadata(ids)).get(ids[1]!)).toMatchObject({ state: "working", diagnostics: { complete: false } });
+    f.state.failInteractions = false;
+    expect((await f.service.metadata(ids)).get(ids[1]!)).toMatchObject({ state: "working", diagnostics: { complete: true } });
+    // A failed history read is retried (not cached) while the accepted sample is reused.
+    f.state.request = "req-history"; f.state.failHistory = true; later();
+    expect((await f.service.metadata(ids)).get(ids[0]!)).toMatchObject({ state: "working", diagnostics: { complete: false } });
+    const acceptedReads = f.state.accepted;
+    f.state.failHistory = false;
+    expect((await f.service.metadata(ids)).get(ids[0]!)).toMatchObject({ state: "working", diagnostics: { complete: true }, sessions: [{ diagnostics: { focusedTaskId: ids[0] } }] });
+    expect(f.state.accepted).toBe(acceptedReads);
+  } finally { await f.host.harness.dispose(); }
+});
+
+it("bounds sampling concurrency, list batches and cache growth", async () => {
+  const n = 300;
+  const f = await fixture(n, (index) => `thr_${index}`, { delay: true });
+  try {
+    const ids = f.tasks.map((task) => task.id);
+    await Promise.all([f.service.metadata(ids), f.service.metadata(ids)]);
+    expect(f.state.peak).toBeGreaterThan(1);
+    expect(f.state.peak).toBeLessThanOrEqual(4); // global limit across both simultaneous calls
+    expect(Math.max(...f.state.batches.map((batch) => batch.length))).toBeLessThanOrEqual(200);
+    expect(f.state.accepted).toBe(n);
+    // Caches hold at most 256 entries: recent threads are still shared, the oldest were dropped.
+    const acceptedBefore = f.state.accepted, listsBefore = f.state.batches.length;
+    await f.service.metadata(ids.slice(200));
+    expect(f.state.accepted).toBe(acceptedBefore);
+    expect(f.state.batches).toHaveLength(listsBefore);
+    await f.service.metadata(ids.slice(0, 20));
+    expect(f.state.accepted).toBe(acceptedBefore + 20);
+    expect(f.state.history).toBe(n + 20);
+  } finally { await f.host.harness.dispose(); }
 });

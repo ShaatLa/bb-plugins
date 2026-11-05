@@ -2,34 +2,36 @@ import { z } from "zod";
 import { dispatchedTask } from "./dispatch.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
+import { createActivityReads, MAX_SDK_READS, type AcceptedTurn, type ActivityReads } from "./shared-reads.js";
 import { evaluateTaskActivity, type TaskActivity, type TaskActivitySession } from "../shared/task-activity";
 
 type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
 type Snapshot = { thread: Thread | null; known: boolean; turnId: string | null; claimKey: string | null; requestId: string | null; dispatchTaskId: string | null; interactionIds: string[]; dispatchUnavailable: boolean; pending: boolean; queue: Set<string>; complete: boolean };
 
+// Services are created per call, so sampling state lives per plugin host and is shared by all of them.
+const readsByHost = new WeakMap<object, ActivityReads<Thread>>();
+
 export function activityService(bb: BbPluginApi, store: TasksApiStore) {
   const db = bb.storage.database();
-  const acceptedTurn = async (threadId: string) => {
+  const reads = readsByHost.get(bb) ?? readsByHost.set(bb, createActivityReads<Thread>()).get(bb)!;
+  const readAccepted = async (threadId: string): Promise<AcceptedTurn | null> => {
     const events = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted", "turn/completed"], order: "desc", limit: "1" });
     const event = events[0];
-    return event?.type === "turn/input/accepted" && event.scope.kind === "turn" ? event : null;
-  };
-  const turnKey = (event: NonNullable<Awaited<ReturnType<typeof acceptedTurn>>>) => {
+    if (event?.type !== "turn/input/accepted" || event.scope.kind !== "turn") return null;
     const accepted = z.object({ clientRequestId: z.string() }).safeParse(event.data);
-    return accepted.success && event.scope.kind === "turn" ? JSON.stringify([event.scope.turnId, accepted.data.clientRequestId]) : null;
+    const requestId = accepted.success ? accepted.data.clientRequestId : null;
+    // Keep only small parsed identity; the raw event is dropped.
+    return { seq: event.seq, turnId: event.scope.turnId, requestId, claimKey: requestId === null ? null : JSON.stringify([event.scope.turnId, requestId]) };
   };
-  const latestTurn = async (threadId: string) => {
-    const event = await acceptedTurn(threadId);
-    return event ? turnKey(event) : null;
-  };
-  const dispatchForTurn = async (threadId: string, event: NonNullable<Awaited<ReturnType<typeof acceptedTurn>>>) => {
-    const accepted = z.object({ clientRequestId: z.string() }).safeParse(event.data);
-    if (!accepted.success) return null;
+  const latestTurn = async (threadId: string) => (await readAccepted(threadId))?.claimKey ?? null;
+  const readDispatch = async (threadId: string, accepted: AcceptedTurn & { requestId: string }) => {
     // Only the request actually accepted into this turn can establish automatic focus.
-    const requests = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", beforeSeq: String(event.seq), limit: "50" });
-    const matching = requests.find((request) => z.object({ requestId: z.literal(accepted.data.clientRequestId) }).safeParse(request.data).success);
-    return matching ? dispatchedTask(matching.data, accepted.data.clientRequestId) : null;
+    const requests = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", beforeSeq: String(accepted.seq), limit: "50" });
+    const matching = requests.find((request) => z.object({ requestId: z.literal(accepted.requestId) }).safeParse(request.data).success);
+    // The up-to-50 large request events die here; callers cache only this task id or null.
+    return matching ? dispatchedTask(matching.data, accepted.requestId) : null;
   };
+  const invalidate = (threadId: string) => { for (const cache of [reads.threads, reads.accepted, reads.interactions, reads.queues]) cache.delete(threadId); };
   const active = (thread: Pick<Thread, "status" | "runtime" | "archivedAt" | "deletedAt">) => thread.status === "active" && thread.runtime.displayStatus === "active" && thread.archivedAt == null && thread.deletedAt == null;
   return {
     async start(taskId: string, threadId: string): Promise<void> {
@@ -47,6 +49,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         db.prepare("INSERT INTO task_activity_claims(thread_id, task_id, turn_id) VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET task_id=excluded.task_id, turn_id=excluded.turn_id").run(threadId, taskId, turnId);
         db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(taskId);
       });
+      invalidate(threadId);
     },
     async stop(taskId: string, threadId: string): Promise<void> {
       const readClaim = () => db.prepare<[string], { task_id: string; turn_id: string }>("SELECT task_id, turn_id FROM task_activity_claims WHERE thread_id=?").get(threadId);
@@ -57,9 +60,12 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       if (current?.task_id !== previous?.task_id || current?.turn_id !== previous?.turn_id) return;
       if (turnId) db.prepare("INSERT INTO task_activity_claims(thread_id, task_id, turn_id) VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET task_id=excluded.task_id, turn_id=excluded.turn_id").run(threadId, taskId, `stopped:${turnId}`);
       else db.prepare("DELETE FROM task_activity_claims WHERE task_id=? AND thread_id=?").run(taskId, threadId);
+      invalidate(threadId);
     },
     queued(taskId: string, threadId: string, queueId: string): void {
       db.prepare("INSERT OR IGNORE INTO task_activity_queue(thread_id, queue_id, task_id) VALUES (?, ?, ?)").run(threadId, queueId, taskId);
+      // A queue sample taken before this row existed must not be used to delete it.
+      reads.queues.delete(threadId);
     },
     async metadata(taskIds: readonly string[], discoveryComplete = true): Promise<Map<string, TaskActivity>> {
       const ids = [...new Set(taskIds)];
@@ -85,39 +91,55 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       }
       const threadIds = [...new Set(links.map((link) => link.threadId))];
       const snapshots = new Map<string, Snapshot>();
-      for (let offset = 0; offset < threadIds.length; offset += 200) {
-        const batch = threadIds.slice(offset, offset + 200);
-        try {
-          const rows = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true });
-          const byId = new Map(rows.map((row) => [row.id, row]));
-          for (const id of batch) snapshots.set(id, { thread: byId.get(id) ?? null, known: true, turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: true });
-        } catch {
-          for (const id of batch) snapshots.set(id, { thread: null, known: false, turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: false });
-        }
+      // Register every missing thread before yielding, so overlapping calls join these requests instead of repeating them.
+      const pendingThreads = new Map<string, Promise<Thread | null>>();
+      const missing: string[] = [];
+      for (const id of threadIds) {
+        const shared = reads.threads.peek(id);
+        if (shared) pendingThreads.set(id, shared); else missing.push(id);
       }
+      for (let offset = 0; offset < missing.length; offset += 200) {
+        const batch = missing.slice(offset, offset + 200); // SDK list limit
+        const rows = (async () => new Map((await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true })).map((row) => [row.id, row] as const)))();
+        for (const id of batch) pendingThreads.set(id, reads.threads.set(id, rows.then((byId) => byId.get(id) ?? null)));
+      }
+      const settledThreads = await Promise.allSettled(threadIds.map((id) => pendingThreads.get(id)!));
+      threadIds.forEach((id, index) => {
+        const result = settledThreads[index]!;
+        // Snapshots are built per call from the shared thread DTO; they are never shared between consumers.
+        snapshots.set(id, { thread: result.status === "fulfilled" ? result.value : null, known: result.status === "fulfilled", turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: result.status === "fulfilled" });
+      });
       const work = [...snapshots.entries()].filter(([, snapshot]) => snapshot.thread && snapshot.thread.archivedAt == null && snapshot.thread.deletedAt == null);
       const worker = async () => {
         for (let item = work.shift(); item; item = work.shift()) {
           const [id, snapshot] = item;
-          try {
-            const [accepted, pending, queue] = await Promise.all([
-              active(snapshot.thread!) ? acceptedTurn(id) : Promise.resolve(null),
-              active(snapshot.thread!) ? bb.sdk.threads.interactions.list({ threadId: id }) : Promise.resolve([]),
-              queuesByThread.has(id) ? bb.sdk.threads.queuedMessages.list({ threadId: id }) : Promise.resolve([]),
-            ]);
-            const turnId = accepted?.scope.kind === "turn" ? accepted.scope.turnId : null;
-            snapshot.turnId = turnId;
-            snapshot.claimKey = accepted ? turnKey(accepted) : null;
-            const request = z.object({ clientRequestId: z.string() }).safeParse(accepted?.data);
-            snapshot.requestId = request.success ? request.data.clientRequestId : null;
-            if (accepted) snapshot.dispatchTaskId = await dispatchForTurn(id, accepted).catch(() => { snapshot.dispatchUnavailable = true; return null; });
-            snapshot.pending = !!turnId && pending.some((interaction: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["interactions"]["list"]>>[number]) => interaction.turnId === turnId && interaction.status === "pending");
-            snapshot.interactionIds = pending.filter((interaction) => interaction.turnId === turnId && interaction.status === "pending").map((interaction) => interaction.id);
-            snapshot.queue = new Set(queue.map((row: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number]) => row.id));
-          } catch { snapshot.complete = false; }
+          const executing = active(snapshot.thread!);
+          // Each read is shared (in flight and for a short TTL) and goes through the global read limiter; one failure never discards the others.
+          const [accepted, pending, queue] = await Promise.allSettled([
+            executing ? reads.accepted.get(id, () => reads.limit(() => readAccepted(id))) : null,
+            executing ? reads.interactions.get(id, () => reads.limit(async () => (await bb.sdk.threads.interactions.list({ threadId: id })).filter((interaction) => interaction.status === "pending").map((interaction) => ({ id: interaction.id, turnId: interaction.turnId ?? null })))) : [],
+            queuesByThread.has(id) ? reads.queues.get(id, () => reads.limit(async () => (await bb.sdk.threads.queuedMessages.list({ threadId: id })).map((row) => row.id))) : [],
+          ]);
+          if (accepted.status === "rejected" || pending.status === "rejected" || queue.status === "rejected") snapshot.complete = false;
+          const turn = accepted.status === "fulfilled" ? accepted.value : null;
+          snapshot.turnId = turn?.turnId ?? null;
+          snapshot.claimKey = turn?.claimKey ?? null;
+          snapshot.requestId = turn?.requestId ?? null;
+          if (pending.status === "fulfilled") {
+            const mine = snapshot.turnId ? pending.value.filter((interaction) => interaction.turnId === snapshot.turnId) : [];
+            snapshot.pending = mine.length > 0;
+            snapshot.interactionIds = mine.map((interaction) => interaction.id);
+          }
+          if (queue.status === "fulfilled") snapshot.queue = new Set(queue.value);
+          if (turn?.requestId) {
+            const request = { ...turn, requestId: turn.requestId };
+            // Keyed by the immutable accepted request, so repeated polls do not re-read the large request history.
+            try { snapshot.dispatchTaskId = await reads.dispatches.get(JSON.stringify([id, turn.seq, turn.turnId, turn.requestId]), () => reads.limit(() => readDispatch(id, request))); }
+            catch { snapshot.dispatchUnavailable = true; }
+          }
         }
       };
-      await Promise.all(Array.from({ length: Math.min(4, work.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(MAX_SDK_READS, work.length) }, worker));
       for (const row of queues) {
         const snapshot = snapshots.get(row.thread_id);
         if (snapshot?.complete && snapshot.thread && !snapshot.queue.has(row.queue_id))
