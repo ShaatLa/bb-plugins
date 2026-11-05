@@ -590,7 +590,8 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
   const dependencies = slot.getByRole("region", { name: "Task dependencies" });
   expect(dependencies.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
-  expect(dependencies.className).not.toContain("border");
+  expect(dependencies.className).toContain("border-t");
+  expect(dependencies.className).not.toContain("rounded");
   fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };

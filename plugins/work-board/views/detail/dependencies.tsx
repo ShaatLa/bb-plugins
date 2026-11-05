@@ -25,7 +25,7 @@ function AddDependency({ task, direction, onSelect }: { task: Task; direction: "
     [], [task.projectId, search], { enabled: open },
   );
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="ghost" size="sm" className="h-6 px-1 text-2xs">+ {direction === "blockedBy" ? "Blocked by" : "Blocks"}</Button></PopoverTrigger>
+    <PopoverTrigger asChild><Button variant="ghost" size="sm" className="h-6 px-1.5 text-2xs" aria-label={direction === "blockedBy" ? "+ Blocked by" : "+ Blocks"}><Icon name="Plus" className="size-3" />Add</Button></PopoverTrigger>
     <PopoverContent align="start" className="w-80 p-0">
       <Command shouldFilter={false}>
         <CommandInput placeholder="Search task key or title…" value={input} onValueChange={setInput} />
@@ -64,13 +64,18 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
       {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : "blocking link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
     </div>);
   }
-  return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="mb-4 mt-5 text-xs">
-    <div className="mb-1 flex flex-wrap items-center justify-between gap-1"><h3 className="font-medium">Dependencies</h3><DependencyWarning blockedBy={blockedBy} /></div>
-    {blockedBy?.length ? <p className="mb-2 text-2xs text-muted-foreground">Waiting for predecessors to reach Done. Work is still allowed.</p> : null}
+  return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="@container mb-4 mt-5 border-t border-border pt-4 text-xs">
+    <div className="mb-1 flex flex-wrap items-center gap-2"><h3 className="font-medium">Dependencies</h3><DependencyWarning blockedBy={blockedBy} /></div>
+    {blockedBy?.length ? <p className="mb-3 text-2xs text-muted-foreground">Waiting for predecessors to reach Done. Work is still allowed.</p> : null}
     {query.error ? <p role="status" className="text-warning">Could not load dependencies.</p> : null}
-    {query.data?.blockedBy.length ? <div><h4 className="text-2xs text-muted-foreground">Blocked by</h4>{rows(query.data.blockedBy, "blockedBy")}</div> : null}
-    {query.data?.blocks.length ? <div className="mt-1"><h4 className="text-2xs text-muted-foreground">Blocks</h4>{rows(query.data.blocks, "blocks")}</div> : null}
-    {query.data && !query.data.blockedBy.length && !query.data.blocks.length ? <p className="text-2xs text-muted-foreground">No dependencies</p> : null}
-    {!task.archivedAt ? <fieldset disabled={pending} className="mt-1 flex gap-1"><AddDependency task={task} direction="blockedBy" onSelect={id => change(id, "blockedBy", false)} /><AddDependency task={task} direction="blocks" onSelect={id => change(id, "blocks", false)} /></fieldset> : null}
+    <div className="grid gap-4 @[36rem]:grid-cols-2">
+      {(["blockedBy", "blocks"] as const).map(direction => <div key={direction} className="min-w-0">
+        <div className="mb-1 flex items-center gap-2">
+          <h4 className="text-2xs font-medium text-muted-foreground">{direction === "blockedBy" ? "Blocked by" : "Blocks"}</h4>
+          {!task.archivedAt ? <fieldset disabled={pending}><AddDependency task={task} direction={direction} onSelect={id => change(id, direction, false)} /></fieldset> : null}
+        </div>
+        {query.data?.[direction].length ? rows(query.data[direction], direction) : query.data ? <p className="text-2xs text-muted-foreground">None</p> : null}
+      </div>)}
+    </div>
   </section>;
 }
