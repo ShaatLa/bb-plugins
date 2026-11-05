@@ -3,7 +3,7 @@ import { evaluateTaskActivity } from "./task-activity";
 import type { TaskActivitySession } from "./task-activity";
 
 const session = (state: TaskActivitySession["state"]): TaskActivitySession => ({ threadId: `thr_${state}`, title: state, role: "worker", state });
-const evaluate = (sessions: TaskActivitySession[], hasWorked = false, terminal = false, complete = true) => evaluateTaskActivity({ sessions, hasWorked, terminal, complete });
+const evaluate = (sessions: TaskActivitySession[], hasWorked = false, terminal = false, complete = true) => evaluateTaskActivity({ sessions, executionTarget: "agent", hasWorked, terminal, complete });
 
 it("keeps working primary alongside failure and reports terminal work", () => {
   expect(evaluate([session("working"), session("error"), session("attached")], true, true)).toMatchObject({ state: "working", workingCount: 1, attachedCount: 3, hasFailure: true, terminalWarning: true });
@@ -20,4 +20,12 @@ it("requires confirmed history and a complete read before abandonment", () => {
 it("prioritizes explicit waiting and queued signals ahead of attachment", () => {
   expect(evaluate([session("attached"), session("queued")]).state).toBe("queued");
   expect(evaluate([session("queued"), session("waiting-owner")]).state).toBe("waiting-owner");
+});
+
+it("never marks owner actions abandoned while preserving live session activity", () => {
+  const input = { executionTarget: "owner" as const, hasWorked: true, terminal: false, complete: true };
+  expect(evaluateTaskActivity({ ...input, sessions: [] })).toMatchObject({ state: null, diagnostics: { hasWorked: true, explanation: expect.stringContaining("owner actions") } });
+  for (const state of ["working", "attached", "waiting-owner", "queued", "error"] as const) {
+    expect(evaluateTaskActivity({ ...input, sessions: [session(state)] }).state).toBe(state);
+  }
 });

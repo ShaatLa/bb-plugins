@@ -182,8 +182,9 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state,
             diagnostics: { explanation, threadStatus: snapshot.thread?.status ?? null, runtimeStatus: snapshot.thread?.runtime.displayStatus ?? null, turnId: snapshot.turnId, requestId: snapshot.requestId, focusedTaskId, focusedTaskKey: focusedKey(focusedTaskId), queueIds, interactionIds: executing ? snapshot.interactionIds : [] } });
         }
-        const status = taskData.get(id)?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        const task = taskData.get(id);
+        const status = task?.status;
+        return [id, evaluateTaskActivity({ sessions, executionTarget: task?.executionTarget ?? "agent", hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

@@ -2097,13 +2097,13 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   // Status plus the latest task-level update: the task row itself or a non-system comment (evidence lives on comments).
-  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; lastActivityAt: string }> {
+  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; executionTarget: Task["executionTarget"]; lastActivityAt: string }> {
     if (!taskIds.length) return new Map();
-    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; at: string }>(
-      `SELECT t.id, t.project_id, t.status, MAX(t.updated_at, COALESCE(
+    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; execution_target: Task["executionTarget"]; at: string }>(
+      `SELECT t.id, t.project_id, t.status, t.execution_target, MAX(t.updated_at, COALESCE(
          (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
-    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, lastActivityAt: row.at }]));
+    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, executionTarget: row.execution_target, lastActivityAt: row.at }]));
   }
 
   function listTaskThreadsForProject(projectId: string): TaskThread[] {
