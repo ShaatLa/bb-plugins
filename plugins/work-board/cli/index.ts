@@ -1732,6 +1732,8 @@ export function registerTasksCli(
                 ["Color", project.color],
                 ["Folder", folder?.name ?? "-"],
                 ["BB project", project.linkedBbProjectId ?? "-"],
+                ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
+                ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
               ]);
@@ -1739,7 +1741,7 @@ export function registerTasksCli(
           },
         }),
         "project update": cliCommand({
-          summary: "Rename, recolor, refile, or relink a tracker project",
+          summary: "Update a project's identity, workflow, archiving or activity settings",
           positionals: [
             {
               name: "prefix-or-id",
@@ -1749,6 +1751,8 @@ export function registerTasksCli(
           ],
           options: {
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
+            "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
+            "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -1805,6 +1809,8 @@ export function registerTasksCli(
               } else if (input.options.machine) throw new CliError("--machine requires --statuses-file");
               const changes = {
                 statuses,
+                autoArchiveAfterDays: input.options["auto-archive"],
+                staleIdleMinutes: input.options["stale-idle"],
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -1819,6 +1825,8 @@ export function registerTasksCli(
                 changes.color === undefined &&
                 changes.folderId === undefined &&
                 changes.statuses === undefined &&
+                changes.autoArchiveAfterDays === undefined &&
+                changes.staleIdleMinutes === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -1837,6 +1845,8 @@ export function registerTasksCli(
                 changes.color !== undefined ||
                 changes.folderId !== undefined ||
                 changes.statuses !== undefined ||
+                changes.autoArchiveAfterDays !== undefined ||
+                changes.staleIdleMinutes !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -1856,6 +1866,8 @@ export function registerTasksCli(
                 store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
                   statuses: updateInput?.statuses,
+                  autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
+                  staleIdleMinutes: updateInput?.staleIdleMinutes,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,

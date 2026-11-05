@@ -4,6 +4,7 @@ import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -295,6 +296,8 @@ export const projectSchema = z
     prefix: projectPrefixSchema,
     nextTaskNumber: z.number().int().positive(),
     statuses: taskStatusesSchema.optional(),
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
+    staleIdleMinutes: staleIdleThresholdSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -540,6 +543,8 @@ const updateProjectInputSchema = z
     projectId: idSchema,
     name: nonBlankStringSchema.optional(),
     statuses: taskStatusesSchema.optional(),
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
+    staleIdleMinutes: staleIdleThresholdSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -548,6 +553,8 @@ const updateProjectInputSchema = z
   .refine(
     (input) =>
       input.statuses !== undefined ||
+      input.autoArchiveAfterDays !== undefined ||
+      input.staleIdleMinutes !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||
@@ -672,6 +679,14 @@ export const tasksRpcContract = {
   listFolders: {
     input: z.null(),
     output: z.object({ folders: z.array(folderSchema) }).strict(),
+  },
+  getBoardPreferences: {
+    input: z.null(),
+    output: boardPreferencesSchema,
+  },
+  setBoardPreferences: {
+    input: boardPreferencesSchema,
+    output: boardPreferencesSchema,
   },
   createProject: {
     input: z

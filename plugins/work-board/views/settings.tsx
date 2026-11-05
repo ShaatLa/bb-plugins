@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/ui/icon";
 import { COLOR_PALETTE } from "../shared/colors.js";
 import { StatusIcon, StatusColorDot } from "../components/status-icon.js";
-import { useProjects, useTasksRpc } from "../shell/data.js";
+import { useProjects, useTasksRpc, useTasksQuery } from "../shell/data.js";
 import {
   DEFAULT_TASK_STATUSES,
   TASK_STATUSES,
@@ -28,6 +28,8 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
+import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
+import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
 function ProjectStatuses({ project }: { project: Project }) {
@@ -393,108 +395,145 @@ function ProjectStatuses({ project }: { project: Project }) {
   );
 }
 
+function ProjectAutomationSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const rpc = useTasksRpc();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (changes: {
+    autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
+    staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
+  }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.call("updateProject", { projectId: project.id, ...changes });
+      onSaved();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section aria-label="Project automation" className="space-y-4 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Archiving and activity</h3>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Automatically archive completed tasks
+        <Select value={project.autoArchiveAfterDays ?? "off"} disabled={busy}
+          onValueChange={(value) => void save({ autoArchiveAfterDays: value as z.infer<typeof autoArchiveAfterDaysSchema> })}>
+          <SelectTrigger aria-label="Automatically archive completed tasks" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="7">After 7 days</SelectItem>
+            <SelectItem value="14">After 14 days</SelectItem>
+            <SelectItem value="30">After 30 days</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">Checks hourly for this project. Task, comment, attachment or question activity restarts the interval. Unfinished children, unanswered questions and working agents prevent archival.</p>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Flag idle threads without task updates
+        <Select value={project.staleIdleMinutes ?? "45"} disabled={busy}
+          onValueChange={(value) => void save({ staleIdleMinutes: value as z.infer<typeof staleIdleThresholdSchema> })}>
+          <SelectTrigger aria-label="Flag idle threads without task updates" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="30">After 30 minutes</SelectItem>
+            <SelectItem value="45">After 45 minutes</SelectItem>
+            <SelectItem value="60">After 60 minutes</SelectItem>
+            <SelectItem value="120">After 2 hours</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">Display an amber marker for idle attached threads in this project. No messages are sent to the thread.</p>
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+    </section>
+  );
+}
+
+function GeneralSettings() {
+  const rpc = useTasksRpc();
+  const preferences = useTasksQuery((rpc) => rpc.call("getBoardPreferences", null), ["projects:changed"]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <details className="rounded-md border border-border text-sm">
+      <summary className="cursor-pointer px-3 py-2.5 font-medium">General</summary>
+      <div className="space-y-3 border-t border-border p-3">
+        <p className="text-xs text-muted-foreground">Applies to all projects.</p>
+        <label className="flex flex-wrap items-center justify-between gap-2">
+          Open by default
+          <Select value={preferences.data?.defaultScreen ?? DEFAULT_BOARD_PREFERENCES.defaultScreen}
+            disabled={busy || !preferences.data}
+            onValueChange={(defaultScreen) => {
+              setBusy(true);
+              setError(null);
+              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ defaultScreen }))
+                .then(() => preferences.refresh())
+                .catch((error) => setError(errorMessage(error)))
+                .finally(() => setBusy(false));
+            }}>
+            <SelectTrigger aria-label="Open by default" className="h-8 w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="last-project-board">Last project · Kanban</SelectItem>
+              <SelectItem value="last-project-list">Last project · List</SelectItem>
+              <SelectItem value="all">All tasks</SelectItem>
+              <SelectItem value="active">Active tasks</SelectItem>
+            </SelectContent>
+          </Select>
+        </label>
+        <p className="text-xs text-muted-foreground">The last selected project is remembered on this device.</p>
+        {error || preferences.error ? <div role="alert" className="text-xs text-destructive">
+          {error ?? preferences.error}
+          <Button size="sm" variant="ghost" onClick={preferences.refresh}>Retry</Button>
+        </div> : null}
+        <NavigationBadgeSettings />
+      </div>
+    </details>
+  );
+}
+
 function TasksSettingsContent() {
   const navigate = useBbNavigate();
   const projects = useProjects();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
-  const project =
-    projects.data?.find((entry) => entry.id === projectId) ??
-    projects.data?.[0];
+  const project = projects.data?.find((entry) => entry.id === projectId) ?? projects.data?.[0];
   return (
     <div className="space-y-5">
-      <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          Plan and track work shared by people and AI agents. Keep tasks,
-          decisions, worker threads and delivery progress together in one place.
-        </p>
-        <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
-          <li>Lists and kanban boards, epics and subtasks, search and filters, and per-project workflows.</li>
-          <li>Delegate to existing BB threads, or create owner actions for manual work.</li>
-          <li>Questions with single or multiple answers, recommendations and recorded decisions.</li>
-          <li>GitHub PR and CI tracking, delivery evidence and reusable description templates.</li>
-          <li>Searchable archives and project export/import, including comments, attachments and questions.</li>
-        </ul>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            className="h-7 px-2.5"
-            onClick={() => setNewProjectOpen(true)}
-          >
-            <Icon name="Plus" className="size-3.5" />
-            New project
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 px-2.5"
-            variant="outline"
-            onClick={() => navigate.toPluginPanel("work-board")}
-          >
-            Open Work Board
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 px-2.5"
-            variant="outline"
-            onClick={() =>
-              navigate.toPluginPanel("work-board", { subPath: "manage" })
-            }
-          >
-            Manage labels and presets
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
+          <Icon name="Plus" className="size-3.5" />New project
+        </Button>
+        {project ? <Select value={project.id} onValueChange={setProjectId}>
+          <SelectTrigger aria-label="Settings project" className="h-8 w-56"><SelectValue /></SelectTrigger>
+          <SelectContent>{projects.data?.map((entry) => (
+            <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>
+          ))}</SelectContent>
+        </Select> : null}
       </div>
-      {newProjectOpen ? (
-        <NewProjectDialog open onOpenChange={setNewProjectOpen} />
-      ) : null}
-      <NavigationBadgeSettings />
-      <section
-        aria-label="Project task statuses"
-        className="space-y-3 border-t border-border pt-4"
-      >
-        <h3 className="text-sm font-medium">Task statuses</h3>
-        {projects.error ? (
-          <p role="alert" className="text-xs text-destructive">
-            {projects.error}{" "}
-            <Button size="sm" variant="ghost" onClick={projects.refresh}>
-              Retry
-            </Button>
-          </p>
-        ) : null}
-        {project ? (
-          <>
-            <label className="flex items-center gap-2 text-xs">
-              Project
-              <Select value={project.id} onValueChange={setProjectId}>
-                <SelectTrigger
-                  aria-label="Statuses project"
-                  className="h-7 w-56 text-xs"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {projects.data?.map((entry) => (
-                    <SelectItem key={entry.id} value={entry.id}>
-                      {entry.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <ProjectStatuses
-              key={`${project.id}:${JSON.stringify(project.statuses)}`}
-              project={project}
-            />
-          </>
-        ) : !projects.error ? (
-          <p className="text-xs text-muted-foreground">
-            {projects.data
-              ? "Create a project to configure its workflow."
-              : "Loading projects…"}
-          </p>
-        ) : null}
-      </section>
-      {project ? <GitSyncSettings key={project.id} projectId={project.id} /> : null}
+      {projects.error ? <div role="alert" className="text-xs text-destructive">
+        {projects.error}<Button size="sm" variant="ghost" onClick={projects.refresh}>Retry</Button>
+      </div> : null}
+      {newProjectOpen ? <NewProjectDialog open onOpenChange={setNewProjectOpen}
+        onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
+      {project ? <>
+        <ProjectAutomationSettings key={`automation:${project.id}`} project={project} onSaved={projects.refresh} />
+        <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
+          <h3 className="text-sm font-medium">Task statuses</h3>
+          <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} />
+        </section>
+        <GitSyncSettings key={`git:${project.id}`} projectId={project.id} />
+      </> : !projects.error ? <p className="text-xs text-muted-foreground">
+        {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
+      </p> : null}
+      <GeneralSettings />
+      <div className="flex flex-wrap gap-2 border-t border-border pt-4">
+        <Button size="sm" className="h-7 px-2.5" variant="outline"
+          onClick={() => navigate.toPluginPanel("work-board", project ? { subPath: project.id } : undefined)}>Open Work Board</Button>
+        <Button size="sm" className="h-7 px-2.5" variant="outline"
+          onClick={() => navigate.toPluginPanel("work-board", { subPath: "manage" })}>Manage labels and presets</Button>
+      </div>
     </div>
   );
 }

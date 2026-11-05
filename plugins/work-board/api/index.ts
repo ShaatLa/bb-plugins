@@ -1,3 +1,4 @@
+import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
 import { gitSyncService } from "../git-sync/service";
 import { createLockHandlers } from "../locks/service";
@@ -609,8 +610,6 @@ async function listTaskPullRequests(
   };
 }
 
-export const DEFAULT_STALE_IDLE_MINUTES = 45;
-
 const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
 
 async function readBadgeCriteria(bb: BbPluginApi) {
@@ -622,7 +621,6 @@ async function readBadgeCriteria(bb: BbPluginApi) {
 export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
-  staleIdleMinutes: () => Promise<number | null> = async () => DEFAULT_STALE_IDLE_MINUTES,
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   return {
@@ -663,6 +661,14 @@ export function registerHandlers(
     },
     listFolders() {
       return { folders: store.tasks.listFolders() };
+    },
+    async getBoardPreferences() {
+      return boardPreferencesSchema.parse(await bb.storage.kv.get(BOARD_PREFERENCES_KEY) ?? DEFAULT_BOARD_PREFERENCES);
+    },
+    async setBoardPreferences(input) {
+      await bb.storage.kv.set(BOARD_PREFERENCES_KEY, input);
+      publishProjectsChanged(bb, null);
+      return input;
     },
     createProject(input) {
       const project = store.tasks.createProject(input);
@@ -1174,7 +1180,7 @@ export function registerHandlers(
       }
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids);
-      const threshold = await staleIdleMinutes();
+      const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
         const task = activity.get(taskId);
@@ -1183,7 +1189,7 @@ export function registerHandlers(
           attachmentCount: counts.get(taskId) ?? 0,
           activity: scopedActivity.get(taskId),
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", threshold),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
         };
       }) };
     },
@@ -1285,11 +1291,10 @@ export function registerHandlers(
     },
     async navigationBadge() {
       const criteria = await readBadgeCriteria(bb);
-      const threshold = criteria.includes("stale_idle") ? await staleIdleMinutes() : null;
       return {
-        ...navigationBadgeCounts(bb, store, criteria, threshold, Date.now()),
+        ...navigationBadgeCounts(bb, store, criteria, Date.now()),
         criteria,
-        timeBased: threshold !== null,
+        timeBased: criteria.includes("stale_idle") && store.tasks.listProjects().some((project) => idleThreshold(project) !== null),
       };
     },
     sidebarOpenTaskCount() {
@@ -1304,7 +1309,6 @@ export function registerHandlers(
 export function registerTasksApi(
   bb: BbPluginApi,
   store: TasksApiStore,
-  staleIdleMinutes?: () => Promise<number | null>,
 ): void {
-  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store, staleIdleMinutes));
+  bb.rpc.register(tasksRpcContract, registerHandlers(bb, store));
 }

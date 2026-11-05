@@ -800,7 +800,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(10);
+  expect(manifest.version).toBe(11);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -833,17 +833,19 @@ it("round-trips configurable project statuses, their order and custom task stage
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
-  source.store.tasks.updateProject(source.project.id, { statuses });
+  source.store.tasks.updateProject(source.project.id, { statuses, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(10);
+  expect(manifest.version).toBe(11);
   expect(manifest.project.statuses).toEqual(statuses);
+  expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
   expect(target.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(source.task.id)).toBeDefined();
   const again = join(await directory(), "again");
@@ -852,10 +854,15 @@ it("round-trips configurable project statuses, their order and custom task stage
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
   // Earlier exporters could already write status metadata under v8.
   manifest.version = 8;
+  delete manifest.project.autoArchiveAfterDays;
+  delete manifest.project.staleIdleMinutes;
   await writeFile(join(out, "project.json"), jsonText(manifest));
   const legacy = setup();
   await importProject(legacy.bb, legacy.store, out, false);
   expect(legacy.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(legacy.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   delete manifest.project.statuses[4].icon;
   delete manifest.project.statuses[4].color;
   await writeFile(join(out, "project.json"), jsonText(manifest));

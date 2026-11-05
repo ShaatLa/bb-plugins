@@ -1,3 +1,4 @@
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -74,6 +75,8 @@ interface FolderRow {
 }
 
 interface ProjectRow {
+  auto_archive_after_days: string | null;
+  stale_idle_minutes: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -373,6 +376,8 @@ function folderFromRow(row: FolderRow): Folder {
 
 function projectFromRow(row: ProjectRow): Project {
   return {
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
+    staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -688,8 +693,8 @@ export function createTasksStore(db: PluginDatabase) {
     >(
       `
       INSERT INTO projects
-        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at)
-      VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at, auto_archive_after_days, stale_idle_minutes)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'off', '45')
     `,
     ).run(
       id,
@@ -746,11 +751,12 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string]
+        [string, string, string, string | null, string | null, string, string, string, string]
       >(
         `
       UPDATE projects
-      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?
+      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?,
+          auto_archive_after_days = ?, stale_idle_minutes = ?
       WHERE id = ?
     `,
       ).run(
@@ -768,6 +774,8 @@ export function createTasksStore(db: PluginDatabase) {
           ? current.linkedBbProjectId
           : validateLinkedBbProjectId(input.linkedBbProjectId),
         JSON.stringify(statuses),
+        autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
+        staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         id,
       );
       return requireProject(id);
@@ -2054,13 +2062,13 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   // Status plus the latest task-level update: the task row itself or a non-system comment (evidence lives on comments).
-  function listTaskActivity(taskIds: readonly string[]): Map<string, { status: string; lastActivityAt: string }> {
+  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; lastActivityAt: string }> {
     if (!taskIds.length) return new Map();
-    return new Map(db.prepare<string[], { id: string; status: string; at: string }>(
-      `SELECT t.id, t.status, MAX(t.updated_at, COALESCE(
+    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; at: string }>(
+      `SELECT t.id, t.project_id, t.status, MAX(t.updated_at, COALESCE(
          (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
-    ).all(...taskIds).map((row) => [row.id, { status: row.status, lastActivityAt: row.at }]));
+    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, lastActivityAt: row.at }]));
   }
 
   function listTaskThreads(taskId: string): TaskThread[] {

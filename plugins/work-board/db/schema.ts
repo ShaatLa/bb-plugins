@@ -347,6 +347,10 @@ const MIGRATIONS = [
    BEGIN INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (NEW.task_id); END;
    CREATE TABLE task_activity_claims (thread_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
    CREATE TABLE task_activity_queue (thread_id TEXT NOT NULL, queue_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id, queue_id));`,
+  `ALTER TABLE projects ADD COLUMN auto_archive_after_days TEXT
+     CHECK (auto_archive_after_days IN ('off', '7', '14', '30'));
+   ALTER TABLE projects ADD COLUMN stale_idle_minutes TEXT
+     CHECK (stale_idle_minutes IN ('off', '30', '45', '60', '120'));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

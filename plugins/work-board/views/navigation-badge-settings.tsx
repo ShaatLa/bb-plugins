@@ -66,7 +66,7 @@ export function NavigationBadgeSettings() {
           ))}
         </div>
         <p className="text-muted-foreground">
-          The idle-thread option uses the threshold in the plugin setting “Flag idle threads without task updates”.
+          The idle-thread option uses each project's “Flag idle threads without task updates” threshold.
         </p>
         {error ? (
           <p role="alert" className="text-destructive">

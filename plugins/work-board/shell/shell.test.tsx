@@ -184,7 +184,7 @@ describe("startup screen", () => {
   });
 
   it.each(["all", "active", "last-project-list"])("uses the %s setting on the root route", async (defaultScreen) => {
-    const slot = renderSlot(tasksRegistration, { subPath: "" }, { rpc, settings: { defaultScreen } });
+    const slot = renderSlot(tasksRegistration, { subPath: "" }, { rpc: { ...rpc, getBoardPreferences: () => ({ defaultScreen }) } });
     const subPath = defaultScreen === "last-project-list" ? `${PROJECT_ID}?view=list` : defaultScreen;
     await waitFor(() => expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath, replace: true } }));
   });

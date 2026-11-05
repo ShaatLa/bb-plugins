@@ -1,6 +1,18 @@
 # Work Board
 
-Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом.
+Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
+
+## Project settings
+
+Settings → Work Board starts with **New project** and a single project selector. Archiving, idle-thread warnings, task statuses and Git/PR synchronization below it belong to the selected project. **General** contains the shared default screen and navigation badge criteria. The last selected project is still remembered on each device.
+
+Existing projects inherit the former plugin-wide archive interval and idle threshold once during upgrade. New projects default to auto-archive Off and idle warnings after 45 minutes. The migration briefly registers legacy controls to read their values; reload the plugin after the first upgrade to remove those controls. Changing a project never changes another project's policy. Export v11 includes both project settings; v1–v10 imports remain accepted and missing settings preserve existing choices (or use Off/45 for a new imported project). General preferences are local and are not exported.
+
+```sh
+bb work-board project show EXA --json
+bb work-board project update EXA --auto-archive 14 --stale-idle 60
+bb work-board project update EXA --auto-archive off --stale-idle off
+```
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 
@@ -33,7 +45,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v10**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v10).
+Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v11**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v11).
 
 Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
 
@@ -46,7 +58,7 @@ bb work-board status --json
 
 Если установлен Tasks Plus, используйте `tasks-plus` вместо `agent-board` в командах сохранения настроек, отключения и `--source-plugin`. Помощник находится в новой папке `plugins/work-board/scripts`.
 
-Помощник копирует БД в `~/.bb/plugins/work-board`, сохраняет ID и все таблицы, переносит вложения и меняет только старые URL вложений на новый ID, включая ссылки в вопросах и JSON-истории. Исходник остаётся нетронутым; повторный перенос поверх существующих данных запрещён. Через `bb plugin config work-board set …` восстановите сохранённые значения `autoArchiveAfterDays` и `defaultScreen`. PR-настройки и связи находятся в самой БД: переносите их актуальные значения на момент переключения. Старый плагин оставьте выключенным до проверки переноса и экспорта, затем удалите его регистрацию; резервные копии сохраняйте отдельно.
+Помощник копирует БД в `~/.bb/plugins/work-board`, сохраняет ID и все таблицы, переносит вложения и меняет только старые URL вложений на новый ID, включая ссылки в вопросах и JSON-истории. Исходник остаётся нетронутым; повторный перенос поверх существующих данных запрещён. При первом запуске прежние `autoArchiveAfterDays`, `staleIdleMinutes` и `defaultScreen` переносятся автоматически. Дальше архивация и порог простоя меняются в настройках выбранного проекта; страница по умолчанию — в General. PR-настройки и связи находятся в самой БД: переносите их актуальные значения на момент переключения. Старый плагин оставьте выключенным до проверки переноса и экспорта, затем удалите его регистрацию; резервные копии сохраняйте отдельно.
 
 При откате после новых записей переносите **последние** данные назад, а не заменяйте их старым снимком. Отключите Work Board, сохраните оба каталога и освободите каталог назначения, затем используйте `--source-plugin work-board --destination-plugin agent-board` (или `tasks-plus`); установите прежний замороженный релиз и восстановите настройки. Параметр `--data-dir` поддерживает другой каталог BB.
 
@@ -69,7 +81,7 @@ Evidence сначала показывает последние 15 записе�
 Карточки на доске (основная и боковая панель) и строки списка показывают пассивные маркеры; задача в detail показывает упавший тред красной рамкой и временем сбоя. Ничего не отправляется в треды и агентам, серверных таймеров и уведомлений нет.
 
 - **Красный маркер** — у незавершённой задачи (не `done`/`canceled`) есть прикреплённый тред в статусе `failed` (bb шлёт `thread.failed` и для упавшего хода, и для прерванного: перезапуск демона, потеря связи). Подсказка: «Thread <title> failed». Маркер гаснет, когда тред снова активен, откреплён или в архиве. Показывается и у завершённых задач.
-- **Янтарный маркер** «Thread idle 52 min, task not updated» — задача не `done`/`canceled`/`in_review`, есть idle-тред, нет working/starting-треда и `now − max(idleSince, lastTaskActivityAt) ≥ порог`. `idleSince` — это `task_threads.updated_at` (время последней смены статуса, миграция не нужна; при нескольких idle-тредах берётся самый поздний); `lastTaskActivityAt` — максимум из `tasks.updated_at` (поля, статус) и комментариев не-system, включая evidence. Порог — настройка `staleIdleMinutes` (off | 30 | 45 | 60 | 120, по умолчанию 45). Расчёт идёт при чтении (`listTaskCardMeta`), UI сверяет часы раз в минуту.
+- **Янтарный маркер** «Thread idle 52 min, task not updated» — задача не `done`/`canceled`/`in_review`, есть idle-тред, нет working/starting-треда и `now − max(idleSince, lastTaskActivityAt) ≥ порог`. `idleSince` — это `task_threads.updated_at` (время последней смены статуса, миграция не нужна; при нескольких idle-тредах берётся самый поздний); `lastTaskActivityAt` — максимум из `tasks.updated_at` (поля, статус) и комментариев не-system, включая evidence. Порог задаётся отдельно для каждого проекта: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, по умолчанию 45). Расчёт идёт при чтении (`listTaskCardMeta`), UI сверяет часы раз в минуту.
 - `show --json` и `list --json` содержат `threadHealth: {failed: [threadId…], staleIdle: {threadId, idleMinutes} | null}`.
 
 Данные не экспортируются: это производное состояние. Фильтр «needs attention» не добавлялся.
@@ -515,7 +527,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v10; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v10 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v11; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v11 exporter.
 
 ## Dispatch и иерархия тредов
 

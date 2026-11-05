@@ -2,6 +2,7 @@ import type { TaskSort } from "../shared/pagination.js";
 import type { TaskDateFilters } from "../shared/task-dates.js";
 import type { TaskStatusDefinition } from "../shared/statuses.js";
 import type { Evidence } from "../shared/contract.js";
+import type { Project as ProjectContract } from "../shared/contract.js";
 import type {
   PRESET_ENVIRONMENT_KINDS,
   PresetPermissionMode,
@@ -29,6 +30,8 @@ export interface Folder {
 }
 
 export interface Project {
+  autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
+  staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   id: string;
   name: string;
   prefix: string;
@@ -150,6 +153,8 @@ export interface CreateProjectInput {
 }
 
 export interface UpdateProjectInput {
+  autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
+  staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   name?: string;
   prefix?: string;
   color?: string;
