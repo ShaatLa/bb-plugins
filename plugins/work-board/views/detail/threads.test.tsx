@@ -589,7 +589,9 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
   expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
   const dependencies = slot.getByRole("region", { name: "Task dependencies" });
-  expect(dependencies.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
+  const attachmentControls = slot.getByRole("button", { name: "Add reaction" }).parentElement!;
+  expect(attachmentControls.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
+  expect(attachmentControls.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(dependencies.className).toContain("border-t");
   expect(dependencies.className).not.toContain("rounded");
   fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));

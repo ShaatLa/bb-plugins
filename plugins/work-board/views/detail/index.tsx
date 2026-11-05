@@ -623,8 +623,6 @@ function TaskDetail({
             onOpenThread={(threadId) => navigate.toThread(threadId)}
           />
 
-          <DependenciesSection task={task} query={dependencies} onError={push} />
-
           <div className="mb-1 mt-3 flex items-center gap-1">
             <button
               type="button"
@@ -668,6 +666,8 @@ function TaskDetail({
             }}
             onError={(message) => push(message)}
           />
+
+          <DependenciesSection task={task} query={dependencies} onError={push} />
 
           {task.parentTaskId === null ? (
             <SubTasksSection
