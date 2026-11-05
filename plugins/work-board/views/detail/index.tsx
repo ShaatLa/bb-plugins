@@ -225,7 +225,7 @@ function SubTasksSection({
   };
 
   return (
-    <section ref={ref} className="mt-5 border-t border-border pt-4">
+    <section ref={ref} className="mt-5 border-t border-border pt-6">
       {task.type === "epic" ? (
         <h2 className="mb-2 text-sm font-semibold">Tasks in this epic</h2>
       ) : null}
