@@ -75,6 +75,7 @@ it("keeps fresh crash leftovers until the grace period and shares concurrent mai
 
 it("shares identical immutable bytes, keeps paths/URLs and independent replacement/deletion, and compacts SQLite", async () => {
   const h = setup();
+  expect(h.db.pragma("journal_size_limit", { simple: true })).toBe(4 * 1024 * 1024);
   const bytes = Buffer.alloc(128 * 1024, 97);
   const a = await saveAttachmentFromBytes(h.store.tasks, bytes, { taskId: h.task.id, fileName: "a.bin" });
   const b = await saveAttachmentFromBytes(h.store.tasks, bytes, { taskId: h.task.id, fileName: "b.bin" });

@@ -362,6 +362,8 @@ const MIGRATIONS = [
 
 export function initializeTasksSchema(db: PluginDatabase): void {
   db.pragma("foreign_keys = ON");
+  // A large transaction must not retain its peak WAL allocation after checkpoints can reset it.
+  db.pragma("journal_size_limit = 4194304");
   // Fresh databases can reclaim pages incrementally without a blocking rebuild during startup.
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").get()) db.pragma("auto_vacuum = INCREMENTAL");
   db.exec(`

@@ -1,12 +1,12 @@
 # Work Board
 
-## Storage management (0.22.1)
+## Storage management (0.22.2)
 
 Settings → Work Board → **Storage** shows database/WAL usage, free database pages, logical blob contents versus allocated filesystem blocks, old unreferenced files, and missing attachment files. Statistics load only when the section opens. Storage is shared across projects.
 
 Daily cleanup removes orphan activity claims/queue markers and PR snapshots with no surviving link, plus unreferenced managed blob files older than 24 hours and empty blob directories. It rechecks references before deletion and protects active uploads/imports, including long-running imports. Symlinks are never followed. Tasks, archived cards, comments/evidence, questions, dependencies, PR links/exclusions, observed-work history and accessible attachments are retained. Missing files are reported without deleting their metadata.
 
-**Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
+**Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
 CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Export format remains v12. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 

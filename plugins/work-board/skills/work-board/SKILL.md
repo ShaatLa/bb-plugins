@@ -319,7 +319,7 @@ Read `bb work-board dependency list KEY --json` before starting a task. Add `bb 
 Use the Dependencies section in the task UI to search/add/remove links or open either endpoint. Board/list Blocked badges identify unfinished predecessors. Links are within one project; self-links and cycles are rejected. Move all connected endpoints together in a task family or remove the links before a project move. Export v12 stores each task's outgoing dependency IDs, validates the graph and restores it atomically. Older imports preserve local links; conflicting imported sets need --overwrite. No merge condition or automatic workflow moves are inferred.
 
 
-## Storage maintenance (0.22.1)
+## Storage maintenance (0.22.2)
 
 Use `bb work-board storage status --json` for plugin-owned disk usage, unreachable blobs older than 24h, and missing attachment files. `storage clean --json` performs the same safe cleanup as the daily sweep. `storage optimize --json` additionally shares identical immutable blobs and compacts SQLite; it may take time. Settings → Storage offers the same actions and reports before/after counts. Scope is all projects in this plugin, not the invoking machine or an export directory.
 
