@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DependencyTask, Task } from "../../shared/contract";
 import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import { useTasksNavigation } from "../../shell/routes";
+import { useTaskStatuses } from "../../shell/task-statuses";
 import { errorMessage } from "../../shared/errors";
 import { DependencyWarning } from "../../components/dependency-warning";
 import { StatusIcon } from "../../components/status-icon";
@@ -42,6 +43,7 @@ function AddDependency({ task, direction, onSelect }: { task: Task; direction: "
 
 export function DependenciesSection({ task, onError, query }: { task: Task; onError: (message: string) => void; query: { data?: { blockedBy: DependencyTask[]; blocks: DependencyTask[] }; error: string | null; refresh: () => void } }) {
   const rpc = useTasksRpc();
+  const { label: statusLabel } = useTaskStatuses(task.projectId);
   const navigation = useTasksNavigation();
   const [pending, setPending] = useState(false);
   async function change(otherId: string, direction: "blockedBy" | "blocks", remove: boolean) {
@@ -57,9 +59,9 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
   const blockedBy = query.data?.blockedBy.filter(row => row.status !== "done");
   function rows(items: DependencyTask[], direction: "blockedBy" | "blocks") {
     return items.map(row => <div key={row.id} className="flex min-w-0 items-start gap-1 py-1">
-      <button type="button" className="flex min-w-0 flex-1 items-start gap-1.5 text-left hover:underline" title={`${row.key} · ${row.title} (${row.status})`} onClick={() => navigation.go({ kind: "task", taskKey: row.key })}>
-        <StatusIcon projectId={row.projectId} status={row.status} />
-        <span className="min-w-0"><span className="block truncate">{row.key} · {row.title}</span><span className="text-2xs text-muted-foreground">{row.status === "done" ? "Done" : direction === "blockedBy" ? "Waiting for Done" : "Dependent task"}</span></span>
+      <button type="button" className="min-w-0 flex-1 text-left hover:underline" title={`${row.key} · ${row.title} (${statusLabel(row.status)})`} onClick={() => navigation.go({ kind: "task", taskKey: row.key })}>
+        <span className="block truncate">{row.key} · {row.title}</span>{" "}
+        <span className="mt-0.5 flex items-center gap-1 text-2xs text-muted-foreground"><StatusIcon projectId={row.projectId} status={row.status} className="size-3" /><span className="truncate">{statusLabel(row.status)}</span></span>
       </button>
       {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : "blocking link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
     </div>);
