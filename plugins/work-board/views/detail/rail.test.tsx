@@ -90,8 +90,6 @@ function railProps(
     project,
     projects: [project, HOME_PROJECT],
     labels: [],
-    threads: [],
-    presets: [],
     onUpdate: () => {},
     onMoveToProject,
     onError: () => {},

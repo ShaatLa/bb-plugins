@@ -146,8 +146,9 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
   const slot = surface === "main"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
-  fireEvent.click(await slot.findByRole("button", { name: "Open thread Correctness review" }));
-  fireEvent.click(slot.getByRole("button", { name: "Open thread QA verification" }));
+  const rail = await slot.findByRole("complementary", { name: "Task details" });
+  fireEvent.click(await within(rail).findByRole("button", { name: "Open thread Correctness review" }));
+  fireEvent.click(within(rail).getByRole("button", { name: "Open thread QA verification" }));
   expect(slot.navigateCalls).toEqual([
     { method: "toThread", threadId: "thr_review" },
     { method: "toThread", threadId: "thr_qa" },
@@ -485,7 +486,7 @@ it.each(["main", "side"])("renders an EXA-71-sized card within 500 ms while Git 
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   await slot.findByRole("textbox", { name: "Task title" }, { timeout: 500 });
-  await slot.findByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
+  await slot.findAllByRole("button", { name: "Open thread Saved worker" }, { timeout: 500 });
   await slot.findByText("Showing 20 of 80", {}, { timeout: 500 });
   expect(performance.now() - started).toBeLessThan(500);
   const syncButton = slot.getByRole("button", { name: "Sync PRs" });
@@ -540,14 +541,14 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   expect(activity.querySelector(".tiptap")).toBe(composer);
 });
 
-it.each(["central", "thread"])("explains activity and opens its evidence in the %s task view", async (surface) => {
+it.each(["central", "thread"])("groups status, linked sessions and dispatch in the %s task view", async (surface) => {
   const activity = {
     state: "working", workingCount: 1, attachedCount: 1, terminalWarning: true, hasFailure: false,
     diagnostics: { explanation: "An accepted dispatch is executing on this task.", hasWorked: true, complete: true, checkedAt: "2026-11-04T12:00:00.000Z", inactiveSessions: [{ threadId: "thr_old", title: "Archived worker", reason: "archived" }] },
     sessions: [{ threadId: "thr_scoped", title: "Scoped worker", role: "worker", state: "working", diagnostics: { explanation: "Task dispatch matches the current accepted input.", threadStatus: "active", runtimeStatus: "active", turnId: "turn-evidence", requestId: "req-evidence", focusedTaskId: TASK_ID, focusedTaskKey: "TSK-5", queueIds: [], interactionIds: [] } }],
   };
   let current = activity;
-  const options = { rpc: detailRpc({ updateTask: (input: unknown) => ({ ok: true, task: { ...task, ...rpcInput(input) } }), listTaskCardMeta: () => ({ metadata: [{ taskId: TASK_ID, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: current }] }) }) };
+  const options = { rpc: detailRpc({ updateTask: (input: unknown) => ({ ok: true, task: { ...task, ...rpcInput(input) } }), listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_scoped", "Scoped worker")] }), listTaskCardMeta: () => ({ metadata: [{ taskId: TASK_ID, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: current }] }) }) };
   const slot = surface === "central"
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_context", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
@@ -564,21 +565,20 @@ it.each(["central", "thread"])("explains activity and opens its evidence in the 
   fireEvent.keyDown(within(region).getByRole("button", { name: "Change task status" }), { key: "ArrowDown" });
   fireEvent.click(await slot.findByRole("menuitem", { name: "Todo" }));
   await waitFor(() => expect(slot.rpcCalls).toContainEqual({ method: "updateTask", input: { taskId: TASK_ID, status: "todo" } }));
-  await within(region).findByText("Why this status?");
-  const disclosure = within(region).getByText("Why this status?");
-  expect(disclosure.className).toContain("text-2xs");
-  expect(disclosure.closest("details")?.open).toBe(false);
-  fireEvent.click(disclosure);
-  expect(disclosure.closest("details")?.open).toBe(true);
   expect(region.textContent).toContain("Working");
-  expect(region.textContent).toContain("An accepted dispatch is executing on this task.");
-  expect(region.textContent).toContain("turn-evidence");
-  expect(region.textContent).toContain("req-evidence");
-  expect(region.textContent).toContain("archived; excluded from current activity");
-  fireEvent.click(within(region).getByRole("button", { name: "Scoped worker" }));
+  expect(within(region).queryByText("Why this status?")).toBeNull();
+  expect(region.querySelector("details")).toBeNull();
+  expect(region.textContent).not.toContain("turn-evidence");
+  expect(region.textContent).not.toContain("req-evidence");
+  expect(within(region).getByText("Sessions")).toBeTruthy();
+  const rail = region.closest("aside")!;
+  expect(within(rail).queryByText("Agents")).toBeNull();
+  expect(within(rail).getByRole("button", { name: "Go to thread" })).toBeTruthy();
+  expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
-  await within(region).findByText("Session data unavailable.");
-  expect(region.textContent).toContain("Some session data could not be read");
+  await within(region).findAllByText("Attached");
+  expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
 });

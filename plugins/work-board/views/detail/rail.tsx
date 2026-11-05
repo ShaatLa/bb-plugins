@@ -6,16 +6,13 @@ import type {
   Task,
   TaskPriority,
   TaskStatus,
-  TaskThread,
 } from "../../shared/contract.js";
 import { TASK_PRIORITIES } from "../../shared/contract.js";
-import type { Preset } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import {
   PriorityIcon,
   formatDueDate,
-  isActiveThread,
 } from "./meta.js";
 import {
   DUE_DATE_PRESETS,
@@ -23,7 +20,6 @@ import {
   PRIORITY_LABELS,
 } from "../list/lib.js";
 import { EpicPicker } from "../../components/epic-picker.js";
-import { DispatchControl } from "./threads.js";
 import { DEFAULT_COLOR } from "../manage/shared.js";
 import { BbProjectLinkPicker } from "../manage/bb-project-link.js";
 import type { BbProjectOption } from "../../shared/contract.js";
@@ -66,7 +62,6 @@ interface TaskPropertiesProps {
   project: Project | undefined;
   projects: Project[] | undefined;
   labels: Label[] | undefined;
-  threads: TaskThread[];
   onUpdate: (update: TaskPropertyUpdate) => void;
   onMoveToProject: (projectId: string) => void;
   onAddQuestion?: () => void;
@@ -579,8 +574,6 @@ export function PropertiesRail({
   project,
   projects,
   labels,
-  threads,
-  presets,
   onUpdate,
   onMoveToProject,
   onError,
@@ -588,7 +581,6 @@ export function PropertiesRail({
   className,
   children,
 }: TaskPropertiesProps & {
-  presets: Preset[] | undefined;
   onError: (message: string) => void;
   className?: string;
   children?: ReactNode;
@@ -597,8 +589,6 @@ export function PropertiesRail({
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
   );
-  const active = threads.filter(isActiveThread);
-  const navigate = useBbNavigate();
   const bbProjects = useTasksQuery(
     async (query) => (await query.call("listBbProjects")).bbProjects,
     ["projects:changed"],
@@ -699,18 +689,6 @@ export function PropertiesRail({
             ) : (
               <div className="py-0.5 text-sm text-muted-foreground">…</div>
             )}
-
-            <div className="mt-2.5 py-0.5">
-              <DispatchControl
-                taskId={task.id}
-                projectId={task.projectId}
-                threads={threads}
-                presets={presets}
-                onError={onError}
-                align="start"
-                className="w-full"
-              />
-            </div>
           </>
         ) : (
           <p className="mt-3 text-xs text-muted-foreground">
@@ -718,35 +696,6 @@ export function PropertiesRail({
             result; the requester thread will be notified if set.
           </p>
         )}
-
-        <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-          Agents
-        </div>
-        <div className="flex flex-col gap-1 py-0.5 text-xs">
-          {active.length > 0 ? (
-            active.map((thread) => (
-              <button
-                key={thread.id}
-                type="button"
-                title={`${thread.title || thread.threadId} · ${thread.liveStatus === "starting" ? "starting" : "working"}`}
-                aria-label={`Open thread ${thread.title || thread.threadId}`}
-                onClick={() => navigate.toThread(thread.threadId)}
-                className="flex min-w-0 items-center gap-1.5 rounded text-left font-medium text-success hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <span
-                  aria-hidden
-                  className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
-                />
-                <span className="truncate">
-                  {thread.title || thread.threadId}
-                </span>
-                <Icon name="ArrowUpRight" className="size-3 shrink-0" />
-              </button>
-            ))
-          ) : (
-            <span className="text-muted-foreground">none active</span>
-          )}
-        </div>
       </div>
       {children}
     </aside>
@@ -761,16 +710,11 @@ export function InlineProperties({
   project,
   projects,
   labels,
-  threads,
-  presets,
   onUpdate,
   onMoveToProject,
-  onError,
   onAddQuestion,
   className,
 }: TaskPropertiesProps & {
-  presets: Preset[] | undefined;
-  onError: (message: string) => void;
   className?: string;
 }) {
   const taskLabels = (labels ?? []).filter((label) =>
@@ -827,16 +771,6 @@ export function InlineProperties({
           <Icon name="Plus" className="size-3" />
         </button>
       </LabelsMenu>
-      {task.executionTarget !== "owner" && !task.archivedAt ? (
-        <DispatchControl
-          taskId={task.id}
-          projectId={task.projectId}
-          threads={threads}
-          presets={presets}
-          onError={onError}
-          className="ml-auto max-w-56"
-        />
-      ) : null}
     </div>
   );
 }

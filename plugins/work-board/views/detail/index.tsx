@@ -42,7 +42,7 @@ import {
   PropertiesRail,
   type TaskPropertyUpdate,
 } from "./rail.js";
-import { ThreadsSection } from "./threads.js";
+import { DispatchControl, ThreadsSection } from "./threads.js";
 import { DetailToasts, useDetailToasts } from "./toast.js";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
@@ -308,7 +308,6 @@ function TaskDetail({
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const subtasksRef = useRef<HTMLElement>(null);
-  const activityRef = useRef<HTMLDivElement>(null);
   const [addingQuestion, setAddingQuestion] = useState<string | null>(null);
 
   const [draft, setDraft] = useState<{ taskId: string; markdown: string }>();
@@ -514,7 +513,12 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
-  const activityStatus = <ActivityStatus task={task} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} onViewHistory={() => activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} />;
+  const activityStatus = <>
+    <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} />
+    {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
+      <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
+    </div> : null}
+  </>;
 
   return (
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
@@ -593,11 +597,8 @@ function TaskDetail({
             project={project}
             projects={projects.data}
             labels={labels.data}
-            threads={threads.data ?? []}
-            presets={presets.data}
             onUpdate={(update) => void updateTask(update)}
             onMoveToProject={(projectId) => void moveToProject(projectId)}
-            onError={(message) => push(message)}
             onAddQuestion={() => setAddingQuestion(task.id)}
             className="mb-4 @[45rem]:hidden"
           />
@@ -691,7 +692,7 @@ function TaskDetail({
             </div>
           ) : null}
 
-          <div ref={activityRef} className="mt-1">
+          <div className="mt-1">
             <QuestionsSection
               key={task.id}
               taskId={task.id}
@@ -714,8 +715,6 @@ function TaskDetail({
           project={project}
           projects={projects.data}
           labels={labels.data}
-          threads={threads.data ?? []}
-          presets={presets.data}
           onUpdate={(update) => void updateTask(update)}
           onMoveToProject={(projectId) => void moveToProject(projectId)}
           onError={(message) => push(message)}
