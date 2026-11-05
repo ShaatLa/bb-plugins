@@ -38,7 +38,7 @@ it("discovers a directly spawned worker in card metadata, then shows Attached wh
   const f = setup();
   expect((await f.meta()).activity).toMatchObject({ state: "working", workingCount: 1 });
   expect(f.store.tasks.listTaskThreads(f.task.id)).toMatchObject([{ threadId: f.thread.id, presetName: "Auto attached" }]);
-  expect(f.store.tasks.listComments(f.task.id)).toMatchObject([{ body: expect.stringContaining(`automatic: title starts with ${f.task.key}`) }]);
+  expect(f.store.tasks.listComments(f.task.id)).toMatchObject([{ body: expect.stringContaining(`automatic: title references ${f.task.key}`) }]);
   f.thread.status = "idle";
   f.thread.runtime.displayStatus = "idle";
   expect((await f.meta()).activity?.state).toBe("attached");
@@ -57,17 +57,35 @@ it("attaches immediately on lifecycle events and records the reason only once", 
 });
 
 it.each([
-  { title: "Discuss DISC-1 in a general session" },
-  { title: "DISC-1 and DISC-2 shared work" },
-  { title: "DISC-1+2 shared work" },
+  "Designer (Codex): DISC-1, DISC-2 research",
+  "Lead: DISC-1+2 research",
+  "Lead: DISC-1 + 2 and DISC-1",
+  "Owner bugs: disc-1 and DISC-2",
+  "Review (DISC-1), (DISC-2)",
+])("attaches every named task and respects a per-card manual detachment: %s", async (title) => {
+  const f = setup();
+  const second = f.store.tasks.createTask({ projectId: f.project.id, title: "Second card", status: "in_progress" });
+  f.thread.title = title;
+  attachNamedTaskThread(f.bb, f.store, f.thread);
+  attachNamedTaskThread(f.bb, f.store, f.thread);
+  expect(f.store.tasks.listTaskThreadsByThreadId(f.thread.id).map((link) => link.taskId).sort()).toEqual([f.task.id, second.id].sort());
+  expect(f.store.tasks.listComments(second.id)).toHaveLength(1);
+  await handlers(f.bb, f.store).taskThreadsDetach({ taskId: f.task.id, threadId: f.thread.id });
+  attachNamedTaskThread(f.bb, f.store, f.thread);
+  expect(f.store.tasks.listTaskThreads(f.task.id)).toEqual([]);
+  expect(f.store.tasks.listTaskThreads(second.id)).toHaveLength(1);
+});
+
+it.each([
   { title: null },
+  { title: "DISC1 missing separator" },
   { projectId: "proj_elsewhere" },
   { archivedAt: 1 },
   { deletedAt: 1 },
   { status: "idle" as const },
   { status: "stopping" as const },
   { originKind: "fork" as const, originPluginId: "side-chat", visibility: "hidden" as const },
-])("does not infer an assignment from unrelated, ambiguous or unavailable threads: %j", (overrides) => {
+])("does not infer an assignment from unrelated or unavailable threads: %j", (overrides) => {
   const f = setup();
   attachNamedTaskThread(f.bb, f.store, { ...f.thread, ...overrides });
   expect(f.store.tasks.listTaskThreads(f.task.id)).toEqual([]);
@@ -78,9 +96,8 @@ it("preserves existing assignments, manual detachments and explicit reattachment
   const other = f.store.tasks.createTask({ projectId: f.project.id, title: "Other" });
   f.store.tasks.upsertTaskThread({ taskId: other.id, threadId: f.thread.id, title: "Explicit", presetName: "Attached", liveStatus: "working" });
   attachNamedTaskThread(f.bb, f.store, f.thread);
-  expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(0);
-  f.store.tasks.deleteTaskThread(f.store.tasks.listTaskThreads(other.id)[0]!.id);
-  attachNamedTaskThread(f.bb, f.store, f.thread);
+  expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(1);
+  expect(f.store.tasks.listTaskThreads(other.id)).toHaveLength(1);
   await handlers(f.bb, f.store).taskThreadsDetach({ taskId: f.task.id, threadId: f.thread.id });
   attachNamedTaskThread(f.bb, createStore(f.bb), f.thread);
   expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(0);
@@ -151,6 +168,6 @@ it("includes the discovered link and its explanation on the first CLI show", asy
   expect(JSON.parse(result.stdout)).toMatchObject({
     activity: { state: "working" },
     taskThreads: [{ threadId: f.thread.id }],
-    comments: [{ body: expect.stringContaining("automatic: title starts with") }],
+    comments: [{ body: expect.stringContaining("automatic: title references") }],
   });
 });

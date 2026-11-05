@@ -6,43 +6,50 @@ import { recordThreadLink, threadLiveStatus, threadUnavailable } from "./thread-
 type Thread = Pick<Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>,
   "id" | "title" | "projectId" | "status" | "runtime" | "archivedAt" | "deletedAt" | "originKind" | "originPluginId" | "visibility">;
 
-function titleTaskKey(title: string | null): string | null {
-  const key = title?.match(/^([A-Z][A-Z0-9]{0,9}-[1-9][0-9]*)(?=$|[\s:–—])/i)?.[1]?.toUpperCase();
-  if (!key) return null;
-  const keys = new Set(title!.toUpperCase().match(/\b[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*\b/g));
-  return keys.size === 1 ? key : null;
+function titleTaskKeys(title: string): string[] {
+  const keys = new Set<string>();
+  for (const match of title.matchAll(/\b([A-Z][A-Z0-9]{0,9})-([1-9][0-9]*(?:\s*\+\s*[1-9][0-9]*)*)\b/gi)) {
+    for (const number of match[2]!.split(/\s*\+\s*/)) keys.add(`${match[1]!.toUpperCase()}-${number}`);
+  }
+  return [...keys];
 }
 
-/** A single leading task key is an assignment hint; a key mentioned in prose is not. */
+/** Explicit task keys anywhere in a session title can identify several assignments. */
 export function attachNamedTaskThread(bb: BbPluginApi, store: TasksApiStore, thread: Thread): void {
-  const key = titleTaskKey(thread.title);
-  if (!key || threadUnavailable(thread) || !["pending", "starting", "active"].includes(thread.status)) return;
-  const task = store.tasks.getTaskByKey(key);
-  if (!task || task.archivedAt || task.executionTarget === "owner" || ["done", "canceled"].includes(task.status)) return;
-  const project = store.tasks.getProject(task.projectId);
-  if (!project?.linkedBbProjectId || project.linkedBbProjectId !== thread.projectId) return;
-  // Existing assignments and explicit detachments take priority over inferred titles.
-  if (store.tasks.listTaskThreadsByThreadId(thread.id).length) return;
+  const title = thread.title;
+  if (!title || threadUnavailable(thread) || !["pending", "starting", "active"].includes(thread.status)) return;
+  const keys = titleTaskKeys(title);
+  if (!keys.length) return;
+  const projects = store.tasks.listProjects().filter((project) => project.linkedBbProjectId != null && project.linkedBbProjectId === thread.projectId);
+  if (!projects.length) return;
+  const projectIds = new Set(projects.map((project) => project.id));
+  const attached = new Set(store.tasks.listTaskThreadsByThreadId(thread.id).map((link) => link.taskId));
   const db = bb.storage.database();
-  if (db.prepare<[string, string], { found: number }>(
-    "SELECT 1 AS found FROM comments WHERE task_id = ? AND thread_id = ? AND kind = 'system' AND body LIKE 'Thread detached (manual):%' LIMIT 1",
-  ).get(task.id, thread.id)) return;
-  store.transaction(() => {
-    store.tasks.upsertTaskThread({
-      taskId: task.id,
-      threadId: thread.id,
-      title: thread.title!,
-      presetName: "Auto attached",
-      liveStatus: threadLiveStatus(thread),
+  for (const key of keys) {
+    const task = store.tasks.getTaskByKey(key);
+    if (!task || !projectIds.has(task.projectId) || attached.has(task.id) || task.archivedAt || task.executionTarget === "owner" || ["done", "canceled"].includes(task.status)) continue;
+    // Manual detachment wins for that card; other explicitly named cards can still attach.
+    if (db.prepare<[string, string], { found: number }>(
+      "SELECT 1 AS found FROM comments WHERE task_id = ? AND thread_id = ? AND kind = 'system' AND body LIKE 'Thread detached (manual):%' LIMIT 1",
+    ).get(task.id, thread.id)) continue;
+    store.transaction(() => {
+      store.tasks.upsertTaskThread({
+        taskId: task.id,
+        threadId: thread.id,
+        title,
+        presetName: "Auto attached",
+        liveStatus: threadLiveStatus(thread),
+      });
+      recordThreadLink(store.tasks, task.id, thread.id,
+        `Thread attached: @thread:${thread.id} (automatic: title references ${key})`);
+      if (thread.status === "active" && thread.runtime.displayStatus === "active")
+        db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(task.id);
     });
-    recordThreadLink(store.tasks, task.id, thread.id,
-      `Thread attached: @thread:${thread.id} (automatic: title starts with ${key})`);
-    if (thread.status === "active" && thread.runtime.displayStatus === "active")
-      db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(task.id);
-  });
-  bb.realtime.publish("threads:changed", { taskId: task.id });
-  bb.realtime.publish("comments:changed", { taskId: task.id });
-  bb.realtime.publish("tasks:changed", { taskId: task.id, projectId: task.projectId });
+    attached.add(task.id);
+    bb.realtime.publish("threads:changed", { taskId: task.id });
+    bb.realtime.publish("comments:changed", { taskId: task.id });
+    bb.realtime.publish("tasks:changed", { taskId: task.id, projectId: task.projectId });
+  }
 }
 
 const discoveries = new WeakMap<TasksApiStore, { until: number; pending: boolean; promise: Promise<boolean> }>();
