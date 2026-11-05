@@ -14,7 +14,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.22.3";
+export const WORK_BOARD_PLUGIN_VERSION = "0.22.4";
 
 const tasksRpcContract = defineRpcContract({
   ping: {

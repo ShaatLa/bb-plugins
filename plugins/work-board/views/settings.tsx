@@ -503,15 +503,15 @@ function TasksSettingsContent() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
-          <Icon name="Plus" className="size-3.5" />New project
-        </Button>
         {project ? <Select value={project.id} onValueChange={setProjectId}>
           <SelectTrigger aria-label="Settings project" className="h-8 w-56"><SelectValue /></SelectTrigger>
           <SelectContent>{projects.data?.map((entry) => (
             <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>
           ))}</SelectContent>
         </Select> : null}
+        <Button size="sm" variant="outline" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
+          <Icon name="Plus" className="size-3.5" />New project
+        </Button>
       </div>
       {projects.error ? <div role="alert" className="text-xs text-destructive">
         {projects.error}<Button size="sm" variant="ghost" onClick={projects.refresh}>Retry</Button>
