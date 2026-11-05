@@ -205,27 +205,27 @@ export function createGitSyncService(
         for (const row of evidence) remember(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
       }
       phase = "worker thread lookup";
-      const threadCache = new Map<string, ReturnType<typeof bb.sdk.threads.get>>();
-      for (const task of tasks) {
-        if (!current()) break;
-        for (const link of store.tasks.listTaskThreads(task.id)) {
+      // Resolve each attached thread once, in bounded batches, while retaining persistent links on failure.
+      const links = store.tasks.listTaskThreadsForTasks(tasks.map((task) => task.id));
+      const ids = [...new Set(links.map((link) => link.threadId))];
+      const environments = new Map<string, string>();
+      for (let offset = 0; offset < ids.length && current(); offset += 200) {
+        const batch = ids.slice(offset, offset + 200);
+        try {
+          const threads = await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true });
           if (!current()) break;
-          try {
-            let lookup = threadCache.get(link.threadId);
-            if (!lookup) {
-              lookup = bb.sdk.threads.get({ threadId: link.threadId });
-              threadCache.set(link.threadId, lookup);
-            }
-            const thread = await lookup;
-            if (!thread.environmentId || !current()) continue;
-            const members =
-              environmentTasks.get(thread.environmentId) ?? new Set<string>();
-            members.add(task.id);
-            environmentTasks.set(thread.environmentId, members);
-          } catch {
-            /* A retired worker must not erase a persistent link. */
-          }
+          for (const thread of threads)
+            if (thread.environmentId) environments.set(thread.id, thread.environmentId);
+        } catch {
+          /* Unavailable workers must not erase persistent links. */
         }
+      }
+      for (const link of links) {
+        const environmentId = environments.get(link.threadId);
+        if (!environmentId) continue;
+        const members = environmentTasks.get(environmentId) ?? new Set<string>();
+        members.add(link.taskId);
+        environmentTasks.set(environmentId, members);
       }
       if (!current()) return { checked: 0, errors };
       phase = "environment PR read";

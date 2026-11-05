@@ -82,11 +82,13 @@ export function createGithubClient(options: {
     { expires: number; value: Promise<{ protection: unknown; rules: unknown[] | null }> }
   >();
   const signal = AbortSignal.any([options.signal, runSignal]);
-  async function request(path: string, body?: unknown): Promise<unknown> {
+  // Page promises belong to one run and credential so cancellation and accounts stay isolated.
+  const branchPages = new Map<string, Promise<unknown>>();
+  async function request(path: string, body?: unknown, suppliedToken?: { value: string | undefined }): Promise<unknown> {
     if (Date.now() < retryAt)
       throw new GithubError(429, "GitHub rate limit: retry later");
     signal.throwIfAborted();
-    const token = await options.token();
+    const token = suppliedToken ? suppliedToken.value : await options.token();
     signal.throwIfAborted();
     const scope = createHash("sha256")
       .update(token ?? "anonymous")
@@ -242,6 +244,20 @@ export function createGithubClient(options: {
       "Discovery window exceeds 2000 PRs; narrow the lookback",
     );
   }
+  async function branchPage(path: string) {
+    signal.throwIfAborted();
+    const token = await options.token();
+    signal.throwIfAborted();
+    const scope = createHash("sha256").update(token ?? "anonymous").digest("hex");
+    const key = `${scope}:${path}`;
+    let value = branchPages.get(key);
+    if (!value) {
+      value = request(path, undefined, { value: token });
+      branchPages.set(key, value);
+      value.catch(() => { if (branchPages.get(key) === value) branchPages.delete(key); });
+    }
+    return value;
+  }
   async function coverage(
     pr: z.infer<typeof pull>,
     config: GitSyncConfig,
@@ -260,7 +276,7 @@ export function createGithubClient(options: {
       const batch = z
         .object({ workflow_runs: z.array(z.unknown()) })
         .parse(
-          await request(
+          await branchPage(
             `/repos/${repo}/actions/runs?event=push&branch=${encodeURIComponent(pr.base.ref)}&per_page=100&page=${page}`,
           ),
         ).workflow_runs;

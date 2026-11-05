@@ -94,8 +94,8 @@ it.each([
   ["ABC-12 ABC-10 XABC-1 ABC-1_suffix", []],
 ] as const)("limits a shared worker's environment PR to matching cards: %s", async (text, matches) => {
   const f = setup();
-  f.harness.sdk.stub("threads.get", async ({ threadId }) =>
-    makeThreadResponse({ id: threadId, environmentId: "env_shared" }));
+  f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: readonly string[] }) =>
+    (threadIds ?? []).map((id) => makeThreadResponse({ id, environmentId: "env_shared" })));
   f.harness.sdk.stub("plugins.callRpc", async () => ({
     env_shared: { outcome: "available", pullRequest: {
       number: 42, title: "Worker PR", state: "open",
@@ -287,6 +287,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
 function githubFixture(
   options: {
     merged?: boolean;
+    mergedAt?: string;
     compare?: string;
     conclusion?: string;
     descendant?: boolean;
@@ -297,6 +298,7 @@ function githubFixture(
 ) {
   const requests: string[] = [];
   let token: string | undefined;
+  let mergedAt = options.mergedAt ?? "2026-10-25T12:00:00.000Z";
   const fetcher: typeof fetch = vi.fn(async (input, init) => {
     const url = new URL(String(input));
     requests.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
@@ -309,7 +311,7 @@ function githubFixture(
         ...(options.merged
           ? {
               state: "closed",
-              merged_at: "2026-10-25T12:00:00.000Z",
+              merged_at: mergedAt,
               merge_commit_sha: b,
             }
           : {}),
@@ -428,6 +430,7 @@ function githubFixture(
     }),
     requests,
     setToken: (value: string) => { token = value; },
+    setMergedAt: (value: string) => { mergedAt = value; },
   };
 }
 it("shares branch rule requests briefly per credential and refreshes them", async () => {
@@ -802,4 +805,41 @@ it("aborts a timed-out fetch and allows a later sync without late writes", async
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   }
+});
+
+it("shares post-merge pages within a run but isolates credentials and runs", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-25T13:00:00Z"));
+  const f = githubFixture({ merged: true });
+  const config = gitSyncConfigSchema.parse({ postMergeWorkflows: ["Publish"] });
+  const controller = new AbortController();
+  const run = f.client.withSignal(controller.signal);
+  const first = await run.snapshot("example/service", 42, config);
+  const second = await run.snapshot("example/service", 42, gitSyncConfigSchema.parse({ postMergeWorkflows: ["Other"] }));
+  expect(first.coverage[0]?.state).toBe("passed");
+  expect(second.coverage[0]?.state).toBe("pending");
+  const pages = () => f.requests.filter((path) => path.includes("/actions/runs?"));
+  expect(pages()).toHaveLength(1);
+  f.setMergedAt("2026-10-25T12:03:00.000Z");
+  expect((await run.snapshot("example/service", 42, config)).coverage[0]?.state).toBe("pending");
+  expect(pages()).toHaveLength(1);
+  f.setToken("different");
+  await run.snapshot("example/service", 42, config);
+  expect(pages()).toHaveLength(2);
+  controller.abort();
+  await expect(run.snapshot("example/service", 42, config)).rejects.toThrow();
+  await f.client.withSignal(new AbortController().signal).snapshot("example/service", 42, config);
+  expect(pages()).toHaveLength(3);
+});
+
+it("loads unique attached threads in batches of at most 200", async () => {
+  const f = setup();
+  for (let i = 0; i < 201; i++)
+    f.store.tasks.upsertTaskThread({ taskId: f.task.id, threadId: `thr_${i}`, title: "Worker", presetName: "Default", liveStatus: "working" });
+  f.store.tasks.upsertTaskThread({ taskId: f.tasks[1]!.id, threadId: "thr_0", title: "Worker", presetName: "Default", liveStatus: "working" });
+  const sizes: number[] = [];
+  f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: readonly string[] }) => { sizes.push(threadIds!.length); return []; });
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.syncProject(f.project.id);
+  expect(sizes).toEqual([200, 1]);
 });
