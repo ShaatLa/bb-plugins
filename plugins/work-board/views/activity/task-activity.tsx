@@ -261,7 +261,8 @@ function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
       ) : (
         <UserAvatar name={comment.authorName} />
       )}
-      <div className="min-w-0 flex-1">
+      {/* Host Markdown tables size their breakout from the nearest query container. */}
+      <div className="@container min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-1.5 text-xs">
           <CommentAuthor comment={comment} onOpenThread={navigate.toThread} />
           {agent && comment.presetName ? (
