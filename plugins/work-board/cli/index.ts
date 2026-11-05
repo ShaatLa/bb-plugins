@@ -1596,9 +1596,9 @@ export function registerTasksCli(
             ["update", "Rename, recolor, refile, or relink a project"],
           ],
         ),
-        activity: groupCommand("activity", "Declare the card this turn is actually working on", [["start <key-or-id>", "Focus work on this card for the current turn"], ["stop <key-or-id>", "Release this card's current work claim"]]),
+        activity: groupCommand("activity", "Record optional task focus for diagnostics; badges follow live sessions", [["start <key-or-id>", "Record this card as the current turn focus"], ["stop <key-or-id>", "Clear this turn focus; does not stop the session"]]),
         "activity start": cliCommand({
-          summary: "start card-scoped activity for the current turn",
+          summary: "record diagnostic task focus for the current turn",
           positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
           options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
           run(input, ctx) {
@@ -1612,7 +1612,7 @@ export function registerTasksCli(
           },
         }),
         "activity stop": cliCommand({
-          summary: "stop card-scoped activity for the current turn",
+          summary: "clear diagnostic task focus without stopping the session",
           positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
           options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
           run(input, ctx) {
@@ -2639,7 +2639,7 @@ export function registerTasksCli(
 ${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activity.diagnostics && !activity.diagnostics.complete ? "\nWarning: session data is incomplete." : ""}
 ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
-                ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous scoped work is recorded; historical execution details were not retained."}`] : []),
+                ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 `Description\n${task.description || "(none)"}`,
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],

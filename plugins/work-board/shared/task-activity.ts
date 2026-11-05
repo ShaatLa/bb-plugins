@@ -45,7 +45,7 @@ export const taskActivitySchema = z.object({
 export type TaskActivitySession = z.infer<typeof taskActivitySessionSchema>;
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
-/** Evaluate only verified, card-scoped signals; attachment alone is not work history. */
+/** Live execution of any attached session determines activity; idle attachment is not work. */
 export function evaluateTaskActivity(input: {
   sessions: TaskActivitySession[];
   hasWorked: boolean;
@@ -62,11 +62,11 @@ export function evaluateTaskActivity(input: {
     : hasFailure ? "error"
     : sessions.length ? "attached"
     : complete && hasWorked && !terminal ? "abandoned" : null;
-  const explanation = state === "working" ? "A session is executing a current accepted input scoped to this task."
-    : state === "waiting-owner" ? "A session has a pending owner interaction in a turn scoped to this task."
+  const explanation = state === "working" ? "An attached session is actively executing."
+    : state === "waiting-owner" ? "An attached session has a pending owner interaction."
     : state === "queued" ? "A dispatched request for this task is still in a session's queue."
     : state === "error" ? "An attached session has failed."
-    : state === "attached" ? "Sessions are attached, but none is verified as executing work on this task."
+    : state === "attached" ? "Sessions are attached, but none is actively executing."
     : state === "abandoned" ? "Previous work is recorded, no live sessions remain attached, and the task is neither done nor canceled."
     : !complete ? "Activity could not be verified because session data is unavailable."
     : terminal ? "No current activity; done and canceled tasks are not marked Abandoned."

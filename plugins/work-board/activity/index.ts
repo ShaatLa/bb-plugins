@@ -128,29 +128,22 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           }
           const claim = claims.get(link.threadId);
           const explicit = claim?.turn_id === snapshot.claimKey || claim?.turn_id === `stopped:${snapshot.claimKey}`;
-          const scoped = snapshot.complete && snapshot.turnId !== null && (explicit
-            ? claim?.task_id === id && claim.turn_id === snapshot.claimKey
-            : snapshot.dispatchTaskId === id && link.presetName !== "Parent thread");
-          if (scoped && !history.has(id)) {
+          const executing = snapshot.thread !== null && active(snapshot.thread);
+          if (executing && !history.has(id)) {
             db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(id);
             history.add(id);
           }
           const queued = snapshot.complete && queues.some((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id));
-          const state = scoped ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
+          const state = executing ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
           const queueIds = queues.filter((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id)).map((row) => row.queue_id);
           const focusedTaskId = explicit ? (claim!.turn_id === snapshot.claimKey ? claim!.task_id : null) : snapshot.dispatchTaskId;
-          const explanation = !snapshot.complete ? "Session data is unavailable; work on this task cannot be verified."
-            : scoped ? `${explicit ? "Manual focus" : "Task dispatch"} matches the current accepted input.${snapshot.pending ? " An owner interaction is pending in this turn." : " The session is actively executing."}`
+          const explanation = !snapshot.known ? "Session data is unavailable; execution cannot be verified."
+            : executing ? (snapshot.pending ? "The attached session has a pending owner interaction." : "The attached session is actively executing.")
             : state === "error" ? "The attached session reports an error."
-            : queued ? "A request dispatched from this task is still queued; it is not the session's current work."
-            : !active(snapshot.thread!) ? "The session is attached but is not actively executing."
-            : explicit && claim!.turn_id.startsWith("stopped:") ? "Automatic attribution was explicitly stopped for the current accepted input."
-            : focusedTaskId && focusedTaskId !== id ? "The current accepted input is scoped to a different task."
-            : snapshot.dispatchUnavailable ? "The accepted request could not be read; task attribution is unavailable."
-            : !snapshot.turnId ? "No current accepted turn is available to verify work on this task."
-            : "The current accepted input has no verified work scope for this task.";
+            : queued ? "A dispatched request is queued; the attached session is not actively executing."
+            : "The session is attached but is not actively executing.";
           sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state,
-            diagnostics: { explanation, threadStatus: snapshot.thread?.status ?? null, runtimeStatus: snapshot.thread?.runtime.displayStatus ?? null, turnId: snapshot.turnId, requestId: snapshot.requestId, focusedTaskId, focusedTaskKey: focusedKey(focusedTaskId), queueIds, interactionIds: scoped ? snapshot.interactionIds : [] } });
+            diagnostics: { explanation, threadStatus: snapshot.thread?.status ?? null, runtimeStatus: snapshot.thread?.runtime.displayStatus ?? null, turnId: snapshot.turnId, requestId: snapshot.requestId, focusedTaskId, focusedTaskKey: focusedKey(focusedTaskId), queueIds, interactionIds: executing ? snapshot.interactionIds : [] } });
         }
         const status = taskData.get(id)?.status;
         return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
