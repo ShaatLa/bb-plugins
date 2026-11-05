@@ -9,7 +9,7 @@ const app = await loadPluginApp(() => import("../app"));
 const { parseTasksRoute, tasksRouteToSubPath } = await import("./routes.js");
 const { pagerPosition } = await import("./topbar.js");
 const { loadViewMode, loadLastProjectId } = await import("./view-preference.js");
-const { querySnapshotStorageKey, resetQuerySnapshotStateForTest } =
+const { querySnapshotStorageKey, resetQuerySnapshotStateForTest, writeQuerySnapshot } =
   await import("./query-snapshot.js");
 
 const tasksRegistration = app.navPanels[0]!;
@@ -748,6 +748,28 @@ describe("tasks app shell", () => {
       taskCount: 3,
       activeAgentCount: 1,
     };
+
+    it("coalesces snapshot writes and rejects older revisions", () => {
+      vi.useFakeTimers();
+      const key = querySnapshotStorageKey("burst");
+      writeQuerySnapshot("burst", { value: "first" }, 1);
+      writeQuerySnapshot("burst", { value: "latest" }, 2);
+      writeQuerySnapshot("burst", { value: "stale" }, 1);
+      expect(window.localStorage.getItem(key)).toBeNull();
+      act(() => vi.advanceTimersByTime(25));
+      expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ value: "latest" });
+      vi.useRealTimers();
+    });
+
+    it("cancels pending snapshot writes on reset", () => {
+      vi.useFakeTimers();
+      const key = querySnapshotStorageKey("reset");
+      writeQuerySnapshot("reset", { value: 1 }, 1);
+      resetQuerySnapshotStateForTest();
+      act(() => vi.advanceTimersByTime(25));
+      expect(window.localStorage.getItem(key)).toBeNull();
+      vi.useRealTimers();
+    });
     function deferred<T>() {
       let resolve!: (value: T) => void;
       const promise = new Promise<T>((r) => {
@@ -837,6 +859,9 @@ describe("tasks app shell", () => {
         { rpc: seededRpc() },
       );
       await slot.findByText(project.name);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      });
       expect(
         window.localStorage.getItem("bb-work-board:query-snapshot:v0:projects"),
       ).toBeNull();
