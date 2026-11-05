@@ -28,6 +28,7 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
+import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
 function ProjectStatuses({ project }: { project: Project }) {
   const rpc = useTasksRpc();
@@ -395,6 +396,7 @@ function ProjectStatuses({ project }: { project: Project }) {
 function TasksSettingsContent() {
   const navigate = useBbNavigate();
   const projects = useProjects();
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
   const project =
     projects.data?.find((entry) => entry.id === projectId) ??
@@ -417,6 +419,14 @@ function TasksSettingsContent() {
           <Button
             size="sm"
             className="h-7 px-2.5"
+            onClick={() => setNewProjectOpen(true)}
+          >
+            <Icon name="Plus" className="size-3.5" />
+            New project
+          </Button>
+          <Button
+            size="sm"
+            className="h-7 px-2.5"
             variant="outline"
             onClick={() => navigate.toPluginPanel("work-board")}
           >
@@ -430,10 +440,13 @@ function TasksSettingsContent() {
               navigate.toPluginPanel("work-board", { subPath: "manage" })
             }
           >
-            Manage projects and presets
+            Manage labels and presets
           </Button>
         </div>
       </div>
+      {newProjectOpen ? (
+        <NewProjectDialog open onOpenChange={setNewProjectOpen} />
+      ) : null}
       <NavigationBadgeSettings />
       <section
         aria-label="Project task statuses"

@@ -1,6 +1,6 @@
 # Work Board
 
-Создание проекта доступно в **Manage → Projects → New project**, а также в боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом.
+Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом.
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 

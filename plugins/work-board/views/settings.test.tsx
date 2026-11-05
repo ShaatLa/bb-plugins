@@ -30,6 +30,48 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+it.each([false, true])("creates a project directly in settings (existing project: %s)", async (hasProject) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    if (hasProject) {
+      store.tasks.createProject({ name: "Existing", prefix: "EX", color: "blue" });
+    }
+    const methods = ["listProjects", "listFolders", "createProject", "getGitSyncConfig"];
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: {
+        ...Object.fromEntries(methods.map((method) => [
+          method, (input: unknown) => harness.callRpc(method, input),
+        ])),
+        listBbProjects: () => ({ bbProjects: [] }),
+      },
+    });
+    fireEvent.click(await settings.findByRole("button", { name: "New project" }));
+    await settings.findByRole("dialog", { name: "New project" });
+    expect(settings.navigateCalls).toHaveLength(0);
+    fireEvent.change(settings.getByPlaceholderText("e.g. Tasks Plugin"), {
+      target: { value: "Home Lab" },
+    });
+    fireEvent.click(settings.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(store.tasks.listProjects().some(
+      (project) => project.name === "Home Lab" && project.prefix === "HL",
+    )).toBe(true));
+    const project = store.tasks.listProjects().find((entry) => entry.prefix === "HL")!;
+    await waitFor(() => expect(settings.navigateCalls).toContainEqual({
+      method: "toPluginPanel", path: "work-board", options: { subPath: project.id },
+    }));
+    expect(settings.queryByRole("dialog")).toBeNull();
+    fireEvent.click(settings.getByRole("button", { name: "Manage labels and presets" }));
+    expect(settings.navigateCalls).toContainEqual({
+      method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
+    });
+  } finally {
+    cleanup();
+    await harness.dispose();
+  }
+});
+
 it("saves a project workflow in compact settings and uses it in the list, board and task picker", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
