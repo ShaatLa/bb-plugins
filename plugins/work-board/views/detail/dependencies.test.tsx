@@ -28,7 +28,7 @@ function setup() {
 it("lets the owner add, inspect, open and remove dependencies inside the task", async () => {
   const h = setup();
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${h.b.key}` }, { rpc: h.rpc });
-  const section = await within(await slot.findByRole("complementary")).findByRole("region", { name: "Task dependencies" });
+  const section = await slot.findByRole("region", { name: "Task dependencies" });
   fireEvent.click(within(section).getByRole("button", { name: "+ Blocked by" }));
   fireEvent.click(await slot.findByRole("option", { name: new RegExp(h.a.key) }));
   await within(section).findByText("Blocked");

@@ -520,7 +520,6 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data} isFetching={activity.isFetching} error={activity.error} />
-    <DependenciesSection task={task} query={dependencies} onError={push} />
     {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}
@@ -623,6 +622,8 @@ function TaskDetail({
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}
           />
+
+          <DependenciesSection task={task} query={dependencies} onError={push} />
 
           <div className="mb-1 mt-3 flex items-center gap-1">
             <button

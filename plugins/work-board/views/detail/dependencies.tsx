@@ -64,7 +64,7 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
       {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : "blocking link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
     </div>);
   }
-  return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="mb-2 rounded-md border border-border px-3 py-2 text-xs">
+  return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="mb-4 mt-5 text-xs">
     <div className="mb-1 flex flex-wrap items-center justify-between gap-1"><h3 className="font-medium">Dependencies</h3><DependencyWarning blockedBy={blockedBy} /></div>
     {blockedBy?.length ? <p className="mb-2 text-2xs text-muted-foreground">Waiting for predecessors to reach Done. Work is still allowed.</p> : null}
     {query.error ? <p role="status" className="text-warning">Could not load dependencies.</p> : null}

@@ -586,8 +586,11 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   const rail = region.closest("aside")!;
   expect(within(rail).queryByText("Agents")).toBeNull();
   expect(within(rail).getByRole("button", { name: "Go to thread" })).toBeTruthy();
-  expect(region.nextElementSibling?.getAttribute("aria-label")).toBe("Task dependencies");
-  expect(region.nextElementSibling?.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
+  const dependencies = slot.getByRole("region", { name: "Task dependencies" });
+  expect(dependencies.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
+  expect(dependencies.className).not.toContain("border");
   fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
