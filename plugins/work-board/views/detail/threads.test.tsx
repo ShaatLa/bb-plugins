@@ -97,14 +97,19 @@ describe("existing thread dispatch", () => {
   });
 });
 
-it("opens the attached thread instead of sending the task again, including with a saved default", async () => {
+it.each(["working", "idle", "failed"])("opens an attached %s thread and hides new-session dispatch until detachment", async (liveStatus) => {
   storeDefaultThread(PROJECT_ID, { id: "thr_other", title: "Other default" });
   let attached = true;
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
-    rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: attached ? [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] : [] }) }),
+    rpc: detailRpc({
+      listPresets: () => ({ presets: [{ id: "01HZZZZZZZZZZZZZZZZZZZZZE1", name: "New worker", providerId: "claude-code", modelId: "claude-sonnet-5", reasoningLevel: "medium", serviceTier: null, permissionMode: "accept-edits", environmentKind: "new-worktree", baseBranch: "main", machineId: null, instructions: "", builtin: false, createdAt: "2026-07-15T00:00:00.000Z" }] }),
+      listTaskThreads: () => ({ taskThreads: attached ? [{ ...taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker"), liveStatus }] : [] }),
+    }),
   });
   const buttons = await slot.findAllByRole("button", { name: "Go to thread" });
   expect(buttons).toHaveLength(2);
+  expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
+  expect(slot.queryByRole("button", { name: "Choose dispatch preset" })).toBeNull();
   fireEvent.click(buttons[0]!);
   expect(slot.navigateCalls).toEqual([{ method: "toThread", threadId: "thr_worker000" }]);
   expect(slot.rpcCalls.filter(({ method }) => method === "delegateToThread")).toHaveLength(0);
@@ -112,6 +117,12 @@ it("opens the attached thread instead of sending the task again, including with 
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await slot.findAllByRole("button", { name: "Send task to Other default" });
   expect(slot.queryByRole("button", { name: "Go to thread" })).toBeNull();
+  expect(await slot.findAllByRole("button", { name: "New worker" })).toHaveLength(2);
+  expect(slot.getAllByRole("button", { name: "Choose dispatch preset" })).toHaveLength(2);
+  attached = true;
+  await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+  await slot.findAllByRole("button", { name: "Go to thread" });
+  expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
 });
 
 function taskThreadRow(id: string, threadId: string, title: string) {
