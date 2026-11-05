@@ -56,6 +56,26 @@ it("follows live attached sessions on every linked card without requiring reques
   } finally { await host.harness.dispose(); }
 });
 
+it("keeps queued messages scoped to each linked card and thread", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    const project = store.tasks.createProject({ name: "Queues", prefix: "QUE", color: "blue" });
+    const a = store.tasks.createTask({ projectId: project.id, title: "A" });
+    const b = store.tasks.createTask({ projectId: project.id, title: "B" });
+    for (const task of [a, b]) store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_queue", title: "Worker", presetName: "Attached", liveStatus: "idle" });
+    host.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_queue", status: "idle", runtime: { displayStatus: "idle" } })] as never);
+    host.harness.sdk.stub("threads.queuedMessages.list", async () => [{ id: "qa" }] as never);
+    const service = activityService(host.bb, store);
+    service.queued(a.id, "thr_queue", "qa");
+    service.queued(b.id, "thr_queue", "qb");
+    const result = await service.metadata([a.id, b.id]);
+    expect(result.get(a.id)).toMatchObject({ state: "queued", sessions: [{ diagnostics: { queueIds: ["qa"] } }] });
+    expect(result.get(b.id)).toMatchObject({ state: "attached", sessions: [{ diagnostics: { queueIds: [] } }] });
+    expect(host.bb.storage.database().prepare("SELECT queue_id FROM task_activity_queue").all()).toEqual([{ queue_id: "qa" }]);
+  } finally { await host.harness.dispose(); }
+});
+
 it("recognizes historical per-card agent work without treating attachment as work", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
   const store = createStore(host.bb);

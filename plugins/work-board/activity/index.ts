@@ -68,6 +68,21 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       const history = new Set(db.prepare<string[], { task_id: string }>(`SELECT task_id FROM task_activity_history WHERE task_id IN (${placeholders})`).all(...ids).map((row) => row.task_id));
       const queues = db.prepare<string[], { thread_id: string; task_id: string; queue_id: string }>(`SELECT thread_id, task_id, queue_id FROM task_activity_queue WHERE task_id IN (${placeholders})`).all(...ids);
       const links = store.tasks.listTaskThreadsForTasks(ids);
+      // Group once so metadata work scales with links and queued messages, not cards times those rows.
+      const linksByTask = new Map<string, typeof links>();
+      for (const link of links) {
+        const group = linksByTask.get(link.taskId) ?? [];
+        group.push(link);
+        linksByTask.set(link.taskId, group);
+      }
+      const queuesByThread = new Map<string, Map<string, string[]>>();
+      for (const row of queues) {
+        const tasks = queuesByThread.get(row.thread_id) ?? new Map<string, string[]>();
+        const group = tasks.get(row.task_id) ?? [];
+        group.push(row.queue_id);
+        tasks.set(row.task_id, group);
+        queuesByThread.set(row.thread_id, tasks);
+      }
       const threadIds = [...new Set(links.map((link) => link.threadId))];
       const snapshots = new Map<string, Snapshot>();
       for (let offset = 0; offset < threadIds.length; offset += 200) {
@@ -88,7 +103,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
             const [accepted, pending, queue] = await Promise.all([
               active(snapshot.thread!) ? acceptedTurn(id) : Promise.resolve(null),
               active(snapshot.thread!) ? bb.sdk.threads.interactions.list({ threadId: id }) : Promise.resolve([]),
-              queues.some((row) => row.thread_id === id) ? bb.sdk.threads.queuedMessages.list({ threadId: id }) : Promise.resolve([]),
+              queuesByThread.has(id) ? bb.sdk.threads.queuedMessages.list({ threadId: id }) : Promise.resolve([]),
             ]);
             const turnId = accepted?.scope.kind === "turn" ? accepted.scope.turnId : null;
             snapshot.turnId = turnId;
@@ -117,7 +132,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         return focusedKeys.get(taskId)!;
       };
       return new Map(ids.map((id) => {
-        const taskLinks = links.filter((link) => link.taskId === id);
+        const taskLinks = linksByTask.get(id) ?? [];
         const sessions: TaskActivitySession[] = [];
         const inactiveSessions: NonNullable<TaskActivity["diagnostics"]>["inactiveSessions"] = [];
         for (const link of taskLinks) {
@@ -133,9 +148,9 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
             db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(id);
             history.add(id);
           }
-          const queued = snapshot.complete && queues.some((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id));
+          const queueIds = (queuesByThread.get(link.threadId)?.get(id) ?? []).filter((queueId) => snapshot.queue.has(queueId));
+          const queued = snapshot.complete && queueIds.length > 0;
           const state = executing ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
-          const queueIds = queues.filter((row) => row.thread_id === link.threadId && row.task_id === id && snapshot.queue.has(row.queue_id)).map((row) => row.queue_id);
           const focusedTaskId = explicit ? (claim!.turn_id === snapshot.claimKey ? claim!.task_id : null) : snapshot.dispatchTaskId;
           const explanation = !snapshot.known ? "Session data is unavailable; execution cannot be verified."
             : executing ? (snapshot.pending ? "The attached session has a pending owner interaction." : "The attached session is actively executing.")
