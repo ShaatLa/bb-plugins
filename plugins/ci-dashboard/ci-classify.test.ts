@@ -22,6 +22,24 @@ describe("classifyJobs", () => {
     expect(one(j)?.class).toBe(expected);
   });
 
+  describe("refusal steps", () => {
+    const gate = failed({ failedSteps: ["Admit release candidate"], runId: 5 });
+    const opts = { refusalSteps: ["Admit release candidate"] };
+    it("classifies a failed refusal step as refused with the step as evidence, even if a later attempt passed", () => {
+      expect(one(gate, opts)).toMatchObject({ class: "refused", reason: "intentional refusal by a gate step", evidence: "Admit release candidate" });
+      expect(classifyJobs([gate, job({ runId: 6, jobName: gate.jobName })], opts)[0]!.class).toBe("refused");
+    });
+    it("leaves other failed steps and an unset setting unchanged", () => {
+      expect(one(failed(), opts)?.class).toBe("real");
+      expect(one(gate)?.class).toBe("real");
+      expect(classifyJobs([gate, job({ runId: 6, jobName: gate.jobName })])[0]!.class).toBe("flake");
+    });
+    it("lets runner loss, cancel and aggregator rules win over a refusal step", () => {
+      expect(one({ ...gate, annotations: [failure(LOSS)] }, opts)?.class).toBe("runner_loss");
+      expect(one({ ...gate, jobName: "Summary" }, { ...opts, aggregatorJobs: ["Summary"] })?.class).toBe("consequence");
+    });
+  });
+
   it("keeps evidence, without log timestamps", () => {
     expect(one(failed({ annotations: [failure(LOSS)] }))?.evidence).toBe(LOSS);
     expect(one(cancelled(MANUAL))?.evidence).toMatch(/canceled by @\S+/);

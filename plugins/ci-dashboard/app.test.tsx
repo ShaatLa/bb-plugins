@@ -5,6 +5,7 @@ import { act, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
+import { duration, when } from "./ci-cards";
 import { minimumDate, resolveRange } from "./date-range";
 import { loadPluginApp, renderSlot as renderSdkSlot } from "@get-bb/plugin-sdk/testing/app";
 
@@ -38,14 +39,11 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   try {
     const attention = await slot.findByRole("region", { name: "CI health" });
     expect(slot.queryByRole("region", { name: "CI needs attention" })).toBeNull();
-    expect(attention.textContent).toContain("3 consecutive failures");
-    expect(slot.getByRole("link", { name: "Unit tests · main: latest run failed" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
-    expect(slot.getByText("3 failed · 25.0% passed · 4 counted runs")).toBeTruthy();
+    expect(slot.getByText("— 3 failed · 25% passed")).toBeTruthy();
     const timings = slot.getByRole("region", { name: "CI run timings" });
-    const order = [timings, attention, slot.getByRole("heading", { name: "CI pass rate over time" }),
-      slot.getByRole("region", { name: "Repository activity in the last 7 days" }), slot.getByRole("region", { name: "PRs awaiting review" })];
+    const order = [timings, attention, slot.getByRole("region", { name: "Repository activity in the last 7 days" }),
+      slot.getByRole("heading", { name: "CI pass rate over time" }), slot.getByRole("region", { name: "PRs awaiting review" })];
     for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(attention.contains(slot.getByRole("region", { name: "CI signals" }))).toBe(true);
     expect(timings.textContent).toContain("7m 0s");
     expect(timings.textContent).toContain("Timing available for 2 of 2 successful runs · 3 non-successful runs excluded");
     expect(slot.getByRole("link", { name: /Unit tests · main · #5/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/5");
@@ -896,15 +894,21 @@ test("draft settings start collapsed, keep native inputs and clean up on navigat
   } finally { dispose(); host.remove(); }
 });
 
-// --- job-level signals merged into the CI health card ---
+// --- CI health card: problems with Investigate/Dismiss, everything else in one "Details" ---
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+const problem = (id: string, severity: "critical" | "warning", minutes: number, extra: Record<string, unknown> = {}) =>
+  ({ id, severity, title: `Title ${id}`, what: `What ${id}.`, impact: "", where: { url: `https://github.com/acme/widgets/actions/runs/${id.length}` }, since: ago(minutes), handled: null, ...extra });
 const jobSignal = (id: string, kind: string, severity: string, minutes: number, where: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   ({ id, kind, severity, title: `server ${id}`, what: `what ${id}`, impact: "", where, since: ago(minutes), until: null, actor: "owner_sre", open: true, ...extra });
 const jobRepo = (extra: Record<string, unknown> = {}) => ({
-  repository: "acme/widgets", updatedAt: ago(1), error: null, live: { pools: [
+  repository: "acme/widgets", updatedAt: ago(1), error: null, projectId: "proj-1", live: { pools: [
     { pool: "idle-pool", queued: 0, inProgress: 0, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
     { pool: "self-hosted", queued: 0, inProgress: 12, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
     { pool: "stuck-pool", queued: 3, inProgress: 0, oldestQueuedAt: ago(30), lastStartedAt: null, queuedRunIds: [1] }], truncated: false, polledAt: null },
+  problems: [
+    problem("pool_stall:stuck-pool", "critical", 5, { title: "Runner pool stalled: stuck-pool", what: "3 jobs wait for a runner." }),
+    problem("runner_loss:90", "warning", 12.5, { title: "Runner lost on main: Integration tests", what: "The runner stopped mid-job.", where: { url: "https://github.com/acme/widgets/actions/runs/9/job/90" } }),
+  ],
   signals: [
     jobSignal("runner_loss:90", "runner_loss", "warning", 12.5, { jobName: "Integration tests", branch: "main", url: "https://github.com/acme/widgets/actions/runs/9/job/90" }),
     jobSignal("pool_stall:stuck-pool", "pool_stall", "critical", 5, { pool: "stuck-pool" }),
@@ -919,84 +923,275 @@ const jobRepo = (extra: Record<string, unknown> = {}) => ({
   backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: "2026-10-16T12:00:00.000Z" },
   ...extra,
 });
-// "Latest failed runs" is the separate CI details view that closes the column.
-const blocks = (card: HTMLElement) => Array.from(card.querySelectorAll("details > summary")).map((summary) => summary.textContent).filter((name) => name !== "Latest failed runs");
 const actors = { owner_sre: "Runner owner / SRE", pr_author: "Author", lead: "Lead", manager: "Manager" };
 const failingMain = () => summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
   created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z` })), "main");
-const healthSlot = (signals: (input: unknown) => unknown, ciInsights: unknown = failingMain(), panels = app.navPanels) => renderSlot(panels[0], { subPath: "" }, { rpc: { snapshot: () => null, signals, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 2, failure: 3 } }] }) }, settings: {} });
+type Extra = { rpc?: Record<string, unknown>; sdk?: Record<string, unknown> };
+const healthSlot = (signals: (input: unknown) => unknown, ciInsights: unknown = failingMain(), panels = app.navPanels, extra: Extra = {}) => renderSlot(panels[0], { subPath: "" }, {
+  rpc: { snapshot: () => null, signals, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 2, failure: 3 } }] }), ...extra.rpc }, settings: {},
+  sdk: { ...extra.sdk, threads: { get: async () => ({ title: null }), ...(extra.sdk?.threads as object) } } as never });
+// The panel module remembers the last signals answer per repository, so tests that assert a first render start from a fresh module.
+const freshPanels = async () => { vi.resetModules(); return (await loadPluginApp(() => import("./app"))).navPanels; };
+const withProblems = (problems: unknown[], extra: Record<string, unknown> = {}) => () => ({ repositories: [jobRepo({ problems, ...extra })], actors });
+const problemRows = (card: HTMLElement) => Array.from(within(card).getByRole("list", { name: "Problems" }).querySelectorAll<HTMLElement>(":scope > li"));
+const threads = [{ id: "thr_a", title: "Fix flaky tests", status: "idle", deletedAt: null, archivedAt: null, visibility: "visible" }, { id: "thr_b", title: "Runner migration", status: "running", deletedAt: null, archivedAt: null, visibility: "visible" }];
 
-test("CI health merges run-level alerts and open job-level signals into one list, stalled pool first, in the card's own markup", async () => {
-  const signals = vi.fn(() => ({ repositories: [jobRepo()], actors }));
-  const slot = healthSlot(signals);
+test("the header says All good, or counts the problems that need attention and turns red when one is critical", async () => {
+  vi.resetModules();
+  const states: [unknown[], string, boolean][] = [[[], "All good", false], [[problem("a", "warning", 5)], "1 problem needs attention", false],
+    [[problem("a", "warning", 5), problem("b", "critical", 6), problem("c", "critical", 7, { handled: { state: "dismissed", at: ago(1) } })], "2 problems need attention", true]];
+  for (const [problems, text, critical] of states) {
+    const slot = healthSlot(withProblems(problems), failingMain(), (await loadPluginApp(() => import("./app"))).navPanels);
+    try {
+      const card = await slot.findByRole("region", { name: "CI health" });
+      const header = await within(card).findByText(text);
+      expect(header.className).toContain(critical ? "text-destructive" : text === "All good" ? "text-muted-foreground" : "font-medium");
+      expect(header.className.includes("text-destructive")).toBe(critical);
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test("unhandled problems are listed with severity, plain title, age and one sentence, at most five until Show all; investigating ones sit under Handled", async () => {
+  const problems = [problem("investigating", "critical", 1, { handled: { state: "investigating", threadId: "thr_a", at: ago(1) } }),
+    ...["p1", "p2", "p3", "p4", "p5", "p6"].map((id, index) => problem(id, index === 0 ? "critical" : "warning", 10 + index))];
+  const slot = healthSlot(withProblems(problems), failingMain(), app.navPanels, { sdk: { threads: { get: async () => ({ title: "Fix flaky tests" }) } } });
   try {
     const card = await slot.findByRole("region", { name: "CI health" });
-    await vi.waitFor(() => expect(within(card).getByRole("link", { name: "Runner pool stalled: stuck-pool" })).toBeTruthy());
-    expect(slot.queryByRole("region", { name: "Signals" })).toBeNull();
-    const list = within(within(card).getByRole("region", { name: "CI signals" })).getByRole("list");
-    expect(Array.from(list.querySelectorAll("li a")).map((a) => a.textContent)).toEqual(["Runner pool stalled: stuck-pool", "Unit tests · main: latest run failed", "Runner lost on main: Integration tests"]);
-    expect(list.className).toBe("divide-y divide-border");
-    expect(list.querySelector("li a")?.className).toContain("text-destructive");
-    expect(list.querySelectorAll("li")[2].querySelector("p")?.textContent).toBe("what runner_loss:90 · Who acts: Runner owner / SRE · 12 min ago");
-    expect(within(card).queryByText(/Resolved \(/)).toBeNull();
-    // The signals request carries the dashboard range, so job-level numbers match the card subtitle.
-    expect(signals).toHaveBeenCalledWith({ repository: "acme/widgets", since: repo.range.since, until: repo.range.until });
-    await slot.behavior.emitRealtime("signals-changed", null);
-    await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThan(1));
+    await within(card).findByText("6 problems need attention");
+    expect(problemRows(card).map((row) => row.querySelector("a")?.textContent)).toEqual(["Title p1", "Title p2", "Title p3", "Title p4", "Title p5"]);
+    const first = problemRows(card)[0];
+    expect(first.querySelector("p")?.textContent).toMatch(/^Critical Title p1 · 10 min ago$/);
+    expect(first.querySelectorAll("p")[1].textContent).toBe("What p1.");
+    expect(first.querySelector("a")?.getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/2");
+    expect(problemRows(card)[1].querySelector("p")?.textContent).toMatch(/^Warning Title p2/);
+    fireEvent.click(within(card).getByRole("button", { name: "Show all 6" }));
+    expect(problemRows(card).map((row) => row.querySelector("a")?.textContent)).toEqual(["Title p1", "Title p2", "Title p3", "Title p4", "Title p5", "Title p6"]);
+    const handled = within(card).getByText("Handled · 1").closest("details")!;
+    expect(handled.open).toBe(false);
+    expect(within(handled).getByRole("list", { name: "Handled problems" }).textContent).toContain("Title investigating");
+    expect(within(card).getByRole("button", { name: "Show fewer" }).getAttribute("aria-expanded")).toBe("true");
   } finally { slot.lifecycle.unmount(); }
 });
 
-test("CI health shows failure causes, what is not counted and the secondary blocks", async () => {
-  const slot = healthSlot(() => ({ repositories: [jobRepo()], actors }));
+test("Investigate opens a menu: New session starts a session through the RPC and refreshes the list", async () => {
+  const investigate = vi.fn(async () => ({ threadId: "thr_new" }));
+  const signals = vi.fn(withProblems([problem("a", "critical", 5)]));
+  const slot = healthSlot(signals, failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    const menu = within(card).getByRole("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["New session", "Existing session…"]);
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitem", { name: "New session" }));
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitem", { name: "Existing session…" }));
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(within(card).queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    const calls = signals.mock.calls.length;
+    fireEvent.click(within(card).getByRole("menuitem", { name: "New session" }));
+    await vi.waitFor(() => expect(investigate).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a" }));
+    await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThan(calls));
+    expect(within(card).queryByRole("menu")).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("without a linked BB project New session is disabled with a hint, and a failed action is reported", async () => {
+  const investigate = vi.fn(async () => { throw new Error("The session could not be started."); });
+  const slot = healthSlot(withProblems([problem("a", "critical", 5)], { projectId: null }), failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Investigate: Title a" }));
+    const item = within(card).getByRole("menuitem", { name: "New session" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(document.getElementById(item.getAttribute("aria-describedby")!)?.textContent).toBe("No BB project is linked to this repository.");
+    expect(within(card).getByRole("menuitem", { name: "Existing session…" })).toBeTruthy();
+    expect(investigate).not.toHaveBeenCalled();
+  } finally { slot.lifecycle.unmount(); }
+  const linked = healthSlot(withProblems([problem("a", "critical", 5)]), failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await linked.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Investigate: Title a" }));
+    fireEvent.click(within(card).getByRole("menuitem", { name: "New session" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe("The session could not be started.");
+  } finally { linked.lifecycle.unmount(); }
+});
+
+test("Existing session… opens a picker of the project's sessions and sends the problem to the chosen one", async () => {
+  const restoreDialog = mockNativeDialog();
+  const investigate = vi.fn(async () => ({ threadId: "thr_b" }));
+  const list = vi.fn(async () => threads);
+  const signals = vi.fn(withProblems([problem("a", "critical", 5)]));
+  const slot = healthSlot(signals, failingMain(), app.navPanels, { rpc: { investigate }, sdk: { threads: { list } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    fireEvent.click(trigger);
+    fireEvent.click(within(card).getByRole("menuitem", { name: "Existing session…" }));
+    const dialog = await slot.findByRole("dialog", { name: "Send to existing session" });
+    expect(list).toHaveBeenCalledWith({ archived: false, limit: 50, offset: 0, projectId: "proj-1" });
+    expect(within(dialog).getByText(/“Title a” is sent/)).toBeTruthy();
+    expect(await within(dialog).findAllByRole("button", { name: /Fix flaky tests|Runner migration/ })).toHaveLength(2);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Filter sessions" }), { target: { value: "migration" } });
+    expect(within(dialog).queryByRole("button", { name: /Fix flaky tests/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /Runner migration/ }));
+    await vi.waitFor(() => expect(investigate).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", threadId: "thr_b" }));
+    await vi.waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+  } finally { slot.lifecycle.unmount(); restoreDialog(); }
+});
+
+test("a picker error stays in the dialog, and closing it returns focus to Investigate", async () => {
+  const restoreDialog = mockNativeDialog();
+  const investigate = vi.fn(async () => { throw new Error("Thread is archived."); });
+  const slot = healthSlot(withProblems([problem("a", "critical", 5)], { projectId: null }), failingMain(), app.navPanels, { rpc: { investigate }, sdk: { threads: { list: vi.fn(async () => threads) } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    fireEvent.click(trigger);
+    fireEvent.click(within(card).getByRole("menuitem", { name: "Existing session…" }));
+    const dialog = await slot.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Fix flaky tests/ }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Thread is archived.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(slot.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  } finally { slot.lifecycle.unmount(); restoreDialog(); }
+});
+
+test("an investigating problem shows the session title as a link instead of the buttons", async () => {
+  const handled = { state: "investigating", threadId: "thr_a", at: ago(1) };
+  const slot = healthSlot(withProblems([problem("a", "critical", 5, { handled }), problem("b", "warning", 6)]), failingMain(), app.navPanels, { sdk: { threads: { get: vi.fn(async () => ({ title: "Fix flaky tests" })) } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const link = await within(card).findByRole("button", { name: "Fix flaky tests" });
+    expect(link.closest("li")?.textContent).toContain("Investigating in Fix flaky tests");
+    expect(within(link.closest("li") as HTMLElement).queryByRole("button", { name: /Investigate:|Dismiss:/ })).toBeNull();
+    expect(within(problemRows(card)[0]).getByRole("button", { name: "Dismiss: Title b" })).toBeTruthy();
+    expect(within(card).getByText("1 problem needs attention")).toBeTruthy();
+    fireEvent.click(link);
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_a" });
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Dismiss moves a problem under a collapsed Dismissed section where Restore brings it back", async () => {
+  vi.resetModules();
+  let dismissed = false;
+  const problemAction = vi.fn(async (input: { action: string }) => { dismissed = input.action === "dismiss"; return { handled: null }; });
+  const signals = () => ({ repositories: [jobRepo({ problems: [problem("a", "critical", 5, dismissed ? { handled: { state: "dismissed", at: ago(0) } } : {})] })], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels, { rpc: { problemAction } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Dismiss: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", action: "dismiss" }));
+    await within(card).findByText("All good");
+    expect(within(card).queryByRole("list", { name: "Problems" })).toBeNull();
+    const section = within(card).getByText("Handled · 1").closest("details")!;
+    expect(section.open).toBe(false);
+    fireEvent.click(within(section).getByRole("button", { name: "Restore: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenLastCalledWith({ repository: "acme/widgets", id: "a", action: "restore" }));
+    await within(card).findByText("1 problem needs attention");
+    expect(within(card).queryByText(/Handled ·/)).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Details keeps only the overview open; every other section is a closed <details> with its count and hint", async () => {
+  const slot = healthSlot(() => ({ repositories: [jobRepo()], actors }), failingMain(), await freshPanels());
   try {
     const card = await slot.findByRole("region", { name: "CI health" });
     const causes = await within(card).findByRole("region", { name: "Failure causes" });
+    const details = Array.from(card.querySelectorAll(":scope > details"));
+    expect(details).toHaveLength(1);
+    const [all] = details as HTMLDetailsElement[];
+    expect(all.open).toBe(false);
+    expect(all.querySelector(":scope > summary")?.textContent).toBe("Details");
+    expect(all.contains(within(card).getByRole("region", { name: "CI problems" }))).toBe(false);
+    expect(all.contains(within(card).getByText("Passed"))).toBe(true);
+    expect(Array.from(all.querySelectorAll("h5")).map((heading) => heading.textContent)).toEqual(["Outcomes", "Failure causes"]);
+    const names = ["Pass rates", "Top failing workflows", "Runner pools", "Runner losses", "Reruns", "Lower-priority events", "Resolved incidents", "Mass runner losses"];
+    const sections = names.map((name) => { const section = within(card).getByRole("region", { name }); expect(all.contains(section)).toBe(true); return section; });
+    // Each nested section is a closed <details> with a real <summary>; "Latest failed runs" is the last, lazy one.
+    expect(sections.map((section) => (section.querySelector("details") as HTMLDetailsElement).open)).toEqual(names.map(() => false));
+    expect(Array.from(all.querySelectorAll("summary")).map((summary) => summary.textContent)).toEqual([
+      "Details", "Pass rates — main 0% · PRs —", "Top failing workflows · 1 — worst: Unit tests", "Runner pools · 3 — 1 stalled", "Runner losses · 2 — mostly Integration tests",
+      "Reruns · 1 — all passed after rerun", "Lower-priority events · 1", "Resolved incidents · 1", "Mass runner losses · 1", "Latest failed runs"]);
+    expect(card.textContent).not.toContain("Needs attention");
+    const text = (name: string) => within(card).getByRole("region", { name }).textContent;
     const values: Record<string, Element | null> = Object.fromEntries(Array.from(causes.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")]));
     expect(Object.entries(values).map(([key, dd]) => [key, dd?.textContent])).toEqual([["Runner losses", "2"], ["Flaky jobs", "1"], ["Network/tool errors", "3"], ["Real failures", "4"]]);
-    expect(causes.textContent).toContain("Also: 1 timed out, 0 without a recognizable cause");
     expect(values["Runner losses"]?.className).toContain("text-destructive");
-    expect(causes.textContent).toContain("Not counted: 5 superseded by newer runs, 6 cancelled manually, 7 cancelled with the run, 8 aggregator jobs");
-    const summaries = blocks(card);
-    expect(summaries).toEqual(["Top failing workflows", "Runner pools · 3", "Runner losses · 2", "Reruns · 1", "Lower-priority events · 1", "Resolved incidents · 1", "Mass runner losses · 1"]);
-    const text = (name: string) => Array.from(card.querySelectorAll("details")).find((item) => item.querySelector("summary")?.textContent === name)?.textContent;
-    expect(text("Runner pools · 3")).toContain("stuck-pool — 0 running, 3 waiting");
-    expect(text("Runner pools · 3")?.indexOf("stuck-pool")).toBeLessThan(text("Runner pools · 3")!.indexOf("self-hosted"));
-    expect(text("Runner pools · 3")).toContain("self-hosted — 12 running, 0 waiting");
-    expect(text("Runner pools · 3")).toContain("Idle: idle-pool");
-    expect(text("Runner losses · 2")).toContain("2 losses · 51 min of runner time");
-    expect(text("Reruns · 1")).toContain("feature · failed → passed · 4 min repeated runner time");
-    expect(text("Lower-priority events · 1")).toContain("Flaky jobs");
-    expect(text("Resolved incidents · 1")).toContain("Runner lost on main: Lint");
-    expect(text("Mass runner losses · 1")).toContain("r1, r2, r3 · 2 runs");
+    expect(causes.textContent).toContain("Excluded: 5 superseded by newer runs, 6 cancelled manually, 7 cancelled with the run, 8 aggregator jobs, 1 timed out");
+    expect(causes.textContent).not.toContain("recognizable cause");
     expect(causes.textContent).toContain("Job-level causes are kept for the last 14 days");
+    expect(text("Runner pools")).toContain("stuck-pool · 0 running · 3 waiting");
+    expect(text("Runner pools")!.indexOf("stuck-pool")).toBeLessThan(text("Runner pools")!.indexOf("self-hosted"));
+    expect(text("Runner pools")).toContain("self-hosted · 12 running · 0 waiting");
+    expect(text("Runner pools")).toContain("Idle: idle-pool");
+    expect(within(card).getByText(/stuck-pool · 0 running/).className).toContain("text-destructive");
+    expect(text("Runner losses")).toContain("By pool");
+    expect(text("Runner losses")).toContain("Integration tests — 2 losses · 51 min runner time");
+    expect(text("Reruns")).toContain("CI #7 (feature) failed → passed · 4 min repeated");
+    expect(within(card).getByRole("link", { name: "CI #7" })).toBeTruthy();
+    expect(text("Lower-priority events")).toContain("Flaky jobs — 1 open");
+    expect(text("Resolved incidents")).toMatch(/Runner lost on main: Lint — resolved (59 min|1 h) ago/);
+    expect(text("Resolved incidents")).not.toContain("what old");
+    expect(text("Top failing workflows")).toContain("Unit tests — 3 failed · 0% passed");
+    const mass = within(card).getByRole("region", { name: "Mass runner losses" });
+    expect(mass.textContent).toMatch(/Oct 19, \d\d:\d\d–\d\d:\d\d · 3 runners · 2 runs/);
+    expect(mass.textContent).not.toContain("r1");
+    expect(mass.querySelector("p")?.getAttribute("title")).toBe("Runners: r1, r2, r3");
   } finally { slot.lifecycle.unmount(); }
 });
 
-test("CI health hides empty secondary blocks and the zero causes stay in plain style", async () => {
-  const empty = jobRepo({ live: { pools: [], truncated: false, polledAt: null }, signals: [], runnerLosses: { byPool: {}, byJob: {}, byDay: {} }, massCancels: [], reruns: [], failureCounts: {},
+test("Excluded lists only non-zero items and disappears when all are zero", async () => {
+  const some = jobRepo({ failureCounts: { superseded: 1200, refused: 3, timeout: 2 } });
+  const none = jobRepo({ failureCounts: { real: 1 } });
+  for (const [repository, expected] of [[some, "Excluded: 1,200 superseded by newer runs, 3 refused by design, 2 timed out"], [none, null]] as const) {
+    const slot = healthSlot(() => ({ repositories: [repository], actors }), failingMain(), await freshPanels());
+    try {
+      const causes = await within(await slot.findByRole("region", { name: "CI health" })).findByRole("region", { name: "Failure causes" });
+      if (expected) expect(causes.textContent).toContain(expected); else expect(causes.textContent).not.toContain("Excluded");
+      if (expected) expect(causes.textContent).not.toContain("cancelled");
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test("duration and time helpers", () => {
+  expect([0, 45000, 32 * 60000, 65 * 60000, 120 * 60000].map(duration)).toEqual(["0 s", "45 s", "32 min", "1 h 5 min", "2 h"]);
+  const now = new Date(2026, 10, 5, 12, 0).getTime();
+  expect([new Date(2026, 10, 5, 8, 5), new Date(2026, 10, 4, 18, 16), new Date(2026, 10, 3, 14, 5)].map((date) => when(date.toISOString(), now)))
+    .toEqual(["today 08:05", "yesterday 18:16", "Nov 3, 14:05"]);
+});
+
+test("empty secondary blocks are not rendered and the zero causes stay in plain style", async () => {
+  const empty = jobRepo({ live: { pools: [], truncated: false, polledAt: null }, signals: [], problems: [], runnerLosses: { byPool: {}, byJob: {}, byDay: {} }, massCancels: [], reruns: [], failureCounts: {},
     window: { since: "2026-10-01T00:00:00.000Z", until: "2026-10-15T00:00:00.000Z" } });
-  const slot = healthSlot(() => ({ repositories: [empty], actors }), { ...failingMain(), alerts: [] });
+  const slot = healthSlot(() => ({ repositories: [empty], actors }), { ...failingMain(), alerts: [] }, await freshPanels());
   try {
     const card = await slot.findByRole("region", { name: "CI health" });
     const causes = await within(card).findByRole("region", { name: "Failure causes" });
     expect(Array.from(causes.querySelectorAll("dd")).map((dd) => dd.textContent)).toEqual(["0", "0", "0", "0"]);
     expect(causes.querySelector("dd")?.className).not.toContain("text-destructive");
-    expect(blocks(card)).toEqual(["Top failing workflows"]);
+    expect(Array.from(card.querySelectorAll("section[aria-label]")).map((section) => section.getAttribute("aria-label"))).toEqual(["CI problems", "Outcomes", "Failure causes", "Pass rates", "Top failing workflows"]);
     expect(causes.textContent).not.toContain("Job-level causes");
-    expect(within(card).getByText("No failed latest default-branch runs or repeated failures in this range.")).toBeTruthy();
+    expect(within(card).getByText("All good")).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
 });
 
 test("CI health explains a range older than the job history and the running backfill", async () => {
   const loading = jobRepo({ backfill: { remaining: 4640, failed: 0, pausedUntil: null, coveredSince: "2026-10-18T00:00:00.000Z" } });
-  const slot = healthSlot(() => ({ repositories: [loading], actors }));
+  const slot = healthSlot(() => ({ repositories: [loading], actors }), failingMain(), await freshPanels());
   try {
     await vi.waitFor(() => expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toContain("Loading job history: 4,640 attempts left"));
     expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toMatch(/Job-level causes cover .* onward — history is still loading/);
   } finally { slot.lifecycle.unmount(); }
 });
 
-test("a failing signals request leaves the run-level part of the card and offers one retry", async () => {
+test("a failing signals request keeps the run-level card and offers one retry", async () => {
   vi.resetModules(); // fresh module: no cached job-level answer from an earlier test
   const signals = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ repositories: [jobRepo()], actors });
   const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels);
@@ -1004,10 +1199,22 @@ test("a failing signals request leaves the run-level part of the card and offers
     const card = await slot.findByRole("region", { name: "CI health" });
     const retry = await within(card).findByRole("button", { name: "Retry" });
     expect(within(card).getAllByRole("alert")).toHaveLength(1);
-    expect(card.textContent).toContain("Unit tests · main: latest run failed");
+    expect(within(card).getByText("Passed")).toBeTruthy();
     expect(within(card).queryByRole("region", { name: "Failure causes" })).toBeNull();
     fireEvent.click(retry);
     expect(await within(card).findByRole("region", { name: "Failure causes" })).toBeTruthy();
     expect(within(card).queryByRole("alert")).toBeNull();
+    expect(within(card).getByText("2 problems need attention")).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("with no open problems the outcomes overview sits in the card; with problems it moves into Details", async () => {
+  for (const [problems, inside] of [[[], false], [[problem("a", "warning", 5)], true]] as const) {
+    const slot = healthSlot(withProblems([...problems]));
+    try {
+      const card = await slot.findByRole("region", { name: "CI health" });
+      const outcomes = await within(card).findByRole("region", { name: "Outcomes" });
+      expect(!!outcomes.closest("details")).toBe(inside);
+    } finally { slot.lifecycle.unmount(); }
+  }
 });

@@ -14,10 +14,12 @@ import { capOpenSignals, cleanupCache, compress, decompress, deepDays, deepIdleM
 import { ciQuerySchema, ciReportSchema, ciReport, ciSliceReport, type CiQuery } from "./agent-ci";
 import { classifyJobs, detectMassCancel, runnerLosses, summarizeReruns, type MassCancel } from "./ci-classify";
 import { createBackfill, createJobStore, createLogFetcher, jobMigrations, normalizeJob } from "./ci-jobs";
-import type { ClassifiedJob, PoolQueueState, RerunSummary, Signal } from "./ci-jobs-types";
+import type { ClassifiedJob, JobRecord, PoolQueueState, RerunSummary, Signal } from "./ci-jobs-types";
 import { createIncidentTracker, detectStalls, fetchLiveJobs, poolQueueStates } from "./ci-live";
 import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-signals";
-import { navigationBadgeOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type SignalsOutput } from "./ci-signals-contract";
+import { handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsOutput } from "./ci-signals-contract";
+import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
+import type { CiInsights } from "./ci-insights";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -36,6 +38,8 @@ export const rpcContract = defineRpcContract({
   },
   signals: { input: signalsInputSchema, output: signalsOutputSchema },
   navigationBadge: { input: z.null(), output: navigationBadgeOutputSchema },
+  problemAction: { input: problemActionInputSchema, output: problemActionOutputSchema },
+  investigate: { input: investigateInputSchema, output: investigateOutputSchema },
 });
 
 export const ciRpcContract = defineRpcContract({ ci: { input: ciQuerySchema, output: ciReportSchema } });
@@ -73,7 +77,9 @@ export default function plugin(bb: BbPluginApi) {
     jobBudgetPerHour: { type: "number", label: "GitHub requests per hour for job-history backfill (100–4000)", default: 1500, experimental_schema: z.number().int().min(100).max(4000) },
     jobHistoryDays: { type: "number", label: "Days of job history kept for signals (1–30)", default: 14, experimental_schema: z.number().int().min(1).max(30) },
     aggregatorJobs: { type: "string", label: "Aggregator job names that only fail because another job did (comma-separated)", default: "", experimental_schema: z.string().max(2000) },
+    refusalSteps: { type: "string", label: "By-design refusal steps: a failure on these steps is an intentional gate refusal (comma-separated)", default: "", experimental_schema: z.string().max(2000) },
     policyJobs: { type: "string", label: "Policy job names whose failures are never treated as flakes (comma-separated)", default: "", experimental_schema: z.string().max(2000) },
+    investigateNotes: { type: "string", label: "Team notes appended to every Investigate prompt (rerun limits, incident links; free text)", default: "", experimental_multiline: true, experimental_schema: z.string().max(4000) },
     actorOwnerSre: { type: "string", label: "Signals: display name for runner owner / SRE", default: "Runner owner / SRE", experimental_schema: actorName },
     actorPrAuthor: { type: "string", label: "Signals: display name for the PR author", default: "PR author", experimental_schema: actorName },
     actorLead: { type: "string", label: "Signals: display name for the lead", default: "Lead", experimental_schema: actorName },
@@ -191,9 +197,11 @@ export default function plugin(bb: BbPluginApi) {
     try { return await request; }
     finally { pending.delete(key); }
   }
+  // Lower-cased repository -> id of the BB project linked to it; refreshed by every successful discovery.
+  let projectIds = new Map<string, string>();
   async function discover(values: Values) {
     const repositories = splitRepositories(repositoriesSettingSchema.parse(values.repository));
-    const projectNames = new Map<string, string>();
+    const projectNames = new Map<string, string>(), linked = new Map<string, string>();
     let discoveryError: string | null = null;
     if (values.importBbRepositories) {
       try {
@@ -202,7 +210,7 @@ export default function plugin(bb: BbPluginApi) {
           const repo = githubRepository(project.gitRemoteUrl);
           if (repo) {
             repositories.push(repo);
-            if (!projectNames.has(repo.toLowerCase())) projectNames.set(repo.toLowerCase(), project.name);
+            if (!projectNames.has(repo.toLowerCase())) { projectNames.set(repo.toLowerCase(), project.name); linked.set(repo.toLowerCase(), project.id); }
           }
         }
       } catch {
@@ -210,6 +218,8 @@ export default function plugin(bb: BbPluginApi) {
         discoveryError = "Unable to discover BB project repositories. Additional repositories are still shown; retry to update the project list.";
       }
     }
+    // A failed discovery keeps the last known links instead of disabling "New session".
+    if (!discoveryError) projectIds = linked;
     return { names: uniqueRepositories(repositories), projectNames, discoveryError };
   }
   async function collect(input: RangeInput, values: Awaited<ReturnType<typeof settings.get>>, histories: Record<string, HistoricalRecords>, force: boolean, version: number): Promise<DashboardData> {
@@ -320,11 +330,11 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Job-level signals: live pool polling, budgeted job backfill, classification, incident tracking and push.
   type RepositorySignals = SignalsOutput["repositories"][number];
-  type View = Omit<RepositorySignals, "signals">;
+  type View = Omit<RepositorySignals, "signals" | "problems" | "projectId">;
   type Incidents = { open: Signal[]; recent: Signal[] };
   type Runtime = {
-    signal: AbortSignal; etags: Map<string, GitHubResponse>; liveKnown: boolean; pools: PoolQueueState[]; truncated: boolean; polledAt: string | null; stalls: Signal[];
-    defaultBranch: string | null; historyReadAt: number;
+    signal: AbortSignal; etags: Map<string, GitHubResponse>; liveKnown: boolean; pools: PoolQueueState[]; liveJobs?: JobRecord[]; truncated: boolean; polledAt: string | null; stalls: Signal[];
+    defaultBranch: string | null; historyReadAt: number; alerts?: CiInsights["alerts"]; handled?: Record<string, Handled>;
     backfill?: { key: string; enqueued: string; run: ReturnType<typeof createBackfill>; status: { processed: number; remaining: number; pausedUntil: number | null; failed: number } };
     analysis?: { key: string; at: number; classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; summary: ReturnType<typeof summarizeAnalysis> };
     incidents?: Incidents; persisted?: string; resultIds?: string; tracker: ReturnType<typeof createIncidentTracker>; view?: View; signature?: string;
@@ -363,10 +373,28 @@ export default function plugin(bb: BbPluginApi) {
   async function repositoryNames(values: Values) {
     return repositoryList?.configuration === configuration(values) ? repositoryList.names : (await discover(values)).names;
   }
-  // Same numbers for the navigationBadge RPC and the SIGNALS_CHANGED payload, so the badge needs no extra RPC.
+  async function loadHandled(repo: string, rt: Runtime) {
+    if (!rt.handled) {
+      const stored = z.record(z.string(), handledSchema).safeParse(await bb.storage.kv.get(`handled:${repo}`));
+      rt.handled ??= stored.success ? stored.data : {};
+    }
+    return rt.handled;
+  }
+  async function saveHandled(repo: string, rt: Runtime) {
+    // shortcut: keep the 200 most recent entries; pruning of closed problems keeps this far below the cap in practice.
+    rt.handled = Object.fromEntries(Object.entries(rt.handled ?? {}).sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at)).slice(0, 200));
+    await bb.storage.kv.set(`handled:${repo}`, rt.handled);
+  }
+  const problemsOf = async (repo: string, rt: Runtime) => buildProblems(repo, (await loadIncidents(repo, rt))?.open ?? [], withoutBenignAlerts(rt.alerts ?? [], rt.analysis?.classified ?? []), await loadHandled(repo, rt));
+  async function configuredRepository(repository: string, values: Values) {
+    const found = (await repositoryNames(values)).find((name) => name.toLowerCase() === repository.toLowerCase());
+    if (!found) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
+    return found;
+  }
+  // Same numbers for the navigationBadge RPC and the SIGNALS_CHANGED payload, so the badge needs no extra RPC. Handled problems do not count.
   async function badgeCounts(values: Values) {
-    const open = (await Promise.all((await repositoryNames(values)).map(async (repo) => (await loadIncidents(repo, runtimeFor(repo)))?.open ?? []))).flat();
-    return { count: open.filter((signal) => signal.severity !== "info").length, critical: open.filter((signal) => signal.severity === "critical").length };
+    const open = (await Promise.all((await repositoryNames(values)).map(async (repo) => (await problemsOf(repo, runtimeFor(repo))).filter((problem) => !problem.handled)))).flat();
+    return { count: open.length, critical: open.filter((problem) => problem.severity === "critical").length };
   }
   async function signalsRepository(repo: string, values: Values, token: string | undefined, signal: AbortSignal) {
     const rt = runtimeFor(repo);
@@ -389,7 +417,7 @@ export default function plugin(bb: BbPluginApi) {
           pullRequests: (run.pull_requests ?? []).map((pr: number | { number: number }) => typeof pr === "number" ? pr : pr.number),
         }));
         const starts = jobStore.listJobs({ repository: repo, since: new Date(now - 3 * 3_600_000).toISOString(), until: nowIso }).flatMap((job) => job.startedAt ? [{ pool: job.pool, startedAt: job.startedAt }] : []);
-        rt.pools = poolQueueStates(live.jobs, starts, now);
+        rt.pools = poolQueueStates(live.jobs, starts, now); rt.liveJobs = live.jobs;
         rt.stalls = detectStalls(rt.pools, { stallMinutes: values.stallMinutes }, now);
         Object.assign(rt, { etags: used, truncated: live.truncated, polledAt: nowIso, liveKnown: true });
       } catch (error) { fail("live poll", error); }
@@ -401,6 +429,7 @@ export default function plugin(bb: BbPluginApi) {
         if (history) {
           rt.historyReadAt = now;
           rt.defaultBranch = history.records.branch ?? history.metrics.ciInsights?.defaultBranch ?? null;
+          if (history.metrics.ciInsights) rt.alerts = history.metrics.ciInsights.alerts;
           const stamp = `${history.checkedAt}:${days}`;
           // Runs stored before 0.2.0 lack head_sha and PR numbers; every job response carries its own head_sha, so they are still backfilled.
           if (rt.backfill.enqueued !== stamp) {
@@ -414,13 +443,13 @@ export default function plugin(bb: BbPluginApi) {
     }
     // 3. analysis, recomputed at most every five minutes even while the backfill stores rows (the live pool state above stays per minute).
     const names = (list: string) => list.split(",").map((name) => name.trim()).filter(Boolean);
-    const aggregatorJobs = names(values.aggregatorJobs), policyJobs = names(values.policyJobs);
-    const analysisKey = JSON.stringify([days, aggregatorJobs, policyJobs]);
+    const aggregatorJobs = names(values.aggregatorJobs), policyJobs = names(values.policyJobs), refusalSteps = names(values.refusalSteps);
+    const analysisKey = JSON.stringify([days, aggregatorJobs, policyJobs, refusalSteps]);
     const recompute = !rt.analysis || rt.analysis.key !== analysisKey || now - rt.analysis.at >= 300_000;
     if (recompute) {
       try {
         const jobs = jobStore.listJobs({ repository: repo, since: new Date(now - days * 86_400_000).toISOString(), until: nowIso });
-        const classified = classifyJobs(jobs, { aggregatorJobs, policyJobs }), reruns = summarizeReruns(jobs), massCancels = detectMassCancel(classified);
+        const classified = classifyJobs(jobs, { aggregatorJobs, policyJobs, refusalSteps }), reruns = summarizeReruns(jobs), massCancels = detectMassCancel(classified);
         rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo }) };
       } catch (error) { fail("analysis", error); }
     }
@@ -437,6 +466,12 @@ export default function plugin(bb: BbPluginApi) {
         if (text !== rt.persisted) { await bb.storage.kv.set(`incidents:${repo}`, rt.incidents); rt.persisted = text; }
       } catch (error) { fail("signals", error); }
     }
+    // Handled entries of problems that closed are dropped, but only once the source of that kind of problem is known.
+    try {
+      const handled = await loadHandled(repo, rt), open = new Set((await problemsOf(repo, rt)).map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
+      const stale = Object.keys(handled).filter((id) => !open.has(id) && (id.startsWith("run:") ? rt.alerts !== undefined : jobKnown));
+      if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); }
+    } catch (error) { logOnce(`CI signals handled state for ${repo} not pruned: ${describe(error)}`); }
     // 5. view for the RPC (kept in memory and kv) and a realtime nudge when something visible changed.
     const status = rt.backfill?.status;
     const oldest = (database.prepare("SELECT MIN(created_at) AS oldest FROM ci_jobs WHERE repository = ?").get(repo) as { oldest: string | null }).oldest;
@@ -444,7 +479,8 @@ export default function plugin(bb: BbPluginApi) {
       window: { since: new Date(now - days * 86_400_000).toISOString(), until: nowIso }, ...(rt.analysis?.summary ?? zeroSummary(repo)),
       backfill: { remaining: status?.remaining ?? 0, failed: status?.failed ?? 0, pausedUntil: status?.pausedUntil ? new Date(status.pausedUntil).toISOString() : null, coveredSince: oldest } };
     const openIds = JSON.stringify((rt.incidents?.open ?? []).map((item) => item.id).sort());
-    const signature = JSON.stringify([openIds, rt.pools.map((pool) => [pool.pool, pool.queued, pool.inProgress])]);
+    const problemState = JSON.stringify((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.handled?.state]));
+    const signature = JSON.stringify([openIds, problemState, rt.pools.map((pool) => [pool.pool, pool.queued, pool.inProgress])]);
     // The stored view is only a restart fallback: pool counts alone do not justify a write.
     if (recompute || openIds !== rt.resultIds) {
       try { await bb.storage.kv.set(`result:${repo}`, rt.view); rt.resultIds = openIds; } catch (error) { logOnce(`CI signals result for ${repo} not persisted: ${describe(error)}`); }
@@ -462,7 +498,7 @@ export default function plugin(bb: BbPluginApi) {
     const active = new Set(repositoryList.names.map((name) => name.toLowerCase()));
     try {
       jobStore.pruneRepositories([...active]);
-      for (const prefix of ["result:", "incidents:"]) for (const key of await bb.storage.kv.list(prefix)) if (!active.has(key.slice(prefix.length).toLowerCase())) await bb.storage.kv.delete(key);
+      for (const prefix of ["result:", "incidents:", "handled:"]) for (const key of await bb.storage.kv.list(prefix)) if (!active.has(key.slice(prefix.length).toLowerCase())) await bb.storage.kv.delete(key);
       for (const repo of runtimes.keys()) if (!active.has(repo.toLowerCase())) runtimes.delete(repo);
       const capped = jobStore.capBytes(jobMaxBytes);
       if (capped.removedDays) logOnce(`CI job data exceeded ${mb(jobMaxBytes)} MB; dropped its ${capped.removedDays} oldest day(s).`);
@@ -504,7 +540,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   async function readView(repo: string, rt: Runtime, days: number): Promise<View> {
     if (!rt.view) {
-      const stored = repositorySignalsSchema.omit({ signals: true }).safeParse(await bb.storage.kv.get(`result:${repo}`));
+      const stored = repositorySignalsSchema.omit({ signals: true, problems: true, projectId: true }).safeParse(await bb.storage.kv.get(`result:${repo}`));
       rt.view = stored.success ? stored.data : emptyView(repo, days, Date.now());
     }
     return rt.view;
@@ -529,10 +565,48 @@ export default function plugin(bb: BbPluginApi) {
       if (input?.repository && !wanted.length) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
       return { actors: actorNames(values), repositories: await Promise.all(wanted.map(async (repo) => {
         const rt = runtimeFor(repo), incidents = await loadIncidents(repo, rt);
-        return { ...rangedView(rt, await readView(repo, rt, values.jobHistoryDays), input), signals: sortSignals([...(incidents?.open ?? []), ...(incidents?.recent ?? [])]) };
+        return { ...rangedView(rt, await readView(repo, rt, values.jobHistoryDays), input), signals: sortSignals([...(incidents?.open ?? []), ...(incidents?.recent ?? [])]),
+          problems: await problemsOf(repo, rt), projectId: projectIds.get(repo.toLowerCase()) ?? null };
       })) };
     },
     async navigationBadge() { return badgeCounts(await settings.get()); },
+    async problemAction({ repository, id, action }) {
+      const values = await settings.get();
+      const repo = await configuredRepository(repository, values), rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
+      if (action === "dismiss") {
+        if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error("This problem is no longer open.");
+        handled[id] = { state: "dismissed", at: new Date().toISOString() };
+      } else delete handled[id];
+      await saveHandled(repo, rt);
+      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      return { handled: rt.handled![id] ?? null };
+    },
+    async investigate({ repository, id, threadId }) {
+      const values = await settings.get();
+      const repo = await configuredRepository(repository, values), rt = runtimeFor(repo);
+      const problem = (await problemsOf(repo, rt)).find((item) => item.id === id);
+      if (!problem) throw new Error("This problem is no longer open.");
+      // Built from what is already in memory: investigating makes no GitHub requests.
+      const backfill = rt.backfill?.status, stored = readHistory(repo, configuration(values));
+      const prompt = seedPrompt(repo, problem, problemContext(problem, {
+        repository: repo, classified: rt.analysis?.classified ?? [], reruns: rt.analysis?.reruns ?? [], massCancels: rt.analysis?.massCancels ?? [], pools: rt.pools, alerts: rt.alerts ?? [],
+        defaultBranch: rt.defaultBranch, backfill: backfill && { remaining: backfill.remaining, failed: backfill.failed, pausedUntil: backfill.pausedUntil ? new Date(backfill.pausedUntil).toISOString() : null },
+        coverage: rt.view?.backfill.coveredSince ?? null, analysisAt: rt.analysis?.at ?? null, polledAt: rt.polledAt, now: Date.now(),
+        runs: stored?.records.runs, deployments: stored?.records.deployments, liveJobs: rt.liveJobs, windowDays: values.jobHistoryDays, notes: values.investigateNotes, actors: actorNames(values),
+      }));
+      let target = threadId;
+      if (target) await bb.sdk.threads.send({ threadId: target, mode: "queue-if-active", input: [{ type: "text", text: prompt, mentions: [] }] });
+      else {
+        const projectId = projectIds.get(repo.toLowerCase());
+        if (!projectId) throw new Error(`No BB project is linked to ${repo}. Link the repository to a BB project, or send the problem to an existing session.`);
+        // Provider and model are omitted so BB uses the project's defaults.
+        target = (await bb.sdk.threads.spawn({ projectId, environment: { type: "project-default" }, title: `Investigate: ${problem.title}`.slice(0, 120), prompt })).id;
+      }
+      (await loadHandled(repo, rt))[id] = { state: "investigating", threadId: target, at: new Date().toISOString() };
+      await saveHandled(repo, rt);
+      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      return { threadId: target };
+    },
     async cardDetails(input) {
       const values = await settings.get();
       const { token } = await resolveGithubToken(values.token, controller.signal);

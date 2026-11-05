@@ -7,7 +7,7 @@ const stripTimestamp = (line: string) => line.replace(/^\s*\d{4}-\d\d-\d\dT[\d:.
 const ms = (job: JobRecord) => job.startedAt && job.completedAt ? Math.max(0, Date.parse(job.completedAt) - Date.parse(job.startedAt)) : 0;
 const executed = (job: JobRecord) => !job.carried && job.conclusion !== "skipped";
 
-export function classifyJobs(jobs: JobRecord[], opts: { aggregatorJobs?: string[]; policyJobs?: string[] } = {}): ClassifiedJob[] {
+export function classifyJobs(jobs: JobRecord[], opts: { aggregatorJobs?: string[]; policyJobs?: string[]; refusalSteps?: string[] } = {}): ClassifiedJob[] {
   // Indexed by sha+workflow+job: 14 days of jobs makes a linear scan per failure quadratic.
   const key = (job: JobRecord) => `${job.headSha}\0${job.workflowName}\0${job.jobName}`;
   const passed = new Map<string, JobRecord[]>();
@@ -28,6 +28,8 @@ export function classifyJobs(jobs: JobRecord[], opts: { aggregatorJobs?: string[
     // Never-started jobs (no annotations at all) are cancelled by the run, same as a fail-fast sibling.
     if (job.conclusion === "cancelled") return make("collateral_cancel", "cancelled without own failure", messages[0] ?? null);
     if (job.failedSteps.length) {
+      const refusal = job.failedSteps.find((step) => (opts.refusalSteps ?? []).includes(step));
+      if (refusal) return make("refused", "intentional refusal by a gate step", refusal);
       const line = job.logExcerpt?.split("\n").find((l) => TRANSIENT.some((re) => re.test(l)));
       if (line) return make("transient", "tool or network failure in log", stripTimestamp(line));
       return !(opts.policyJobs ?? []).includes(job.jobName) && passedLater(job) ? make("flake", "failed step passed later at the same sha") : make("real", "failed step did not pass later");

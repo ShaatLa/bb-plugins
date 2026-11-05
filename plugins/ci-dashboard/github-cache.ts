@@ -36,7 +36,7 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
       if (path.includes("/actions/runs?") && result.body && typeof result.body === "object" && "workflow_runs" in result.body && Array.isArray(result.body.workflow_runs)) {
         const body = result.body as { total_count?: unknown; workflow_runs: unknown[] };
         result = { ...result, body: { total_count: body.total_count, workflow_runs: body.workflow_runs.map((row) => ({
-          ...pick(row, ["id", "created_at", "conclusion", "workflow_id", "name", "head_branch", "event", "run_started_at", "updated_at", "run_attempt", "head_sha"]) as object,
+          ...pick(row, ["id", "created_at", "conclusion", "workflow_id", "name", "head_branch", "event", "run_started_at", "updated_at", "run_attempt", "head_sha", "display_title"]) as object,
           ...pullRequestNumbers(row),
         })) } };
       }
@@ -44,7 +44,7 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
         const body = result.body as { total_count?: unknown; jobs: Record<string, unknown>[] };
         result = { ...result, body: { total_count: body.total_count, jobs: body.jobs.map((job) => ({ ...pick(job, ["id", "name", "conclusion"]) as object, steps: Array.isArray(job.steps) ? job.steps.map((step) => pick(step, ["name", "conclusion"])) : [] })) } };
       }
-      if (path.includes("/deployments?") && Array.isArray(result.body)) result = { ...result, body: result.body.map((row) => pick(row, ["id", "environment", "production_environment", "ref", "created_at"])) };
+      if (path.includes("/deployments?") && Array.isArray(result.body)) result = { ...result, body: result.body.map((row) => pick(row, ["id", "environment", "production_environment", "ref", "sha", "created_at"])) };
       if (path.includes("/statuses?") && Array.isArray(result.body)) result = { ...result, body: result.body.map((row) => {
         const status = pick(row, ["state", "created_at", "log_url"]);
         if (status && typeof status === "object" && "log_url" in status && !secureUrlSchema.safeParse(status.log_url).success) status.log_url = null;

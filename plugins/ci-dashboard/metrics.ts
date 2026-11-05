@@ -50,7 +50,7 @@ export const metricsProgressSchema = z.object({
 
 const countSchema = z.object({ total_count: z.number().int().nonnegative() });
 const searchSchema = countSchema.extend({ incomplete_results: z.boolean() });
-const deploymentsSchema = z.array(z.object({ created_at: timestampSchema }));
+const deploymentsSchema = z.array(z.object({ created_at: timestampSchema, environment: z.string().optional(), ref: z.string().optional(), sha: z.string().optional() }));
 const runSchema = ciRunSchema;
 const runsSchema = z.object({ workflow_runs: z.array(runSchema) });
 const productionRowsSchema = z.array(z.object({ id: z.number().int().positive(), environment: z.string(), production_environment: z.boolean(), ref: z.string(), created_at: timestampSchema }));

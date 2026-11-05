@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import { z } from "zod";
-import { SIGNALS_CHANGED, signalsInputSchema, signalsOutputSchema, navigationBadgeOutputSchema, type SignalsOutput } from "./ci-signals-contract";
+import { SIGNALS_CHANGED, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, signalsInputSchema, signalsOutputSchema, type SignalsOutput } from "./ci-signals-contract";
 
-type Contract = { signals: { input: typeof signalsInputSchema; output: typeof signalsOutputSchema }; navigationBadge: { input: z.ZodNull; output: typeof navigationBadgeOutputSchema } };
+export type Contract = {
+  signals: { input: typeof signalsInputSchema; output: typeof signalsOutputSchema }; navigationBadge: { input: z.ZodNull; output: typeof navigationBadgeOutputSchema };
+  problemAction: { input: typeof problemActionInputSchema; output: typeof problemActionOutputSchema }; investigate: { input: typeof investigateInputSchema; output: typeof investigateOutputSchema };
+};
 
 export function useSignalsBadge() {
   const rpc = useRpc<Contract>();
@@ -11,7 +14,8 @@ export function useSignalsBadge() {
   const [badge, setBadge] = useState<{ count: number; label: string; tone: "critical" | "neutral" } | null>(null);
   const connection = useRealtimeConnectionState();
   const sequence = useRef(0);
-  const show = useCallback(({ count, critical }: { count: number; critical: number }) => setBadge(count > 0 ? { count, label: `${count} open CI signals`, tone: critical > 0 ? "critical" : "neutral" } : null), []);
+  // Only critical problems count: warnings stay in the CI health list without raising the navigation badge.
+  const show = useCallback(({ critical }: { count: number; critical: number }) => setBadge(critical > 0 ? { count: critical, label: `${critical} critical CI ${critical === 1 ? "problem needs" : "problems need"} attention`, tone: "critical" } : null), []);
   const refresh = useCallback(() => { const request = ++sequence.current; void rpcRef.current.call("navigationBadge", null).then((counts) => {
     if (request === sequence.current) show(counts);
   }).catch(() => {}); }, [show]);

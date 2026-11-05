@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { rangeInputSchema } from "./date-range";
 import { metricsSchema, repositorySchema } from "./metrics";
-import { actorSchema, poolStateSchema, repositorySignalsSchema, signalSchema, type SignalsOutput } from "./ci-signals-contract";
+import { actorSchema, poolStateSchema, problemSchema, repositorySignalsSchema, signalSchema, type SignalsOutput } from "./ci-signals-contract";
 import type { DashboardData } from "./server";
 
 export const ciQuerySchema = z.object({
@@ -14,11 +14,13 @@ const openSignalSchema = signalSchema.pick({ id: true, kind: true, severity: tru
 const summaryRow = metricsSchema.pick({ repository: true, updatedAt: true, range: true, ciOutcomes: true, ciInsights: true }).extend({
   projectName: z.string().nullable(), ageSeconds: z.number().nonnegative(), stale: z.boolean(), pending: z.array(z.string()),
   passRate: metricsSchema.shape.ci.omit({ series: true, seriesError: true }).extend({ historyError: z.string().nullable() }),
-  signals: z.object({ open: z.array(openSignalSchema), pools: z.array(poolStateSchema), backfill: repositorySignalsSchema.shape.backfill }),
+  signals: z.object({ open: z.array(openSignalSchema), pools: z.array(poolStateSchema), backfill: repositorySignalsSchema.shape.backfill,
+    /** Open problems with their handled state: dismissed, or investigating in a BB thread. */
+    problems: z.array(problemSchema.pick({ id: true, severity: true, title: true, since: true, handled: true })) }),
 });
 // Non-summary views carry exactly one slice of the signals RPC data next to these identity fields.
 const sliceRow = repositorySignalsSchema.pick({ repository: true, updatedAt: true, error: true, window: true, backfill: true })
-  .extend(repositorySignalsSchema.pick({ live: true, signals: true, runnerLosses: true, massCancels: true, failureCounts: true, failures: true, reruns: true }).partial().shape);
+  .extend(repositorySignalsSchema.pick({ live: true, signals: true, problems: true, runnerLosses: true, massCancels: true, failureCounts: true, failures: true, reruns: true }).partial().shape);
 export const ciReportSchema = z.object({
   source: z.enum(["cache", "collection"]), discoveryError: z.string().nullable(),
   repositories: z.array(z.union([summaryRow, sliceRow])),
@@ -29,7 +31,7 @@ const noBackfill = { remaining: 0, failed: 0, pausedUntil: null, coveredSince: n
 export function ciSliceReport(signals: SignalsOutput, view: Exclude<CiQuery["view"], "summary">) {
   const slice = {
     stall: (r) => ({ live: r.live, signals: r.signals.filter((s) => s.kind === "pool_stall") }),
-    signals: (r) => ({ signals: r.signals }),
+    signals: (r) => ({ signals: r.signals, problems: r.problems }),
     losses: (r) => ({ runnerLosses: r.runnerLosses, massCancels: r.massCancels }),
     failures: (r) => ({ failureCounts: r.failureCounts, failures: r.failures }),
     reruns: (r) => ({ reruns: r.reruns }),
@@ -54,7 +56,8 @@ export function ciReport(data: DashboardData, query: CiQuery, refreshSeconds: nu
         signals: (() => {
           const found = signals.repositories.find((item) => item.repository.toLowerCase() === row.repository.toLowerCase());
           return { open: (found?.signals ?? []).filter((signal) => signal.open).slice(0, 50).map(({ id, kind, severity, title, since, actor }) => ({ id, kind, severity, title, since, actor })),
-            pools: found?.live.pools ?? [], backfill: found?.backfill ?? noBackfill };
+            pools: found?.live.pools ?? [], backfill: found?.backfill ?? noBackfill,
+            problems: (found?.problems ?? []).map(({ id, severity, title, since, handled }) => ({ id, severity, title, since, handled })) };
         })(),
       };
     }),

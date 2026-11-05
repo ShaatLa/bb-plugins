@@ -43,6 +43,7 @@ export type FailureClass =
   | "transient" // tool or network failure (HTTP 5xx, download refused, ECONNRESET...) found in logExcerpt
   | "flake" // real failed step, then the same job passed later at the same headSha
   | "real" // real failed step that did not pass later
+  | "refused" // a failed step listed in the refusalSteps setting: an intentional gate refusal, nobody needs to act
   | "consequence" // aggregator job (e.g. "CI summary job") failed or cancelled because another job did
   | "superseded" // cancelled by concurrency: "Canceling since a higher priority waiting request..."
   | "manual_cancel" // "The run was canceled by @user"

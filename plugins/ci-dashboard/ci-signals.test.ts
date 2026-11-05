@@ -103,7 +103,7 @@ describe("summarizeAnalysis and sortSignals", () => {
   const view = summarizeAnalysis({ classified: all, reruns: allReruns, massCancels: allMass, losses: runnerLosses(all), repository: REPO });
 
   it("counts every class but lists only actionable failures, newest first", () => {
-    expect(Object.keys(view.failureCounts)).toHaveLength(10);
+    expect(Object.keys(view.failureCounts)).toHaveLength(11);
     expect(view.failureCounts).toMatchObject({ consequence: 1, superseded: 1, manual_cancel: 1 });
     expect(view.failures.some((f) => ["consequence", "superseded", "manual_cancel"].includes(f.class))).toBe(false);
     const times = view.failures.map((f) => Date.parse(f.completedAt ?? ""));

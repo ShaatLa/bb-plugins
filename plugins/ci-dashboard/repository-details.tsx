@@ -5,8 +5,10 @@ import { Button } from "./components/ui/button";
 import { experimental_Icon as Icon, UrlLink, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
-import { CiJobCauses, CiSignals, passRate } from "./ci-cards";
+import { CiJobCauses, CiRunNotes, Disclosure, percent } from "./ci-cards";
+import { CiProblems, ProblemsBadge } from "./ci-problems-view";
 import { useRepositorySignals, type JobSignals } from "./signals-panel";
 import { CardDetailsView } from "./card-details-view";
 
@@ -124,28 +126,39 @@ function CiHealth({ repo }: { repo: Metrics }) {
 }
 
 function CiOutcomesCard({ repo, signals }: { repo: Metrics; signals?: JobSignals }) {
-  const showDetails = !!signals;
-  return <Card role="region" aria-label={showDetails ? "CI health" : "CI outcomes"} className="space-y-4 p-4">
-      <div><h4 className="text-sm font-medium">{showDetails ? "CI health" : "CI outcomes"}</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
-      <div className={showDetails ? "grid grid-cols-1 items-start gap-5 lg:grid-cols-2" : undefined}>
-      {showDetails && <CiSignals repo={repo} signals={signals} />}
-      <div className="min-w-0 space-y-3">
-      {repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
-        {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
-          <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
-          <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
-        </div>)}
-      </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>}
-      {signals && <CiJobCauses repo={repo} signals={signals} part="causes" />}
-      {showDetails && !repo.pending?.includes("ci") && repo.ciInsights && repo.ciInsights.workflows.some((workflow) => workflow.failed > 0) && <details className="space-y-2 border-t border-border pt-3">
-        <summary className="cursor-pointer text-sm">Top failing workflows</summary>
-        {repo.ciInsights.workflows.filter((workflow) => workflow.failed > 0).slice(0, 3).map((workflow) => <p key={workflow.id} className="text-sm">
-          <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${workflow.failureId}`} className="break-words hover:underline">{workflow.name}</UrlLink>
-          <span className="block text-xs text-muted-foreground">{workflow.failed} failed · {passRate(workflow)} passed · {workflow.eligible} counted runs</span>
-        </p>)}
-      </details>}
-      {signals && <CiJobCauses repo={repo} signals={signals} part="details" />}
-      {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
-      </div></div>
-    </Card>;
+  const outcomes = repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
+    {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
+      <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
+      <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
+    </div>)}
+  </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>;
+  const caption = <p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p>;
+  if (!signals) return <Card role="region" aria-label="CI outcomes" className="space-y-4 p-4"><div><h4 className="text-sm font-medium">CI outcomes</h4>{caption}</div>{outcomes}</Card>;
+  const failing = !repo.pending?.includes("ci") && repo.ciInsights?.workflows.filter((workflow) => workflow.failed > 0).sort((a, b) => b.failed - a.failed).slice(0, 3);
+  const overview = <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
+    <section aria-label="Outcomes" className="space-y-3"><h5 className="text-sm font-medium">Outcomes</h5>{outcomes}</section>
+    <CiJobCauses repo={repo} signals={signals} part="causes" />
+  </div>;
+  // With no open problems the overview has the space to itself; otherwise problems come first and it moves into Details.
+  const allGood = signals.repo?.problems.every((problem) => problem.handled) ?? false;
+  return <Card role="region" aria-label="CI health" className="space-y-4 p-4">
+    <div><h4 className="flex flex-wrap items-center gap-2 text-sm font-medium">CI health <ProblemsBadge signals={signals} /></h4>{caption}</div>
+    <CiProblems repository={repo.repository} signals={signals} />
+    {allGood && overview}
+    <details className="border-t border-border pt-3">
+      <Summary className="text-sm">Details</Summary>
+      <div className="mt-3 space-y-3">
+        {!allGood && overview}
+        <CiRunNotes repo={repo} />
+        {failing && failing.length > 0 && <Disclosure name="Top failing workflows" count={failing.length} hint={`worst: ${failing[0].name}`}>
+          {failing.map((workflow) => <p key={workflow.id} className="text-sm">
+            <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${workflow.failureId}`} className="break-words hover:underline">{workflow.name}</UrlLink>
+            <span className="text-xs text-muted-foreground"> — {workflow.failed.toLocaleString()} failed · {percent(workflow)} passed</span>
+          </p>)}
+        </Disclosure>}
+        <CiJobCauses repo={repo} signals={signals} part="details" />
+        <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />
+      </div>
+    </details>
+  </Card>;
 }

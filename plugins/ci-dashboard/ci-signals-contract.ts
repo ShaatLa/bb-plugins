@@ -3,7 +3,7 @@ import { repositorySchema } from "./metrics";
 
 // RPC contract shared by server.ts (producer) and the app Signals panel (consumer).
 const timestamp = z.iso.datetime({ offset: true });
-const failureClass = z.enum(["runner_loss", "timeout", "transient", "flake", "real", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"]);
+const failureClass = z.enum(["runner_loss", "timeout", "transient", "flake", "real", "refused", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"]);
 export const actorSchema = z.enum(["owner_sre", "pr_author", "lead", "manager"]);
 
 export const signalSchema = z.object({
@@ -18,6 +18,16 @@ export const signalSchema = z.object({
   }),
   since: timestamp, until: timestamp.nullable(), actor: actorSchema, open: z.boolean(),
 });
+
+export const handledSchema = z.object({ state: z.enum(["dismissed", "investigating"]), threadId: z.string().optional(), at: timestamp });
+export type Handled = z.infer<typeof handledSchema>;
+
+/** An open critical/warning job-level signal or a run-level alert, with who deals with it. Sorted most severe first, then newest. */
+export const problemSchema = z.object({
+  id: z.string(), severity: z.enum(["critical", "warning"]), title: z.string(), what: z.string(), impact: z.string(),
+  where: signalSchema.shape.where, since: timestamp, handled: handledSchema.nullable(),
+});
+export type Problem = z.infer<typeof problemSchema>;
 
 export const poolStateSchema = z.object({
   pool: z.string(), queued: z.number(), inProgress: z.number(),
@@ -48,6 +58,10 @@ export const repositorySignalsSchema = z.object({
   live: z.object({ pools: z.array(poolStateSchema), truncated: z.boolean(), polledAt: timestamp.nullable() }),
   /** Open signals first (critical > warning > info, newest first), then resolved ones from the last 7 days. */
   signals: z.array(signalSchema),
+  /** Open problems (see problemSchema), handled ones included. */
+  problems: z.array(problemSchema),
+  /** BB project linked to the repository, or null: "New session" needs it. */
+  projectId: z.string().nullable(),
   /** Job-level window the aggregates below cover. */
   window: z.object({ since: timestamp, until: timestamp }),
   failureCounts: z.record(failureClass, z.number()),
@@ -70,3 +84,8 @@ export type SignalsOutput = z.infer<typeof signalsOutputSchema>;
 export const signalsInputSchema = z.object({ repository: repositorySchema.optional(), since: timestamp.optional(), until: timestamp.optional() }).strict().nullable();
 export const navigationBadgeOutputSchema = z.object({ count: z.number(), critical: z.number() });
 export const SIGNALS_CHANGED = "signals-changed";
+const problemId = z.string().min(1).max(300);
+export const problemActionInputSchema = z.object({ repository: repositorySchema, id: problemId, action: z.enum(["dismiss", "restore"]) }).strict();
+export const problemActionOutputSchema = z.object({ handled: handledSchema.nullable() });
+export const investigateInputSchema = z.object({ repository: repositorySchema, id: problemId, threadId: z.string().regex(/^thr_[A-Za-z0-9_-]{1,64}$/).optional() }).strict();
+export const investigateOutputSchema = z.object({ threadId: z.string() });

@@ -1,4 +1,5 @@
 import { mountDraftSettingsDisclosure } from "./settings-disclosure";
+import { chevronClass } from "./components/ui/summary";
 import { useEffect, useRef, useState } from "react";
 import { minimumDate, presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
@@ -187,7 +188,7 @@ export function Dashboard() {
             {presets.map((days, index) => <option key={days} value={days}>{["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"][index]}</option>)}
             <option value="custom">Custom dates</option>
           </select>
-          <svg aria-hidden="true" viewBox="0 0 12 8" fill="none" className="pointer-events-none absolute right-3 top-1/2 h-2 w-3 -translate-y-1/2 text-foreground"><path d="m1 1 5 5 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
         </span>
         <Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
           <svg data-refresh-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`}>
@@ -240,8 +241,8 @@ export function Dashboard() {
           </div>
           <CiTiming repo={repo} />
           <CiOutcomes repo={repo} showDetails />
-          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           <RepositoryActivity repo={repo} />
+          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           <RepositoryDetails repo={repo} />
           <p className="text-xs text-muted-foreground">Last checked {new Date(repo.updatedAt).toLocaleString()}</p>
         </section>;

@@ -3,6 +3,7 @@ import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/a
 import type { rpcContract } from "./server";
 import type { CardDetails, CardDetailsInput } from "./card-details";
 import { Button } from "./components/ui/button";
+import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton } from "./components/ui/skeleton";
 
 export function CardDetailsView({ input }: { input: CardDetailsInput }) {
@@ -23,9 +24,9 @@ export function CardDetailsView({ input }: { input: CardDetailsInput }) {
     return () => { disposed = true; };
   }, [rpc, key, requested, attempt]);
   return <details className="space-y-3 border-t border-border pt-3" onToggle={(event) => { if (event.currentTarget.open) setRequested(true); }}>
-    <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <Summary className="rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       {input.kind === "ci" ? "Latest failed runs" : "Recent production deployments"}
-    </summary>
+    </Summary>
     {requested && (error ? <div className="space-y-2">
       <p role="alert" className="text-xs text-destructive">Unable to load details. Check connectivity and GitHub access.</p>
       <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>Retry details</Button>

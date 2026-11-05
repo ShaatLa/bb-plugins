@@ -8,6 +8,7 @@ import { loadMetrics, type HistoricalRecords, type Metrics } from "./metrics";
 import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
 import { resolveRange } from "./date-range";
+import { createJobStore } from "./ci-jobs";
 
 vi.mock("./auth", () => ({ resolveGithubToken: vi.fn() }));
 
@@ -940,7 +941,7 @@ test("a stalled pool opens one critical signal, pushes once and is readable thro
     expect(result.actors).toEqual({ owner_sre: "Runner owner / SRE", pr_author: "PR author", lead: "Lead", manager: "Manager" });
     expect(result.repositories[0]).toMatchObject({ error: null, live: { pools: [{ pool: "self-hosted", queued: 1 }] },
       signals: [{ id: "pool_stall:self-hosted", severity: "critical", open: true, kind: "pool_stall", actor: "owner_sre", since: "2026-10-20T11:40:00.000Z" }], failures: [] });
-    expect(Object.keys(result.repositories[0].failureCounts)).toHaveLength(10);
+    expect(Object.keys(result.repositories[0].failureCounts)).toHaveLength(11);
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
     expect(harness.inspection.realtimeSignals).toEqual(expect.arrayContaining([expect.objectContaining({ channel: "signals-changed" })]));
     const pushes = () => harness.inspection.sdk.callsTo("plugins.callRpc");
@@ -964,6 +965,39 @@ test("a stalled pool opens one critical signal, pushes once and is readable thro
     const reloaded = (await harness.lifecycle.reload(plugin)).harness;
     expect((await reloaded.behavior.callRpc("signals", null) as SignalsResult).repositories[0].signals).toMatchObject([{ id: "pool_stall:self-hosted", open: true }]);
   } finally { await harness.lifecycle.dispose(); }
+});
+
+test("the refusalSteps setting classifies gate refusals as refused and drops the run-level alert", async () => {
+  const job = (id: number) => ({ id, name: "Release gate", status: "completed", conclusion: "failure", created_at: "2026-10-19T12:00:00Z", started_at: "2026-10-19T12:01:00Z", completed_at: "2026-10-19T12:05:00Z", labels: ["self-hosted"], runner_name: "runner-1", runner_group_name: null,
+    steps: [{ name: "Admit release candidate", conclusion: "failure" }] });
+  const base = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
+    const response = await base(input, options);
+    if (!new URL(input).pathname.endsWith("/actions/runs")) return response;
+    const body = await response.json();
+    return Response.json({ ...body, workflow_runs: body.workflow_runs.map((run: Record<string, unknown>) => ({ ...run, workflow_id: 42, name: "CI", event: "push", head_branch: "main", head_sha: `sha${run.id}`, run_attempt: 1, pull_requests: [], conclusion: "failure" })) });
+  });
+  live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [[`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [job((index + 1) * 10)] })], [`/repos/acme/widgets/check-runs/${(index + 1) * 10}/annotations`, () => []]]).flat()));
+  const run = async (settings: object) => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, ...settings } });
+    try {
+      await plugin(bb);
+      await harness.behavior.callRpc("metrics", { days: 7 });
+      // Each loop stores a batch of jobs and re-analyses at most every five minutes, so run three loops.
+      for (let loop = 0; loop < 3; loop++) {
+        const before = await updatedAt(harness);
+        vi.setSystemTime(new Date(Date.now() + 301_000));
+        const service = harness.behavior.runService("ci-signals");
+        await vi.waitFor(async () => expect(await updatedAt(harness)).not.toBe(before));
+        service.controller.abort(); await service.done;
+      }
+      expect(bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs").get()).toEqual({ n: 10 });
+      return { counts: ((await harness.behavior.callRpc("signals", null)) as SignalsResult).repositories[0].failureCounts, badge: await harness.behavior.callRpc("navigationBadge", null) };
+    } finally { await harness.lifecycle.dispose(); }
+  };
+  expect(await run({ refusalSteps: "Admit release candidate" })).toMatchObject({ counts: { refused: 10, real: 0 }, badge: { count: 0, critical: 0 } });
+  fetchMock.mockClear();
+  expect(await run({})).toMatchObject({ counts: { refused: 0 }, badge: { count: 1, critical: 1 } });
 });
 
 test("a failing push is logged and does not stop the loop", async () => {
@@ -1009,10 +1043,19 @@ test("the budgeted backfill stores job rows from run metadata and classifies the
     expect(database.prepare("SELECT COUNT(*) AS n FROM ci_jobs").get()).toEqual({ n: 10 });
     // Warnings on main are only pushed while fresh; these completed a day ago.
     expect(harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(0);
-    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 2, critical: 0 });
+    // The runner losses completed a day ago, past the event window; only the run-level alert of the red default branch remains.
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+    const problems = (await harness.behavior.callRpc("signals", null) as { repositories: { problems: { id: string; severity: string; title: string; handled: unknown }[] }[] }).repositories[0].problems;
+    expect(problems.map((problem) => problem.id)).toEqual([expect.stringMatching(/^run:main:\d+$/)]);
+    expect(problems[0]).toMatchObject({ severity: "critical", title: "CI · main: latest run failed", handled: null });
     const summary = await harness.behavior.callRpc("ci", { repository: "acme/widgets" }) as { repositories: { signals: { open: { id: string }[]; pools: unknown[]; backfill: { remaining: number } } }[] };
     expect(summary.repositories[0]).toMatchObject({ ciInsights: expect.anything(), signals: { open: expect.arrayContaining([expect.objectContaining({ id: "runner_loss:90" })]), pools: [], backfill: { remaining: 0 } } });
     expect(ciReportSchema.safeParse(summary).success).toBe(true);
+    // Run-level alerts are problems too, and the summary view shows who handles each one.
+    await harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: problems[0].id, action: "dismiss" });
+    const handledSummary = await harness.behavior.callRpc("ci", { repository: "acme/widgets" }) as { repositories: { signals: { problems: { id: string; handled: { state: string } | null }[] } }[] };
+    expect(handledSummary.repositories[0].signals.problems).toMatchObject([{ id: problems[0].id, handled: { state: "dismissed" } }]);
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
     await expect(harness.behavior.callRpc("signals", { repository: "acme/unknown" })).rejects.toThrow("not configured");
     // A range cuts the job-level numbers from memory (no GitHub calls), keeps open signals and reports the history coverage.
     const calls = fetchMock.mock.calls.length;
@@ -1232,7 +1275,7 @@ async function signalsPass(harness: ReturnType<typeof signalsHost>["harness"], a
 
 test("the analysis is recomputed every five minutes even while the backfill keeps storing rows", async () => {
   const job = (id: number) => ({ id, name: "Unit tests", status: "completed", conclusion: "success", created_at: "2026-10-19T12:00:00Z", started_at: "2026-10-19T12:01:00Z", completed_at: "2026-10-19T12:05:00Z", labels: ["self-hosted"], runner_name: "runner-1", runner_group_name: null, steps: [] });
-  live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [job((index + 1) * 10)] })])));
+  live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [[`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [job((index + 1) * 10)] })], [`/repos/acme/widgets/check-runs/${(index + 1) * 10}/annotations`, () => []]]).flat()));
   const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, jobBudgetPerHour: 100 } });
   const set = vi.spyOn(bb.storage.kv, "set");
   try {
@@ -1270,6 +1313,155 @@ test("pool-only changes publish the badge numbers but do not rewrite the stored 
     expect(published.length).toBeGreaterThanOrEqual(2);
     for (const signal of published) expect(signal.payload).toEqual({ count: 1, critical: 1 });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+// --- problems: handled state, badge, hand-off to BB sessions ---
+const linkedProject = { id: "proj-1", name: "Widgets", kind: "standard", gitRemoteUrl: "git@github.com:acme/widgets.git", createdAt: 0, updatedAt: 0, sources: [] };
+function problemsHost(linked = true) {
+  const spawn = vi.fn(async (_args: unknown) => ({ id: "thr_new" })), send = vi.fn(async (_args: unknown) => ({}));
+  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: linked },
+    sdk: { projects: { list: async () => [linkedProject] }, threads: { spawn, send } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
+  return { ...host, spawn, send };
+}
+type ProblemsResult = { repositories: { projectId: string | null; problems: { id: string; severity: string; title: string; handled: { state: string; threadId?: string } | null }[] }[] };
+const problemsOf = async (harness: { behavior: { callRpc(method: string, input?: unknown): Promise<unknown> } }) => (await harness.behavior.callRpc("signals", null) as ProblemsResult).repositories[0];
+async function stalledPass(harness: ReturnType<typeof problemsHost>["harness"]) {
+  const service = harness.behavior.runService("ci-signals");
+  await vi.waitFor(async () => expect((await problemsOf(harness)).problems).toHaveLength(1));
+  service.controller.abort(); await service.done;
+}
+const stallId = "pool_stall:self-hosted";
+
+test("dismissing and restoring a problem moves the badge, publishes the new counts and survives a reload", async () => {
+  live([queuedJob]);
+  const { bb, harness } = problemsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    expect(await problemsOf(harness)).toMatchObject({ projectId: "proj-1", problems: [{ id: stallId, severity: "critical", title: "Runner pool stalled: self-hosted", handled: null }] });
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+    await expect(harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: "flake:nothing", action: "dismiss" })).rejects.toThrow("no longer open");
+    await expect(harness.behavior.callRpc("problemAction", { repository: "acme/unknown", id: stallId, action: "dismiss" })).rejects.toThrow("not configured");
+    await harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "dismiss" });
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "dismissed" });
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
+    expect(harness.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 0, critical: 0 });
+    // The handled state is read from storage after a restart.
+    const reloaded = (await harness.lifecycle.reload(plugin)).harness;
+    expect(await reloaded.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
+    await reloaded.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "restore" });
+    expect((await problemsOf(reloaded)).problems[0].handled).toBeNull();
+    expect(await reloaded.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+    expect(reloaded.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 1, critical: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("investigate without a thread spawns a session in the linked project with a seed prompt and marks the problem investigating", async () => {
+  live([queuedJob]);
+  const { bb, harness, spawn, send } = problemsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    expect(await harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: stallId })).toEqual({ threadId: "thr_new" });
+    expect(send).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const args = spawn.mock.calls[0][0] as { projectId: string; title: string; prompt: string; providerId?: string; model?: string };
+    expect(args).toMatchObject({ projectId: "proj-1", title: "Investigate: Runner pool stalled: self-hosted" });
+    expect(args.providerId).toBeUndefined(); expect(args.model).toBeUndefined();
+    for (const fact of ["Problem: Runner pool stalled: self-hosted (critical)", "What happened:", "Impact:", "- Repository: acme/widgets", "- Pool: self-hosted", "Since: 2026-10-20T11:40:00.000Z",
+      "ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns)", "bb plugin rpc call delivery-dashboard ci", "## Pool stall", "Queued runs:", "Find the root cause and report back.",
+      "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks."]) expect(args.prompt).toContain(fact);
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating", threadId: "thr_new" });
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
+    const agent = await harness.behavior.callRpc("ci", { view: "signals" }) as { repositories: { problems: { id: string; handled: unknown }[] }[] };
+    expect(agent.repositories[0].problems).toMatchObject([{ id: stallId, handled: { state: "investigating", threadId: "thr_new" } }]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("investigate on a job problem sends the stored job evidence and makes no GitHub request", async () => {
+  live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [] })])));
+  const { bb, harness, spawn } = problemsHost();
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 7 });
+    const synthetic = (jobId: number, completedAt: string, over: object = {}) => ({ repository: "acme/widgets", runId: 500 + jobId, attempt: 1, jobId, workflowName: "CI", jobName: "Build", event: "push", headBranch: "main", headSha: "abc123", pullRequests: [7],
+      status: "completed", conclusion: "failure", labels: ["self-hosted"], pool: "self-hosted", runnerName: "runner-a", runnerGroup: "default", createdAt: "2026-10-20T10:50:00Z", startedAt: "2026-10-20T10:51:00Z", completedAt,
+      failedSteps: [], annotations: [{ level: "failure" as const, title: "", message: "The runner has received a shutdown signal: synthetic detail" }], logExcerpt: "log line alpha\nlog line beta", carried: false, ...over });
+    const store = createJobStore(bb.storage.database());
+    store.saveAttempt("acme/widgets", 501, 1, [synthetic(1, "2026-10-20T11:30:00Z")], true);
+    store.saveAttempt("acme/widgets", 502, 1, [synthetic(2, "2026-10-20T11:00:00Z")], true);
+    const service = harness.behavior.runService("ci-signals");
+    await vi.waitFor(async () => expect((await problemsOf(harness)).problems.map((problem) => problem.id)).toContain("runner_loss:1"));
+    service.controller.abort(); await service.done;
+    await harness.behavior.setSettings({ investigateNotes: "Rerun limit: once per commit.\nIncident log: https://example.invalid/incidents" });
+    const requests = fetchMock.mock.calls.length;
+    await harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: "runner_loss:1" });
+    expect(fetchMock.mock.calls.length).toBe(requests);
+    const { prompt } = spawn.mock.calls[0][0] as { prompt: string };
+    for (const fact of ["Problem id: runner_loss:1", "Job URL: https://github.com/acme/widgets/actions/runs/501/job/1", "synthetic detail", "| log line alpha", "| log line beta", "Classification: runner_loss",
+      'Runner losses on runner runner-a: 2', "Live pool poll", "gh run view <runId> --repo acme/widgets --log-failed",
+      "Code looks broken: no", "- runner_loss: let the next run supersede it", "/day)", "- production: ref main", "## Team notes\nRerun limit: once per commit.\nIncident log: https://example.invalid/incidents"]) expect(prompt).toContain(fact);
+    expect(prompt.indexOf("## Verdict")).toBeLessThan(prompt.indexOf("## Problem"));
+    expect(prompt.length).toBeLessThanOrEqual(12_000);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("investigate with a thread sends the seed prompt to it, queueing when it is busy", async () => {
+  live([queuedJob]);
+  const { bb, harness, spawn, send } = problemsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    expect(await harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: stallId, threadId: "thr_existing" })).toEqual({ threadId: "thr_existing" });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith({ threadId: "thr_existing", mode: "queue-if-active", input: [{ type: "text", text: expect.stringContaining("Problem: Runner pool stalled: self-hosted"), mentions: [] }] });
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating", threadId: "thr_existing" });
+    // A failed send leaves the problem unhandled.
+    await harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "restore" });
+    send.mockRejectedValueOnce(new Error("thread is gone"));
+    await expect(harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: stallId, threadId: "thr_gone" })).rejects.toThrow("thread is gone");
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a repository without a linked BB project cannot start a new session but can use an existing one", async () => {
+  live([queuedJob]);
+  const { bb, harness, spawn, send } = problemsHost(false);
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    expect((await problemsOf(harness)).projectId).toBeNull();
+    await expect(harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: stallId })).rejects.toThrow("No BB project is linked to acme/widgets");
+    expect(spawn).not.toHaveBeenCalled();
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+    await harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: stallId, threadId: "thr_existing" });
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("handled entries are pruned once their problem closes, and the stored map is capped at 200", async () => {
+  live([queuedJob]);
+  const { bb, harness } = problemsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    const stored = Object.fromEntries(Array.from({ length: 205 }, (_, index) => [`old:${index}`, { state: "dismissed", at: new Date(Date.UTC(2026, 9, 1, 0, index)).toISOString() }]));
+    await bb.storage.kv.set("handled:acme/widgets", stored);
+    const reloaded = await harness.lifecycle.reload(plugin);
+    await reloaded.harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "dismiss" });
+    const kept = (await reloaded.bb.storage.kv.get<Record<string, unknown>>("handled:acme/widgets"))!;
+    expect(Object.keys(kept)).toHaveLength(200);
+    expect(kept[stallId]).toBeDefined(); expect(kept["old:0"]).toBeUndefined();
+    // The pool recovers: the next pass closes the incident and drops every entry whose problem is no longer open.
+    live([]);
+    const before = await updatedAt(reloaded.harness);
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    const service = reloaded.harness.behavior.runService("ci-signals");
+    await vi.waitFor(async () => expect(await updatedAt(reloaded.harness)).not.toBe(before));
+    service.controller.abort(); await service.done;
+    expect((await problemsOf(reloaded.harness)).problems).toEqual([]);
+    expect(await reloaded.bb.storage.kv.get("handled:acme/widgets")).toEqual({});
   } finally { await harness.lifecycle.dispose(); }
 });
 

@@ -3,8 +3,8 @@ import type { LossTally, MassCancel } from "./ci-classify";
 
 const HOUR = 3_600_000;
 const FAILED_FINAL = new Set(["failure", "timed_out"]);
-const HIDDEN_FAILURES = new Set<FailureClass>(["consequence", "superseded", "manual_cancel"]);
-const CLASSES: FailureClass[] = ["runner_loss", "timeout", "transient", "flake", "real", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"];
+const HIDDEN_FAILURES = new Set<FailureClass>(["refused", "consequence", "superseded", "manual_cancel"]);
+const CLASSES: FailureClass[] = ["runner_loss", "timeout", "transient", "flake", "real", "refused", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"];
 
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: JobRecord) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;

@@ -1,3 +1,4 @@
+import { ciRunSchema } from "./ci-insights";
 import { afterEach, expect, test, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createGitHubCache } from "./github-cache";
@@ -125,4 +126,21 @@ test("the LRU trim runs only after 64 new keys push the table past 576 rows", as
     expect(sql.filter((text) => text.startsWith("DELETE"))).toHaveLength(1);
     expect((database.prepare("SELECT COUNT(*) AS n FROM github_responses").get() as { n: number }).n).toBe(572);
   } finally { await harness.lifecycle.dispose(); }
+});
+
+test("stored workflow runs keep their display title and stored deployments keep environment, ref and sha", async () => {
+  const { bb, harness } = createFakePluginHost();
+  const database = bb.storage.database();
+  database.prepare("CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL)").run();
+  const run = { id: 1, created_at: "2026-10-19T00:00:00Z", conclusion: "failure", display_title: "Add retry to uploads (#123)" };
+  const deployment = { id: 5, environment: "staging", production_environment: false, ref: "main", sha: "a".repeat(40), created_at: "2026-10-19T00:00:00Z" };
+  const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ total_count: 1, workflow_runs: [{ ...run, unused: "do-not-store" }] })).mockResolvedValueOnce(Response.json([{ ...deployment, payload: "do-not-store" }]));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const request = createGitHubCache(database)("config", undefined, new AbortController().signal, 300_000, true, () => true);
+    expect(await request("/repos/acme/widgets/actions/runs?created=fixed&page=1")).toMatchObject({ body: { workflow_runs: [run] } });
+    expect(await request("/repos/acme/widgets/deployments?per_page=100&page=1")).toMatchObject({ body: [deployment] });
+    expect(JSON.stringify(database.prepare("SELECT data FROM github_responses").all())).not.toContain("do-not-store");
+    expect(ciRunSchema.parse(run).display_title).toBe(run.display_title);
+  } finally { vi.unstubAllGlobals(); await harness.lifecycle.dispose(); }
 });

@@ -8,10 +8,10 @@ export const ciRunSchema = z.object({
   run_attempt: z.number().int().positive().optional(), draftDeferred: z.boolean().optional(),
   run_started_at: timestamp.nullable().optional(), updated_at: timestamp.optional(),
   // Optional so snapshots stored before 0.2.0 still parse; raw GitHub rows carry PR objects, the cache stores plain numbers.
-  head_sha: z.string().optional(),
+  head_sha: z.string().optional(), display_title: z.string().optional(),
   pull_requests: z.array(z.union([z.number(), z.object({ number: z.number() }).transform((pr) => pr.number)])).optional(),
 });
-type Run = z.infer<typeof ciRunSchema>;
+export type Run = z.infer<typeof ciRunSchema>;
 const timingSchema = z.object({
   // Missing basis identifies legacy aggregates that must be rebuilt from raw records.
   basis: z.literal("success").optional(),
@@ -52,6 +52,16 @@ function timings(runs: Run[]) {
   return { basis: "success" as const, count, totalMs, averageMs: count ? totalMs / count : null,
     medianMs: count ? (values[Math.floor((count - 1) / 2)] + values[Math.floor(count / 2)]) / 2 : null,
     p95Ms: count ? values[Math.ceil(count * 0.95) - 1] : null };
+}
+
+/** The consecutive failed runs an alert counts, newest first (same grouping and filtering as summarizeCi). */
+export function alertStreak(runs: Run[], alert: Pick<CiInsights["alerts"][number], "workflowId" | "branch" | "runId">): Run[] {
+  const latest = runs.find((run) => run.id === alert.runId);
+  const rows = runs.filter((run) => identified(run) && run.workflow_id === alert.workflowId && run.head_branch === alert.branch && run.id <= alert.runId && (!latest || isPr(run) === isPr(latest)) && !run.draftDeferred && !excluded.has(run.conclusion ?? ""))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
+  const streak: Run[] = [];
+  for (const run of rows) { if (!failures.has(run.conclusion ?? "")) break; streak.push(run); }
+  return streak;
 }
 
 export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsights {
