@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { evaluateOverlaps, matchesGlob } from "./overlap";
+import { evaluateOverlaps, matchesGlob, prepareOverlaps } from "./overlap";
 import { gitSyncConfigSchema, prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 
 it("matches path globs without crossing directories for single stars", () => {
@@ -21,4 +21,17 @@ it("validates optional overlap rules", () => {
   expect(gitSyncConfigSchema.parse({}).overlapRules).toBeUndefined();
   expect(gitSyncConfigSchema.safeParse({ overlapRules: [{ pattern: "x", match: "invalid" }] }).success).toBe(false);
   expect(gitSyncConfigSchema.safeParse({ overlapRules: Array(51).fill({ pattern: "x", match: "added" }) }).success).toBe(false);
+});
+
+it.each([50, 200])("prepares filenames once for %i snapshots across task batches", (count) => {
+  let reads = 0;
+  const entries = Array.from({ length: count }, (_, i) => ({
+    taskId: String(i), taskKey: `ABC-${i}`,
+    link: { repository: "org/repo", number: i } as any,
+    snapshot: { files: { entries: [{ get filename() { reads++; return `file-${i}`; }, status: "modified" }] } } as any,
+  }));
+  const evaluate = prepareOverlaps(entries, []);
+  for (const entry of entries) evaluate(entry.taskId);
+  for (const entry of entries) evaluate(entry.taskId);
+  expect(reads).toBe(count);
 });
