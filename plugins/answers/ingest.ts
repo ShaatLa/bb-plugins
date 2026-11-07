@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 
 export const RELEVANT = ['client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed'] as const;
 export const cap = (text: string, max: number) => text.length <= max ? text : text.slice(0, max - '… (truncated, open in chat)'.length) + '… (truncated, open in chat)';
-export type Event = { seq: number; type: string; scope?: { turnId?: string }; data: any };
+export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any };
 
 /** Apply an ascending page inside the caller's transaction. */
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0) {
