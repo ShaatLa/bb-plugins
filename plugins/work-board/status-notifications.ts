@@ -46,6 +46,9 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
   }
   function changed(before: Task | undefined, after: Task) {
     if (closed || !before || before.status === after.status) return;
+    // Off projects must not schedule deferred reads during unrelated lifecycle work.
+    const mode = tasks.getProject(after.projectId)?.statusNotifications ?? "off";
+    if (mode === "off" || (mode === "done" && after.status !== "done")) return;
     // Retain only one tiny record per changed card, never task bodies or a history of edits.
     if (!pending.has(before.id)) pending.set(before.id, { id: before.id, status: before.status });
     if (!draining) { draining = true; queueMicrotask(() => { void drain(); }); }
