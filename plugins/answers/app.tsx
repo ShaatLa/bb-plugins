@@ -1,0 +1,117 @@
+import { useRef, useState } from 'react';
+import { definePluginApp, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads } from '@get-bb/plugin-sdk/app';
+import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
+import { Button } from './components/ui/button';
+
+const views: [View, string][] = [['unread', 'Unread'], ['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+export function useAnswersBadge() {
+  const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
+  const count = data ? data.unread + data.forMe : 0;
+  return count ? { count, label: `${count} unread answers and questions for you` } : null;
+}
+
+function ItemCard({ item }: { item: Item }) {
+  const rpc = useRpc<AnswersRpcContract>();
+  const [expanded, setExpanded] = useState(false);
+  const [replying, setReplying] = useState(false);
+  const [text, setText] = useState('');
+  const [pending, setPending] = useState(false);
+  const sending = useRef(false);
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+  async function act(write: () => Promise<unknown>) {
+    setError('');
+    try { await write(); } catch (cause) { setError(message(cause)); }
+  }
+  async function reply() {
+    if (sending.current || !text.trim()) return;
+    sending.current = true;
+    setPending(true); setError(''); setFeedback('');
+    try {
+      const result = await rpc.call('reply', { id: item.id, text });
+      setFeedback(result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setReplying(false);
+    } catch (cause) {
+      setError(`Delivery uncertain — check the thread before retrying. ${message(cause)}`);
+    } finally { sending.current = false; setPending(false); }
+  }
+  const seq = item.answerSeq ?? item.questionSeq;
+  // BB's message routes use the project prefix when the thread belongs to a project.
+  const href = `${item.projectId ? `/projects/${encodeURIComponent(item.projectId)}` : ''}/threads/${encodeURIComponent(item.threadId)}${seq === null ? '' : `?msg=${seq}`}`;
+  const minutes = Math.max(0, Math.floor((Date.now() - item.createdAt) / 60000));
+  const age = minutes < 1 ? 'Just now' : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
+  return <li className="rounded-lg border p-4 space-y-3">
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <h2 className="font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
+      {item.projectName && <span>{item.projectName}</span>}
+      <span className="rounded border px-1.5 py-0.5">{item.status}</span>
+      <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
+      {item.threadDeleted && <span>Thread deleted</span>}
+    </div>
+    <p className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.question}</p>
+    <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>
+    {item.answer && <Markdown content={item.answer} />}
+    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><Markdown content={item.interim} /></div>}
+    {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
+    <div className="flex flex-wrap gap-2">
+      {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}>Open in chat</UrlLink></Button>}
+      <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}>Mark read</Button>
+      <Button size="sm" variant="outline" aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}>{item.pinned ? 'Unpin' : 'Pin'}</Button>
+      <Button size="sm" variant="outline" disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}>Done</Button>
+      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" variant="outline" disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}>Reply</Button>}
+    </div>
+    {replying && <form className="space-y-2" onSubmit={event => { event.preventDefault(); void reply(); }}>
+      <textarea aria-label="Reply text" className="w-full rounded border bg-transparent p-2 text-sm" maxLength={8000} value={text} disabled={pending} onChange={event => setText(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void reply(); } }} />
+      <Button type="submit" size="sm" disabled={pending || !text.trim()}>{pending ? 'Sending…' : 'Send reply'}</Button>
+    </form>}
+    {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+  </li>;
+}
+
+function Page({ threadId, view, projectId, query, cursor }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string }) {
+  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
+  const [next, setNext] = useState(false);
+  return <>
+    {result.isLoading && <p role="status">Loading answers…</p>}
+    {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}>Retry</Button></div>}
+    {result.data && <>
+      {!cursor && !result.data.items.length && <p className="text-muted-foreground">No answers in this view.</p>}
+      <ul aria-label="Answers" className="space-y-3">{result.data.items.map(item => <ItemCard key={item.id} item={item} />)}</ul>
+      {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
+    </>}
+  </>;
+}
+
+export function AnswersPanel({ threadId }: { threadId?: string }) {
+  const rpc = useRpc<AnswersRpcContract>();
+  const { projects } = experimental_useSidebarThreads();
+  const [view, setView] = useState<View>(threadId ? 'all' : 'unread');
+  const [query, setQuery] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [error, setError] = useState('');
+  return <section className="h-full overflow-auto p-4 space-y-4">
+    <h1 className="text-lg font-semibold">{threadId ? 'My questions' : 'Answers'}</h1>
+    <nav aria-label="Answer views" className="flex flex-wrap gap-1">{views.map(([value, label]) => <Button key={value} size="sm" variant="ghost" aria-pressed={view === value} onClick={() => setView(value)}>{label}</Button>)}</nav>
+    <div className="flex flex-wrap gap-2">
+      <input aria-label="Search answers" type="search" placeholder="Search answers" maxLength={4000} className="rounded border bg-transparent px-3 py-1 text-sm" value={query} onChange={event => setQuery(event.target.value)} />
+      <select aria-label="Project" className="rounded border bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
+      <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); } catch (cause) { setError(message(cause)); } }}>Mark all read</Button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} />
+  </section>;
+}
+
+export default definePluginApp(app => {
+  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'Inbox', path: 'answers', component: () => <AnswersPanel />, experimental_useBadge: useAnswersBadge });
+  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'Inbox', context: { kind: 'thread' }, availability: 'action', component: AnswersPanel });
+  app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Inbox', async run({ threadId, message, selectedText }) {
+    const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
+    // Message actions have no React hook context; use the public plugin RPC endpoint.
+    const response = await fetch('/api/v1/plugins/answers/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    const body = await response.json();
+    if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? `Unable to save to Answers (${response.status})`);
+    rpcContract.save.output.parse(body.result);
+  } });
+});

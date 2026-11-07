@@ -13,7 +13,8 @@
     "branding": {
       "icon": "Inbox"
     },
-    "server": "./server.ts"
+    "server": "./server.ts",
+    "app": "./app.tsx"
   },
   "scripts": {
     "build": "bb plugin build",
@@ -50,6 +51,9 @@
     "schema.ts",
     "driver.ts",
     "cli.ts",
-    "dist"
+    "dist",
+    "app.tsx",
+    "components",
+    "lib"
   ]
 }
