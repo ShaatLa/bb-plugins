@@ -77,6 +77,11 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
     case "capacity": return `Capacity set to ${event.reason && /^\d+$/.test(event.reason) ? plural(Number(event.reason), "slot") : "a new limit"}`;
     case "port": return `Port ${event.port ?? ""} leased`;
     case "port-release": return `Port ${event.port ?? ""} released`;
+    case "unleased-load": return "High checkout load without a heavy slot";
+    case "idle-lease": return "Heavy lease idle during checkout activity";
+    case "use-expired": return "A heavy use expired";
+    case "use-dropped": return "A heavy use was dropped";
+    case "unclaimed": return "A granted slot was not claimed";
     case "gate": return "Machine checked";
   }
 }

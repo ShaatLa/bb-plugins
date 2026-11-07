@@ -1,11 +1,12 @@
 # Machine Slots
 
 Advisory resource pools for heavy jobs on the BB server machine. Requires BB
-0.49.0+ and SDK 0.6.132+. Slots coordinates agents; it never kills or inspects
-processes, reads environment values, or guarantees exclusive machine access.
+0.49.0+ and SDK 0.6.132+. Slots coordinates agents; it never kills processes or reads environment values or command lines. Its optional load watch reads only own-user process IDs, start times, CPU time and working directories (cwd), never environment or command lines. It samples every 30 seconds and is a checkout-level heuristic: local host only, short-lived processes can be missed, and containers are not covered. Measured cost is ~0.03% of one core in-process and ~0.6% including `ps`/`lsof` children on a busy 18-core machine; see `bb slots status --json` diagnostics.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.3.1)
+## Sidebar (0.4.0)
+
+Version 0.4.0 adds the optional load watch, idle heavy-lease notices and observer filters for both events. Configure policy, cores threshold, window and idle notice in Settings.
 
 Version 0.3.1 removes legacy settings migration; missing `config.json` means all defaults.
 
@@ -45,7 +46,7 @@ lines. Commands other than `wrapper` support `--json`. Caller identity defaults 
 BB_THREAD_ID; holder commands also accept `--thread <id>`.
 
 ```sh
-sh -c "$(bb slots wrapper)" slots-run --est 35m --job "full test suite" -- <command> [args...]
+sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command> [args...]
 bb slots acquire --pool heavy --job "full test suite" --est 35m
 bb slots heartbeat --use <use-id>
 bb slots done <use-id>
@@ -53,7 +54,7 @@ bb slots request --pool heavy --job "full test suite" --est 35m --wait --timeout
 bb slots gate
 bb slots heartbeat
 bb slots config [show | set <key> <value> | unset <key>] [--json]
-bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold] [--json]
+bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold,unleased-load,idle-lease] [--json]
 bb slots release [lease-or-request]
 bb slots status
 bb slots transfer --to <child-thread> [--lease <id>]
@@ -66,7 +67,7 @@ bb slots log --since 2h --limit 100 --json
 ```
 
 Request returns immediately unless `--wait` is present. Waiting polls every 3s,
-keeps the queued request on timeout (exit 75); disconnect withdraws it. Retry to keep its position. Default timeout
+keeps the queued request on timeout (exit 75); disconnect withdraws it. Rerun the same command to keep its position. `acquire` timeouts likewise keep the queue position for one use TTL; rerun the same command. Default timeout
 is 30m; maximum 60m (BB's CLI headers timeout is 65m). Tools return immediately;
 grant messages wake idle threads. Tool names are `slots_request`, `slots_release`,
 `slots_heartbeat`, `slots_gate`, `slots_status`, `slots_transfer`, `slots_port`,
@@ -86,7 +87,7 @@ grandchildren that outlive it are not covered. PID and start-time checks are
 approximate and do not exclude PID reuse. A stuck renewal supervisor can leave
 an in-flight heartbeat running until it returns. The wrapper supports macOS and
 Linux. Acquire timeout exits 75 and keeps the queue position for one use TTL;
-retry within that grace period. Each use must be renewed independently.
+retry within that grace period. A holder may reuse its lease for nested, sequential or concurrent wrapper runs without re-gating. Each use must be renewed independently.
 
 A thread has one request or lease per pool. Release without an ID releases all
 its leases and cancels all its queued requests. A request ID cancels only that
@@ -99,8 +100,8 @@ Binding after a successful probe can still race another application.
 ## Settings
 
 The custom Machine Slots settings section groups Slots, Machine check (with
-collapsed Advanced checks), Leases, Manager / observer, Grant mode and Dev-server
-ports. Changes apply immediately; server validation errors appear inline. Reset
+collapsed Advanced checks), Leases, Load watch, Manager / observer, Grant mode and Dev-server
+ports. Load watch policy is off or warn; threshold is 1–CPU cores, window 60–900 seconds, and idle lease notice 10–240 minutes. Defaults are machine-derived for cores, 120 seconds for the window and 30 minutes for idle notice. Observer events include Unleased load and Idle heavy lease. Changes apply immediately; server validation errors appear inline. Reset
 to default unsets the key so machine defaults follow the next start. The observer
 picker lists active sessions across projects; the server rejects sessions on other
 hosts. Clear disables the observer without changing event preferences.
@@ -181,8 +182,8 @@ ignored. The `slots_observer` tool accepts `self`, `toThreadId`, `clear`, and
 threads on the local host. Handover notifies the new and previous observer and
 is audited. Startup rechecks the observer; archive/deletion clears it automatically.
 
-The default observer filter copies warnings, expiry and revocation. Grant,
-release (including thread end), transfer/return and capacity copies are opt-in.
+The load watch scans own-user processes every 30 seconds and reads only pid, start time, CPU time and cwd; it never reads environment or command lines. Its cwd heuristic is local-host only, may miss short-lived processes and does not cover containers. Approximate measured cost: ~0.03% of one core in-process, ~0.6% including `ps`/`lsof` children on a busy 18-core machine; inspect `bb slots status --json` diagnostics. A0 request/acquire timeout exits 75 and retains queue position for retry with the same command. The default observer filter copies warnings, expiry and revocation. Grant,
+release (including thread end), transfer/return and capacity copies are opt-in; unleased-load and idle-lease can also be selected.
 Messages already addressed to the observer are never copied again. Queue-wait
 alerts include requester, job, estimate, elapsed wait, pool position and blockers.
 Gate-hold alerts require queued work and continuous failing samples; a passing
