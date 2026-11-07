@@ -62,7 +62,7 @@ bb slots log --since 2h --limit 100 --json
 ```
 
 Request returns immediately unless `--wait` is present. Waiting polls every 3s,
-withdraws the queued request on timeout/disconnect and exits 1. Default timeout
+keeps the queued request on timeout (exit 75); disconnect withdraws it. Retry to keep its position. Default timeout
 is 30m; maximum 60m (BB's CLI headers timeout is 65m). Tools return immediately;
 grant messages wake idle threads. Tool names are `slots_request`, `slots_release`,
 `slots_heartbeat`, `slots_gate`, `slots_status`, `slots_transfer`, `slots_port`,

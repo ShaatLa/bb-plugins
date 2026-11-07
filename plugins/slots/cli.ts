@@ -97,7 +97,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     request: cliCommand({ summary: "Queue heavy work; optionally wait for a grant", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description (max 2000 characters)" },
       est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration (35m)" }, priority,
-      wait: { type: "boolean", description: "Wait for a grant; disconnect or timeout withdraws the request" },
+      wait: { type: "boolean", description: "Wait for a grant; disconnect withdraws the request" },
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(input, ctx) {
       const o = input.options;
@@ -118,8 +118,18 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
           if (lease) return renderResult("request", { ok: true, data: { kind: "leased", lease } }, !!o.json);
           if (!view.pools.some(p => p.queue.some(r => r.id === requestId))) throw new Error("Request was canceled");
         }
-        throw new Error("Slot wait timed out; request withdrawn");
+        if (!result.ok) return renderResult("request", result, !!o.json);
+        const current = await invoke("status", {});
+        if (!current.ok) return renderResult("request", current, !!o.json);
+        const view = current.data as StatusView;
+        const lease = view.pools.flatMap(p => p.leases).find(l => l.requestId === requestId);
+        if (lease) return renderResult("request", { ok: true, data: { kind: "leased", lease } }, !!o.json);
+        const queue = view.pools.find(p => p.queue.some(r => r.id === requestId))?.queue;
+        if (!queue) return renderResult("request", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json);
+        const message = `still queued at position ${queue.findIndex(r => r.id === requestId) + 1} (${requestId}); run the same command again to keep waiting`;
+        return { exitCode: 75, stdout: o.json ? JSON.stringify({ ok: false, error: { code: "timeout", message } }) : message };
       } catch (error) {
+        if (!ctx.signal?.aborted) return renderResult("request", { ok: false, error: { code: "not-found", message: String(error) } }, !!o.json);
         const withdrawn = await invoke("release", { threadId: caller, leaseId: requestId });
         if (!withdrawn.ok) {
           const current = await invoke("status", {});

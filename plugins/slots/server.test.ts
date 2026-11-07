@@ -8,7 +8,8 @@ import { register } from "./server.js";
 import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
 import { stateSchema } from "./schemas.js";
-import { renderResult } from "./cli.js";
+import { registerCli, renderResult } from "./cli.js";
+import type { Invoke } from "./server.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -120,10 +121,23 @@ it("reads retained JSONL with inclusive bounds and removes old daily files", asy
   expect((await h.invoke("log", { since: Date.parse("2026-11-08T12:00:00Z") }))).toMatchObject({ ok: true, data: { events: [] } });
   await expect(readFile(join(h.path, "2026-10-01.jsonl"))).rejects.toThrow();
 });
-it("CLI timeout withdraws queued request and remote-free status stays bounded", async () => {
+it("CLI timeout keeps queued request and remote-free status stays bounded", async () => {
   const h = await setup();
   const result = await h.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms", "--json"], { threadId: "a" });
-  expect(result.exitCode).toBe(1); expect((await h.view()).pools[0].queue).toHaveLength(0);
+  expect(result.exitCode).toBe(75); expect((await h.view()).pools[0].queue).toHaveLength(1);
+});
+it("resolves a grant at the wait deadline and withdraws on abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const lease = { id: "lease-2", requestId: "req-1", pool: "heavy", slotIndex: 0, holderThreadId: "a", job: "tests", expiresAt: 10000 };
+  const invoke = vi.fn(async (method: string) => method === "request" ? { ok: true, data: { kind: "queued", request: { id: "req-1" } } } :
+    method === "status" ? { ok: true, data: { pools: [{ leases: [lease], queue: [] }] } } : { ok: true, data: {} });
+  registerCli(host.bb, invoke as Invoke);
+  const args = ["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms"];
+  expect((await host.harness.behavior.runCli(args, { threadId: "a" })).exitCode).toBe(0);
+  const controller = new AbortController(); controller.abort();
+  expect((await host.harness.behavior.runCli(args, { threadId: "a", signal: controller.signal })).exitCode).toBe(1);
+  expect(invoke).toHaveBeenCalledWith("release", { threadId: "a", leaseId: "req-1" });
+  await host.harness.lifecycle.dispose();
 });
 it("uses public SDK imports only", () => {
   const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge|@testing-library\/react)$/] });
