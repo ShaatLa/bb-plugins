@@ -150,7 +150,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.requests = state.requests.filter(r => r.id !== requestId);
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
-    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Use bb slots wrapper for heavy commands; bb slots heartbeat extends manual leases; bb slots release ${lease.id} promptly.`;
     notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
@@ -293,7 +293,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Use bb slots wrapper for heavy commands; bb slots heartbeat extends manual leases; bb slots release ${lease.id} promptly.`;
       notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;

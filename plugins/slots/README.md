@@ -45,7 +45,11 @@ lines. Every command supports `--json`. Caller identity defaults to the CLI cont
 BB_THREAD_ID; holder commands also accept `--thread <id>`.
 
 ```sh
-bb slots request --pool heavy --job "full test suite" --est 35m --priority normal --wait --timeout 30m
+sh -c "$(bb slots wrapper)" slots-run --est 35m --job "full test suite" -- <command> [args...]
+bb slots acquire --pool heavy --job "full test suite" --est 35m
+bb slots heartbeat --use <use-id>
+bb slots done <use-id>
+bb slots request --pool heavy --job "full test suite" --est 35m --wait --timeout 30m
 bb slots gate
 bb slots heartbeat
 bb slots config [show | set <key> <value> | unset <key>] [--json]
@@ -70,11 +74,19 @@ grant messages wake idle threads. Tool names are `slots_request`, `slots_release
 The native tools are enabled alongside the bundled `slots` skill.
 
 `gate` samples freshly and exits 1 when the reading fails; it prints readings
-and thresholds. Always check it as a separate step before each launch. Never
-chain gate and launch in one shell command. Two consecutive passing samples
+and thresholds. A holder can launch additional wrapper commands without another gate check; the lease was gated when granted. Two consecutive passing samples
 spaced 15s apart are required for automatic grants; every grant resets the
 streak. Manual grant bypasses queue order and streak, but checks a fresh sample
 and capacity. There is no force option.
+
+The wrapper runs the command in the foreground and calls done only after it exits.
+Signal the process group to cancel; signals to the wrapper PID alone are not
+forwarded. If renewal stops, the use can expire while the command still runs;
+grandchildren that outlive it are not covered. PID and start-time checks are
+approximate and do not exclude PID reuse. A stuck renewal supervisor can leave
+an in-flight heartbeat running until it returns. The wrapper supports macOS and
+Linux. Acquire timeout exits 75 and keeps the queue position for one use TTL;
+retry within that grace period. Each use must be renewed independently.
 
 A thread has one request or lease per pool. Release without an ID releases all
 its leases and cancels all its queued requests. A request ID cancels only that

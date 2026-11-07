@@ -7,17 +7,26 @@ Small or focused runs — a single package's unit tests, typecheck, lint, a quic
 build — that finish in a minute or two on a few cores do not need a slot.
 Request one for work that saturates many cores or lots of memory for several minutes.
 
-Request before heavy work such as full test suites, race-detector or fuzz runs,
-database or service containers, headless-browser jobs, large builds, or local LLM
-inference: `bb slots request --pool heavy --job "..." --est 35m`.
-Use `--pool local-model` for LLM inference. Add `--wait --timeout 30m` in a
-background shell run, or wait idle for the grant message. Tools `slots_request`
-and peers return immediately; notifications wake idle threads. One request or
-lease per thread/pool. All commands support `--json`.
+Run heavy work through the foreground wrapper:
 
-Before EACH launch, run `bb slots gate` as a separate tool/shell step and inspect
-the result. Launch only if it passes. NEVER run `bb slots gate && launch` or put
-the gate and launch in the same command. A lease alone is not a passing gate.
+```sh
+sh -c "$(bb slots wrapper)" slots-run --est 35m --job "full test suite" -- <command> [args...]
+```
+
+Use `--pool local-model` for LLM inference. A holder may launch concurrent or
+nested commands on its own lease without another gate check. A timed-out acquire
+exits 75 and keeps its queue position briefly; retry within the use TTL. Manual
+`bb slots request --wait` keeps its queue position on timeout until canceled.
+For scripts, `bb slots acquire` returns a use ID; renew with `bb slots heartbeat
+--use <id>` and finish with `bb slots done <id>`. Manual request, heartbeat and
+release remain available.
+
+The wrapper never calls done before its foreground command exits. Renewal loss
+may let the use expire while the command still runs. To cancel, signal the
+process group; signals to the wrapper PID alone are not forwarded. Grandchildren
+that outlive the command are not covered. Process identity checks are approximate
+and PID reuse is not excluded. If the renewal supervisor is stuck during cleanup,
+an in-flight heartbeat may outlive it until that heartbeat returns.
 
 On an expiry warning, run `bb slots heartbeat` if still working. Release promptly
 with `bb slots release [lease-or-request]`; no ID also cancels queued requests.

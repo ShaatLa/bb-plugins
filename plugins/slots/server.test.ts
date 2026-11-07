@@ -73,7 +73,7 @@ it("serializes concurrent idempotent requests, persists and restores after a liv
 });
 it("archives release leases, cancel queues, and grant/warning notifications wake threads", async () => {
   const h = await setup(); const lease = await h.grant();
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "auto", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots gate") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "auto", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots wrapper") })] }));
   h.advance(1200000);
   // The service heartbeats active holders only; idle holders get the warning.
   const service = h.harness.behavior.runService("sampler");
@@ -429,4 +429,14 @@ it("exposes acquire, use heartbeat and done through CLI and RPC", async () => {
   expect((await h.harness.behavior.runCli(["heartbeat", "--use", useId], { threadId: "a" })).exitCode).toBe(0);
   expect((await h.harness.behavior.runCli(["done", useId], { threadId: "a" })).exitCode).toBe(0);
   expect((await h.view()).pools[0].queue).toHaveLength(0);
+});
+
+
+it("loads 0.3 state and restores active uses", async () => {
+  const h = await setup(); await h.request();
+  const old = JSON.parse(await readFile(join(h.path, "state.json"), "utf8"));
+  expect(stateSchema.parse(old).requests[0]).toMatchObject({ uses: [], autoRelease: false, graceUntil: null });
+  await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  const restored = await setup(h.path);
+  expect((await restored.view()).pools[0].queue[0].uses).toHaveLength(1);
 });

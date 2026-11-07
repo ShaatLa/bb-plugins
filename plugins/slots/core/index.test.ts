@@ -253,7 +253,7 @@ it("release cancels all queued pools or a single owned request", () => {
 });
 it("warning and grant name exact commands with a UTC expiry", () => {
   const h = harness(); h.request("a");
-  expect(h.open().effects).toContainEqual(expect.objectContaining({ type: "notify", text: expect.stringContaining("bb slots gate") }));
+  expect(h.open().effects).toContainEqual(expect.objectContaining({ type: "notify", text: expect.stringContaining("bb slots wrapper") }));
   h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
   const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
   expect(warning).toMatchObject({ text: expect.stringContaining(new Date(h.state.leases[0].expiresAt).toISOString()) });
