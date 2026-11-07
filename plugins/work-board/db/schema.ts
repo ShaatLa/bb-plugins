@@ -358,6 +358,31 @@ const MIGRATIONS = [
      CHECK (task_id <> blocking_task_id)
    );
    CREATE INDEX idx_task_dependencies_blocker ON task_dependencies(blocking_task_id, task_id);`,
+  `CREATE TABLE task_schedules (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    template_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), rule TEXT NOT NULL, target TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0,1)), next_due_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_task_schedules_due ON task_schedules(enabled,next_due_at);
+  CREATE TABLE task_scheduled_sources (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    schedule_id TEXT NOT NULL, schedule_title TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('template','recurring_run','one_time_run')),
+    scheduled_for TEXT, started_at TEXT, run_id TEXT, occurrence_key TEXT
+  );
+  CREATE UNIQUE INDEX idx_task_scheduled_source_occurrence ON task_scheduled_sources(schedule_id,occurrence_key) WHERE occurrence_key IS NOT NULL;
+  CREATE INDEX idx_task_scheduled_sources_schedule ON task_scheduled_sources(schedule_id,role,task_id);
+  CREATE TABLE task_schedule_runs (
+    id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    occurrence_key TEXT NOT NULL, state TEXT NOT NULL, resolved_at TEXT, finished_at TEXT,
+    thread_id TEXT, payload TEXT NOT NULL,
+    UNIQUE(schedule_id,occurrence_key)
+  );
+  CREATE INDEX idx_task_schedule_runs_pending ON task_schedule_runs(state,thread_id);
+  CREATE INDEX idx_task_schedule_runs_history ON task_schedule_runs(project_id,schedule_id,id);
+  CREATE INDEX idx_task_schedule_runs_retention ON task_schedule_runs(state,resolved_at,finished_at);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

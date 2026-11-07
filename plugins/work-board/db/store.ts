@@ -1,3 +1,4 @@
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
@@ -89,6 +90,7 @@ interface ProjectRow {
 }
 
 interface TaskRow {
+  ordinary_visible?: number;
   archived_at: string | null;
   id: string;
   project_id: string;
@@ -395,6 +397,7 @@ function projectFromRow(row: ProjectRow): Project {
 
 function taskFromRow(row: TaskRow): Task {
   return {
+    ...(row.ordinary_visible === 0 ? { ordinaryVisible: false } : {}),
     id: row.id,
     archivedAt: row.archived_at,
     projectId: row.project_id,
@@ -539,7 +542,7 @@ export function createTasksStore(db: PluginDatabase) {
     "SELECT * FROM projects WHERE id = ?",
   );
   const taskSelect = `
-    SELECT t.*, p.prefix AS project_prefix
+    SELECT t.*, p.prefix AS project_prefix, CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible
     FROM tasks t
     JOIN projects p ON p.id = t.project_id
   `;
@@ -1038,6 +1041,7 @@ export function createTasksStore(db: PluginDatabase) {
     const dateField = filters.dateField ?? (filters.archive === "archived" ? "archived" : "created");
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
+    if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
     const parameters: Record<string, SqlParameter> = {};
@@ -1226,6 +1230,7 @@ export function createTasksStore(db: PluginDatabase) {
             WITH filtered_tasks AS (
               SELECT
                 t.*,
+                CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
                 COALESCE(${dateColumn}, '') AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority

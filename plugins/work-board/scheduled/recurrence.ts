@@ -1,22 +1,9 @@
 import { CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 
-const timezoneSchema = z.string().refine((timezone) => {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
-}, "Invalid time zone");
-
-const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
-export const recurrenceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("daily"), time: timeSchema, timezone: timezoneSchema }).strict(),
-  z.object({ kind: z.literal("weekly"), time: timeSchema, timezone: timezoneSchema, weekdays: z.array(z.number().int().min(0).max(6)).min(1).refine((days) => new Set(days).size === days.length) }).strict(),
-  z.object({ kind: z.literal("once"), at: z.iso.datetime({ offset: true }), timezone: timezoneSchema }).strict(),
-]);
-export type Recurrence = z.infer<typeof recurrenceSchema>;
+import { recurrenceSchema, type Recurrence } from "../shared/scheduled";
+export { recurrenceSchema, type Recurrence } from "../shared/scheduled";
+const timezoneSchema = z.string().refine(value => { try { new Intl.DateTimeFormat("en", {timeZone:value}); return true; } catch { return false; } }, "Invalid time zone");
 
 /** Returns the first occurrence strictly after the given instant. */
 export function nextOccurrence(rule: Recurrence, after: Date): Date | null {

@@ -44,6 +44,7 @@ export interface Project {
 }
 
 export interface Task {
+  ordinaryVisible?: boolean;
   archivedAt?: string | null;
   id: string;
   projectId: string;
@@ -196,6 +197,7 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters extends TaskDateFilters {
+  ordinaryOnly?: boolean;
   allowStaleCursor?: boolean;
   archive?: "active" | "archived" | "all";
   projectId?: string;

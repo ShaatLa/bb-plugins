@@ -1,3 +1,4 @@
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
@@ -116,7 +117,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
           .prepare<
             [string],
             CountRow
-          >("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?")
+          >(`SELECT COUNT(*) AS count FROM tasks t WHERE project_id = ? AND ${ordinaryTaskVisibilitySql()}`)
           .get(projectId)?.count ?? 0
       );
     },
@@ -140,7 +141,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
             `
               SELECT COUNT(*) AS count
               FROM tasks
-              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled')
+              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled') AND ${ordinaryTaskVisibilitySql('tasks')}
             `,
           )
           .get()?.count ?? 0
@@ -158,7 +159,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
               END) AS active_agent_count
             FROM projects p
             LEFT JOIN tasks t
-              ON t.project_id = p.id AND t.archived_at IS NULL
+              ON t.project_id = p.id AND t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}
               AND t.parent_task_id IS NULL
             LEFT JOIN task_threads tt ON tt.task_id = t.id
             GROUP BY p.id
@@ -973,6 +974,7 @@ export function registerHandlers(
     },
     listTasks(input) {
       const page = store.tasks.listTasksPage({
+        ordinaryOnly: !input.includeScheduled,
         archive: input.archive,
         dateField: input.dateField,
         dateFrom: input.dateFrom,
