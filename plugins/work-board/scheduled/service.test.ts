@@ -1,4 +1,4 @@
-import { createFakePluginHost, makeThreadResponse, makeQueueEntry } from '@get-bb/plugin-sdk/testing';
+import { createFakePluginHost, makeThreadResponse, makeQueueEntry, makeTurnFailedEvent } from '@get-bb/plugin-sdk/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStore, registerTasksApi } from '../api';
 import { scheduledService } from './service';
@@ -37,12 +37,15 @@ describe('Scheduled execution',()=>{
    f.store.tasks.updateTask(a.taskId!,{status:'done'});expect(f.data.run(a.id).state).toBe('completed');
    expect((await f.harness.callRpc('listTasks',{}) as {tasks:unknown[]}).tasks).toHaveLength(1);
    f.store.tasks.updateTask(a.taskId!,{status:'in_review'});expect(f.data.run(a.id).state).toBe('running');
+   f.store.tasks.updateTask(b.taskId!,{status:'canceled'});expect(f.data.run(b.id).resolvedAt).not.toBeNull();
   }finally{await f.harness.dispose();}
  });
  it('does not infer cancellation from queue disappearance or repeat an unknown send after reload',async()=>{
+  vi.useFakeTimers({toFake:['Date']});
   const f=fixture();try{
    const s=f.create(),r=await f.service.runNow(s.id,'unknown');f.clearQueue();f.setPushFailure();
-   await f.service.reconcileThread(f.thread.id);
+   await f.service.reconcileThread(f.thread.id);expect(f.data.run(r.id).state).toBe('queued');
+   vi.setSystemTime(Date.now()+120_000);await f.service.reconcileThread(f.thread.id);
    expect(f.data.run(r.id)).toMatchObject({state:'delivery_unknown',pushState:'failed'});
    const count=f.harness.sdk.callsTo('threads.send').length;
    await f.service.reconcileAll();await f.service.runNow(s.id,'unknown');
@@ -50,12 +53,12 @@ describe('Scheduled execution',()=>{
    await expect(f.service.retry(r.id,'retry')).rejects.toThrow('unknown');
   }finally{await f.harness.dispose();}
  });
- it('requires positive cancellation evidence and keeps actual schedule deletion independent of results',async()=>{
+ it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{
   const f=fixture();try{
-   const s=f.create(),r=await f.service.runNow(s.id,'cancel');
+   const s=f.create(),r=await f.service.runNow(s.id,'cancel');if(status==='done')f.store.tasks.updateTask(r.taskId!,{status:'done'});
    f.harness.sdk.stub('threads.queuedMessages.delete',async()=>{const [entry]=f.getQueue();f.clearQueue();await f.harness.emitThreadEvent('message.cancelled',{entry:entry!});return {ok:true};});
    expect((await f.service.cancel(r.id)).state).toBe('canceled');
-   expect(f.store.tasks.getTask(r.taskId!)?.status).toBe('canceled');
+   expect(f.store.tasks.getTask(r.taskId!)?.status).toBe(status==='done'?'done':'canceled');
    expect(await f.service.remove(s.id)).toBe(true);expect(f.data.results({}).results).toHaveLength(1);
   }finally{await f.harness.dispose();}
  });
@@ -188,6 +191,49 @@ describe('Scheduled execution',()=>{
    expect((await next.runNow(s.id,'reload')).id).toBe(r.id);expect(next.data.run(r.id).state).toBe('queued');
    expect(replacement.harness.sdk.callsTo('threads.send')).toHaveLength(before);
   }finally{if(replacement)await replacement.harness.dispose();else await f.harness.dispose();}
+ });
+
+ it('allows normal dispatch-before-accept ordering without a false incident or push',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=fixture();try{
+   const r=await f.service.runNow(f.create().id,'handoff'),entry=f.getQueue()[0]!;f.clearQueue();
+   await f.harness.emitThreadEvent('message.dispatched',{entry});await f.service.reconcileThread(f.thread.id);
+   expect(f.data.run(r.id).state).toBe('starting');expect(f.harness.sdk.callsTo('plugins.callRpc')).toHaveLength(0);
+   vi.setSystemTime(Date.now()+1000);f.accept([r]);await f.service.reconcileThread(f.thread.id);
+   expect(f.data.run(r.id).state).toBe('running');expect(f.harness.sdk.callsTo('plugins.callRpc')).toHaveLength(0);
+  }finally{await f.harness.dispose();}
+ });
+ it('keeps incidents idempotent, resolves a lost cancellation event and expires acknowledged unknown history',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=fixture();try{
+   const s=f.create(),r=await f.service.runNow(s.id,'lost-cancel');f.harness.sdk.stub('threads.queuedMessages.delete',async()=>{f.clearQueue();return {ok:true};});
+   await f.service.cancel(r.id);await f.service.reconcileThread(f.thread.id);
+   vi.setSystemTime(Date.now()+120_000);await f.service.reconcileThread(f.thread.id);
+   const unknown=f.data.run(r.id);expect(unknown).toMatchObject({state:'delivery_unknown',queueId:null,lastQueueId:r.queueId});
+   const comments=f.store.tasks.listComments(s.templateTaskId).length,pushes=f.harness.sdk.callsTo('plugins.callRpc').length;
+   await f.service.reconcileThread(f.thread.id);await f.service.reconcileThread(f.thread.id);
+   expect(f.store.tasks.listComments(s.templateTaskId)).toHaveLength(comments);expect(f.harness.sdk.callsTo('plugins.callRpc')).toHaveLength(pushes);
+   f.data.resolve(r.id,'Checked execution history; safe to close');const reason=f.data.run(r.id).reason;
+   await f.service.reconcileAll();expect(f.data.run(r.id).reason).toBe(reason);expect(f.data.pending()).toEqual([]);
+   expect(await f.service.remove(s.id)).toBe(true);
+   vi.setSystemTime(Date.now()+7*86400000);expect(f.data.cleanup()).toBe(1);expect(f.data.results({}).results).toHaveLength(1);
+  }finally{await f.harness.dispose();}
+ });
+ it('fails only the matching current request, preserving older review work on a shared session',async()=>{
+  const f=fixture();try{
+   const s=f.create(),a=await f.service.runNow(s.id,'older'),b=await f.service.runNow(s.id,'current');f.accept([a,b]);await f.service.reconcileThread(f.thread.id);
+   f.store.tasks.updateTask(a.taskId!,{status:'in_review'});f.data.updateRun(a.id,{requestId:'older_request'});
+   f.thread.status='error';await f.harness.emitThreadEvent('thread.failed',{thread:f.thread,error:'Quota'});
+   await f.harness.emitThreadEvent('turn.failed',makeTurnFailedEvent({threadId:f.thread.id,requestId:'request_1',inputAccepted:true}));
+   expect(f.data.run(a.id).state).toBe('running');expect(f.data.run(b.id).state).toBe('failed');
+   expect(f.store.tasks.getTask(a.taskId!)?.status).toBe('in_review');
+  }finally{await f.harness.dispose();}
+ });
+
+ it('ignores unrelated token-stream events while a scheduled request is only waiting in the queue',async()=>{
+  const f=fixture();try{
+   await f.service.runNow(f.create().id,'busy');const before=f.harness.sdk.calls.length;
+   for(let sequence=10;sequence<30;sequence++)await f.harness.emitThreadEvent('experimental_thread.events',{thread:f.thread,sequence});
+   expect(f.harness.sdk.calls).toHaveLength(before);
+  }finally{await f.harness.dispose();}
  });
 
 });

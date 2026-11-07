@@ -7,7 +7,7 @@ import { browserTimeZone, formatInZone } from "./lib.js";
 /** Shown on tasks that belong to a schedule; the lookup runs once when the detail opens. */
 export function ScheduledSourceBanner({ task }: { task: Task }) {
   const navigation = useTasksNavigation();
-  const query = useScheduledQuery((rpc) => rpc.call("getTaskSchedule", { taskId: task.id }), [task.id]);
+  const query = useScheduledQuery((rpc) => rpc.call("getTaskSchedule", { taskId: task.id }), [task.id], { enabled: task.scheduledRole !== undefined });
   const source = query.data?.source;
   if (!source) return null;
   const isTemplate = source.role === "template";

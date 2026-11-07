@@ -91,6 +91,7 @@ interface ProjectRow {
 
 interface TaskRow {
   ordinary_visible?: number;
+  scheduled_role?: Task["scheduledRole"];
   archived_at: string | null;
   id: string;
   project_id: string;
@@ -398,6 +399,7 @@ function projectFromRow(row: ProjectRow): Project {
 function taskFromRow(row: TaskRow): Task {
   return {
     ...(row.ordinary_visible === 0 ? { ordinaryVisible: false } : {}),
+    ...(row.scheduled_role ? { scheduledRole: row.scheduled_role } : {}),
     id: row.id,
     archivedAt: row.archived_at,
     projectId: row.project_id,
@@ -542,7 +544,7 @@ export function createTasksStore(db: PluginDatabase) {
     "SELECT * FROM projects WHERE id = ?",
   );
   const taskSelect = `
-    SELECT t.*, p.prefix AS project_prefix, CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible
+    SELECT t.*, p.prefix AS project_prefix, CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible, (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role
     FROM tasks t
     JOIN projects p ON p.id = t.project_id
   `;
@@ -1231,6 +1233,7 @@ export function createTasksStore(db: PluginDatabase) {
               SELECT
                 t.*,
                 CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
+                (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role,
                 COALESCE(${dateColumn}, '') AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
@@ -1324,8 +1327,7 @@ export function createTasksStore(db: PluginDatabase) {
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
-      const scheduled = db.prepare<[string], { role: string }>("SELECT role FROM task_scheduled_sources WHERE task_id=?").get(id);
-      if (scheduled?.role === "template" && (input.status !== undefined || input.executionTarget === "owner" || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
+      if (current.scheduledRole === "template" && (input.status !== undefined || input.executionTarget === "owner" || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
         throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
       validateTaskStatus(current.projectId, status);
@@ -1420,7 +1422,7 @@ export function createTasksStore(db: PluginDatabase) {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
-      if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=?").get(id))
+      if (root.scheduledRole)
         throw new Error("Scheduled tasks keep their source project; create a schedule in the target project instead");
       const source = requireProject(root.projectId);
       const members =
@@ -1632,7 +1634,7 @@ export function createTasksStore(db: PluginDatabase) {
 
   const setTaskArchived = db.transaction((id: string, archived: boolean): Task[] => {
     const root = requireTask(id);
-    if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=? AND role='template'").get(id))
+    if (root.scheduledRole === "template")
       throw new Error("Pause or delete the schedule in Scheduled settings instead of archiving its template");
     if (archived && root.archivedAt || !archived && !root.archivedAt) return [];
     const parentId = root.parentTaskId ?? root.epicId;
@@ -1652,7 +1654,7 @@ export function createTasksStore(db: PluginDatabase) {
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
-      if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=? AND role='template'").get(task.id)) continue;
+      if (task.scheduledRole === "template") continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||

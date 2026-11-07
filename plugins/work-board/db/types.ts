@@ -45,6 +45,7 @@ export interface Project {
 
 export interface Task {
   ordinaryVisible?: boolean;
+  scheduledRole?: "template" | "recurring_run" | "one_time_run";
   archivedAt?: string | null;
   id: string;
   projectId: string;

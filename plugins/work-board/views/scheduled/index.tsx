@@ -215,7 +215,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
               <li key={schedule.id} className="space-y-1.5 border-b border-border-hairline px-4 py-3" data-schedule-id={schedule.id}>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">{schedule.title}</span>
-                  <Badge tone={status === "active" ? "success" : "muted"}>{status === "active" ? "Active" : status === "paused" ? "Paused" : "Finished"}</Badge>
+                  <Badge tone={status === "active" ? "success" : "muted"}>{status === "active" ? "Enabled" : status === "paused" ? "Paused" : "No future runs"}</Badge>
                   {schedule.target.kind === "unassigned" ? <Badge tone="warning">Choose target</Badge> : null}
                   {schedule.overlapRunIds.length > 0 ? <Badge tone="warning">Overlaps {schedule.overlapRunIds.length} unfinished</Badge> : null}
                 </div>

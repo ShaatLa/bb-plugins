@@ -106,8 +106,8 @@ export function runActions(run: ScheduleRun): RunActions {
   const live = !run.historical;
   return {
     retry: live && run.startedAt === null && (run.state === "failed" || run.state === "skipped" || run.state === "canceled"),
-    resolve: run.resolvedAt === null && run.state !== "cancel_pending" && (ATTENTION_STATES.has(run.state) || run.state === "canceled"),
-    cancel: live && (run.state === "queued" || run.state === "cancel_pending"),
+    resolve: run.resolvedAt === null && run.state !== "cancel_pending" && !(run.state === "delivery_unknown" && run.queueId !== null) && (ATTENTION_STATES.has(run.state) || run.state === "canceled"),
+    cancel: live && (run.state === "queued" || run.state === "cancel_pending" || (run.state === "delivery_unknown" && run.queueId !== null)),
   };
 }
 

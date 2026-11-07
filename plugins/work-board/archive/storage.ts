@@ -26,7 +26,7 @@ type Row = Record<string, SqlValue>;
 export const sha256 = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
 
-const withoutVisibility = <T extends { ordinaryVisible?: boolean }>({ ordinaryVisible: _derived, ...task }: T) => task;
+const withoutVisibility = <T extends { ordinaryVisible?: boolean; scheduledRole?: string }>({ ordinaryVisible: _derived, scheduledRole: _role, ...task }: T) => task;
 
 export function captureProject(
   bb: BbPluginApi,
@@ -221,7 +221,7 @@ export function restoreProject(
   if (archive.manifest.gitSync) assertNoSecretsInValue(archive.manifest.gitSync, "Git sync configuration");
   for (const record of archive.records) for (const link of record.pullRequests ?? []) assertNoSecretsInValue(link, "PR link");
   for (const source of archive.manifest.scheduleSources) assertNoSecrets(source.scheduleTitle, "schedule title");
-  for (const run of archive.manifest.scheduleRuns) assertNoSecrets(`${run.scheduleTitle} ${run.reason ?? ""}`, "schedule run");
+  for (const run of archive.manifest.scheduleRuns) assertNoSecretsInValue(run, "schedule run");
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;

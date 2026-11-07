@@ -318,6 +318,7 @@ export const taskSchema = z
     status: taskStatusSchema,
     archivedAt: z.iso.datetime({ precision: 3 }).nullable().optional(),
     ordinaryVisible: z.boolean().optional(),
+    scheduledRole: z.enum(["template", "recurring_run", "one_time_run"]).optional(),
     priority: taskPrioritySchema,
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),

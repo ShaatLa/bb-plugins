@@ -179,7 +179,7 @@ it("requires choosing a target for imported unassigned schedules", async () => {
 });
 
 it("shows the scheduled-source banner on a task detail", async () => {
-  const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", key: "OPS-3", title: "Run result", projectId: PROJECT_ID });
+  const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", key: "OPS-3", title: "Run result", projectId: PROJECT_ID, scheduledRole: "recurring_run" });
   const source = { taskId: task.id, scheduleId: S1, scheduleTitle: "Report 11", role: "recurring_run" as const, scheduledFor: "2026-11-06T08:00:00.000Z", startedAt: null, runId: null, occurrenceKey: "k" };
   const { rpc } = scheduledRpc({ getTaskSchedule: () => ({ source }) });
   Object.assign(rpc, { getTaskByKey: () => ({ task }), listTaskDependencies: () => ({ blockedBy: [], blocks: [] }), listTaskThreads: () => ({ threads: [] }) });

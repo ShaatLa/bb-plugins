@@ -28,16 +28,22 @@ function definiteFailure(error:unknown) {
 }
 function createService(bb:BbPluginApi,store:TasksApiStore) {
  const data=createScheduledStore(bb,store),db=bb.storage.database(),reads=limiter(2),dispatchSlots=limiter(2);
- const acceptedScopes=new Map<string,string[]>();
+ const acceptedScopes=new Map<string,string[]>(),absentSince=new Map<string,number>();
+ const startingThreads=new Set<string>();
  const flights=new Map<string,Promise<ScheduleRun>>(),threadReads=new Map<string,Promise<void>>(),removing=new Set<string>();
  let closed=false,tickFlight:Promise<void>|null=null,cleanupDay="",pendingCursor="";
  const alive=()=>{if(closed)throw new Error("Scheduled service disposed");};
- const trackedThreads=new Set(db.prepare<[],{thread_id:string}>("SELECT DISTINCT thread_id FROM task_schedule_runs WHERE thread_id IS NOT NULL AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 LIMIT 256").all().map(x=>x.thread_id));
+ const trackedThreads=new Set(db.prepare<[],{thread_id:string}>("SELECT DISTINCT thread_id FROM task_schedule_runs WHERE thread_id IS NOT NULL AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 AND (resolved_at IS NULL OR state<>'delivery_unknown') LIMIT 256").all().map(x=>x.thread_id));
  const trackThread=(id:string)=>{trackedThreads.add(id);if(trackedThreads.size>256)trackedThreads.delete(trackedThreads.values().next().value!);};
  const hasPendingThread=(threadId:string)=>{
   if(!trackedThreads.has(threadId))return false;
-  const found=Boolean(db.prepare("SELECT 1 FROM task_schedule_runs WHERE thread_id=? AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 LIMIT 1").get(threadId));
+  const found=Boolean(db.prepare("SELECT 1 FROM task_schedule_runs WHERE thread_id=? AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 AND (resolved_at IS NULL OR state<>'delivery_unknown') LIMIT 1").get(threadId));
   if(!found)trackedThreads.delete(threadId);return found;
+ };
+ const refreshStarting=(threadId:string)=>{
+  if(db.prepare("SELECT 1 FROM task_schedule_runs WHERE thread_id=? AND state='starting' AND resolved_at IS NULL AND COALESCE(json_extract(payload,'$.historical'),0)=0 LIMIT 1").get(threadId))startingThreads.add(threadId);
+  else startingThreads.delete(threadId);
+  if(startingThreads.size>256)startingThreads.delete(startingThreads.values().next().value!);
  };
  const changed=(r?:ScheduleRun,taskChanged=false)=>{
   if(closed)return;
@@ -61,6 +67,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
  }
  async function incident(id:string,state:"failed"|"skipped"|"delivery_unknown",reason:string) {
   const current=data.run(id),stamp=new Date().toISOString();
+  if(current.resolvedAt!==null||(current.state===state&&current.reason!==null))return current;
   const previous=db.prepare<[string,string,string,string],{payload:string}>(`SELECT payload FROM task_schedule_runs WHERE schedule_id=? AND state=? AND resolved_at IS NULL AND id<>? AND json_extract(payload,'$.reason')=? AND COALESCE(json_extract(payload,'$.historical'),0)=0 ORDER BY id LIMIT 1`).get(current.scheduleId,state,id,reason);
   if(previous&&!current.taskId&&current.occurrenceKey.startsWith("slot:")) {
    const old=JSON.parse(previous.payload) as ScheduleRun;
@@ -69,8 +76,18 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    changed(merged);return merged;
   }
   const r=data.updateRun(id,{state,reason:reason.slice(0,2000),...(state==="delivery_unknown"?{}:{finishedAt:stamp})});
+  if(r.threadId)refreshStarting(r.threadId);
   if(!previous){note(r,`Scheduled run ${r.scheduledFor}: ${state} — ${r.reason}`);await notify(r.id);}
   changed(r);return data.run(r.id);
+ }
+ async function missingDelivery(id:string,reason:string) {
+  const r=data.run(id);if(r.resolvedAt||r.startedAt||terminalStates.has(r.state))return r;
+  const first=absentSince.get(id);
+  if(first===undefined){absentSince.set(id,Date.now());if(absentSince.size>256)absentSince.delete(absentSince.keys().next().value!);return r;}
+  // Dispatch precedes accepted input; tolerate the ordinary handoff before escalating an unknown.
+  if(Date.now()-first<120_000)return r;
+  if(r.queueId)data.updateRun(id,{lastQueueId:r.queueId,queueId:null});
+  return incident(id,"delivery_unknown",reason);
  }
  async function accepted(threadId:string,thread:Thread) {
   if(!hasPendingThread(threadId))return;
@@ -93,8 +110,9 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
     let r;try{r=data.run(runId);}catch{continue;}
     if(r.threadId!==threadId||r.startedAt||!r.taskId||r.historical)continue;
     // Sent, dispatched and session-active all precede actual input acceptance.
+    absentSince.delete(r.id);
     const started=data.markStarted(r.id,{threadId,requestId:parsed.data.clientRequestId,title:thread.title??thread.titleFallback??threadId,presetName:"Scheduled",liveStatus:threadLiveStatus(thread)});
-    note(started,`Scheduled run started · ${r.scheduledFor} · @thread:${threadId}`);changed(started,true);
+    note(started,`Scheduled run started · ${r.scheduledFor} · @thread:${threadId}`);refreshStarting(threadId);changed(started,true);
    }
   }
  }
@@ -103,8 +121,9 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   for(const id of ids) {
    let r;try{r=data.run(id);}catch{continue;}
    if(r.startedAt||r.historical||terminalStates.has(r.state))continue;
+   absentSince.delete(id);
    trackThread(entry.threadId);
-   if(r.threadId!==entry.threadId||r.queueId!==entry.id||(r.state!=="queued"&&r.state!=="cancel_pending")){r=data.updateRun(id,{threadId:entry.threadId,queueId:entry.id,...(r.state==="cancel_pending"?{}:{state:"queued"})});changed(r);}
+   if(r.threadId!==entry.threadId||r.queueId!==entry.id||r.resolvedAt||(r.state!=="queued"&&r.state!=="cancel_pending")){r=data.updateRun(id,{threadId:entry.threadId,queueId:entry.id,resolvedAt:null,...(r.state==="cancel_pending"?{}:{state:"queued"})});refreshStarting(entry.threadId);changed(r);}
    if(r.state==="cancel_pending")continue;
    if(entry.waitingOn?.kind==="host-offline"||entry.waitingOn?.kind==="stopping") {
     await cancel(id,"Assigned session is unavailable; queued launch must not resume later");
@@ -116,14 +135,14 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   const r=data.run(row.id);if(r.startedAt||r.historical||terminalStates.has(r.state))return;
   const state=r.cancelOutcome??"canceled",stamp=new Date().toISOString();
   const result=data.updateRun(r.id,{state,finishedAt:stamp,resolvedAt:state==="canceled"?stamp:null,reason:r.reason??"Queued run canceled"});
-  if(r.taskId&&state==="canceled")store.tasks.updateTask(r.taskId,{status:"canceled"});changed(result);
+  if(r.taskId&&state==="canceled"){const task=store.tasks.getTask(r.taskId);if(task&&!["done","canceled"].includes(task.status))store.tasks.updateTask(r.taskId,{status:"canceled"});}absentSince.delete(r.id);changed(result);
   if(state==="skipped")void notify(r.id);
  }
  async function reconcileThread(threadId:string) {
   const existing=threadReads.get(threadId);if(existing)return existing;
   if(!hasPendingThread(threadId))return;
   const promise=reads(async()=>{
-   const rows=data.pending(threadId,500);if(!rows.length)return;
+   const rows=data.pending(threadId,500,"",false);if(!rows.length)return;
    let thread:Thread;
    try {thread=await bb.sdk.threads.get({threadId,signal:AbortSignal.timeout(5000)});}catch(error){
     if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="thread_not_found") {
@@ -144,10 +163,10 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    const ids=new Set(queue.map(x=>x.id));
    for(const old of current) {
     const r=data.run(old.id);if(r.startedAt||terminalStates.has(r.state))continue;
-    if(r.queueId&&ids.has(r.queueId))continue;
+    if(r.queueId&&ids.has(r.queueId)){absentSince.delete(r.id);continue;}
     if(flights.has(r.id))continue;
     // Queue disappearance alone proves neither dispatch nor cancellation, even after two reads.
-    if(r.state!=="cancel_pending")await incident(r.id,"delivery_unknown","Request is absent from the queue; execution or cancellation is not confirmed");
+    await missingDelivery(r.id,r.state==="cancel_pending"?"Cancellation outcome is unknown; no queued request or accepted start was confirmed":"Request is absent from the queue; execution or cancellation is not confirmed");
    }
   }).catch(error=>{if(!closed)bb.log.warn(`Scheduled reconciliation failed: ${errorMessage(error)}`);}).finally(()=>threadReads.delete(threadId));
   threadReads.set(threadId,promise);return promise;
@@ -200,7 +219,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    alive();if(removing.has(s.id))return incident(id,"skipped","Schedule is being deleted");
    const task=data.createRunTask(id),project=store.tasks.getProject(s.projectId)!;
    const execution=preset?{providerId:preset.providerId,model:preset.modelId,reasoningLevel:preset.reasoningLevel,serviceTier:preset.serviceTier,permissionMode:preset.permissionMode,environmentKind:preset.environmentKind,machineId:preset.machineId,baseBranch:preset.baseBranch}:{targetThreadId:thread!.id,providerId:thread!.providerId,...threadExecution};
-   r=data.updateRun(id,{threadId:thread?.id??null,execution});if(thread)trackThread(thread.id);
+   r=data.updateRun(id,{threadId:thread?.id??null,execution});if(thread){trackThread(thread.id);refreshStarting(thread.id);}
    // shortcut: SDK queues return full messages; keep task previews small until ID-only reads exist.
    const seedTask={...task,description:task.description.length>12_000?`${task.description.slice(0,12_000)}\n\nFull description: bb work-board show ${task.key} --json`:task.description};
    const attachments=store.tasks.listAttachmentsForTask(task.id);
@@ -210,14 +229,14 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
      const delivery=await bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text:prompt,mentions:[]}]});
      alive();r=data.run(id);
      if(!r.startedAt&&!terminalStates.has(r.state)&&r.state!=="cancel_pending") {
-      if(delivery.delivery==="queued") {data.updateRun(id,{state:"queued",queueId:delivery.queuedMessage.id});await processQueue(delivery.queuedMessage);}
+      if(delivery.delivery==="queued"&&!(r.lastQueueId===delivery.queuedMessage.id&&r.queueId===null)) {data.updateRun(id,{state:"queued",queueId:delivery.queuedMessage.id});refreshStarting(thread.id);await processQueue(delivery.queuedMessage);}
       // Inline send still needs its matching accepted-input event.
      }
     }else {
      const environment=await presetSpawnEnvironment(bb,preset!);alive();
      const created=await bb.sdk.threads.spawn({projectId:project.linkedBbProjectId!,environment,providerId:preset!.providerId,model:preset!.modelId,reasoningLevel:preset!.reasoningLevel,...(preset!.serviceTier?{serviceTier:preset!.serviceTier}:{}),permissionMode:preset!.permissionMode,title:`${task.key} · ${task.title}`.slice(0,120),prompt,pluginMetadata:{scheduledRunId:id}});
      alive();thread=created;r=data.run(id);
-     if(!r.startedAt)data.updateRun(id,{threadId:created.id});trackThread(created.id);
+     if(!r.startedAt)data.updateRun(id,{threadId:created.id});trackThread(created.id);refreshStarting(created.id);
     }
    }catch(error){if(closed)throw error;const known=data.run(id);if(known.threadId)await reconcileThread(known.threadId);if(data.run(id).startedAt)return data.run(id);return incident(id,definiteFailure(error)?"failed":"delivery_unknown",`Delivery ${definiteFailure(error)?"failed":"outcome unknown"}: ${errorMessage(error)}`);}
    if(thread)await reconcileThread(thread.id);
@@ -240,7 +259,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   alive();data.get(scheduleId);removing.add(scheduleId);
   try {
    data.setEnabled(scheduleId,false);
-   const pending=db.prepare<[string],{id:string}>("SELECT id FROM task_schedule_runs WHERE schedule_id=? AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 LIMIT 101").all(scheduleId);
+   const pending=db.prepare<[string],{id:string}>("SELECT id FROM task_schedule_runs WHERE schedule_id=? AND state IN ('starting','queued','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 AND (resolved_at IS NULL OR state<>'delivery_unknown') LIMIT 101").all(scheduleId);
    if(pending.length>100)throw new Error("Cancel the pending run backlog before deleting this schedule");
    for(const {id} of pending) {
     const r=await cancel(id);
@@ -251,7 +270,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   }finally{removing.delete(scheduleId);}
  }
  async function recoverThread(thread:Pick<Thread,"id"|"originPluginId">) {
-  if(thread.originPluginId!=="work-board"||!db.prepare("SELECT 1 FROM task_schedule_runs WHERE thread_id IS NULL AND state IN ('starting','delivery_unknown') AND COALESCE(json_extract(payload,'$.historical'),0)=0 LIMIT 1").get())return;
+  if(thread.originPluginId!=="work-board"||!db.prepare("SELECT 1 FROM task_schedule_runs WHERE thread_id IS NULL AND state IN ('starting','delivery_unknown') AND COALESCE(json_extract(payload,'$.historical'),0)=0 AND resolved_at IS NULL LIMIT 1").get())return;
   try {
    const metadata=await reads(()=>bb.sdk.threads.getPluginMetadata({threadId:thread.id,pluginId:"work-board",signal:AbortSignal.timeout(5000)}));alive();
    const parsed=z.object({scheduledRunId:z.uuid()}).safeParse(metadata);if(!parsed.success)return;
@@ -260,7 +279,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   }catch(error){if(!closed)bb.log.warn(`Scheduled thread recovery: ${errorMessage(error)}`);}
  }
  async function reconcileAll() {
-  const all=data.pending(undefined,100,pendingCursor);pendingCursor=all.at(-1)?.id??"";
+  const all=data.pending(undefined,100,pendingCursor,false);pendingCursor=all.at(-1)?.id??"";
   if(!all.length)return;
   await Promise.all([...new Set(all.flatMap(r=>r.threadId&&!r.startedAt?[r.threadId]:[]))].map(id=>{trackThread(id);return reconcileThread(id);}));
   for(const old of all.filter(r=>!r.threadId&&!flights.has(r.id))) {
@@ -270,9 +289,9 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
     let enabled=false;try{enabled=data.get(old.scheduleId).enabled;}catch{ /* Schedule may have been removed. */ }
     if(enabled&&isWithinGrace(new Date(old.scheduledFor),new Date()))await dispatch(old.id);
     else await incident(old.id,"skipped","Launch interrupted before dispatch; schedule paused, removed or grace expired");
-   }else await incident(old.id,"delivery_unknown","Interrupted launch: session creation or delivery may have completed; no automatic resend");
+   }else await missingDelivery(old.id,"Interrupted launch: session creation or delivery may have completed; no automatic resend");
   }
-  const unresolved=all.filter(r=>!r.threadId).flatMap(old=>{try{const r=data.run(old.id);return !r.threadId&&r.state==="delivery_unknown"?[r]:[];}catch{return [];}});
+  const unresolved=all.filter(r=>!r.threadId).flatMap(old=>{try{const r=data.run(old.id);return !r.threadId&&!r.resolvedAt&&(r.state==="delivery_unknown"||r.state==="starting")?[r]:[];}catch{return [];}});
   if(unresolved.length) {
    // Resolve only recent plugin-owned candidates in one metadata batch, not 50 serial reads.
    const candidates=await reads(()=>bb.sdk.threads.list({originPluginId:"work-board",includeHidden:true,limit:50,signal:AbortSignal.timeout(5000)}));
@@ -314,20 +333,47 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
  }
  function observe(threadId:string) {void reconcileThread(threadId);}
  function observeLifecycle(thread:Thread) {
-  if(thread.status==="error"||thread.archivedAt!==null||thread.deletedAt!==null) {
-   for(const r of data.pending(thread.id,500).filter(r=>r.startedAt&&r.state==="running"))
-    void incident(r.id,"failed",thread.status==="error"?"Session failed after the run started":"Session became unavailable before the task reached Done");
+  if(thread.archivedAt!==null||thread.deletedAt!==null) {
+   for(const r of data.pending(thread.id,500).filter(r=>r.startedAt&&r.state==="running"&&r.taskId&&store.tasks.getTask(r.taskId)?.status==="in_progress"))
+    void incident(r.id,"failed","Session became unavailable before the task reached Done");
   }
   observe(thread.id);
  }
+ async function failTurn(event:{threadId:string;requestId:string;inputAccepted:boolean;errorInfo?:unknown}) {
+  const ids=new Set(db.prepare<[string,string],{id:string}>("SELECT id FROM task_schedule_runs WHERE thread_id=? AND json_extract(payload,'$.requestId')=? AND state='running' AND COALESCE(json_extract(payload,'$.historical'),0)=0").all(event.threadId,event.requestId).map(r=>r.id));
+  if(hasPendingThread(event.threadId)) {
+   const requests=await reads(()=>bb.sdk.threads.events.list({threadId:event.threadId,types:["client/turn/requested"],order:"desc",limit:"10",signal:AbortSignal.timeout(5000)}));
+   for(const request of requests)for(const id of acceptedScheduledRuns(request.data,event.requestId))ids.add(id);
+  }
+  for(const id of ids) {
+   let r;try{r=data.run(id);}catch{continue;}
+   if(r.threadId!==event.threadId||r.historical||r.resolvedAt||!r.taskId)continue;
+   const task=store.tasks.getTask(r.taskId);if(!task||["done","canceled","in_review"].includes(task.status))continue;
+   if(event.inputAccepted&&!r.startedAt)r=data.markStarted(id,{threadId:event.threadId,requestId:event.requestId,title:event.threadId,presetName:"Scheduled",liveStatus:"failed"});
+   else if(!event.inputAccepted&&!r.startedAt)data.updateRun(id,{requestId:event.requestId});
+   const error=z.object({message:z.string()}).safeParse(event.errorInfo);
+   await incident(id,"failed",error.success?error.data.message:"The scheduled request failed");
+  }
+ }
+
+ function dispatched(entry:QueueEntry) {
+  for(const id of acceptedScheduledRuns({requestId:"dispatched",input:entry.content},"dispatched")) {
+   let r;try{r=data.run(id);}catch{continue;}
+   if(r.startedAt||r.historical||terminalStates.has(r.state))continue;
+   r=data.updateRun(id,{state:"starting",threadId:entry.threadId,queueId:null,lastQueueId:entry.id,resolvedAt:null});
+   trackThread(entry.threadId);refreshStarting(entry.threadId);changed(r);
+  }
+  observe(entry.threadId);
+ }
  function register() {
-  bb.events.on("experimental_thread.events",({thread})=>observe(thread.id));
+  bb.events.on("experimental_thread.events",({thread})=>{if(startingThreads.has(thread.id))observe(thread.id);});
   bb.events.on("thread.created",({thread})=>{void recoverThread(thread);});
   for(const event of ["thread.active","thread.idle","thread.failed","thread.archived","thread.deleted"] as const)
    bb.events.on(event,({thread})=>observeLifecycle(thread));
   bb.events.on("message.queued",({entry})=>{void processQueue(entry).catch(error=>{if(!closed)bb.log.warn(errorMessage(error));});});
-  bb.events.on("message.dispatched",({entry})=>observe(entry.threadId));
+  bb.events.on("message.dispatched",({entry})=>dispatched(entry));
   bb.events.on("message.cancelled",({entry})=>cancelEvent(entry));
+  bb.events.on("turn.failed",event=>failTurn(event).catch(error=>{if(!closed)bb.log.warn(errorMessage(error));}));
   bb.background.schedule("scheduled-tasks","* * * * *",()=>runDue());
   bb.onDispose(()=>{closed=true;instances.delete(bb);});
   // Events are not replayed: register first, then reconcile without delaying plugin load.

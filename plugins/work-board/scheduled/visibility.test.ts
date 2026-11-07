@@ -1,3 +1,4 @@
+import { handlers as delegationHandlers } from "../delegate";
 import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
 import { describe, expect, it } from 'vitest';
 import { createStore, registerTasksApi } from '../api';
@@ -46,4 +47,19 @@ describe('scheduled task visibility across ordinary readers',()=>{
   expect(()=>store.tasks.deleteTask(s.templateTaskId)).toThrow('Scheduled settings');
   await host.harness.lifecycle.dispose();
  });
+ it('refuses ordinary delegation/attachment before any SDK side effect for templates and queued instances',async()=>{
+  const host=createFakePluginHost({pluginId:'work-board'}),store=createStore(host.bb),scheduled=createScheduledStore(host.bb,store);
+  try{
+   const p=store.tasks.createProject({name:'Guard',prefix:'GRD',color:'blue'});
+   const s=scheduled.create({projectId:p.id,title:'Rule',rule:{kind:'daily',time:'09:00',timezone:'UTC'},target:{kind:'thread',threadId:'thr_worker'}});
+   const r=scheduled.reserve(s.id,'queued',new Date().toISOString()),task=scheduled.createRunTask(r.run.id),handlers=delegationHandlers(host.bb,store);
+   for(const taskId of [s.templateTaskId,task.id]){
+    await expect(handlers.delegateToThread({taskId,threadId:'thr_worker'})).rejects.toThrow('Scheduled');
+    await expect(handlers.taskThreadsAttach({taskId,threadId:'thr_worker'})).rejects.toThrow('Scheduled');
+   }
+   expect(host.harness.sdk.calls).toHaveLength(0);
+   expect(store.tasks.getTask(s.templateTaskId)?.scheduledRole).toBe('template');
+  }finally{await host.harness.dispose();}
+ });
+
 });

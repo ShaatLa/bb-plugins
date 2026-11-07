@@ -145,7 +145,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    if(task.status==="backlog"||task.status==="todo")store.tasks.updateTask(r.taskId,{status:"in_progress"});
    db.prepare("UPDATE task_scheduled_sources SET started_at=? WHERE task_id=?").run(now.toISOString(),r.taskId);
    store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working"});
-   return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);
+   return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),resolvedAt:null,finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);
   });
  }
  function due(now=new Date(),limit=25) {
@@ -154,16 +154,16 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
  function advance(id:string,expectedDue:string,nextDue:string|null,now=new Date()) {
   return db.prepare("UPDATE task_schedules SET next_due_at=?,updated_at=? WHERE id=? AND enabled=1 AND next_due_at=?").run(nextDue,now.toISOString(),id,expectedDue).changes>0;
  }
- function pending(threadId?:string,limit=100,afterId="") {
-  return db.prepare<(string|number)[],{payload:string}>(`SELECT payload FROM task_schedule_runs WHERE state IN ('starting','queued','running','delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 ${threadId?"AND thread_id=?":""} ${afterId?"AND id>?":""} ORDER BY id LIMIT ?`).all(...(threadId?[threadId]:[]),...(afterId?[afterId]:[]),Math.min(500,limit)).map(x=>scheduleRunSchema.parse(JSON.parse(x.payload)));
+ function pending(threadId?:string,limit=100,afterId="",includeStarted=true) {
+  return db.prepare<(string|number)[],{payload:string}>(`SELECT payload FROM task_schedule_runs WHERE state IN ('starting','queued',${includeStarted?"'running',":""}'delivery_unknown','cancel_pending') AND COALESCE(json_extract(payload,'$.historical'),0)=0 AND (resolved_at IS NULL OR state<>'delivery_unknown') ${threadId?"AND thread_id=?":""} ${afterId?"AND id>?":""} ORDER BY id LIMIT ?`).all(...(threadId?[threadId]:[]),...(afterId?[afterId]:[]),Math.min(500,limit)).map(x=>scheduleRunSchema.parse(JSON.parse(x.payload)));
  }
  function resolve(runId:string,note:string,now=new Date()) {
-  const r=run(runId);if(["starting","queued","running","cancel_pending"].includes(r.state))throw new Error("Cancel or finish an active run before resolving it");
+  const r=run(runId);if(r.state==="delivery_unknown"&&r.queueId)throw new Error("Cancel the known queued request before resolving delivery");if(["starting","queued","running","cancel_pending"].includes(r.state))throw new Error("Cancel or finish an active run before resolving it");
   return updateRun(runId,{resolvedAt:now.toISOString(),reason:[r.reason,`Resolved: ${note}`].filter(Boolean).join("\n")},now);
  }
  function cleanup(now=new Date()) {
   // Only disposable run history expires; task sources and user-visible results never do.
-  return db.prepare(`DELETE FROM task_schedule_runs WHERE (state='completed' AND finished_at<=?) OR (state IN ('skipped','failed','canceled') AND resolved_at IS NOT NULL AND resolved_at<=?)`).run(new Date(now.valueOf()-30*86400000).toISOString(),new Date(now.valueOf()-7*86400000).toISOString()).changes;
+  return db.prepare(`DELETE FROM task_schedule_runs WHERE (state='completed' AND finished_at<=?) OR (state IN ('skipped','failed','canceled','delivery_unknown') AND resolved_at IS NOT NULL AND resolved_at<=?)`).run(new Date(now.valueOf()-30*86400000).toISOString(),new Date(now.valueOf()-7*86400000).toISOString()).changes;
  }
  function detail(id:string) {const s=get(id);return {schedule:s,task:apiTask(requireTask(s.templateTaskId)),dependencyIds:dependencies.list(s.templateTaskId).blockedBy.map(x=>x.id)};}
  function preview(rule:Recurrence,after=new Date(),count=3) {const dates:string[]=[];let date=after;for(let i=0;i<Math.min(10,count);i++){const next=nextOccurrence(rule,date);if(!next)break;dates.push(next.toISOString());date=next;}return dates;}

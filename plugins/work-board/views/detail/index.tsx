@@ -519,9 +519,9 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
-  const activityStatus = <>
+  const activityStatus = task.scheduledRole === "template" ? null : <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
+    {task.executionTarget !== "owner" && !task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}
   </>;
