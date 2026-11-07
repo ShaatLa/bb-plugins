@@ -1,4 +1,4 @@
-import { annotationHit, type FlakeRule } from "./flake-signatures";
+import { annotationHit, buildFailureLine, type FlakeRule } from "./flake-signatures";
 import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary } from "./ci-jobs-types";
 
 /** Conclusions of a job that did not succeed and was not skipped. */
@@ -16,6 +16,8 @@ const executed = (job: JobRecord) => !job.carried && job.conclusion !== "skipped
 
 export type ClassifyOptions = { aggregatorJobs?: string[]; policyJobs?: string[]; refusalSteps?: string[]; flakeRules?: FlakeRule[]; flakeHash?: string };
 export const SIGNATURE_REASON = "matches a known flaky signature";
+export const BUILD_REASON = "build or setup failed";
+export const PASS_REASON = "same job passed at the same sha";
 export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): ClassifiedJob[] {
   // Same code, same job: a pass in any run or workflow at this sha means the failure was not deterministic.
   // Reusable workflows prefix callee jobs ("Caller / Job"), so the leaf name pairs a push run with its merge-queue run.
@@ -43,13 +45,16 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
       if (refusal) return make("refused", "intentional refusal by a gate step", refusal);
       const line = job.logExcerpt?.split("\n").find((l) => TRANSIENT.some((re) => re.test(l)));
       if (line) return make("transient", "tool or network failure in log", stripTimestamp(line));
+      // Nothing ran: no signature label and no pass at the same sha makes this a flake.
+      const build = job.buildFailure?.match ?? buildFailureLine(job.annotations.filter((a) => a.level === "failure").map((a) => `${a.title}\n${a.message}`).join("\n"));
+      if (build) return make("real", BUILD_REASON, build);
       const policy = (opts.policyJobs ?? []).includes(job.jobName);
       // Annotations need no network; a stored scan counts only for the rules version it was made with.
       const stored = job.signature && opts.flakeHash && job.signature.rules === opts.flakeHash && job.signature.label ? { label: job.signature.label, match: job.signature.match ?? "" } : null;
       const known = policy ? null : annotationHit(opts.flakeRules ?? [], job.annotations) ?? stored;
       if (known) return { ...make("flake", SIGNATURE_REASON, `${known.label}: ${known.match}`), flakeLabel: known.label };
       const pass = policy ? null : passedElsewhere(job);
-      return pass ? make("flake", "same job passed at the same sha", `${pass.workflowName} run ${pass.runId}`) : make("real", "same job never passed at this sha");
+      return pass ? make("flake", PASS_REASON, `${pass.workflowName} run ${pass.runId}`) : make("real", "same job never passed at this sha");
     }
     return make("unknown", "no recognizable cause");
   };

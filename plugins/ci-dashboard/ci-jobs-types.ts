@@ -40,6 +40,8 @@ export type JobRecord = {
   carried: boolean;
   /** Absent until scanned; a stored result only counts while `rules` equals the current rules version. */
   signature?: JobSignature;
+  /** Written by the scan: the package, suite or log line showing a build or setup failure (a deterministic failure, never a flake); null when scanned and none found. */
+  buildFailure?: { match: string } | null;
 };
 
 export type FailureClass =

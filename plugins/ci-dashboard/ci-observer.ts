@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { queuePullRequest, type MassCancel } from "./ci-classify";
+import { BUILD_REASON, queuePullRequest, type MassCancel } from "./ci-classify";
 import { alertProblemId, CLASS_ORDER, codeBrokenVerdict } from "./ci-problems";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, FailureClass, JobRecord, PoolQueueState, Signal } from "./ci-jobs-types";
@@ -80,8 +80,8 @@ const TEST_CLASSES = new Set<FailureClass>(["real", "flake", "unknown", "transie
 const headLosses = (classified: ClassifiedJob[], sha: string) => classified.filter((c) => c.class === "runner_loss" && c.job.headSha === sha
   && !(c.job.event === "merge_group" && invalidated(classified, c.job.runId, c.job.attempt))).length;
 const lossCount = (classified: ClassifiedJob[], job: JobRecord, limit: number) => `${headLosses(classified, job.headSha)}${limit > 0 ? `/${limit}` : ""}`;
-const describeJob = (classified: ClassifiedJob[], limit: number) => ({ job, class: cls, flakeLabel }: ClassifiedJob) =>
-  `${job.jobName}: ${cls}${flakeLabel ? ` ${flakeLabel}` : ""}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit)} on this head)` : ""}`;
+const describeJob = (classified: ClassifiedJob[], limit: number) => ({ job, class: cls, reason, flakeLabel }: ClassifiedJob) =>
+  `${job.jobName}: ${cls}${reason === BUILD_REASON ? ` (${reason})` : ""}${flakeLabel ? ` ${flakeLabel}` : ""}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit)} on this head)` : ""}`;
 // The queue invalidated or rebuilt the group: nothing acts on its losses or failures.
 const invalidated = (classified: ClassifiedJob[], runId: number, attempt: number) => classified.some((c) => c.job.runId === runId && c.job.attempt === attempt && NOT_OWN.has(c.class));
 

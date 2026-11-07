@@ -46,11 +46,13 @@ export const parseArtifactGlobs = (text: string): RegExp[] =>
 
 // Pure JS hash: this module is also bundled into the browser app (via ci-classify), which has no node:crypto.
 const fnv1a = (text: string) => { let hash = 0x811c9dc5; for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193); return (hash >>> 0).toString(16).padStart(8, "0"); };
+/** Bump when scan semantics change: stored jobs are then re-scanned once under the new rules. */
+const SCAN_VERSION = "reports-over-logs-v1";
 /** Parsed settings plus a version of the normalized rules and globs; blank rules disable the feature (hash ""). */
 export function flakeSettings(signatures: string, artifacts: string) {
   const parsed = parseFlakeRules(signatures).rules, globs = parseArtifactGlobs(artifacts);
   const rules = parsed.length > MAX_RULES ? [] : parsed;
-  const hash = rules.length ? fnv1a(JSON.stringify([rules.map((rule) => [rule.pattern.source, rule.label]), globs.map((glob) => glob.source)])) : "";
+  const hash = rules.length ? fnv1a(JSON.stringify([SCAN_VERSION, rules.map((rule) => [rule.pattern.source, rule.label]), globs.map((glob) => glob.source)])) : "";
   return { rules, artifacts: globs, hash };
 }
 
@@ -73,3 +75,8 @@ export function firstMatch(rules: FlakeRule[], text: string): SignatureHit | nul
 }
 export const annotationHit = (rules: FlakeRule[], annotations: JobAnnotation[]) =>
   rules.length ? firstMatch(rules, annotations.filter((a) => a.level === "failure").map((a) => `${a.title}\n${a.message}`).join("\n")) : null;
+
+/** A deterministic build or setup failure in a log or annotation: no rerun can fix it. */
+const BUILD_FAILURE = [{ pattern: /\[(?:build|setup) failed\]|C compiler "[^"]*" not found|cannot find package|could not import/i, label: "build" }];
+/** First line of a text that shows a build or setup failure, trimmed. */
+export const buildFailureLine = (text: string): string | null => firstMatch(BUILD_FAILURE, text)?.match ?? null;

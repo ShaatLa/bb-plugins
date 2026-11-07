@@ -5,11 +5,12 @@ import { createBackfill, createJobStore, createLogFetcher, fetchAttemptJobs, job
 import type { JobRecord } from "./ci-jobs-types";
 import { buildSignals } from "./ci-signals";
 import { flakeSettings, flakeSignaturesSchema, parseFlakeRules } from "./flake-signatures";
-import { failedTestNames, scanZip } from "./flake-artifacts";
+import { failedTestNames, scanZip as scanEvidence } from "./flake-artifacts";
 import { at, failed, failure, fakeGithub, job, runContext, syntheticRun, zip } from "./test-support";
 
 const rules = (text: string) => parseFlakeRules(text).rules;
 const SOCKET = "socket hang up => FLAKE-1";
+const scanZip = (...args: Parameters<typeof scanEvidence>) => scanEvidence(...args).hit;
 
 describe("parseFlakeRules", () => {
   it("reads rules, ignores blanks and comments, matches case-insensitively", () => {
@@ -95,7 +96,13 @@ describe("log scan", () => {
       expect(scan.hit).toEqual({ label: "FLAKE-1", match: "2026-11-05T10:00:00Z Error: socket hang up" });
       expect(excerpt.split("\n")).toHaveLength(30);
       expect(excerpt.endsWith("##[error] broken")).toBe(true);
-      expect(counters).toEqual({ reads: 3, cancelled: true });
+      expect(counters.reads).toBe(5); // a rule hit alone does not stop the read: a later build failure would override it
+      // A build failure line decides the job: the read stops there.
+      Object.assign(counters, { reads: 0, cancelled: false }); stream([lead, "FAIL\texample.com/app/db [build failed]\n", "never read\n"], counters);
+      const built: LogScan = { rules: rules(SOCKET), hit: null };
+      await fetcher()("/logs", built);
+      expect(built.build).toBe("FAIL\texample.com/app/db [build failed]");
+      expect(counters).toEqual({ reads: 2, cancelled: true });
       // The same log without rules keeps today's early stop.
       Object.assign(counters, { reads: 0, cancelled: false }); stream([lead, "cleanup\n"], counters);
       expect(await fetcher()("/logs")).toBe(excerpt);
@@ -189,6 +196,35 @@ describe("test reports", () => {
   });
 });
 
+const goEvents = (...events: object[]) => events.map((e) => JSON.stringify(e)).join("\n");
+// One partition ran and passed; the other did not compile.
+const GO_BUILD_FAILED = goEvents(
+  { Action: "output", Package: "app/ok", Test: "TestFine", Output: "--- PASS: TestFine\n" }, { Action: "pass", Package: "app/ok", Test: "TestFine" }, { Action: "pass", Package: "app/ok" },
+  { Action: "output", Package: "app/db", Output: '# app/db\ncgo: C compiler "gcc" not found\n' }, { Action: "output", Package: "app/db", Output: "FAIL\tapp/db [build failed]\n" }, { Action: "fail", Package: "app/db" });
+const goFailedTest = (output: string) => goEvents({ Action: "output", Package: "app/pay", Test: "TestPay", Output: `${output}\n` }, { Action: "fail", Package: "app/pay", Test: "TestPay" }, { Action: "fail", Package: "app/pay" });
+
+describe("build and setup failures in reports", () => {
+  const evidence = (data: string, text = SOCKET, name = "report.json") => scanEvidence(zip([{ name, data }]), rules(text));
+  it("Go: a package-level fail with [build failed] is a BUILD FAILED entry; a package-level fail of a failed test is not", () => {
+    expect(evidence(GO_BUILD_FAILED)).toEqual({ report: true, hit: null, build: "app/db" });
+    expect(evidence(GO_BUILD_FAILED, 'C compiler => FLAKE-8')).toMatchObject({ hit: { label: "FLAKE-8", match: 'cgo: C compiler "gcc" not found' }, build: "app/db" });
+    expect(evidence(GO_BUILD_FAILED.replace("[build failed]", "[setup failed]")).build).toBe("app/db");
+    expect(evidence(goFailedTest("Error: socket hang up"))).toMatchObject({ report: true, hit: { label: "FLAKE-1" }, build: null });
+    expect(failedTestNames(GO_BUILD_FAILED)).toEqual(["db (build failed)"]);
+  });
+  it("Jest: a suite that failed to run without assertions is a setup failure; failed assertions are not", () => {
+    const suite = (extra: object) => JSON.stringify({ testResults: [{ name: "/src/cart.test.ts", status: "failed", assertionResults: [], ...extra }] });
+    expect(evidence(suite({ message: "Cannot find module './cart'" }), "nothing => X").build).toBe("/src/cart.test.ts");
+    expect(evidence(suite({ testExecError: { message: "boom" } }), "nothing => X").build).toBe("/src/cart.test.ts");
+    expect(evidence(suite({ message: "" }), "nothing => X")).toMatchObject({ report: true, build: null });
+    const failedAssertion = JSON.stringify({ testResults: [{ name: "/src/cart.test.ts", status: "failed", assertionResults: [{ status: "failed", fullName: "cart pays", failureMessages: ["x"] }] }] });
+    expect(evidence(failedAssertion, "nothing => X").build).toBeNull();
+  });
+  it("a zip without a recognized report says so", () => {
+    expect(scanEvidence(zip([{ name: "a.txt", data: "socket hang up" }]), rules(SOCKET))).toMatchObject({ report: false, hit: { label: "FLAKE-1" } });
+  });
+});
+
 const ARTIFACT_ZIP = zip([{ name: "report.txt", data: "step 1 ok\nError: socket hang up\n", deflate: true }]);
 function artifactSetup(artifacts: { id: number; name: string; size_in_bytes?: number; expired?: boolean; created_at?: string }[] = [{ id: 7, name: "test-results-unit", created_at: at(5) }]) {
   const data = syntheticRun(), github = fakeGithub(data), settings = flakeSettings(SOCKET, "test-results-*");
@@ -220,7 +256,7 @@ describe("artifact attribution", () => {
     const t = artifactSetup();
     const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(2), t.logs, t.scan());
     for (const name of ["Integration tests", "CI summary"]) expect(byName(jobs, name).signature).toEqual({ rules: t.config().hash, label: null, match: null, source: null });
-    expect(t.listings).toEqual([]); expect(t.downloads).toEqual([]);
+    expect(t.listings).toHaveLength(1); // the artifacts are still listed: a recognized report would override the logs
     // An aggregator is a consequence, not a candidate: the lone real failure owns the artifact again.
     const alone = await fetchAttemptJobs(t.request, "o/r", t.context(2), t.logs, t.scan({ classify: { aggregatorJobs: ["CI summary"] } }));
     expect(byName(alone, "Integration tests").signature?.source).toBe("artifact");
@@ -236,12 +272,11 @@ describe("artifact attribution", () => {
     await fetchAttemptJobs(t.request, "o/r", t.context(1), t.logs, { ...scan, config: t.config({ hash: "next" }) });
     expect(t.downloads).toHaveLength(2);
   });
-  it("a log hit decides without touching artifacts, and a job whose log cannot be read stays unmarked", async () => {
+  it("a log hit decides when the artifacts hold no recognized report, and a job whose log cannot be read stays unmarked", async () => {
     const t = artifactSetup();
     const hit = vi.fn(async (_path: string, scan?: LogScan) => { scan!.hit = { label: "FLAKE-2", match: "from log" }; return "before\n##[error] broken"; });
     const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(1), hit, t.scan());
     expect(byName(jobs, "Integration tests").signature).toMatchObject({ label: "FLAKE-2", source: "log" });
-    expect(t.listings).toEqual([]);
     const unreadable = await fetchAttemptJobs(t.request, "o/r", t.context(1), async () => { throw new Error("Log fetch 404"); }, t.scan());
     expect(byName(unreadable, "Integration tests").signature).toBeUndefined();
   });
@@ -250,6 +285,61 @@ describe("artifact attribution", () => {
     const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(1), t.logs);
     expect(jobs.every((j) => j.signature === undefined)).toBe(true);
     expect(t.logs.mock.calls.every(([, scan]) => scan === undefined)).toBe(true);
+  });
+});
+
+describe("test reports win over log lines", () => {
+  const LOCKED = "lock_busy => FLAKE-7";
+  const dump = (scan?: LogScan) => { scan!.hit = { label: "FLAKE-7", match: "ERROR: orders_lock_busy" }; return "before\n##[error] broken"; };
+  const run = async (report: string | null, logHit = true, rule = LOCKED) => {
+    const t = artifactSetup([{ id: 7, name: "test-results-unit", created_at: at(5) }]);
+    if (report !== null) t.fetchArtifact.mockImplementation(async (path: string) => { t.downloads.push(path); return zip([{ name: "report.json", data: report }]); });
+    const settings = flakeSettings(rule, "test-results-*");
+    const config = t.config({ ...settings });
+    const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(1), vi.fn(async (_path: string, scan?: LogScan) => logHit ? dump(scan) : "before\n##[error] broken"), { config, fetchArtifact: t.fetchArtifact, cache: new Map() });
+    const target = byName(jobs, "Integration tests");
+    return { jobs, target, config, verdict: (all: JobRecord[] = jobs) => classifyJobs(all, { flakeRules: config.rules, flakeHash: config.hash }).find((c) => c.job === target)! };
+  };
+
+  it("a build-failed package next to a passing partition is real, whatever the log matches", async () => {
+    const { target, verdict } = await run(GO_BUILD_FAILED);
+    expect(target.signature).toMatchObject({ label: null, source: null });
+    expect(target.buildFailure).toEqual({ match: "app/db" });
+    expect(verdict()).toMatchObject({ class: "real", reason: "build or setup failed", evidence: "app/db" });
+    // Not even a pass at the same sha makes it a flake.
+    const pass = job({ jobId: 99, runId: 2, jobName: "Integration tests", headSha: target.headSha, conclusion: "success" });
+    expect(verdict([...[target], pass])).toMatchObject({ class: "real", reason: "build or setup failed" });
+  });
+  it("a failed test whose output matches a rule is a flake with the label", async () => {
+    const { target, verdict } = await run(goFailedTest("ERROR: orders_lock_busy"), false);
+    expect(target.signature).toMatchObject({ label: "FLAKE-7", source: "artifact" });
+    expect(target.buildFailure).toBeNull();
+    expect(verdict()).toMatchObject({ class: "flake", flakeLabel: "FLAKE-7" });
+  });
+  it("a failed test that does not match gets no label even when the log matches; only a same-sha pass makes it a flake", async () => {
+    const { target, verdict } = await run(goFailedTest("assertion failed: want 1, got 2"));
+    expect(target.signature).toMatchObject({ label: null, match: null, source: null });
+    expect(verdict()).toMatchObject({ class: "real", reason: "same job never passed at this sha" });
+    const pass = job({ jobId: 99, runId: 2, jobName: "Integration tests", headSha: target.headSha, conclusion: "success" });
+    expect(verdict([target, pass])).toMatchObject({ class: "flake", reason: "same job passed at the same sha" });
+  });
+  it("without a recognized report the log decides", async () => {
+    const { target } = await run(null);
+    expect(target.signature).toMatchObject({ label: "FLAKE-7", source: "log" });
+  });
+  it("a build failure line in the log (no report) makes the job real", async () => {
+    const t = artifactSetup([]);
+    const log = vi.fn(async (_path: string, scan?: LogScan) => { dump(scan); scan!.build = 'cgo: C compiler "gcc" not found'; return "x\n##[error] broken"; });
+    const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(1), log, t.scan());
+    const c = classifyJobs(jobs, { flakeRules: t.config().rules, flakeHash: t.config().hash }).find((x) => x.job.jobName === "Integration tests")!;
+    expect(c).toMatchObject({ class: "real", reason: "build or setup failed", evidence: 'cgo: C compiler "gcc" not found' });
+  });
+  it("a failure annotation about a missing compiler is real even if the same job passed at the same sha", () => {
+    const failing = failed({ annotations: [failure('cgo: C compiler "gcc" not found')] });
+    const pass = job({ jobId: 2, runId: 2, jobName: failing.jobName, headSha: failing.headSha });
+    const h = flakeSettings(SOCKET, "");
+    const label = { rules: h.hash, label: "FLAKE-9", match: "boom", source: "log" as const };
+    for (const j of [failing, { ...failing, signature: label }]) expect(classifyJobs([j, pass], { flakeRules: h.rules, flakeHash: h.hash })[0]).toMatchObject({ class: "real", reason: "build or setup failed", evidence: 'cgo: C compiler "gcc" not found' });
   });
 });
 
@@ -285,6 +375,29 @@ describe("re-scan of stored jobs", () => {
     await backfill.step(signal(), config("other pattern => FLAKE-3"));
     expect(text).toHaveBeenCalledTimes(4);
     expect(stored(store).filter((j) => j.conclusion === "failure").every((j) => j.signature?.rules === config("other pattern => FLAKE-3").hash)).toBe(true);
+  });
+  it("a stored job scanned under other scan semantics (another rules hash) is scanned once more, and its stale label is dropped", async () => {
+    const stale = { rules: "scanned-before-reports-won", label: "FLAKE-7", match: "ERROR: orders_lock_busy", source: "log" as const };
+    const store = storeWith(real(1, { signature: stale }));
+    const text = logging(() => false);
+    const backfill = createBackfill({ store, request, fetchText: text });
+    const opts = { flakeRules: config(SOCKET).rules, flakeHash: config(SOCKET).hash };
+    expect(classifyJobs(stored(store), opts)[0]!.class).toBe("real"); // the stale label no longer counts
+    await backfill.step(signal(), config(SOCKET)); await backfill.step(signal(), config(SOCKET));
+    expect(text).toHaveBeenCalledTimes(1);
+    expect(stored(store)[0]!.signature).toEqual({ rules: config(SOCKET).hash, label: null, match: null, source: null });
+  });
+  it("a recognized report decides without fetching the log, and a build failure is stored on the job", async () => {
+    const store = storeWith(real(1, { createdAt: at(1), startedAt: at(2), completedAt: at(3) }));
+    const listing = vi.fn(async (_path: string) => ({ body: { artifacts: [{ id: 9, name: "test-results-a", size_in_bytes: 10, expired: false, created_at: at(2) }] }, hasNext: false }));
+    const text = logging(() => true);
+    const backfill = createBackfill({ store, request: listing, fetchText: text, fetchArtifact: async () => zip([{ name: "r.json", data: GO_BUILD_FAILED }]), maxPerStep: 10 });
+    await backfill.step(signal(), { ...config("lock_busy => FLAKE-7"), ...flakeSettings("lock_busy => FLAKE-7", "test-results-*") });
+    expect(text).not.toHaveBeenCalled();
+    const [job] = stored(store);
+    expect(job!.buildFailure).toEqual({ match: "app/db" });
+    expect(job!.signature).toMatchObject({ label: null, source: null });
+    expect(classifyJobs([job!], {})[0]).toMatchObject({ class: "real", reason: "build or setup failed" });
   });
   it("spends the backfill budget, newest job first, and continues on the next step", async () => {
     const store = storeWith(real(1), real(2), real(3));

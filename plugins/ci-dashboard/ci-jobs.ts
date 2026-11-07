@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { GitHubRequest } from "./metrics";
-import type { JobRecord, JobSignature } from "./ci-jobs-types";
-import { BAD, classifyJobs, type ClassifyOptions } from "./ci-classify";
-import { annotationHit, matchLine, MAX_ARTIFACT_BYTES, type FlakeRule, type SignatureHit } from "./flake-signatures";
-import { failedTestNames, scanZip, zipTextEntries } from "./flake-artifacts";
+import type { ClassifiedJob, JobRecord, JobSignature } from "./ci-jobs-types";
+import { BAD, classifyJobs, PASS_REASON, type ClassifyOptions } from "./ci-classify";
+import { annotationHit, buildFailureLine, matchLine, MAX_ARTIFACT_BYTES, type FlakeRule, type SignatureHit } from "./flake-signatures";
+import { failedTestNames, scanZip, zipTextEntries, type ZipEvidence } from "./flake-artifacts";
 
 const level = z.enum(["failure", "warning", "notice"]);
 const annotation = z.object({ level, title: z.string(), message: z.string() });
@@ -35,7 +35,7 @@ function slim(j: JobRecord): string {
   const out: Record<string, unknown> = rest;
   if (labels.length !== (pool === null ? 0 : 1) || labels[0] !== (pool ?? undefined)) out.labels = labels;
   if (out.status === "completed") delete out.status;
-  for (const key of ["workflowName", "headBranch", "runnerName", "runnerGroup", "startedAt", "completedAt", "logExcerpt"]) if (!out[key]) delete out[key];
+  for (const key of ["workflowName", "headBranch", "runnerName", "runnerGroup", "startedAt", "completedAt", "logExcerpt", "buildFailure"]) if (!out[key]) delete out[key];
   for (const key of ["pullRequests", "failedSteps", "annotations"]) if (!(out[key] as unknown[]).length) delete out[key];
   if (!out.carried) delete out.carried;
   return JSON.stringify(out);
@@ -91,13 +91,13 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
   };
 }
 type Run = Omit<Context, "repository" | "runId"> & { id: number };
-/** Collects the first rule hit while a log streams past; `hit` is the out-parameter. */
-export type LogScan = { rules: FlakeRule[]; hit: SignatureHit | null };
+/** Collects while a log streams past: the first rule hit and the first build or setup failure line. */
+export type LogScan = { rules: FlakeRule[]; hit: SignatureHit | null; build?: string | null };
 type FetchText = (path: string, scan?: LogScan) => Promise<string>;
 type FetchBinary = (path: string, maxBytes: number) => Promise<Buffer>;
 /** Known-flake scan settings for one repository (the backfill serves one repository per instance). */
 export type FlakeConfig = { repository: string; rules: FlakeRule[]; hash: string; artifacts: RegExp[]; classify: Omit<ClassifyOptions, "flakeRules" | "flakeHash">; /** Start of the job-history window re-scanned after a rules change. */ since: string };
-type FlakeScan = { config: FlakeConfig; fetchArtifact?: FetchBinary; /** Artifact scan result per run attempt and rules version: an archive is downloaded once. */ cache: Map<string, SignatureHit | null> };
+type FlakeScan = { config: FlakeConfig; fetchArtifact?: FetchBinary; /** Artifact scan result per run attempt and rules version: an archive is downloaded once. */ cache: Map<string, ZipEvidence> };
 const sign = (hash: string, hit: SignatureHit | null, source: JobSignature["source"]): JobSignature => ({ rules: hash, label: hit?.label ?? null, match: hit?.match ?? null, source: hit ? source : null });
 const rateLimited = (error: unknown) => /403|429/.test(String(error));
 const artifactListing = z.object({ artifacts: z.array(z.object({ id: z.number(), name: z.string(), size_in_bytes: z.number(), expired: z.boolean().optional(), created_at: z.string().nullable().optional() })) });
@@ -115,22 +115,38 @@ async function attemptArtifacts(request: GitHubRequest, repository: string, run:
     return !(created < from || created > to);
   });
 }
-/** Scans the run's artifacts for a rule hit. Errors propagate and leave the cache untouched. */
-async function artifactHit(request: GitHubRequest, repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], { config, fetchArtifact, cache }: FlakeScan): Promise<SignatureHit | null> {
+/**
+ * Scans the run's artifacts. `report` is true when any is a recognized test report: then `hit` and `build` come from the failed tests of the reports only.
+ * Errors propagate and leave the cache untouched; null without globs or a downloader.
+ */
+async function artifactEvidence(request: GitHubRequest, repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], { config, fetchArtifact, cache }: FlakeScan): Promise<ZipEvidence | null> {
   if (!config.artifacts.length || !fetchArtifact) return null;
   const key = `${repository}#${run.id}#${run.attempt}#${config.hash}`;
   if (cache.has(key)) return cache.get(key)!;
-  let hit: SignatureHit | null = null;
+  let report = false, reportHit: SignatureHit | null = null, textHit: SignatureHit | null = null, build: string | null = null;
   for (const a of await attemptArtifacts(request, repository, run, attemptJobs, config.artifacts)) {
-    hit = scanZip(await fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES), config.rules);
-    if (hit) break;
+    const found = scanZip(await fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES), config.rules);
+    if (found.report) { report = true; reportHit ??= found.hit; build ??= found.build; } else textHit ??= found.hit;
   }
+  const evidence: ZipEvidence = { report, hit: report ? reportHit : textHit, build };
   if (cache.size >= 500) cache.clear();
-  cache.set(key, hit);
-  return hit;
+  cache.set(key, evidence);
+  return evidence;
+}
+/** Failed jobs the scan decides: real, or a flake only by a same-sha pass. Signatures and annotations already decided the rest. */
+const candidates = (classified: ClassifiedJob[]) => classified.filter(c => c.class === "real" || (c.class === "flake" && c.reason === PASS_REASON)).map(c => c.job);
+/**
+ * What one failed job's scan found. Recognized test reports of the attempt win over log lines: with one, only its failed tests count
+ * (and only for the lone candidate, since artifacts are run-level); otherwise the log, then any plain artifact text. Null: no evidence (unreadable log), retry later.
+ */
+function scanResult(hash: string, lone: boolean, artifacts: ZipEvidence | null, log: LogScan | null): Pick<JobRecord, "signature" | "buildFailure"> | null {
+  const own = lone ? artifacts : null;
+  if (artifacts?.report) return { signature: sign(hash, own?.hit ?? null, "artifact"), buildFailure: own?.build ? { match: own.build } : null };
+  if (!log) return null;
+  return { signature: sign(hash, log.hit ?? own?.hit ?? null, log.hit ? "log" : "artifact"), buildFailure: log.build ? { match: log.build } : null };
 }
 export async function fetchAttemptJobs(request: GitHubRequest, repository: string, run: Run, fetchText?: FetchText, flake?: FlakeScan): Promise<JobRecord[]> {
-  const jobs: JobRecord[] = [], logged = new Set<JobRecord>();
+  const jobs: JobRecord[] = [], logs = new Map<JobRecord, LogScan>();
   for (let page = 1;; page++) {
     const response = await request(`/repos/${repository}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`);
     const rows = z.object({ jobs: z.array(z.unknown()) }).parse(response.body).jobs;
@@ -143,11 +159,11 @@ export async function fetchAttemptJobs(request: GitHubRequest, repository: strin
       if (flake && j.conclusion === "failure" && j.failedSteps.length) { const hit = annotationHit(flake.config.rules, j.annotations); if (hit) j.signature = sign(flake.config.hash, hit, "annotation"); }
       if (fetchText && j.conclusion === "failure" && j.failedSteps.length && !j.annotations.some(a => a.level === "failure" && /lost communication|shutdown signal|maximum execution time/i.test(`${a.title} ${a.message}`))) {
         // The rest of the log is only streamed for rules when annotations did not already decide.
-        const scan: LogScan | undefined = flake && !j.signature ? { rules: flake.config.rules, hit: null } : undefined;
+        const scan: LogScan | undefined = flake && !j.signature ? { rules: flake.config.rules, hit: null, build: null } : undefined;
         try {
           const lines = (await fetchText(`/repos/${repository}/actions/jobs/${j.jobId}/logs`, scan)).split(/\r?\n/); const index = lines.findIndex(line => line.includes("##[error]")); if (index >= 0) j.logExcerpt = lines.slice(Math.max(0, index - 29), index + 1).join("\n");
-          logged.add(j);
-          if (scan?.hit) j.signature = sign(flake!.config.hash, scan.hit, "log");
+          // Held back: a recognized test report of the attempt overrides what the log says.
+          if (scan) logs.set(j, scan);
         } catch { /* Logs are optional. */ }
       }
       jobs.push(j);
@@ -157,12 +173,10 @@ export async function fetchAttemptJobs(request: GitHubRequest, repository: strin
   }
   if (flake) {
     const { config } = flake;
-    const real = classifyJobs(jobs, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }).filter(c => c.class === "real").map(c => c.job);
-    // Only a lone real failure owns the run's artifacts; a job whose log could not be read stays unmarked so the re-scan retries it.
-    for (const j of real) if (logged.has(j)) {
-      try { j.signature = sign(config.hash, real.length === 1 ? await artifactHit(request, repository, run, jobs, flake) : null, "artifact"); }
-      catch (error) { if (rateLimited(error)) throw error; }
-    }
+    const decide = candidates(classifyJobs(jobs, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }));
+    let artifacts: ZipEvidence | null = null;
+    if (decide.length) try { artifacts = await artifactEvidence(request, repository, run, jobs, flake); } catch (error) { if (rateLimited(error)) throw error; }
+    for (const j of decide) { const found = scanResult(config.hash, decide.length === 1, artifacts, logs.get(j) ?? null); if (found) Object.assign(j, found); }
   }
   return jobs;
 }
@@ -172,17 +186,17 @@ export function createLogFetcher(token: string, signal: AbortSignal): FetchText 
     if (!response.ok) throw new Error(`Log fetch ${response.status}`);
     if (!response.body) return "";
     const reader = response.body.getReader(), decoder = new TextDecoder();
-    // The excerpt stops at the first error or after 2 MB; rules keep scanning up to 8 MB.
+    // The excerpt stops at the first error or after 2 MB; rules keep scanning up to 8 MB, or until a build failure decides the job.
     const limit = scan ? 8_000_000 : 2_000_000;
     let size = 0, before = 0, pending = "", lines: string[] = [], found = false;
     // Without rules the 2 MB limit is the loop limit itself; with rules the excerpt freezes once a chunk starts past 2 MB.
     const settled = () => found || (!!scan && before >= 2_000_000);
     const consume = (line: string) => {
       if (!settled()) { lines.push(line.replace(/\r$/, "")); if (lines.length > 30) lines.shift(); if (line.includes("##[error]")) found = true; }
-      if (scan && !scan.hit) scan.hit = matchLine(scan.rules, line.replace(/\r$/, ""));
+      if (scan) { if (!scan.hit) scan.hit = matchLine(scan.rules, line.replace(/\r$/, "")); scan.build ??= buildFailureLine(line); }
     };
     try {
-      while (size < limit && !(settled() && (!scan || scan.hit))) {
+      while (size < limit && !(settled() && (!scan || scan.build))) {
         const { done, value } = await reader.read();
         if (done) { pending += decoder.decode(); break; }
         before = size;
@@ -192,10 +206,10 @@ export function createLogFetcher(token: string, signal: AbortSignal): FetchText 
         while ((end = pending.indexOf("\n")) >= 0) {
           const line = pending.slice(0, end); pending = pending.slice(end + 1);
           consume(line);
-          if (settled() && (!scan || scan.hit)) break;
+          if (settled() && (!scan || scan.build)) break;
         }
       }
-      if (pending && !(settled() && (!scan || scan.hit))) consume(pending);
+      if (pending && !(settled() && (!scan || scan.build))) consume(pending);
     } finally { await reader.cancel(); }
     return lines.join("\n");
   };
@@ -234,7 +248,7 @@ type Summary = { id: number; run_attempt: number; status: string; conclusion: st
 export function createBackfill({ store, request, fetchText, fetchArtifact, budgetPerHour = 1500, now = Date.now, maxPerStep = Math.ceil(budgetPerHour / 60) }: { store: ReturnType<typeof createJobStore>; request: GitHubRequest; fetchText?: FetchText; fetchArtifact?: FetchBinary; budgetPerHour?: number; now?: () => number; maxPerStep?: number }) {
   const queue: { repository: string; run: Run; createdAt: string; /** Just finished: fetched before the history backlog. */ urgent?: boolean }[] = [], queued = new Set<string>(), failed = new Map<string, string>(), retries = new Map<string, { count: number; at: number }>(); let tokens = budgetPerHour, last = now(), pausedUntil: number | null = null;
   // Re-scan state: the rules version each repository is fully scanned for, jobs that failed to scan (not retried until restart) and the artifact results.
-  const rescanned = new Map<string, string>(), unscannable = new Set<string>(), artifactCache = new Map<string, SignatureHit | null>();
+  const rescanned = new Map<string, string>(), unscannable = new Set<string>(), artifactCache = new Map<string, ZipEvidence>();
   const keyOf = (repository: string, id: number, attempt: number) => `${repository}#${id}#${attempt}`;
   const testCache = new Map<string, string[]>();
   const refill = () => {
@@ -337,18 +351,19 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
       // Stored jobs that classify as real and were not scanned with the current rules, newest first, on the budget the queue left over.
       if (flake && chargedText && !exhausted && !pausedUntil && !signal.aborted && tokens >= 1 && spent < maxPerStep && rescanned.get(flake.config.repository) !== flake.config.hash) {
         const { config } = flake, stored = store.listJobs({ repository: config.repository, since: config.since, until: "9999" });
-        const real = classifyJobs(stored, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }).filter(c => c.class === "real").map(c => c.job);
+        const real = candidates(classifyJobs(stored, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }));
         const attemptKey = (j: JobRecord) => `${j.runId}#${j.attempt}`, perAttempt = new Map<string, number>();
         for (const j of real) perAttempt.set(attemptKey(j), (perAttempt.get(attemptKey(j)) ?? 0) + 1);
         const when = (j: JobRecord) => j.completedAt ?? j.createdAt;
         const pending = real.filter(j => j.signature?.rules !== config.hash && !unscannable.has(`${j.jobId}#${config.hash}`)).sort((a, b) => when(b).localeCompare(when(a)));
         let finished = true;
         for (const j of pending) {
-          const scan: LogScan = { rules: config.rules, hit: null };
           try {
-            await chargedText(`/repos/${j.repository}/actions/jobs/${j.jobId}/logs`, scan);
-            const hit = scan.hit ?? (perAttempt.get(attemptKey(j)) === 1 ? await artifactHit(chargedRequest, j.repository, { id: j.runId, attempt: j.attempt }, stored.filter(x => x.runId === j.runId && x.attempt === j.attempt), flake) : null);
-            j.signature = sign(config.hash, hit, scan.hit ? "log" : "artifact");
+            // Reports first (cached per attempt): a recognized one makes the log irrelevant, so it is not even fetched.
+            const artifacts = await artifactEvidence(chargedRequest, j.repository, { id: j.runId, attempt: j.attempt }, stored.filter(x => x.runId === j.runId && x.attempt === j.attempt), flake);
+            let log: LogScan | null = null;
+            if (!artifacts?.report) { log = { rules: config.rules, hit: null, build: null }; await chargedText(`/repos/${j.repository}/actions/jobs/${j.jobId}/logs`, log); }
+            Object.assign(j, scanResult(config.hash, perAttempt.get(attemptKey(j)) === 1, artifacts, log));
             store.saveJob(j); signaturesUpdated++;
           } catch (error) {
             finished = false;
