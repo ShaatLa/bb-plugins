@@ -149,12 +149,15 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     }, async run(i, c) {
       const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
-      let result = await call("acquire", { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) }, c);
+      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) };
+      let result = await call("acquire", params, c);
       if (!result.ok) return renderResult("acquire", result, !!o.json);
       const initial = result.data as UseOutcome, useId = initial.useId;
       const status = await invoke("status", {});
       if (!status.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", status, !!o.json); }
-      const ttl = Object.values((status.data as StatusView).hostSettings)[0].heartbeatIntervalMs;
+      const hostSettings = (status.data as StatusView).hostSettings[params.hostId as string];
+      if (!hostSettings) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "Host settings not found" } }, !!o.json); }
+      const ttl = hostSettings.heartbeatIntervalMs;
       const renew = Math.max(30, Math.floor(ttl / 3000));
       const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}` });
       if (c.signal?.aborted) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json); }

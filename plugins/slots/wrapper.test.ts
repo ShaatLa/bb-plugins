@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, writeFile, chmod, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, chmod, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -90,4 +90,19 @@ it.each([true, false])("cleans up around heartbeat %s", async hung => {
   const r = await run(`case $2 in acquire) echo "use use-1 lease lease-2 renew 1" ;; heartbeat) echo "helper $$" >> "$LOG"; ${action} ;; esac`, 'while ! grep -q helper "$LOG"; do sleep 0.01; done');
   expect(r.result.status).toBe(0); expect(r.log.match(/slots done/g)).toHaveLength(1);
   for (const match of r.log.matchAll(/helper (\d+)/g)) expect(() => process.kill(Number(match[1]), 0)).toThrow();
+});
+
+
+it("creates and removes its run directory inside TMPDIR", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "slots-tmp-")); dirs.push(dir);
+  const bb = join(dir, "bb"), marker = join(dir, "marker");
+  await writeFile(bb, '#!/bin/sh\ncase $2 in acquire) echo "use use-1 lease lease-2 renew 30" ;; esac\n');
+  await chmod(bb, 0o755);
+  const result = spawnSync("sh", ["./slots-run.sh", "--est", "1m", "--job", "test", "--", "sh", "-c", 'find "$TMPDIR" -maxdepth 1 -type d -name "slots-run.*" > "$MARKER"'], {
+    cwd: import.meta.dirname, encoding: "utf8", env: { ...process.env, TMPDIR: dir, PATH: `${dir}:${process.env.PATH}`, MARKER: marker, SLOTS_RUN_TEST_STEP: "0.01" }, timeout: 5000,
+  });
+  expect(result.status).toBe(0);
+  const runDir = (await readFile(marker, "utf8")).trim();
+  expect(runDir.startsWith(`${dir}/slots-run.`)).toBe(true);
+  expect((await readdir(dir)).filter(name => name.startsWith("slots-run."))).toEqual([]);
 });

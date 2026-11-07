@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run a foreground command under a renewable Machine Slots use.
 interval=${SLOTS_RUN_TEST_STEP:-1}
-dir=$(mktemp -d) || exit 70
+dir=$(mktemp -d "${TMPDIR:-/tmp}/slots-run.XXXXXX") || exit 70
 use= loop= cleaned=
 cleanup() {
   [ -n "$cleaned" ] && return
