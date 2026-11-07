@@ -73,6 +73,8 @@ export interface StatusView extends StatusSnapshot {
   hostSettings: Record<string, HostSettings>;
   /** The BB server host id; the only host whose gate is sampled in v1. */
   localHostId: string;
+  /** Display name from the SDK; null when unavailable. */
+  localHostName?: string | null;
 }
 export interface SlotsError {
   code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use";
