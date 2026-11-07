@@ -126,5 +126,6 @@ export function Pools({ threadId }: { threadId?: string }) {
   const [feedback, setFeedback] = useState('');
   const result = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const pools = result.data?.pools.filter(pool => !threadId || pool.threadId === threadId);
-  return <div className="h-full overflow-auto">{feedback && <p role="status">{feedback}</p>}{result.error && <p role="alert">{result.error.message}</p>}{pools?.length === 0 && <p>Select text in an answer and choose Add to pool.</p>}{pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}</div>;
+  if (threadId && !pools?.length && !feedback) return null;
+  return <div className="h-full overflow-auto">{feedback && <p role="status">{feedback}</p>}{result.error && <p role="alert">{result.error.message}</p>}{pools?.length === 0 && !threadId && <p>Select text in an answer and choose Add to pool.</p>}{pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}</div>;
 }
