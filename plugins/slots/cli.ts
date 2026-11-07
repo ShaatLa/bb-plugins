@@ -113,6 +113,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
         while (Date.now() < deadline) {
           await sleep(Math.min(3000, deadline - Date.now()), undefined, { signal: ctx.signal });
           result = await invoke("status", {});
+          if (ctx.signal?.aborted) throw new Error("canceled");
           if (!result.ok) break;
           const view = result.data as StatusView;
           const lease = view.pools.flatMap(p => p.leases).find(l => l.requestId === requestId);
@@ -121,6 +122,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
         }
         if (!result.ok) return renderResult("request", result, !!o.json);
         const current = await invoke("status", {});
+        if (ctx.signal?.aborted) throw new Error("canceled");
         if (!current.ok) return renderResult("request", current, !!o.json);
         const view = current.data as StatusView;
         const lease = view.pools.flatMap(p => p.leases).find(l => l.requestId === requestId);
@@ -155,16 +157,20 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       const ttl = Object.values((status.data as StatusView).hostSettings)[0].heartbeatIntervalMs;
       const renew = Math.max(30, Math.floor(ttl / 3000));
       const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}` });
+      if (c.signal?.aborted) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json); }
       if (initial.kind === "leased") return success(initial);
       const deadline = Date.now() + timeout;
       try {
         while (Date.now() < deadline) {
           await sleep(Math.min(3000, deadline - Date.now()), undefined, { signal: c.signal });
           result = await invoke("heartbeatUse", { threadId: caller, useId });
-          if (!result.ok) return renderResult("acquire", result, !!o.json);
+          if (c.signal?.aborted) throw new Error("canceled");
+          if (!result.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", result, !!o.json); }
           if ((result.data as UseOutcome).kind === "leased") return success(result.data as UseOutcome);
         }
+        if (c.signal?.aborted) throw new Error("canceled");
         result = await invoke("detach", { threadId: caller, useId });
+        if (c.signal?.aborted) throw new Error("canceled");
         if (!result.ok) return renderResult("acquire", result, !!o.json);
         const outcome = result.data as UseOutcome | { kind: "queued"; position: number };
         if (outcome.kind === "leased") return success(outcome);

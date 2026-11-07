@@ -362,3 +362,54 @@ it("expires uses independently of thread heartbeat and preserves plain leases", 
   expect(h.state.leases).toHaveLength(1); expect(h.state.leases[0].uses).toEqual([]);
   expect(h.send({ type: "done", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "not-found" } });
 });
+
+it("joins a granted grace lease and releases after the retry finishes", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); const id = h.state.requests[0].id;
+  h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id });
+  h.open(); expect(h.state.leases[0]).toMatchObject({ requestId: id, uses: [] });
+  expect(h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true }).result).toMatchObject({ ok: false, error: { code: "in-use" } });
+  acquire(); const use = h.state.leases[0].uses![0].id;
+  h.send({ type: "done", threadId: "a", useId: use }); expect(h.state.leases).toEqual([]);
+});
+it("retires only expired uses and cleans up an unclaimed granted lease", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); h.open();
+  const [first, second] = h.state.leases[0].uses!;
+  h.now += h.settings.heartbeatIntervalMs / 2;
+  h.send({ type: "heartbeatUse", threadId: "a", useId: second.id });
+  h.now = first.expiresAt; h.send({ type: "heartbeat", threadId: "a" }); h.send({ type: "tick" });
+  expect(h.state.leases[0].uses?.map(u => u.id)).toEqual([second.id]);
+  h.now = h.state.leases[0].uses![0].expiresAt; h.send({ type: "tick" }); expect(h.state.leases).toEqual([]);
+  acquire(); h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id }); h.open();
+  h.now = h.state.leases[0].graceUntil!; h.send({ type: "tick" });
+  expect(h.state.leases).toEqual([]); expect(h.state.audit.some(e => e.type === "unclaimed")).toBe(true);
+});
+it("rejects transferred owners and drops child uses when a lease returns", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true });
+  const acq = (threadId: string) => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId, job: "test", estMs: minute });
+  expect(acq("a").result).toMatchObject({ ok: false, error: { code: "transferred" } });
+  acq("child"); const use = h.state.leases[0].uses![0].id;
+  expect(h.send({ type: "heartbeatUse", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(h.send({ type: "detach", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  h.send({ type: "threadEnded", threadId: "child", reason: "archived" });
+  expect(h.state.leases[0]).toMatchObject({ holderThreadId: "a", uses: [] });
+  expect(h.state.audit.some(e => e.type === "use-dropped")).toBe(true);
+});
+it("refreshes an almost-expired held lease and waits for all concurrent uses", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.now = h.state.leases[0].expiresAt - 1;
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); const [a, b] = h.state.leases[0].uses!;
+  expect(h.state.leases[0].expiresAt).toBeGreaterThanOrEqual(b.expiresAt);
+  h.send({ type: "done", threadId: "a", useId: a.id }); h.send({ type: "done", threadId: "a", useId: b.id });
+  expect(h.state.leases).toHaveLength(1);
+  const auto = harness();
+  const get = () => auto.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  get(); get(); auto.open(); const [first, second] = auto.state.leases[0].uses!;
+  auto.send({ type: "done", threadId: "a", useId: first.id }); expect(auto.state.leases).toHaveLength(1);
+  auto.send({ type: "done", threadId: "a", useId: second.id }); expect(auto.state.leases).toHaveLength(0);
+});

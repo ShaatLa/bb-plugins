@@ -41,7 +41,7 @@ and gate-hold alerts, and `bb slots observer` for manager session handover.
 ## Commands
 
 Plain output summarizes gate readings, requests, pools and audit events in short
-lines. Every command supports `--json`. Caller identity defaults to the CLI context's
+lines. Commands other than `wrapper` support `--json`. Caller identity defaults to the CLI context's
 BB_THREAD_ID; holder commands also accept `--thread <id>`.
 
 ```sh

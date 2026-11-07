@@ -124,7 +124,9 @@ it("reads retained JSONL with inclusive bounds and removes old daily files", asy
 it("CLI timeout keeps queued request and remote-free status stays bounded", async () => {
   const h = await setup();
   const result = await h.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms", "--json"], { threadId: "a" });
-  expect(result.exitCode).toBe(75); expect((await h.view()).pools[0].queue).toHaveLength(1);
+  expect(result.exitCode).toBe(75); const queue = (await h.view()).pools[0].queue; expect(queue).toHaveLength(1);
+  const retry = await h.request();
+  expect(retry).toMatchObject({ ok: true, data: { kind: "queued", request: { id: queue[0].id, createdAt: queue[0].createdAt } } });
 });
 it("resolves a grant at the wait deadline and withdraws on abort", async () => {
   const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
@@ -439,4 +441,24 @@ it("loads 0.3 state and restores active uses", async () => {
   await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
   const restored = await setup(h.path);
   expect((await restored.view()).pools[0].queue[0].uses).toHaveLength(1);
+});
+
+it("acquire resolves a grant at its deadline and cleans up on abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const lease = { id: "lease-2", requestId: "req-1" };
+  const invoke = vi.fn(async (method: string) => {
+    if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1" }, useId: "use-3" } };
+    if (method === "status") return { ok: true, data: { hostSettings: { local: { heartbeatIntervalMs: 600000 } } } };
+    if (method === "heartbeatUse") return { ok: true, data: { kind: "queued", useId: "use-3" } };
+    if (method === "detach") return { ok: true, data: { kind: "leased", lease, useId: "use-3" } };
+    return { ok: true, data: null };
+  });
+  registerCli(host.bb, invoke as Invoke);
+  const args = ["acquire", "--pool", "heavy", "--job", "tests", "--est", "1m", "--timeout", "1ms"];
+  const granted = await host.harness.behavior.runCli(args, { threadId: "a" });
+  expect(granted).toMatchObject({ exitCode: 0, stdout: "use use-3 lease lease-2 renew 200" });
+  const controller = new AbortController(); controller.abort();
+  expect((await host.harness.behavior.runCli(args, { threadId: "a", signal: controller.signal })).exitCode).toBe(1);
+  expect(invoke).toHaveBeenCalledWith("done", { threadId: "a", useId: "use-3" });
+  await host.harness.lifecycle.dispose();
 });
