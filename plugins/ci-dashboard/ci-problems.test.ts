@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { alertProblemId, buildProblems, withoutBenignAlerts, EVENT_PROBLEM_MS, problemContext, seedPrompt, type ProblemContextInput } from "./ci-problems";
 import type { Run } from "./ci-insights";
 import type { Signal } from "./ci-jobs-types";
-import type { Problem } from "./ci-signals-contract";
+import { handledSchema, type Problem } from "./ci-signals-contract";
 import { at, classify, failed, failure, LOSS, REPO } from "./test-support";
 
 const now = Date.parse("2026-01-10T12:00:00Z");
@@ -216,4 +216,13 @@ test("Team notes are appended verbatim, and Verdict, Suggested action and notes 
   for (const fact of ["## Verdict", "Code looks broken: yes", "## Suggested action", "- real: fix the code", "## Team notes", "Rerun limit: once per commit.", "Incident log: https://example.invalid/incidents", "n".repeat(900), "## Your task"]) expect(prompt).toContain(fact);
   expect(prompt.indexOf("## Verdict")).toBeLessThan(prompt.indexOf("## Problem"));
   expect(section(problemContext(alertProblem(), base({ alerts: [streakAlert] })), "Team notes")).toEqual([]);
+});
+
+test("handled entries stored before claims still parse; fix_pending carries a ref of at most 80 characters", () => {
+  const at = "2026-01-10T12:00:00Z";
+  expect(handledSchema.parse({ state: "investigating", threadId: "thr_worker", at })).toEqual({ state: "investigating", threadId: "thr_worker", at });
+  expect(handledSchema.parse({ state: "dismissed", at })).toEqual({ state: "dismissed", at });
+  expect(handledSchema.parse({ state: "fix_pending", ref: "#12", by: "agent", threadId: "thr_worker", at })).toMatchObject({ state: "fix_pending", ref: "#12", by: "agent" });
+  expect(handledSchema.parse({ state: "fix_pending", ref: "FIX-1", at }).by).toBeUndefined();
+  for (const bad of [{ state: "fix_pending", ref: "x".repeat(81), at }, { state: "released", at }, { state: "fix_pending", by: "bot", at }]) expect(handledSchema.safeParse(bad).success).toBe(false);
 });

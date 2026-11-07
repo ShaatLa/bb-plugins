@@ -360,3 +360,26 @@ describe("safety", () => {
     expect(fit("x".repeat(500), "https://example.test/u").length).toBe(400);
   });
 });
+
+describe("problem ids in event lines", () => {
+  const stall = { id: "pool_stall:self-hosted", kind: "pool_stall", severity: "critical", title: "", what: "", where: { pool: "self-hosted" }, since: at(0), until: null, impact: "", actor: "owner_sre", open: true } satisfies Signal;
+  it("candidate ids match the problem ids; the id is appended only when the caller passes it", () => {
+    const event = stallEvent(stall, [], Date.parse(at(14)));
+    expect(event.problem).toBe("pool_stall:self-hosted");
+    expect(text(event)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min");
+    expect(event.render(null, event.problem)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min · problem pool_stall:self-hosted");
+    const loss = runnerLossEvents(REPO, [classify(failed({ event: "push", headBranch: "main", jobId: 9, annotations: [failure(LOSS)] }), "runner_loss")], "main", 0)[0]!;
+    expect(loss.problem).toBe("runner_loss:9");
+    expect(loss.render(null, loss.problem)).toMatch(/ · problem runner_loss:9 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/1\/job\/9$/);
+    const red = defaultRedEvents(REPO, [classify(failed({ event: "push", headBranch: "main", runId: 70 }), "real")], [{ kind: "main", workflowId: 1, name: "CI", branch: "main", runId: 70, createdAt: at(0), consecutive: 1 }])[0]!;
+    expect(red.problem).toBe("run:main:70");
+    expect(red.render(null, red.problem)).toMatch(/Code looks broken: yes · problem run:main:70 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/70$/);
+    // Queue removals are never problems.
+    expect(queueRemovalEvents(REPO, [classify(failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-7-abc", runId: 50 }), "real")])[0]!.problem).toBeUndefined();
+  });
+  it("keeps the 400-character cap, the tag and the link when the body is long", () => {
+    const line = fit("x".repeat(500), "https://example.test/u", " · problem run:main:70");
+    expect(line.length).toBe(400);
+    expect(line.endsWith(" · problem run:main:70 https://example.test/u")).toBe(true);
+  });
+});

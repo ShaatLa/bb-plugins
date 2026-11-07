@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { queuePullRequest, type MassCancel } from "./ci-classify";
-import { CLASS_ORDER, codeBrokenVerdict } from "./ci-problems";
+import { alertProblemId, CLASS_ORDER, codeBrokenVerdict } from "./ci-problems";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, FailureClass, JobRecord, PoolQueueState, Signal } from "./ci-jobs-types";
 import type { GitHubRequest } from "./metrics";
@@ -43,7 +43,9 @@ const MAX_LINE = 400, MAX_TESTS = 5, MAX_JOBS = 4, MAX_DIGEST = 30;
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
 /** One line, at most ~400 characters; the link at the end is never the part that gets cut. */
-export const fit = (body: string, url?: string) => url ? `${clip(squash(body), MAX_LINE - url.length - 1)} ${url}` : clip(squash(body), MAX_LINE);
+export const fit = (body: string, url?: string, tag = "") => `${clip(squash(body), MAX_LINE - tag.length - (url ? url.length + 1 : 0))}${tag}${url ? ` ${url}` : ""}`;
+/** Marks a line with the open problem it is about, so an agent can claim it with ci_dashboard_problem. Never clipped. */
+const problemTag = (problem?: string) => problem ? ` · problem ${problem}` : "";
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: Pick<JobRecord, "runId" | "jobId">) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
 const sha7 = (sha: string) => sha.slice(0, 7) || "unknown";
@@ -56,7 +58,10 @@ export type ObserverEvent = {
   at: number;
   /** "once": one message per key for as long as the key is remembered. "quiet": a key that reopens (a stall) is repeated only after the quiet window. */
   dedupe: "once" | "quiet";
-  render: (tests?: string[] | null) => string;
+  /** `problem`: the id of the open problem this event maps to, when it does (passed in by the caller, which knows the open problems). */
+  render: (tests?: string[] | null, problem?: string) => string;
+  /** Id the event's problem would have; it counts only while that problem is open (events of info signals or old runs are not problems). */
+  problem?: string;
   /** Present when the line can name failed tests; the caller looks them up only for events that are really going out. */
   tests?: { run: { id: number; attempt: number }; jobs: JobRecord[] };
   /** A queue removal to confirm against the PR's RemovedFromMergeQueueEvent at or after `since` before it goes out. */
@@ -102,7 +107,8 @@ export function runnerLossEvents(repository: string, classified: ClassifiedJob[]
     ? standaloneQueueLoss(job.runId, job.attempt) && !invalidated(classified, job.runId, job.attempt)
     : job.event === "push" && defaultBranch !== null && job.headBranch === defaultBranch)).map(({ job }): ObserverEvent => ({
     type: "loss", key: `loss:${job.jobId}`, dedupe: "once", at: completedAt(job),
-    render: () => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · run ${job.runId} · ${lossCount(classified, job, limit)} losses on head ${sha7(job.headSha)}`, jobUrl(repository, job)) }));
+    problem: `runner_loss:${job.jobId}`,
+    render: (_tests, problem) => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · run ${job.runId} · ${lossCount(classified, job, limit)} losses on head ${sha7(job.headSha)}`, jobUrl(repository, job), problemTag(problem)) }));
 }
 
 export const classCounts = (jobs: ClassifiedJob[]) => CLASS_ORDER.map((cls) => [cls, jobs.filter((c) => c.class === cls).length] as const).filter(([, n]) => n > 0).map(([cls, n]) => `${n} ${cls}`).join(", ") || "none stored";
@@ -116,15 +122,15 @@ export function defaultRedEvents(repository: string, classified: ClassifiedJob[]
     const attempt = Math.max(...ofRun.map((c) => c.job.attempt)), jobs = ofRun.filter((c) => c.job.attempt === attempt);
     const runIds = streaks.get(alert.runId) ?? [alert.runId], verdict = codeBrokenVerdict(classified.filter((c) => runIds.includes(c.job.runId)), runIds);
     const at = Math.max(Date.parse(alert.createdAt), ...jobs.map((c) => completedAt(c.job)));
-    return [{ type: "red", key: `red:${alert.runId}:${attempt}`, dedupe: "once", at,
-      render: () => fit(`${alert.name} red on ${alert.branch} · run ${alert.runId} · jobs: ${classCounts(jobs)} · Code looks broken: ${verdict}`, runUrl(repository, alert.runId)) }];
+    return [{ type: "red", key: `red:${alert.runId}:${attempt}`, dedupe: "once", at, problem: alertProblemId(alert),
+      render: (_tests, problem) => fit(`${alert.name} red on ${alert.branch} · run ${alert.runId} · jobs: ${classCounts(jobs)} · Code looks broken: ${verdict}`, runUrl(repository, alert.runId), problemTag(problem)) }];
   });
 }
 
 /** 4. A newly opened pool stall signal. */
 export function stallEvent(signal: Signal, pools: PoolQueueState[], now: number): ObserverEvent {
   const pool = signal.where.pool ?? "unknown", queued = pools.find((state) => state.pool === pool)?.queued ?? 0, minutes = Math.max(0, Math.floor((now - Date.parse(signal.since)) / 60_000));
-  return { type: "stall", key: signal.id, dedupe: "quiet", at: now, render: () => fit(`Pool ${pool} stalled · ${queued} queued, no job start for ${minutes} min`) };
+  return { type: "stall", key: signal.id, dedupe: "quiet", at: now, problem: signal.id, render: (_tests, problem) => fit(`Pool ${pool} stalled · ${queued} queued, no job start for ${minutes} min`, undefined, problemTag(problem)) };
 }
 
 /** 5. A newly opened mass-cancel signal; `groups` are the analysis' mass cancels the signal id refers to. */
@@ -132,8 +138,8 @@ export function massCancelEvent(signal: Signal, groups: MassCancel[]): ObserverE
   const group = groups.find((item) => `mass_cancel:${item.since}` === signal.id);
   if (!group) return null;
   const pool = signal.where.pool;
-  return { type: "mass", key: signal.id, dedupe: "once", at: Date.parse(group.until),
-    render: () => fit(`${group.jobs.length} jobs lost/cancelled within 2 min${pool ? ` in ${pool}` : ""} · runs ${more(group.runIds.map(String), MAX_TESTS)}`) };
+  return { type: "mass", key: signal.id, dedupe: "once", at: Date.parse(group.until), problem: signal.id,
+    render: (_tests, problem) => fit(`${group.jobs.length} jobs lost/cancelled within 2 min${pool ? ` in ${pool}` : ""} · runs ${more(group.runIds.map(String), MAX_TESTS)}`, undefined, problemTag(problem)) };
 }
 
 // --- deployments ---

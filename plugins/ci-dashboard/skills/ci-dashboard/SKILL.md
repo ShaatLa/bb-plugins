@@ -139,6 +139,23 @@ How to set the observer: Settings → CI Dashboard → `observerThreads` (comma-
 
 `subscribe` adds the calling thread (or `threadId`), `unsubscribe` removes it, `list` shows the current observers, and `replace` makes the thread the only observer. Take-over flow for a new manager session: call `replace` with no `threadId`; the previous manager stops receiving events at once and the new thread gets a one-line confirmation (`[CI Dashboard] Subscribed to CI events for <repos>: <types>; quiet window <m> min`). Call `subscribe` when you start watching CI and `unsubscribe` when you stop. The thread must exist and not be archived. Archived or deleted threads, and threads whose messages fail with 404, are removed from the list automatically. Other send failures are logged once per thread and not retried. A change to `observerThreads` (from the tool or the settings UI) takes effect immediately for new subscribers and from the next loop for events.
 
+## Claiming problems
+
+When you or a worker start on a CI problem, claim it so the CI health status shows it without a human clicking Investigate. Problem ids: `ci_dashboard_metrics` with `view=signals` (`problems[].id`) or the ` · problem <id>` tail of an observer line.
+
+Use the agent tool **ci_dashboard_problem**:
+
+```json
+{"action":"take","id":"pool_stall:self-hosted"}
+```
+
+- `take`: investigating by `threadId` (default: this thread). When you delegate, pass the worker's `threadId` so the card links to the worker. The thread must exist and not be archived.
+- `fix_pending` with `ref` (a PR number like `#12`, a tracker key like `FIX-1` or a URL, up to 80 characters): a fix PR/card exists; `threadId` is kept if given.
+- `release`: back to open. `dismiss`: nobody needs to act.
+- `repository` (owner/repo) is needed only when several repositories are configured. An unknown or closed id is an error. The result is the problem's new `handled` state, also visible in `ci_dashboard_metrics`.
+
+You do not have to clean up: a claim closes itself when the signal resolves, is dropped when its investigating thread is archived or deleted (`fix_pending` outlives its thread), and expires after `claimTimeoutHours` (default 24, `0` = never). Observers get `[CI Dashboard] Claim dropped · <title> · problem <id> · <reason>` for each automatic drop, never for changes made through the tool.
+
 ## Rename compatibility
 
 The visible name, navigation label, documentation, skill and repository directory are CI Dashboard / ci-dashboard. The package name bb-plugin-delivery-dashboard and internal plugin ID delivery-dashboard intentionally stay stable because BB namespaces settings, secrets and SQLite data by that ID. Existing routes under /plugins/delivery-dashboard/dashboard and old collection installs continue to work. New installs use --plugin ci-dashboard; updates continue to use bb plugin update delivery-dashboard. The delivery-dashboard collection entry is a compatibility alias pointing to the same renamed package, not a second installed plugin.

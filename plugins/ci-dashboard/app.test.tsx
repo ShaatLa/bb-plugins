@@ -1078,6 +1078,30 @@ test("an investigating problem shows the session title as a link instead of the 
   } finally { slot.lifecycle.unmount(); }
 });
 
+test("a fix_pending problem sits under Handled with its PR as a link, and Restore clears it", async () => {
+  vi.resetModules();
+  let pending = true;
+  const problemAction = vi.fn(async () => { pending = false; return { handled: null }; });
+  const handled = { state: "fix_pending", ref: "#12", by: "agent", threadId: "thr_worker", at: ago(1) };
+  const signals = () => ({ repositories: [jobRepo({ problems: [problem("a", "critical", 5, pending ? { handled } : {}), problem("b", "warning", 6, { handled: { state: "fix_pending", ref: "FIX-1", at: ago(1) } }),
+    problem("c", "warning", 7, { handled: { state: "fix_pending", ref: "https://example.test/pr/3", at: ago(1) } })] })], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels, { rpc: { problemAction } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const handledList = within(await within(card).findByText("Handled · 3").then((summary) => summary.closest("details") as HTMLElement)).getByRole("list", { name: "Handled problems" });
+    const rows = Array.from(handledList.querySelectorAll<HTMLElement>(":scope > li"));
+    expect(within(rows[0]).getByRole("link", { name: "#12" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/12");
+    expect(rows[0].textContent).toContain("Fix pending: #12");
+    expect(rows[1].textContent).toContain("Fix pending: FIX-1");
+    expect(within(rows[1]).queryByRole("link", { name: "FIX-1" })).toBeNull();
+    expect(within(rows[2]).getByRole("link", { name: "https://example.test/pr/3" }).getAttribute("href")).toBe("https://example.test/pr/3");
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "Restore: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", action: "restore" }));
+    await within(card).findByText("Handled · 2");
+    expect(within(card).getByRole("list", { name: "Problems" }).textContent).toContain("Title a");
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test("Dismiss moves a problem under a collapsed Dismissed section where Restore brings it back", async () => {
   vi.resetModules();
   let dismissed = false;

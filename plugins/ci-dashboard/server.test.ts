@@ -1467,6 +1467,149 @@ test("handled entries are pruned once their problem closes, and the stored map i
   } finally { await harness.lifecycle.dispose(); }
 });
 
+// --- agent claims: ci_dashboard_problem, automatic releases, observer echo ---
+function claimsHost(settings: object = {}) {
+  const send = vi.fn(async (_args: unknown) => ({}));
+  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; archivedAt: number | null }> => {
+    if (threadId === "thr_missing") throw new Error("404 thread not found");
+    return { id: threadId, archivedAt: threadId === "thr_archived" ? 1 : null };
+  });
+  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
+    sdk: { threads: { send, get } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
+  return { ...host, send, get };
+}
+const STALL_TITLE = "Runner pool stalled: self-hosted";
+const claimTool = async (harness: { behavior: { callAgentTool(name: string, input: unknown, context?: { threadId: string }): Promise<unknown> } }, input: object, threadId = "thr_manager") =>
+  JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_problem", { id: stallId, ...input }, { threadId }) as string) as { repository: string; id: string; handled: Record<string, unknown> | null };
+const observerLines = (send: { mock: { calls: unknown[][] } }) => sentTo(send, "thr_observer");
+
+test("ci_dashboard_problem: take (default and delegated thread), fix_pending, release and dismiss change the status and are not echoed to observers", async () => {
+  live([queuedJob]);
+  const { bb, harness, send } = claimsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    // The observer line for the stall names the problem id the agent can claim.
+    const lines = observerLines(send);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toMatch(new RegExp(`^\\[CI Dashboard\\] Pool self-hosted stalled · 1 queued, no job start for \\d+ min · problem ${stallId}$`));
+    expect(lines[1].length).toBeLessThanOrEqual(400);
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+    // take defaults to the calling thread ...
+    expect(await claimTool(harness, { action: "take" })).toEqual({ repository: "acme/widgets", id: stallId, handled: { state: "investigating", threadId: "thr_manager", by: "agent", at: expect.any(String) } });
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
+    // ... or the worker the caller delegates to.
+    expect((await claimTool(harness, { action: "take", threadId: "thr_worker" })).handled).toMatchObject({ state: "investigating", threadId: "thr_worker", by: "agent" });
+    // fix_pending needs a ref and keeps the worker thread when none is passed.
+    await expect(claimTool(harness, { action: "fix_pending" })).rejects.toThrow("needs ref");
+    await expect(claimTool(harness, { action: "fix_pending", ref: "x".repeat(81) })).rejects.toThrow();
+    expect((await claimTool(harness, { action: "fix_pending", ref: "#12" })).handled).toMatchObject({ state: "fix_pending", ref: "#12", threadId: "thr_worker", by: "agent" });
+    expect((await claimTool(harness, { action: "fix_pending", ref: "FIX-1", threadId: "thr_other" })).handled).toMatchObject({ ref: "FIX-1", threadId: "thr_other" });
+    // The agent read path carries the new state and ref.
+    const agent = await harness.behavior.callRpc("ci", { view: "signals" }) as { repositories: { problems: { id: string; handled: unknown }[] }[] };
+    expect(agent.repositories[0].problems).toMatchObject([{ id: stallId, handled: { state: "fix_pending", ref: "FIX-1" } }]);
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "fix_pending", ref: "FIX-1" });
+    expect((await claimTool(harness, { action: "release" })).handled).toBeNull();
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+    expect((await claimTool(harness, { action: "dismiss" })).handled).toMatchObject({ state: "dismissed", by: "agent" });
+    // Refusals: archived or unknown threads, a bad id, an unknown or closed problem, an unknown repository.
+    await expect(claimTool(harness, { action: "take", threadId: "thr_archived" })).rejects.toThrow("archived");
+    await expect(claimTool(harness, { action: "take", threadId: "thr_missing" })).rejects.toThrow("does not exist");
+    await expect(claimTool(harness, { action: "take", threadId: "not-a-thread" })).rejects.toThrow("not a BB thread id");
+    await expect(claimTool(harness, { action: "take", id: "flake:nothing" })).rejects.toThrow("flake:nothing is not open");
+    await expect(claimTool(harness, { action: "release", id: "flake:nothing" })).rejects.toThrow("is not open");
+    await expect(claimTool(harness, { action: "take", repository: "acme/unknown" })).rejects.toThrow("not configured");
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "dismissed" });
+    // Nothing the agent did reached the observer.
+    expect(observerLines(send)).toHaveLength(2);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ci_dashboard_problem needs a repository only when several are configured", async () => {
+  live([queuedJob]);
+  const { bb, harness } = claimsHost({ repository: "acme/widgets, acme/gadgets" });
+  try {
+    await plugin(bb);
+    await expect(claimTool(harness, { action: "take" })).rejects.toThrow("Several repositories are configured; pass repository");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("an archived or deleted investigating thread releases its claim with exactly one echo; fix_pending claims and other threads are untouched", async () => {
+  live([queuedJob]);
+  const { bb, harness, send } = claimsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    const echoes = () => observerLines(send).filter((line) => line.includes("Claim dropped"));
+    await claimTool(harness, { action: "take", threadId: "thr_worker" });
+    expect((await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_unrelated" }) })).errors).toEqual([]);
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating" });
+    expect(echoes()).toEqual([]);
+    expect((await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) })).errors).toEqual([]);
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · thread archived`]);
+    // Archiving it again changes nothing and repeats nothing.
+    await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) });
+    expect(echoes()).toHaveLength(1);
+    // A fix_pending claim outlives the worker thread that opened the PR.
+    await claimTool(harness, { action: "fix_pending", ref: "#12", threadId: "thr_worker" });
+    await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) });
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "fix_pending", ref: "#12" });
+    // A deleted thread releases too; the badge counts the problem again.
+    await claimTool(harness, { action: "take", threadId: "thr_gone" });
+    await harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_gone" }) });
+    expect(echoes()).toEqual([expect.stringContaining("thread archived"), `${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · thread deleted`]);
+    expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a claim older than claimTimeoutHours is released with one echo; 0 means never", async () => {
+  live([queuedJob]);
+  const { bb, harness, send } = claimsHost();
+  const echoes = () => observerLines(send).filter((line) => line.includes("Claim dropped"));
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    await claimTool(harness, { action: "take", threadId: "thr_worker" });
+    await signalsPass(harness, 23 * 3_600_000);
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating" });
+    expect(echoes()).toEqual([]);
+    await signalsPass(harness, 2 * 3_600_000);
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · no resolution within 24 h`]);
+    await signalsPass(harness);
+    expect(echoes()).toHaveLength(1);
+    // fix_pending expires the same way, counted from its own time.
+    await claimTool(harness, { action: "fix_pending", ref: "#12" });
+    await signalsPass(harness, 25 * 3_600_000);
+    expect((await problemsOf(harness)).problems[0].handled).toBeNull();
+    expect(echoes()).toHaveLength(2);
+    // 0 = never.
+    await harness.behavior.setSettings({ claimTimeoutHours: 0 });
+    await claimTool(harness, { action: "take", threadId: "thr_worker" });
+    await signalsPass(harness, 100 * 3_600_000);
+    expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating" });
+    expect(echoes()).toHaveLength(2);
+    await expect(harness.behavior.setSettings({ claimTimeoutHours: -1 })).rejects.toThrow();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a problem that resolves closes its claim silently", async () => {
+  live([queuedJob]);
+  const { bb, harness, send } = claimsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    await claimTool(harness, { action: "fix_pending", ref: "FIX-1" });
+    const before = observerLines(send).length;
+    live([]);
+    await signalsPass(harness);
+    expect((await problemsOf(harness)).problems).toEqual([]);
+    expect(await bb.storage.kv.get("handled:acme/widgets")).toEqual({});
+    expect(observerLines(send)).toHaveLength(before);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 // --- retention ---
 const storedHistory = (bb: { storage: { database(): ReturnType<ReturnType<typeof createFakePluginHost>["bb"]["storage"]["database"]> } }) => {
   const row = bb.storage.database().prepare("SELECT data FROM repository_history").get() as { data: Uint8Array };

@@ -24,6 +24,12 @@ function ThreadLink({ threadId }: { threadId: string }) {
   return <Button variant="link" size="sm" className="h-auto min-w-0 max-w-56 p-0 text-xs" onClick={() => navigate.toThread(threadId)}><span className="truncate">{title ?? "session"}</span></Button>;
 }
 
+/** "Fix pending: <ref>"; a URL or #N (a PR of the repository) is a link, anything else (a tracker key) is plain text. */
+function FixRef({ repository, fixRef }: { repository: string; fixRef: string }) {
+  const href = /^https?:\/\//.test(fixRef) ? fixRef : /^#\d+$/.test(fixRef) ? `https://github.com/${repository}/pull/${fixRef.slice(1)}` : null;
+  return <span className="min-w-0 break-words text-xs text-muted-foreground">Fix pending: {href ? <UrlLink href={href} className="hover:underline">{fixRef}</UrlLink> : fixRef}</span>;
+}
+
 /** "Investigate" menu: new session in the repository's project, or an existing one chosen in a dialog. */
 function InvestigateMenu({ problem, projectId, busy, onNew, onExisting }: { problem: Problem; projectId: string | null; busy: boolean; onNew: () => void; onExisting: (threadId: string) => Promise<void> }) {
   const [open, setOpen] = useState(false), [picking, setPicking] = useState(false);
@@ -52,7 +58,7 @@ function InvestigateMenu({ problem, projectId, busy, onNew, onExisting }: { prob
   </div>;
 }
 
-/** The CI health card's problem list: unhandled problems, then one collapsed "Handled" section (investigating with its session, dismissed with Restore). */
+/** The CI health card's problem list: unhandled problems, then one collapsed "Handled" section (investigating with its session, fix pending with its PR/card, dismissed with Restore). */
 const badge = "inline-block rounded border px-1.5 py-0.5 align-middle text-[10px] font-medium leading-none";
 /** Problem count next to the CI health title; renders nothing until signals load. */
 export function ProblemsBadge({ signals }: { signals: JobSignals }) {
@@ -71,7 +77,7 @@ export function CiProblems({ repository, signals }: { repository: string; signal
     : signals.error ? <p role="alert" className="text-sm text-destructive-text">CI problems failed to load. <Button variant="outline" size="sm" onClick={signals.retry}>Retry</Button></p> : null;
   const unhandled = job.problems.filter((problem) => !problem.handled);
   // Handled problems leave the list; they close on their own once the underlying problem resolves.
-  const handledRows = [...job.problems.filter((problem) => problem.handled?.state === "investigating"), ...job.problems.filter((problem) => problem.handled?.state === "dismissed")];
+  const handledRows = ["investigating", "fix_pending", "dismissed"].flatMap((state) => job.problems.filter((problem) => problem.handled?.state === state));
   const rows = unhandled, shown = all ? rows : rows.slice(0, SHOWN);
   const run = async (id: string, action: () => Promise<unknown>) => {
     setBusy(id); setFailure(null);
@@ -93,7 +99,10 @@ export function CiProblems({ repository, signals }: { repository: string; signal
         <InvestigateMenu problem={problem} projectId={job.projectId} busy={busy === problem.id} onNew={() => void investigate(problem).catch(report)} onExisting={(threadId) => investigate(problem, threadId)} />
         <Button variant="outline" size="sm" disabled={busy === problem.id} aria-label={`Dismiss: ${problem.title}`} onClick={() => void act(problem, "dismiss")}>Dismiss</Button>
       </div> : handled.state === "investigating" && handled.threadId ? <p className="flex min-w-0 shrink-0 items-center gap-1 text-xs text-muted-foreground">Investigating in <ThreadLink threadId={handled.threadId} /></p>
-        : <Button variant="outline" size="sm" className="shrink-0" disabled={busy === problem.id} aria-label={`Restore: ${problem.title}`} onClick={() => void act(problem, "restore")}>Restore</Button>}
+        : <div className="flex min-w-0 shrink-0 items-center gap-2">
+          {handled.state === "fix_pending" && <FixRef repository={repository} fixRef={handled.ref ?? ""} />}
+          <Button variant="outline" size="sm" className="shrink-0" disabled={busy === problem.id} aria-label={`Restore: ${problem.title}`} onClick={() => void act(problem, "restore")}>Restore</Button>
+        </div>}
     </li>;
   };
   return <section aria-label="CI problems" className="space-y-3">

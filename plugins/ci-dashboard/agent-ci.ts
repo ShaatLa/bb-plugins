@@ -15,7 +15,7 @@ const summaryRow = metricsSchema.pick({ repository: true, updatedAt: true, range
   projectName: z.string().nullable(), ageSeconds: z.number().nonnegative(), stale: z.boolean(), pending: z.array(z.string()),
   passRate: metricsSchema.shape.ci.omit({ series: true, seriesError: true }).extend({ historyError: z.string().nullable() }),
   signals: z.object({ open: z.array(openSignalSchema), pools: z.array(poolStateSchema), backfill: repositorySignalsSchema.shape.backfill,
-    /** Open problems with their handled state: dismissed, or investigating in a BB thread. */
+    /** Open problems with their handled state: dismissed, investigating in a BB thread, or fix_pending (a fix PR/card ref). */
     problems: z.array(problemSchema.pick({ id: true, severity: true, title: true, since: true, handled: true })) }),
 });
 // Non-summary views carry exactly one slice of the signals RPC data next to these identity fields.

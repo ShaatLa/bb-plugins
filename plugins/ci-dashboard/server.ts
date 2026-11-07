@@ -21,7 +21,7 @@ import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-s
 import { handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsOutput } from "./ci-signals-contract";
 import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
 import { alertStreak, type CiInsights } from "./ci-insights";
-import { acceptEvents, confirmRemovals, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
+import { acceptEvents, confirmRemovals, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -91,6 +91,7 @@ export default function plugin(bb: BbPluginApi) {
     observePoolStall: { type: "boolean", label: "Observer events: runner pool stall", default: true },
     observeMassCancel: { type: "boolean", label: "Observer events: many jobs lost or cancelled within 2 minutes", default: true },
     observeDeployments: { type: "boolean", label: "Observer events: deployment finished (success, failure or error)", default: true },
+    claimTimeoutHours: { type: "number", label: "Problem claims (investigating, fix pending) are released after this many hours without the problem resolving (0 = never, 0–720)", default: 24, experimental_schema: z.number().int().min(0).max(720) },
     observerQuietMinutes: { type: "number", label: "Observer quiet window in minutes: at most one message per event key in it (0–1440)", default: 30, experimental_schema: z.number().int().min(0).max(1440) },
     observerBatchMinutes: { type: "number", label: "Observer digest interval in minutes (0 = send each event immediately; N = one digest every N minutes, 0–1440)", default: 0, experimental_schema: z.number().int().min(0).max(1440) },
     runnerLossLimit: { type: "number", label: "Runner losses allowed per head commit, shown as N/limit in observer messages (0 = not shown, 0–1000)", default: 0, experimental_schema: z.number().int().min(0).max(1000) },
@@ -442,6 +443,11 @@ export default function plugin(bb: BbPluginApi) {
       if (threadGone.test(describe(error))) await removeObserver(threadId, "thread no longer available").catch((e) => logOnce(`CI observer: could not drop ${threadId}: ${describe(e)}`));
     }
   }
+  /** One line to the observer threads when a claim is dropped by the plugin (never when an agent or a person releases it, or when the problem resolves). */
+  async function echoClaimDropped(values: Values, title: string, id: string, reason: string) {
+    const text = `${PREFIX} ${fit(`Claim dropped · ${title}`, undefined, ` · problem ${id} · ${reason}`)}`;
+    for (const threadId of parseObserverThreads(values.observerThreads)) await notify(threadId, text);
+  }
   /** Brings subscriptions and event-type start times in line with the settings; new subscribers get the one-line confirmation and no history. */
   function syncObservers(values: Values, repositories: string[]) {
     return serialObserver(async () => {
@@ -491,10 +497,12 @@ export default function plugin(bb: BbPluginApi) {
     // A merge queue runner loss stands alone only once its removal was given up on (the PR stayed queued).
     if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit, (runId, attempt) => removals.has(`queue:${runId}:${attempt}`)));
     const accepted = acceptEvents(state, global, confirmed, config);
+    // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_problem.
+    const openProblems = new Set((await problemsOf(repo, rt)).map((problem) => problem.id));
     const artifacts = flakeSettings(values.flakeSignatures, values.flakeArtifacts).artifacts, rendered: Rendered[] = [];
     for (const event of accepted) {
       const tests = event.tests && rt.backfill ? await rt.backfill.run.failedTests(repo, event.tests.run, event.tests.jobs, artifacts, signal) : null;
-      rendered.push({ key: event.key, type: event.type, at: event.at, text: event.render(tests) });
+      rendered.push({ key: event.key, type: event.type, at: event.at, text: event.render(tests, event.problem && openProblems.has(event.problem) ? event.problem : undefined) });
     }
     const messages = dispatch(state, rendered, global, config);
     // State first: a crash while sending loses a message instead of repeating it.
@@ -598,6 +606,14 @@ export default function plugin(bb: BbPluginApi) {
       const handled = await loadHandled(repo, rt), open = new Set((await problemsOf(repo, rt)).map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
       const stale = Object.keys(handled).filter((id) => !open.has(id) && (id.startsWith("run:") ? rt.alerts !== undefined : jobKnown));
       if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); }
+      // A claim that outlives claimTimeoutHours with its problem still open is dropped (the claimant stalled or forgot to release).
+      const limit = values.claimTimeoutHours * 3_600_000, titles = new Map((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.title]));
+      const expired = limit > 0 ? Object.entries(handled).filter(([id, entry]) => entry.state !== "dismissed" && titles.has(id) && now - Date.parse(entry.at) > limit).map(([id]) => id) : [];
+      if (expired.length) {
+        for (const id of expired) delete handled[id];
+        await saveHandled(repo, rt);
+        for (const id of expired) await echoClaimDropped(values, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
+      }
     } catch (error) { logOnce(`CI signals handled state for ${repo} not pruned: ${describe(error)}`); }
     // 5. view for the RPC (kept in memory and kv) and a realtime nudge when something visible changed.
     const status = rt.backfill?.status;
@@ -704,7 +720,7 @@ export default function plugin(bb: BbPluginApi) {
       const repo = await configuredRepository(repository, values), rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
       if (action === "dismiss") {
         if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error("This problem is no longer open.");
-        handled[id] = { state: "dismissed", at: new Date().toISOString() };
+        handled[id] = { state: "dismissed", by: "user", at: new Date().toISOString() };
       } else delete handled[id];
       await saveHandled(repo, rt);
       bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
@@ -731,7 +747,7 @@ export default function plugin(bb: BbPluginApi) {
         // Provider and model are omitted so BB uses the project's defaults.
         target = (await bb.sdk.threads.spawn({ projectId, environment: { type: "project-default" }, title: `Investigate: ${problem.title}`.slice(0, 120), prompt })).id;
       }
-      (await loadHandled(repo, rt))[id] = { state: "investigating", threadId: target, at: new Date().toISOString() };
+      (await loadHandled(repo, rt))[id] = { state: "investigating", threadId: target, by: "user", at: new Date().toISOString() };
       await saveHandled(repo, rt);
       bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
       return { threadId: target };
@@ -856,8 +872,63 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Observer threads can be changed by the agents themselves: a new manager session subscribes (or takes over) and unsubscribes when it stops watching.
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, async ({ thread }) => {
-    try { await removeObserver(thread.id, event === "thread.archived" ? "thread archived" : "thread deleted"); }
+    const why = event === "thread.archived" ? "thread archived" : "thread deleted";
+    try { await removeObserver(thread.id, why); }
     catch (error) { logOnce(`CI observer: could not drop ${thread.id}: ${describe(error)}`); }
+    try { await releaseClaimsOf(thread.id, why); }
+    catch (error) { logOnce(`CI claims: could not release claims of ${thread.id}: ${describe(error)}`); }
+  });
+  /** Problems claimed by agents (see ci_dashboard_problem). A thread that is archived or deleted stops investigating; fix_pending claims outlive their thread. */
+  async function releaseClaimsOf(threadId: string, why: string) {
+    const values = await settings.get();
+    for (const repo of await repositoryNames(values)) {
+      const rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
+      const ids = Object.keys(handled).filter((id) => handled[id]!.state === "investigating" && handled[id]!.threadId === threadId);
+      if (!ids.length) continue;
+      const titles = new Map((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.title]));
+      for (const id of ids) delete handled[id];
+      await saveHandled(repo, rt);
+      for (const id of ids) if (titles.has(id)) await echoClaimDropped(values, titles.get(id)!, id, why);
+      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+    }
+  }
+  const claimInput = z.object({
+    action: z.enum(["take", "fix_pending", "release", "dismiss"]).describe("take: you (or the worker in threadId) are working on the problem; fix_pending: a fix PR/card exists (ref required); release: back to open; dismiss: nobody needs to act"),
+    id: z.string().min(1).max(300).describe("Problem id from ci_dashboard_metrics view=signals (problems[].id) or from an observer line (`problem <id>`)"),
+    repository: repositorySchema.optional().describe("owner/repo; needed only when several repositories are configured"),
+    threadId: z.string().optional().describe("BB thread id (thr_...) of whoever works on it; defaults to the calling thread for take. Pass the worker's id when you delegate"),
+    ref: z.string().trim().min(1).max(80).optional().describe('fix_pending only (required): the fix, as a PR number like "#12", a tracker key like "FIX-1" or a URL'),
+  });
+  bb.agents.registerTool({
+    name: "ci_dashboard_problem",
+    description: 'Claim CI Dashboard problems so the CI health status shows who deals with them. Call action=take when you or a worker start on a problem (pass the worker\'s threadId when you delegate; it defaults to this thread), action=fix_pending with ref (PR number, tracker key or URL) once a fix PR/card exists, action=release to hand it back, action=dismiss when nobody needs to act. The claim closes itself when the problem resolves, is dropped when its investigating thread is archived or deleted, and expires after the claimTimeoutHours setting (default 24 h; observers get one "Claim dropped" line). Problem ids come from ci_dashboard_metrics view=signals or from "problem <id>" in observer lines. Returns the problem\'s new handled state. Writes only plugin state; nothing is written to GitHub.',
+    parameters: claimInput,
+    presentation: { label: { pending: "Updating CI problem", completed: "Updated CI problem" } },
+    async execute({ action, id, repository, threadId, ref }, ctx) {
+      ctx.signal.throwIfAborted();
+      const values = await settings.get(), names = await repositoryNames(values);
+      if (!repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard.");
+      const repo = repository ? await configuredRepository(repository, values) : names[0]!, rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
+      if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error(`Problem ${id} is not open (unknown id, or it already resolved).`);
+      const at = new Date().toISOString();
+      if (action === "release") delete handled[id];
+      else if (action === "dismiss") handled[id] = { state: "dismissed", by: "agent", at };
+      else if (action === "take") {
+        const target = threadId ?? ctx.threadId;
+        if (!isThreadId(target)) throw new Error(`"${target.slice(0, 40)}" is not a BB thread id.`);
+        const thread = await bb.sdk.threads.get({ threadId: target }).catch(() => null);
+        if (!thread || thread.archivedAt) throw new Error(`Thread ${target} does not exist or is archived, so it cannot work on a problem.`);
+        handled[id] = { state: "investigating", threadId: target, by: "agent", at };
+      } else {
+        if (!ref) throw new Error("fix_pending needs ref: a PR number like #12, a tracker key like FIX-1 or a URL.");
+        if (threadId && !isThreadId(threadId)) throw new Error(`"${threadId.slice(0, 40)}" is not a BB thread id.`);
+        const keep = threadId ?? handled[id]?.threadId;
+        handled[id] = { state: "fix_pending", ref, ...(keep ? { threadId: keep } : {}), by: "agent", at };
+      }
+      await saveHandled(repo, rt);
+      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      return JSON.stringify({ repository: repo, id, handled: rt.handled![id] ?? null });
+    },
   });
   const observeInput = z.object({
     action: z.enum(["subscribe", "unsubscribe", "replace", "list"]).describe("subscribe: add the thread; unsubscribe: remove it; replace: make it the only observer; list: show the current observers"),

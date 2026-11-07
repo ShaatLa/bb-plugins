@@ -19,7 +19,8 @@ export const signalSchema = z.object({
   since: timestamp, until: timestamp.nullable(), actor: actorSchema, open: z.boolean(),
 });
 
-export const handledSchema = z.object({ state: z.enum(["dismissed", "investigating"]), threadId: z.string().optional(), at: timestamp });
+/** Who deals with a problem. `ref` (fix_pending only): a PR number like "#12", a tracker key like "FIX-1" or a URL. `by` is absent on entries stored before 0.5.0. */
+export const handledSchema = z.object({ state: z.enum(["dismissed", "investigating", "fix_pending"]), threadId: z.string().optional(), ref: z.string().max(80).optional(), by: z.enum(["agent", "user"]).optional(), at: timestamp });
 export type Handled = z.infer<typeof handledSchema>;
 
 /** An open critical/warning job-level signal or a run-level alert, with who deals with it. Sorted most severe first, then newest. */
