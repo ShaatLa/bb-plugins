@@ -32,6 +32,7 @@ export interface Folder {
 export interface Project {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   id: string;
   name: string;
   prefix: string;
@@ -44,6 +45,8 @@ export interface Project {
 }
 
 export interface Task {
+  ordinaryVisible?: boolean;
+  scheduledRole?: "template" | "recurring_run" | "one_time_run";
   archivedAt?: string | null;
   id: string;
   projectId: string;
@@ -155,6 +158,7 @@ export interface CreateProjectInput {
 export interface UpdateProjectInput {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   name?: string;
   prefix?: string;
   color?: string;
@@ -196,6 +200,7 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters extends TaskDateFilters {
+  ordinaryOnly?: boolean;
   allowStaleCursor?: boolean;
   archive?: "active" | "archived" | "all";
   projectId?: string;

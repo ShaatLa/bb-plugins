@@ -3,8 +3,10 @@ import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { BoardView } from "../views/board/index.js";
 import { useProjects } from "./data.js";
 import { TasksRefreshProvider } from "./refresh.js";
-import { parseTasksRoute } from "./routes.js";
+import { parseTasksRoute, useTasksNavigation } from "./routes.js";
+import { ScheduledButton } from "./scheduled-button.js";
 import { loadLastProjectId } from "./view-preference.js";
+import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
 
@@ -16,6 +18,7 @@ export const KANBAN_TAB = {
 
 function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
+  const navigation = useTasksNavigation();
   const route = parseTasksRoute(subPath);
   const project = projects.data?.find((project) =>
     route.kind === "project" ? project.id === route.projectId :
@@ -31,12 +34,12 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   }
   return (
     <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 flex-1 truncate">{project.name}</span><LockChips projectId={project.id} /></header>
+      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 flex-1 truncate">{project.name}</span><LockChips projectId={project.id} /><ScheduledButton active={false} onClick={() => navigation.go({ kind: "scheduled", tab: "all" })} /></header>
       <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
     </section>
   );
 }
 
 export function KanbanPanel(props: PluginNavPanelProps) {
-  return <TasksRefreshProvider><TaskStatusesProvider><KanbanPanelContent {...props} /></TaskStatusesProvider></TasksRefreshProvider>;
+  return <DialogScope className="relative h-full min-h-0"><TasksRefreshProvider><TaskStatusesProvider><KanbanPanelContent {...props} /></TaskStatusesProvider></TasksRefreshProvider></DialogScope>;
 }

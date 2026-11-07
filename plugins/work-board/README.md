@@ -8,19 +8,31 @@ Daily cleanup removes orphan activity claims/queue markers and PR snapshots with
 
 **Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
-CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Export format remains v12. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v13. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 
 
 ## Task dependencies (0.22.0)
 
 Use the task's **Dependencies** section to add or remove **Blocked by / Blocks** links and search predecessors by key or title. Board cards and list rows show **Blocked** with the unfinished predecessors; task details retain satisfied links and their status. A predecessor satisfies its links only in **Done**. Canceled does not satisfy them, and reopening Done restores the warning. These are warnings: dispatch and status changes remain available, and workflow status is never replaced automatically.
 
-Agents can use `bb work-board dependency add ABC-2 --blocked-by ABC-1`, `dependency list ABC-2 --json`, and `dependency remove ABC-2 --blocked-by ABC-1`. `show --json` includes `dependencies` and `blocked`; `list --json` includes unresolved `blockedBy`. Dispatch prompts include the current blockers. Add/remove operations record history on both cards. Self-links and cycles are refused. Links currently stay within one project; moving a task family is allowed only if it carries all its dependency endpoints. Export v12 preserves outgoing dependency IDs; imports v1–v11 preserve existing local dependencies.
+Agents can use `bb work-board dependency add ABC-2 --blocked-by ABC-1`, `dependency list ABC-2 --json`, and `dependency remove ABC-2 --blocked-by ABC-1`. `show --json` includes `dependencies` and `blocked`; `list --json` includes unresolved `blockedBy`. Dispatch prompts include the current blockers. Add/remove operations record history on both cards. Self-links and cycles are refused. Links currently stay within one project; moving a task family is allowed only if it carries all its dependency endpoints. Exports preserve outgoing dependency IDs (introduced in v12); imports v1–v11 preserve existing local dependencies.
 
 Performance: activity consumers share bounded SDK reads and immutable dispatch attribution; Git sync batches attached sessions and shares post-merge pages within each run; archive capture batches SQL and limits JSON I/O while keeping blobs sequential; downloads revalidate privately with ETags and avoid an extra full-size buffer copy. Browser snapshot writes are coalesced and bounded, and PR overlap preparation is reused. Small English comments describe the resource invariants beside these paths.
 
 
 Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
+
+## Scheduled tasks CLI
+
+`bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
+handlers as the Scheduled page: `list`, `show`, `create`, `edit`, `reschedule`, `enable`/`pause`/`resume`,
+`delete --yes`, `preview`, `run-now`, `retry`, `cancel-queued`, `resolve`, `dismiss`, `runs`, `needs-attention`
+and `results`. Use `--daily|--weekly|--at` with `--time`, `--timezone` and `--days`, and `--thread` or `--preset`
+(`--rule`/`--target` accept the raw JSON). Schedules are addressable by UUID or by the key of their template or
+result task; the template key printed by `schedule show` works with ordinary task commands. Descriptions can be
+read with `--description-file` from the invoking machine. `--json` returns the contract objects with stable
+state enums and bounded pages (`--limit`, `--cursor`, `--all`). Scheduled templates and not-yet-started results
+stay out of the normal `list` unless `--include-scheduled` is passed. See `skills/work-board/SKILL.md` for the full guide.
 
 ## Project settings
 
@@ -54,7 +66,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 В настройках **Work Board → Open by default** выбирается стартовый экран: канбан последнего проекта (по умолчанию), список последнего проекта, все задачи или активные задачи. Последний выбранный проект запоминается на этом устройстве. Если он удалён, открывается первый доступный проект. Прямые ссылки продолжают открывать указанный в них экран.
 
-Кнопка **Open kanban in side panel** в заголовке проекта открывает вкладку **Kanban** справа, рядом с Browser и Terminal, а в основной области показывает список задач. Вкладка также доступна в панели напрямую. Доска следует за выбранным проектом, сохраняет перетаскивание карточек и обновляется вместе со списком задач.
+Переключатель **List / Board** в заголовке проекта (и задачи) управляет вкладкой **Kanban** справа: **Board** открывает её, **List** возвращает вкладку Navigation, не закрывая Browser, Terminal и саму панель. Состояние переключателя берётся из панели, поэтому смена вкладки или скрытие панели сразу обновляют его. Основная область всегда показывает список или задачу, так что задачу можно читать рядом с доской. В заголовке доски есть кнопка **Scheduled**, она открывает расписание в основной области. Доска следует за выбранным проектом, сохраняет перетаскивание карточек и обновляется вместе со списком задач.
 
 Вкладка **Work Board** в правой панели треда по умолчанию показывает доску проекта Work Board, связанного с BB-проектом этого треда. Карточки на доске и новые задачи открываются в той же вкладке; **Back to project board** возвращает к доске. Ключ и кнопка назад находятся в заголовке самой карточки, над названием; кнопка копирования стоит рядом с ключом и копирует только ключ; отдельная верхняя полоса задачи в боковой панели не занимает место. Открытие конкретной задачи из сообщения сохраняется. Стрелка в заголовке открывает доску или задачу в основном разделе Work Board. Если связь проектов отсутствует, панель предлагает **Manage projects**, не подменяя её последним просмотренным проектом.
 
@@ -65,7 +77,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v12**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v12).
+Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v13**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v13).
 
 Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
 
@@ -547,7 +559,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v12; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v12 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v13; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
 
 ## Dispatch и иерархия тредов
 

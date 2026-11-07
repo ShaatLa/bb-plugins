@@ -19,6 +19,7 @@ import {
   AgentNotificationControl,
   AttachmentTracks,
   agentNotificationTarget,
+  CommentCard,
   CommentComposer,
 } from "./task-activity.js";
 
@@ -33,6 +34,10 @@ vi.mock("../../shell/data.js", () => ({
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
   useBbNavigate: () => ({ toThread: vi.fn() }),
+  // The host renders Markdown; the stub exposes the source it was given.
+  Markdown: ({ content }: { content: string }) => (
+    <div data-testid="markdown">{content}</div>
+  ),
 }));
 
 vi.mock("../../editor/tasks-editor.js", () => ({
@@ -78,6 +83,29 @@ function comment(
     provider: null,
   };
 }
+
+describe("CommentCard thread links", () => {
+  it("hands the host Markdown a native thread mention for a same-origin thread URL only", () => {
+    const body = [
+      `${window.location.origin}/projects/proj_example1/threads/thr_example1`,
+      "https://example.com/projects/proj_example1/threads/thr_example1",
+      "https://example.com/docs",
+    ].join("\n");
+    render(
+      <CommentCard
+        entry={{ comment: { ...comment("user"), body }, attachments: [] }}
+        nowMs={Date.parse("2026-07-15T00:01:00.000Z")}
+      />,
+    );
+    expect(screen.getByTestId("markdown").textContent).toBe(
+      [
+        "@thread:thr_example1",
+        "https://example.com/projects/proj_example1/threads/thr_example1",
+        "https://example.com/docs",
+      ].join("\n"),
+    );
+  });
+});
 
 describe("AttachmentTracks", () => {
   const attachment = (

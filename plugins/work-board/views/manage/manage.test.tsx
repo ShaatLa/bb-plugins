@@ -131,6 +131,7 @@ describe("NewTaskDialog", () => {
         },
       );
       fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+      fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
       fireEvent.change(await slot.findByLabelText("Task title"), {
         target: { value: "Task assigned from the dialog" },
       });
@@ -188,7 +189,6 @@ describe("NewTaskDialog", () => {
       expected: { status: "in_progress" },
     },
     { field: "Priority", option: "High", expected: { priority: "high" } },
-    { field: "Type", option: "Epic", expected: { type: "epic", epicId: null } },
   ])(
     "keeps the compact task form accessible while choosing $field",
     async ({ field, option: optionName, expected }) => {
@@ -232,6 +232,7 @@ describe("NewTaskDialog", () => {
           },
         );
         fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+        fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
         const title = await slot.findByLabelText("Task title");
         fireEvent.change(title, { target: { value: "Keep this draft open" } });
         fireEvent.click(slot.getByLabelText(field));
@@ -246,7 +247,7 @@ describe("NewTaskDialog", () => {
           ).toBe("Keep this draft open"),
         );
         const createButton = slot.getByRole("button", {
-          name: field === "Type" ? "Create epic" : "Create task",
+          name: "Create task",
         });
         await waitFor(() =>
           expect(createButton).toHaveProperty("disabled", false),
@@ -311,6 +312,7 @@ describe("NewTaskDialog", () => {
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Keyboard submission" },
     });
@@ -346,6 +348,7 @@ describe("NewTaskDialog", () => {
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     const title = await slot.findByLabelText("Task title");
     fireEvent.change(title, { target: { value: "  Ship the dialog  " } });
     fireEvent.click(slot.getByRole("button", { name: "Create task" }));
@@ -391,6 +394,7 @@ describe("NewTaskDialog", () => {
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.click(await slot.findByRole("checkbox", { name: "Create more" }));
     const title = await slot.findByLabelText("Task title");
     fireEvent.change(title, { target: { value: "First" } });
@@ -425,6 +429,7 @@ describe("NewTaskDialog", () => {
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Nested" },
     });
@@ -471,6 +476,7 @@ describe("NewTaskDialog", () => {
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.click(await slot.findByRole("button", { name: /Labels/ }));
     const search = await slot.findByPlaceholderText("Add labels…");
     fireEvent.change(search, { target: { value: "  dank  " } });
@@ -511,10 +517,11 @@ describe("NewTaskDialog drafts", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(slot.queryByLabelText("Task title")).toBeNull());
     fireEvent.click(slot.getAllByRole("button", { name: /New task/ })[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     return (await slot.findByLabelText("Task title")) as HTMLInputElement;
   }
 
-  it("restores an unsaved draft after the dialog is dismissed", async () => {
+  it("starts fresh after the dialog is dismissed and keeps nothing in localStorage", async () => {
     const createCalls: Array<Record<string, unknown>> = [];
     const slot = renderSlot(
       app.navPanels[0]!,
@@ -522,67 +529,23 @@ describe("NewTaskDialog drafts", () => {
       { rpc: draftRpc(createCalls) },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Twenty minutes of drafting" },
     });
+    expect(window.localStorage.getItem(NEW_TASK_DRAFT_STORAGE_KEY)).toBeNull();
 
     const title = await reopen(slot);
-    expect(title.value).toBe("Twenty minutes of drafting");
+    expect(title.value).toBe("");
+    expect(createCalls).toEqual([]);
 
+    fireEvent.change(title, { target: { value: "Second attempt" } });
     fireEvent.click(slot.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(createCalls).toHaveLength(1));
-    expect(createCalls[0]).toMatchObject({
-      title: "Twenty minutes of drafting",
-    });
-    expect(window.localStorage.getItem(NEW_TASK_DRAFT_STORAGE_KEY)).toBeNull();
+    expect(createCalls[0]).toMatchObject({ title: "Second attempt" });
   });
 
-  it("keeps the default project and labels when reopened from another project", async () => {
-    const createCalls: Array<Record<string, unknown>> = [];
-    const otherProject = {
-      ...project,
-      id: "01HZZZZZZZZZZZZZZZZZZZZZP2",
-      name: "Personal",
-      prefix: "HOME",
-    };
-    const label = {
-      id: "01HZZZZZZZZZZZZZZZZZZZZZL1",
-      projectId: PROJECT_ID,
-      name: "Automation",
-      color: "blue",
-    };
-    const rpc = {
-      ...draftRpc(createCalls),
-      listProjects: () => ({ projects: [project, otherProject] }),
-      listLabels: (raw: unknown) => ({
-        labels: rpcInput(raw).projectId === PROJECT_ID ? [label] : [],
-      }),
-    };
-    const initial = renderSlot(app.navPanels[0]!, { subPath: "all" }, { rpc });
-    fireEvent.click(await initial.findByRole("button", { name: /New task/ }));
-    fireEvent.change(await initial.findByLabelText("Task title"), {
-      target: { value: "Preserve my project" },
-    });
-    fireEvent.click(initial.getByRole("button", { name: "Labels" }));
-    fireEvent.click(await initial.findByRole("option", { name: "Automation" }));
-    initial.unmount();
-    const restored = renderSlot(
-      app.navPanels[0]!,
-      { subPath: otherProject.id },
-      { rpc },
-    );
-    fireEvent.click(await restored.findByRole("button", { name: /New task/ }));
-    await restored.findByLabelText("Task title");
-    fireEvent.click(restored.getByRole("button", { name: "Create task" }));
-    await waitFor(() => expect(createCalls).toHaveLength(1));
-    expect(createCalls[0]).toMatchObject({
-      projectId: PROJECT_ID,
-      labelIds: [label.id],
-      title: "Preserve my project",
-    });
-  });
-
-  it("persists the default project when projects load after typing begins", async () => {
+  it("submits to the default project when projects load after typing begins", async () => {
     let resolveProjects: (value: {
       projects: (typeof project)[];
     }) => void = () => {};
@@ -591,81 +554,32 @@ describe("NewTaskDialog drafts", () => {
         resolveProjects = resolve;
       },
     );
+    const createCalls: Array<Record<string, unknown>> = [];
     const slot = renderSlot(
       app.navPanels[0]!,
       { subPath: "all" },
       {
         rpc: {
-          ...draftRpc([]),
+          ...draftRpc(createCalls),
           listProjects: () => projects,
         },
       },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Started before projects loaded" },
     });
     resolveProjects({ projects: [project] });
-    await waitFor(() =>
-      expect(
-        JSON.parse(window.localStorage.getItem(NEW_TASK_DRAFT_STORAGE_KEY)!),
-      ).toMatchObject({
-        projectId: PROJECT_ID,
-        title: "Started before projects loaded",
-      }),
-    );
+    const create = slot.getByRole("button", { name: "Create task" });
+    await waitFor(() => expect(create).toHaveProperty("disabled", false));
+    fireEvent.click(create);
+    await waitFor(() => expect(createCalls).toHaveLength(1));
+    expect(createCalls[0]).toMatchObject({
+      projectId: PROJECT_ID,
+      title: "Started before projects loaded",
+    });
   });
-
-  it.each(["project", "label"])(
-    "drops a restored label when its %s was deleted",
-    async (removed) => {
-      const createCalls: Array<Record<string, unknown>> = [];
-      const otherProject = {
-        ...project,
-        id: "01HZZZZZZZZZZZZZZZZZZZZZP2",
-        name: "Personal",
-        prefix: "HOME",
-      };
-      window.localStorage.setItem(
-        NEW_TASK_DRAFT_STORAGE_KEY,
-        JSON.stringify({
-          version: 1,
-          projectId: PROJECT_ID,
-          title: "Recovered draft",
-          description: "Keep this body",
-          status: "todo",
-          priority: "none",
-          labelIds: ["01HZZZZZZZZZZZZZZZZZZZZZL1"],
-          dueDate: "",
-        }),
-      );
-      const slot = renderSlot(
-        app.navPanels[0]!,
-        { subPath: otherProject.id },
-        {
-          rpc: {
-            ...draftRpc(createCalls),
-            listProjects: () => ({
-              projects:
-                removed === "project"
-                  ? [otherProject]
-                  : [project, otherProject],
-            }),
-          },
-        },
-      );
-      fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
-      await slot.findByLabelText("Task title");
-      fireEvent.click(slot.getByRole("button", { name: "Create task" }));
-      await waitFor(() => expect(createCalls).toHaveLength(1));
-      expect(createCalls[0]).toMatchObject({
-        projectId: removed === "project" ? otherProject.id : PROJECT_ID,
-        labelIds: [],
-        title: "Recovered draft",
-        description: "Keep this body",
-      });
-    },
-  );
 
   it("starts empty after Discard draft", async () => {
     const slot = renderSlot(
@@ -674,6 +588,7 @@ describe("NewTaskDialog drafts", () => {
       { rpc: draftRpc([]) },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     fireEvent.change(await slot.findByLabelText("Task title"), {
       target: { value: "Throwaway" },
     });
@@ -687,10 +602,10 @@ describe("NewTaskDialog drafts", () => {
     expect(title.value).toBe("");
   });
 
-  it("ignores a stored draft whose shape does not match", async () => {
+  it("ignores and purges a legacy stored draft", async () => {
     window.localStorage.setItem(
       NEW_TASK_DRAFT_STORAGE_KEY,
-      JSON.stringify({ version: 1, title: "Partial", status: "nope" }),
+      JSON.stringify({ version: 1, projectId: PROJECT_ID, title: "Legacy", status: "todo" }),
     );
     const slot = renderSlot(
       app.navPanels[0]!,
@@ -698,10 +613,12 @@ describe("NewTaskDialog drafts", () => {
       { rpc: draftRpc([]) },
     );
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     const title = (await slot.findByLabelText(
       "Task title",
     )) as HTMLInputElement;
     expect(title.value).toBe("");
+    expect(window.localStorage.getItem(NEW_TASK_DRAFT_STORAGE_KEY)).toBeNull();
   });
 });
 
@@ -765,6 +682,7 @@ describe("NewTaskDialog attachments", () => {
     title: string,
   ) => {
     fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
+    fireEvent.click(await slot.findByRole("button", { name: /^Task\b/ }));
     const titleInput = await slot.findByLabelText("Task title");
     fireEvent.change(titleInput, { target: { value: title } });
     return titleInput;

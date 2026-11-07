@@ -479,6 +479,9 @@ describe("Task embed panel", () => {
       },
     });
     fireEvent.click(await slot.findByRole("button", { name: "New Todo task" }));
+    expect((await slot.findByRole("dialog")).closest("[data-dialog-scope]")).toBeTruthy();
+    // The New task dialog opens on a kind chooser; pick plain Task.
+    fireEvent.click(await slot.findByRole("button", { name: "Task" }));
     fireEvent.change(await slot.findByLabelText("Task title"), { target: { value: created.title } });
     const submit = slot.getByRole("button", { name: "Create task" });
     await waitFor(() => expect(submit).toHaveProperty("disabled", false));

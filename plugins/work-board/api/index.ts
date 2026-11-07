@@ -1,3 +1,5 @@
+import { observeStatusNotifications } from "../status-notifications";
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
 import { activityService } from "../activity/index.js";
@@ -81,6 +83,7 @@ export interface TasksApiStore {
 export function createStore(bb: BbPluginApi): TasksApiStore {
   const database = bb.storage.database();
   const tasks = createTasksStore(database);
+  observeStatusNotifications(bb, tasks);
 
   return {
     tasks,
@@ -116,7 +119,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
           .prepare<
             [string],
             CountRow
-          >("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?")
+          >(`SELECT COUNT(*) AS count FROM tasks t WHERE project_id = ? AND ${ordinaryTaskVisibilitySql()}`)
           .get(projectId)?.count ?? 0
       );
     },
@@ -140,7 +143,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
             `
               SELECT COUNT(*) AS count
               FROM tasks
-              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled')
+              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled') AND ${ordinaryTaskVisibilitySql('tasks')}
             `,
           )
           .get()?.count ?? 0
@@ -158,7 +161,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
               END) AS active_agent_count
             FROM projects p
             LEFT JOIN tasks t
-              ON t.project_id = p.id AND t.archived_at IS NULL
+              ON t.project_id = p.id AND t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}
               AND t.parent_task_id IS NULL
             LEFT JOIN task_threads tt ON tt.task_id = t.id
             GROUP BY p.id
@@ -197,6 +200,8 @@ export function publishTasksChanged(
 ): void {
   const payload: TasksChangedEvent = { taskId, projectId };
   bb.realtime.publish("tasks:changed", payload);
+  if (bb.storage.database().prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=?").get(taskId))
+    bb.realtime.publish("schedules:changed", { projectId });
   // A predecessor's status/key changes must refresh its neighbours without board-wide polling.
   const neighbours = bb.storage.database().prepare<[string, string, string], { taskId: string; projectId: string }>(`
     SELECT DISTINCT t.id AS taskId, t.project_id AS projectId FROM task_dependencies d JOIN tasks t
@@ -973,6 +978,7 @@ export function registerHandlers(
     },
     listTasks(input) {
       const page = store.tasks.listTasksPage({
+        ordinaryOnly: !input.includeScheduled,
         archive: input.archive,
         dateField: input.dateField,
         dateFrom: input.dateFrom,

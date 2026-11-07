@@ -51,6 +51,60 @@ New records merge by ID; conflicting existing values require explicit `--overwri
 Pull and import repository changes before exporting BB changes. Neither command commits or pushes Git changes, runs agents, nor restores full BB chats, external PR contents, global presets or account settings.
 Paths target the invoking thread's machine, otherwise the server; `--machine <id-or-name>` selects another enrolled host. Add `--json` for a bounded machine-readable result.
 
+## Scheduled tasks
+
+A schedule is a **template task** plus a recurrence and an execution target. Every firing creates a
+separate **result task** cloned from the template (title, description, priority, labels, attachments,
+dependencies; not past comments). Template and not-yet-started results are hidden from ordinary
+`list`/board/counts; direct lookup by key always works, `bb work-board list --include-scheduled` shows
+them, and `schedule results` lists them by durable source (also after history cleanup or schedule deletion).
+Use the ordinary task commands (`show`, `comment`, `attachment`, `question`, `dependency`, `evidence`)
+on the template key printed by `schedule show` and on result keys. Do not touch the database.
+
+Every `<schedule>` argument accepts the schedule UUID, or the key/ULID of its template or any result task;
+run arguments are run UUIDs from `schedule runs`. `--project` takes a tracker prefix such as `OPS`.
+
+```sh
+bb work-board schedule create --project OPS --title "Morning check" --weekly --days mon,wed,fri \
+  --time 09:00 --timezone Europe/Kyiv --thread thr_abc --dependency OPS-12 --description-file brief.md
+bb work-board schedule create --project OPS --title "Nightly sweep" --daily --time 02:00 --tz UTC --preset Nightly
+bb work-board schedule create --project OPS --title "Release day" --at 2026-12-01 --time 10:00 --timezone Europe/Kyiv --thread current
+bb work-board schedule preview --weekly --days mon --time 09:00 --tz UTC --count 5
+```
+
+- **Recurrence** (exactly one on create): `--daily --time HH:MM`, `--weekly --days mon,wed --time HH:MM`
+  (names or 0-6, Sunday=0), `--at YYYY-MM-DD --time HH:MM` (also `--at YYYY-MM-DDTHH:MM`, or a full ISO instant
+  with offset), always with `--timezone <IANA>`. Daylight-saving gaps are refused, a folded hour picks the
+  earlier instant. `--rule <json>` takes the full contract object instead (advanced).
+- **Target** (exactly one): `--thread thr_ID` (or `current`) queues in that thread while it is busy and waits
+  without timeout; an archived/deleted/unavailable thread is recorded as a failure, never replaced.
+  `--preset NAME` starts a NEW session and reads the preset's CURRENT settings at every attempt; a missing
+  preset/environment is an error, never a silent substitute. `--target <json>` is the raw form. An imported
+  schedule has target `unassigned` and stays paused: choose one with `schedule edit <schedule> --thread|--preset`
+  before `resume`/`enable` (the CLI refuses earlier).
+- **Description**: `--description <md>` or `--description-file path` (`--body-file` alias); the file is read on the
+  invoking machine through the SDK (`--machine` selects another enrolled host), never from a server path.
+  `--dependency OPS-12,OPS-13` (keys or ULIDs) are warnings only, as for ordinary tasks; `--priority`; `--paused`.
+
+Manage (`--json` on everything; mutations return the contract object):
+
+| Goal | Command |
+|---|---|
+| browse / search | `schedule list [--project P] [--search q] [--needs-attention] [--limit 1-100] [--cursor c \| --all]` |
+| inspect | `schedule show <schedule>` (template key, target explanation, next run in its timezone, overlap links, recent runs) |
+| change | `schedule edit <schedule> [--title ..] [--description-file ..] [--priority ..] [--dependency .. \| --clear-dependencies] [recurrence flags] [target flags]`; time/timezone/days alone modify the current recurrence; affects future runs only |
+| recurrence only | `schedule reschedule <schedule> --time 10:30` (use `retry` to redo a missed run) |
+| stop / start | `schedule pause`, `schedule resume` (= `enable`): pause stops future firings only; running work and an accepted queue are untouched; resume picks the next future slot, no replay |
+| remove | `schedule delete <schedule> --yes`: real deletion; pending queued runs are canceled first and a failed cancel is reported; past results and incidents stay |
+| run | `schedule run-now <schedule> [--idempotency-key K]` (overlap is advisory only) |
+| incidents | `schedule needs-attention`, `schedule runs [--schedule S]`, `schedule retry <run> [--idempotency-key K]`, `schedule cancel-queued <run>`, `schedule resolve <run> --note ..`, `schedule dismiss <run> [--note ..]` |
+| results | `schedule results [--schedule S] [--search q]` |
+
+`run-now`/`retry` print the idempotency key (generated when omitted); pass your own key and repeat it after a
+timeout: the same key never sends twice. A `delivery_unknown` run may already have executed; check the
+thread before `retry`. Paging: every list returns `nextCursor`; `--all` follows it (at most 50 pages).
+Run history is trimmed after 30 days (resolved incidents after 7); tasks, comments and attachments never are.
+
 ## Work a task
 
 1. Find and read the task before acting:
@@ -208,7 +262,7 @@ Settings → Work Board → General exposes the shared `defaultScreen`: `last-pr
 
 ## Kanban in the side panel
 
-On the Tasks page, use the project header's `Open kanban in side panel` button to select the native `Kanban` tab beside Browser and Terminal while showing the project list in the main area. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. Board edits and task changes refresh both views through realtime. Opening is an explicit action, with no separate auto-open setting.
+On the Tasks page the project (and task) header's `List | Board` toggle drives the native `Kanban` tab beside Browser and Terminal: `Board` selects it, `List` selects the native `Navigation` tab without closing other tabs or the panel. The toggle always mirrors the panel (another tab or a hidden panel reads as `List`); the main area keeps showing the list or task. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. The board header has a `Scheduled` button that opens Scheduled in the main area. Board edits and task changes refresh both views through realtime.
 
 ## Default existing thread
 
@@ -240,7 +294,7 @@ Exclude workflow statuses with `bb work-board list --project ABC --exclude-statu
 
 Settings → Task statuses lets owners select a status icon from 20 existing glyphs, or Default to remove the override. The optional `icon` field uses IDs validated by `shared/statuses.ts`; preserve it when replacing a workflow. The color picker offers 10 palette values, without a Default swatch. The optional `color` field still accepts all 11 values in `shared/colors.ts` so existing Teal selections remain readable; omitting the field uses the theme color. Preserve both fields when replacing workflows. Icons and colors are project-specific presentation and do not change completion semantics.
 
-Discover status IDs with `bb work-board project show PREFIX --json` (`project.statuses`, ordered `{id,name,icon?,color?}` array). Use IDs with `create/update --status`, `list --status` and `--exclude-status`; names are editable labels. `project update PREFIX --statuses-file PATH [--machine HOST]` replaces the complete array from the invoking machine. Keep all six system IDs. Custom IDs use `[a-z][a-z0-9_]{0,63}` and are open stages; only `done` completes and `canceled` cancels. Removing a status in use is rejected. Moving an epic/task between projects requires all its current status IDs in the destination. Archive v6 persists the workflow; v1–v5 import as the original workflow. API list filters also accept `excludeStatuses`; inclusion and exclusion are combined.
+Discover status IDs with `bb work-board project show PREFIX --json` (`project.statuses`, ordered `{id,name,icon?,color?}` array). Use IDs with `create/update --status`, `list --status` and `--exclude-status`; names are editable labels. `project update PREFIX --statuses-file PATH [--machine HOST]` replaces the complete array from the invoking machine. `project update PREFIX --status-notifications off|all|done` controls status change pushes. Keep all six system IDs. Custom IDs use `[a-z][a-z0-9_]{0,63}` and are open stages; only `done` completes and `canceled` cancels. Removing a status in use is rejected. Moving an epic/task between projects requires all its current status IDs in the destination. Archive v6 persists the workflow; v1–v5 import as the original workflow. API list filters also accept `excludeStatuses`; inclusion and exclusion are combined.
 
 
 ## Worker assignment recovery (0.7.2)
@@ -316,7 +370,7 @@ Created/active events attach immediately; metadata/thread reads also discover cu
 
 Read `bb work-board dependency list KEY --json` before starting a task. Add `bb work-board dependency add ABC-2 --blocked-by ABC-1`; remove with `dependency remove ABC-2 --blocked-by ABC-1`. Reverse the keys to express Blocks instead. Only the predecessor's Done status satisfies a link; Canceled stays unresolved, and reopening restores the warning. These links warn; they never forbid dispatch or status changes. Respect the ordering and report blockers instead of assuming a permitted command means the task is ready. `show --json` provides `dependencies: {blockedBy, blocks}` and `blocked`; `list --json` adds unresolved `blockedBy`. Dispatch context includes unresolved predecessors. Both endpoints receive a system history comment on add/remove.
 
-Use the Dependencies section in the task UI to search/add/remove links or open either endpoint. Board/list Blocked badges identify unfinished predecessors. Links are within one project; self-links and cycles are rejected. Move all connected endpoints together in a task family or remove the links before a project move. Export v12 stores each task's outgoing dependency IDs, validates the graph and restores it atomically. Older imports preserve local links; conflicting imported sets need --overwrite. No merge condition or automatic workflow moves are inferred.
+Use the Dependencies section in the task UI to search/add/remove links or open either endpoint. Board/list Blocked badges identify unfinished predecessors. Links are within one project; self-links and cycles are rejected. Move all connected endpoints together in a task family or remove the links before a project move. Exports store each task's outgoing dependency IDs, validates the graph and restores it atomically. Older imports preserve local links; conflicting imported sets need --overwrite. No merge condition or automatic workflow moves are inferred.
 
 
 ## Storage maintenance (0.22.2)
@@ -326,3 +380,21 @@ Use `bb work-board storage status --json` for plugin-owned disk usage, unreachab
 Cleanup preserves accessible/archived tasks, comments/evidence, attachments, questions, dependencies, PR links and rediscovery exclusions. It deletes only unreferenced managed blobs after a 24h grace period and unreachable transient activity/PR cache rows. Active uploads/imports are protected, symlinks skipped, missing metadata retained for recovery. Hard-linked blob paths are immutable: imports/replacements must write a fresh unique path, never modify a committed path in place. Filesystems without hard-link support retain the original files. SQLite uses bounded incremental vacuum after initial optimization (fresh databases support it immediately). External exports, release directories, BB logs and backups belong to their owners and are not pruned.
 
 `bb work-board list --json` and `show KEY --json` include `advisories`: `merged-predecessor` (an unresolved predecessor with fresh confirmed delivery merge evidence) and `no-live-session` (Agent task in_progress, complete activity data, zero live attached sessions). Inspect the supplied PR, merge SHA, checkedAt/validUntil, retained last attachment and task activity. Expired or incomplete evidence is unknown. Check criteria or remaining work before marking a predecessor Done; consider reassignment/queueing for a sessionless task. Advice never changes status/dependencies or notifies anyone; only Done satisfies dependencies.
+
+Scheduled snapshots use archive v13; imports still accept v1–v12. Imported schedules are paused and unassigned, and retained runs are non-operational history. Choose a target explicitly before enabling. Unknown delivery is never retried automatically: dispatch-to-accept handoffs have a two-minute settling window; investigate the session before resolving an uncertain outcome. Resolved errors expire after seven days, successful history after 30; results and task content are preserved independently.
+
+## Status push notifications
+
+Settings → select a project → Archiving and activity → Task status notifications applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. UI, CLI and agent updates use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
+
+
+## Assignment and abandonment
+
+Assign an existing session without dispatching with `bb work-board attach KEY --thread thr_ID`; remove responsibility with `detach`, inspect with `threads`. In the task UI, **Assign thread** performs the same operation without sending messages or changing workflow status. Multiple collaborators are supported and existing links remain intact. A live idle session is **Assigned**, an executing one is **Working**. Go to thread opens it; new-session dispatch is hidden while assigned. The project default dispatch thread is a preference, not an assignment. Creators/requesters and comment authors are not silently assigned.
+
+Abandoned requires recorded work AND a confirmed lost assignment (archived/deleted/missing or explicitly detached), no remaining session, complete provider diagnostics, and an unfinished agent task. Comments alone never establish that a task was taken. Unknown provider state is not abandonment. Existing legacy cards without an assignment can be assigned explicitly; task comments are preserved.
+
+
+## Sharing task context
+
+The UI Share button copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status. A scheduled task shares its template key; agents can inspect/change it with `schedule show KEY` and `schedule edit KEY`, and use ordinary task commands for attachments/questions/comments. Selected scheduled targets display the thread title; an unavailable thread is not silently replaced.
