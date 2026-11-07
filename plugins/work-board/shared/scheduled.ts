@@ -11,6 +11,7 @@ export const recurrenceSchema = z.discriminatedUnion("kind", [
 ]);
 export type Recurrence = z.infer<typeof recurrenceSchema>;
 export const scheduleTargetSchema = z.discriminatedUnion("kind", [
+  z.object({kind:z.literal("unassigned")}).strict(),
   z.object({kind:z.literal("thread"),threadId:z.string().regex(/^thr_[A-Za-z0-9_-]+$/)}).strict(),
   z.object({kind:z.literal("preset"),presetId:idSchema}).strict(),
 ]);

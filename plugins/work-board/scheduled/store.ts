@@ -35,6 +35,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
  const source=(taskId:string):ScheduleSource|null=>{const row=db.prepare<[string],SourceRow>("SELECT * FROM task_scheduled_sources WHERE task_id=?").get(taskId);return row?sourceFromRow(row):null;};
  function create(raw:z.input<typeof createScheduleInputSchema>,now=new Date()) {
   const input=createScheduleInputSchema.parse(raw);
+  if(input.enabled&&input.target.kind==="unassigned")throw new Error("Choose an execution target before enabling this schedule");
   return store.transaction(()=>{
    if(input.enabled&&input.rule.kind==="once"&&new Date(input.rule.at)<new Date(now.valueOf()-30*60_000))throw new Error("One-time date is more than 30 minutes in the past");
    const task=store.tasks.createTask({projectId:input.projectId,title:input.title,description:input.description,priority:input.priority,executionTarget:"agent"});
@@ -50,6 +51,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
   const input=updateScheduleInputSchema.parse(raw);
   return store.transaction(()=>{
    const current=get(input.scheduleId),rule=input.rule??current.rule,enabled=input.enabled??current.enabled;
+   if(enabled&&(input.target??current.target).kind==="unassigned")throw new Error("Choose an execution target before enabling this schedule");
    store.tasks.updateTask(current.templateTaskId,{...(input.title===undefined?{}:{title:input.title}),...(input.description===undefined?{}:{description:input.description}),...(input.priority===undefined?{}:{priority:input.priority})});
    if(input.dependencyIds!==undefined)replaceDependencies(current.templateTaskId,input.dependencyIds);
    let due=current.nextDueAt;

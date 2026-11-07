@@ -1324,6 +1324,9 @@ export function createTasksStore(db: PluginDatabase) {
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
+      const scheduled = db.prepare<[string], { role: string }>("SELECT role FROM task_scheduled_sources WHERE task_id=?").get(id);
+      if (scheduled?.role === "template" && (input.status !== undefined || input.executionTarget === "owner" || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
+        throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
       validateTaskStatus(current.projectId, status);
       const parentTaskId =
@@ -1417,6 +1420,8 @@ export function createTasksStore(db: PluginDatabase) {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
+      if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=?").get(id))
+        throw new Error("Scheduled tasks keep their source project; create a schedule in the target project instead");
       const source = requireProject(root.projectId);
       const members =
         root.type === "epic" ? listTasks({ epicId: root.id }) : [];
@@ -1627,6 +1632,8 @@ export function createTasksStore(db: PluginDatabase) {
 
   const setTaskArchived = db.transaction((id: string, archived: boolean): Task[] => {
     const root = requireTask(id);
+    if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=? AND role='template'").get(id))
+      throw new Error("Pause or delete the schedule in Scheduled settings instead of archiving its template");
     if (archived && root.archivedAt || !archived && !root.archivedAt) return [];
     const parentId = root.parentTaskId ?? root.epicId;
     if (!archived && parentId && requireTask(parentId).archivedAt)
@@ -1645,6 +1652,7 @@ export function createTasksStore(db: PluginDatabase) {
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
+      if (db.prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=? AND role='template'").get(task.id)) continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||
@@ -1665,6 +1673,10 @@ export function createTasksStore(db: PluginDatabase) {
   });
 
   function deleteTask(id: string): boolean {
+    if (db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?").get(id))
+      throw new Error("Delete the schedule in Scheduled settings instead of deleting its template");
+    if (db.prepare("SELECT 1 FROM task_scheduled_sources ss JOIN task_schedule_runs r ON r.id=ss.run_id WHERE ss.task_id=? AND ss.role<>'template' AND ss.started_at IS NULL AND r.state IN ('starting','queued','delivery_unknown','cancel_pending')").get(id))
+      throw new Error("Cancel the pending scheduled run before deleting its task");
     return (
       db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(id).changes > 0
     );
