@@ -1,30 +1,24 @@
 ---
 name: slots
-description: "Coordinate heavy local jobs through Slots leases, launch gates and dev-server ports."
+description: "Request local resource leases for full Vitest, Go race, PG containers, headless geometry or local LLM work."
 ---
 
-# Slots
+Request before heavy work: `bb slots request --pool heavy --job "..." --est 35m`.
+Use `--pool local-model` for LLM inference. Add `--wait --timeout 30m` in a
+background shell run, or wait idle for the grant message. Tools `slots_request`
+and peers return immediately; notifications wake idle threads. One request or
+lease per thread/pool. All commands support `--json`.
 
-This 0.1.0 package contains the pure engine only. The commands below describe the
-planned adapter workflow; no CLI or agent tools are registered in this phase.
+Before EACH launch, run `bb slots gate` as a separate tool/shell step and inspect
+the result. Launch only if it passes. NEVER run `bb slots gate && launch` or put
+the gate and launch in the same command. A lease alone is not a passing gate.
 
-Request a `heavy` slot before full suites, race tests, containers or browser jobs.
-Request `local-model` for local inference; that pool also uses the host gate.
-Provide a job description and a realistic estimate. Await the grant notification
-before starting. After the adapter lands, the command will be:
+On an expiry warning, run `bb slots heartbeat` if still working. Release promptly
+with `bb slots release [lease-or-request]`; no ID also cancels queued requests.
+Use `bb slots port` for dev servers. Transfer to a QA child with
+`bb slots transfer --to <thread> [--lease <id>]`; child release returns the lease.
 
-```sh
-bb slots request --pool heavy --job "full test suite" --est 35m --wait
-```
-
-Before EVERY launch, run `bb slots gate` as a separate operation. Inspect its
-result and launch only after it passes. Never chain the gate into the launch
-command. Passing once does not cover subsequent launches under a long lease.
-
-Heartbeat while holding a lease (`bb slots heartbeat`); respond to the expiry
-warning with a heartbeat if still working. Release promptly with
-`bb slots release [lease]`. An owner can transfer its lease to a verified child
-with `bb slots transfer --to <thread>`; child release returns it to the owner.
-Use `bb slots port` for an allocated dev-server port; it is released with the
-last held lease. Manager priority, grant, revoke and capacity controls do not
-replace the launch gate. All future operations support JSON output.
+Manager commands: `prioritize <req> --priority high|urgent|normal`,
+`revoke <lease> --reason "..."`, `grant <req>` (no force),
+`capacity --pool heavy 4`. Inspect `status` and `log --since 2h --limit 100`.
+Manager commands are unrestricted. V1 supports only the BB server host.

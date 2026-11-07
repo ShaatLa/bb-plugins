@@ -1,9 +1,99 @@
 # Slots
 
-Slots 0.1.0 is the pure core and package scaffold for an advisory resource manager
-for heavy local jobs. It never kills processes. This phase registers no UI, RPC,
-CLI, timers, metrics probes or storage; those adapters are subsequent work.
-Requires BB 0.49.0+ and Plugin SDK 0.6.132+ (the SDK shipped by BB 0.49.0).
+Advisory resource pools for heavy jobs on the BB server machine. Requires BB
+0.49.0+ and SDK 0.6.132+. Slots coordinates agents; it never kills or inspects
+processes, reads environment values, or guarantees exclusive machine access.
+Manager commands are unrestricted in v1. Threads on other hosts are refused.
+
+## Commands
+
+Every command supports `--json`. Caller identity defaults to the CLI context's
+BB_THREAD_ID; holder commands also accept `--thread <id>`.
+
+```sh
+bb slots request --pool heavy --job "full Vitest" --est 35m --priority normal --wait --timeout 30m
+bb slots gate
+bb slots heartbeat
+bb slots release [lease-or-request]
+bb slots status
+bb slots transfer --to <child-thread> [--lease <id>]
+bb slots port
+bb slots prioritize <request> --priority high
+bb slots revoke <lease> --reason "job canceled"
+bb slots grant <request>
+bb slots capacity --pool heavy 4
+bb slots log --since 2h --limit 100 --json
+```
+
+Request returns immediately unless `--wait` is present. Waiting polls every 3s,
+withdraws the queued request on timeout/disconnect and exits 1. Default timeout
+is 30m; maximum 60m (BB's CLI headers timeout is 65m). Tools return immediately;
+grant messages wake idle threads. Tool names are `slots_request`, `slots_release`,
+`slots_heartbeat`, `slots_gate`, `slots_status`, `slots_transfer`, `slots_port`,
+`slots_prioritize`, `slots_revoke`, `slots_grant`, `slots_setCapacity`, `slots_log`.
+The native tools are enabled alongside the bundled `slots` skill.
+
+`gate` samples freshly and exits 1 when the reading fails; it prints readings
+and thresholds. Always check it as a separate step before each launch. Never
+chain gate and launch in one shell command. Two consecutive passing samples
+spaced 15s apart are required for automatic grants; every grant resets the
+streak. Manual grant bypasses queue order and streak, but checks a fresh sample
+and capacity. There is no force option.
+
+A thread has one request or lease per pool. Release without an ID releases all
+its leases and cancels all its queued requests. A request ID cancels only that
+request. Transfer verifies the target is the owner's child on the local host;
+child release/archive/deletion returns the lease to the owner. Owner end frees
+it. Revoke and expiry always free it. Port allocation requires a held lease,
+probes IPv4 and IPv6 loopback, and releases when the last held lease is gone.
+Binding after a successful probe can still race another application.
+
+## Settings
+
+Installed plugin settings expose `configuration`: validated JSON with these
+fields. The SDK has no host-scoped settings, so this is global, with `hosts`
+overrides always empty. Durations are milliseconds.
+
+| Field | Default |
+| --- | --- |
+| capacities | `{"heavy":4,"local-model":1}` |
+| memFreeMinPct / loadMax | `20` / `18` |
+| gateSamples / gateIntervalMs | `2` / `15000` |
+| leaseTtlMs / heartbeatIntervalMs | `1800000` / `600000` |
+| observerThreadId | `null` |
+| portRange | `{"from":41000,"to":41099}` |
+| grantMode | `"auto"` (`"manual"` disables automatic grants) |
+| hosts | `{}` (reserved; ignored by server) |
+
+`capacity` writes this setting via `experimental_set`; there is no capacity
+override in state. Lowering capacity preserves live leases. Settings changes
+reset gate streaks. TTL is `max(leaseTtlMs, estimate + 15m)`, renewed by heartbeat,
+gate, port, duplicate request, active events and each tick for active holders.
+Idle holders receive one wake-up warning at expiry minus heartbeat interval.
+Archive/deletion cancels queued work and releases leases. Startup rechecks owners,
+holders and queued requesters before scheduling. Stopped idle threads rely on
+explicit release or expiry; the SDK exposes no distinct thread-stopped event.
+
+Memory uses macOS `memory_pressure` (fixed argv, 2s timeout) or Linux MemAvailable /
+MemTotal. A probe failure closes the gate and logs an error. Only the local host
+is sampled: every gateIntervalMs with queued work, otherwise every 60s; ticks run
+every 15s. Observer notifications are optional and never fatal on send failure.
+
+## Persistence and frontend contract
+
+State is JSON at `state.json` beside the SDK plugin database, saved by temporary
+file + rename under a single transition queue. Audit effects append to daily
+`YYYY-MM-DD.jsonl` files retained for 14 days. Gate readings remain in JSONL but
+never displace the 50 non-gate events retained for the sidebar. Historical logs
+stream those files, defaulting to 100 events, maximum 1000; `--since` accepts a
+duration (`2h`) or ISO timestamp. Persisted state is validated before restore.
+Malformed state fails startup instead of silently discarding leases.
+
+`contract.ts` exports `RpcMethods`, `StatusView`, and `SLOTS_CHANGED` =
+`slots.changed`. Each successful transition publishes that realtime channel;
+the sidebar should refetch `status`. It returns titles, effective host settings,
+localHostId and the engine snapshot. Runtime input schemas and `rpcContract`
+live in `schemas.ts`; `core/index.ts` remains deterministic and performs no I/O.
 
 ## Development
 
@@ -14,82 +104,6 @@ npm test
 npm run build
 ```
 
-The package uses npm/package-lock and Vitest. `server.ts` and `app.tsx` are inert
-entry points. `components/ui` and `lib/utils.ts` contain the repository's vendored
-Button, Card, motion tokens and `cn` helper for the future sidebar.
-
-## Contract and pure engine
-
-`contract.ts` exports `Settings`, `HostSettings`, `DEFAULT_SETTINGS`, `State`,
-`SlotRequest`/`QueueEntry`, `Lease`, `GateState`, `PortLease`, `AuditEvent`,
-`StatusSnapshot`, `RpcMethods`, `RpcRequest`, `RpcResponse`, `Input`, `Context`,
-`Effect`, `Result` and `Transition`. RPC method types cover request, release,
-heartbeat, gate, status, transfer, port, prioritize, revoke, grant, setCapacity,
-and log. The server must validate boundary data and translate its SDK schema
-contract into these JSON types; the contract file imports no SDK.
-
-`core/index.ts` exports `initialState`, `apply`, `settingsFor`, `validateSettings`,
-`capacityFor`, `gateOpen`, `portCandidates`, `statusSnapshot` and `logSince`.
-
-```ts
-const ctx = { now: 0, settings: DEFAULT_SETTINGS };
-const transition = apply(initialState(), {
-  type: "request", hostId: "host-1", pool: "heavy", threadId: "thread-1",
-  job: "full test suite", estMs: 35 * 60_000,
-}, ctx);
-// Persist transition.state, then execute transition.effects in order.
-```
-
-The reducer does no I/O and never reads a clock. Inputs and prior state are not
-mutated. Errors are `{ok:false,error:{code,message,readings?}}`, with unchanged
-state and no effects. Persist state verbatim. Execute `notify` effects using
-thread messages and append `audit` effects to JSONL; state retains just 50 events.
-`logSince` queries only that retained tail; the server must query its full JSONL
-for historical `log --since` results. `since` is inclusive; timestamps, estimates
-and durations are milliseconds. `seq` and IDs increase deterministically.
-
-## Scheduling and lifecycle
-
-- Hosts are explicit at the engine boundary. `heavy` defaults to capacity 4 and
-  `local-model` to 1. Settings apply globally unless a complete `hosts[hostId]`
-  override exists. `setCapacity` persists a manager override in state; it takes
-  precedence over settings until changed again. Zero capacity pauses a pool.
-- Queues sort urgent, high, normal, then timestamp and insertion order for ties.
-  Requests are idempotent per host/pool for both owner and holder of a lease.
-  Prioritization keeps the original timestamp. Capacity reductions preserve leases.
-- Both pools use the same per-host gate: memory free >=20%, load1 <18, two passing
-  samples at least 15 seconds apart. Fast samples are audited but do not count;
-  failures reset the streak. Every grant resets it. Only `gateSample` and `tick`
-  auto-grant, at most once per host per open gate. Manual mode never auto-grants.
-  Manager `grant` bypasses priority and streak, requires a passing latest sample,
-  and respects capacity. A host with no sample cannot be manually granted.
-- `gateSample.at` must be nonnegative, no later than `ctx.now`, and no earlier
-  than the preceding sample; invalid readings fail transactionally. `gate` is
-  a read of the latest sample plus a holder heartbeat. The server must collect
-  a fresh sample before answering a launch gate check. `passed` means the latest
-  reading passes; `open` also requires the consecutive sample streak.
-- Default TTL is 30 minutes, heartbeat interval 10 minutes. Effective TTL is
-  `max(leaseTtlMs, estMs + 15 minutes)` on grant, transfer and every heartbeat.
-  One warning wakes the holder at expiry minus heartbeat interval; heartbeat
-  clears it. `tick` expires at the exact deadline, notifying holder and observer.
-  Heartbeat, gate, portLease and duplicate request refresh all leases held by the
-  caller, including leases on other hosts.
-- A transfer requires exactly one owned lease (or an explicit leaseId), a different
-  target, and `isChild` verified by the server against the current holder's child.
-  The target cannot already own/hold/queue for that host/pool. The owner remains
-  reserved. Child release/archive/deletion returns the lease to the owner; owner
-  release/archive/deletion frees it, notifying the transferee. Expiry and revoke
-  always free. Transfer/return refreshes TTL and drops any now-orphaned port.
-- `release` releases leases; it does not cancel queued requests. `threadEnded`
-  releases/returns leases and cancels queues. The phase-1 lifecycle input covers
-  archive/deletion; the server decides how to map other liveness observations.
-- `portCandidates(state, hostId, settings)` returns ascending unleased ports.
-  The server probes real TCP availability then submits `portLease`. A port is
-  idempotent per host/thread and requires a held lease on that host. Port range
-  defaults to 41000–41099. The port stays until the last held lease is gone;
-  transfer does not move a port to a different thread.
-- `restored` resets gate streaks, preserving leases and latest readings. The
-  server rechecks thread liveness before resuming scheduling.
-
-Read [PLUGIN_OVERVIEW.md](PLUGIN_OVERVIEW.md) for adapter responsibilities and
-[the agent skill](skills/slots/SKILL.md) for the intended heavy-job workflow.
+Server tests use the SDK fake host, a fake clock and metrics, and temporary
+storage. No plugin installation, live three-thread demo or deployment is part
+of this phase. The sidebar is developed separately.

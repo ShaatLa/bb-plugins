@@ -1,0 +1,142 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createServer } from "node:net";
+import { register } from "./server.js";
+import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
+import { renderResult } from "./cli.js";
+
+const cleanups: (() => Promise<unknown>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+async function setup(dir?: string) {
+  const path = dir ?? await mkdtemp(join(tmpdir(), "slots-test-"));
+  if (!dir) cleanups.push(() => rm(path, { recursive: true, force: true }));
+  let now = Date.parse("2026-11-07T12:00:00Z");
+  const threads = new Map(["a", "b", "child"].map(id => [id, makeThreadResponse({ id, title: `Title ${id}`, environmentId: "env", ...(id === "child" ? { parentThreadId: "a" } : {}) })]));
+  const send = vi.fn(async () => ({ threadId: "a" }));
+  const host = createFakePluginHost({ pluginId: "slots", agentSkillIds: ["slots"], sdk: {
+    system: { config: async () => ({ primaryHostId: "local" }) },
+    environments: { get: async () => ({ hostId: "local" }) },
+    threads: { get: async ({ threadId }: { threadId: string }) => {
+      const t = threads.get(threadId); if (!t) throw Object.assign(new Error("missing"), { status: 404 }); return t;
+    }, send },
+  } });
+  const metrics = vi.fn(async () => ({ memFreePct: 75, load1: 1 }));
+  const runtime = { store: new DiskStore(path), now: () => now, metrics };
+  const { invoke } = await register(host.bb, runtime);
+  cleanups.push(() => host.harness.lifecycle.dispose());
+  async function view() { const result = await invoke("status", {}); if (!result.ok) throw new Error(result.error.message); return result.data as StatusView; }
+  async function request(threadId = "a") {
+    return await invoke("request", { threadId, hostId: "local", pool: "heavy", job: "tests", estMs: 60000 }) as Result<RequestOutcome>;
+  }
+  async function grant(threadId = "a") {
+    await request(threadId); await invoke("gate", { threadId, hostId: "local" }); now += 15000; await invoke("gate", { threadId, hostId: "local" });
+    return (await view()).pools[0].leases.find(l => l.ownerThreadId === threadId)!;
+  }
+  return { ...host, invoke, view, request, grant, threads, send, metrics, path, advance: (ms: number) => { now += ms; } };
+}
+it("parses macOS/Linux memory and duration/ISO log bounds", () => {
+  expect(parseMemoryPressure("System-wide memory free percentage: 24%\n")).toBe(24);
+  expect(parseMeminfo("MemTotal: 1000 kB\nMemAvailable: 250 kB\n")).toBe(25);
+  expect(() => parseMemoryPressure("failed")).toThrow(); expect(() => parseMeminfo("MemTotal: 0 kB")).toThrow();
+  expect(parseSince("2h", 10000000)).toBe(2800000);
+  expect(parseSince("2026-11-07T12:00:00Z", 0)).toBe(Date.parse("2026-11-07T12:00:00Z"));
+  expect(() => parseSince("oops", 0)).toThrow();
+});
+it("gate exit code reflects a failed reading and prints thresholds", async () => {
+  const h = await setup(); h.metrics.mockRejectedValueOnce(new Error("probe failed"));
+  const gate = await h.harness.behavior.runCli(["gate", "--json"], { threadId: "a" });
+  expect(gate.exitCode).toBe(1); expect(JSON.parse(gate.stdout!)).toMatchObject({ ok: true, data: { passed: false, thresholds: { local: { loadMax: 18 } } } });
+  expect(renderResult("gate", { ok: true, data: { passed: true } }, true).exitCode).toBe(0);
+});
+it("serializes concurrent idempotent requests, persists and restores after a liveness recheck", async () => {
+  const h = await setup(); await Promise.all([h.request(), h.request()]); expect((await h.view()).pools[0].queue).toHaveLength(1);
+  const lease = await h.grant();
+  expect(JSON.parse(await readFile(join(h.path, "state.json"), "utf8")).leases[0].id).toBe(lease.id);
+  const restored = await setup(h.path);
+  expect((await restored.view()).pools[0].leases[0].id).toBe(lease.id);
+  expect((await restored.view()).gates.local.streak).toBe(0);
+  await restored.harness.lifecycle.dispose();
+  const gone = await setup(h.path); gone.threads.delete("a");
+  expect((await gone.view()).pools[0].leases).toEqual([]);
+});
+it("archives release leases, cancel queues, and grant/warning notifications wake threads", async () => {
+  const h = await setup(); const lease = await h.grant();
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "auto", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots gate") })] }));
+  h.advance(1200000);
+  // The service heartbeats active holders only; idle holders get the warning.
+  const service = h.harness.behavior.runService("sampler");
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat to keep it") })] })));
+  service.controller.abort(); await service.done;
+  const event = await h.harness.behavior.emitThreadEvent("thread.archived", { thread: h.threads.get("a")! });
+  expect(event.errors).toEqual([]); expect((await h.view()).pools[0].leases).toEqual([]);
+  expect(h.harness.inspection.realtimeSignals).toContainEqual(expect.objectContaining({ channel: SLOTS_CHANGED }));
+  const logs = await h.invoke("log", { limit: 100 }); expect(JSON.stringify(logs)).toContain(lease.id);
+});
+it("transfer checks the child's parent; active events heartbeat the holder", async () => {
+  const h = await setup(); const lease = await h.grant();
+  expect((await h.invoke("transfer", { threadId: "a", toThreadId: "b" })).ok).toBe(false);
+  expect((await h.invoke("transfer", { threadId: "a", toThreadId: "child" })).ok).toBe(true);
+  h.advance(10000); await h.harness.behavior.emitThreadEvent("thread.active", { thread: h.threads.get("child")! });
+  expect((await h.view()).pools[0].leases[0].lastHeartbeatAt).toBe(lease.lastHeartbeatAt + 10000);
+  await h.invoke("release", { threadId: "child" }); expect((await h.view()).pools[0].leases[0].holderThreadId).toBe("a");
+});
+it("persists capacity in settings, rejects remote callers and validates RPC/tool inputs", async () => {
+  const h = await setup(); await h.grant();
+  expect((await h.invoke("setCapacity", { hostId: "local", pool: "heavy", capacity: 0 })).ok).toBe(true);
+  expect((await h.view()).pools[0]).toMatchObject({ capacity: 0, leases: [expect.anything()] });
+  expect(JSON.parse(await readFile(join(h.path, "state.json"), "utf8")).hosts.local).not.toHaveProperty("capacities");
+  h.harness.sdk.stub("environments.get", async () => ({ hostId: "remote" }));
+  expect(await h.request("b")).toMatchObject({ ok: false, error: { message: expect.stringContaining("only supports") } });
+  await expect(h.harness.behavior.callRpc("request", { pool: "bad" })).rejects.toThrow();
+  expect(JSON.parse(await h.harness.behavior.callAgentTool("slots_status", {}) as string)).toMatchObject({ ok: true });
+});
+it("skips a bound port and probes both loopback families", async () => {
+  const server = createServer(); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+  expect(await probePort(port)).toBe(false);
+  const h = await setup();
+  await h.harness.behavior.setSettings({ configuration: JSON.stringify({ ...DEFAULT_SETTINGS, portRange: { from: port, to: Math.min(65535, port + 20) } }) });
+  await h.grant(); const result = await h.invoke("port", { threadId: "a", hostId: "local" });
+  expect(result).toMatchObject({ ok: true, data: { port: expect.any(Number) } });
+  if (result.ok) expect((result.data as { port: number }).port).toBeGreaterThan(port);
+});
+it("reads retained JSONL with inclusive bounds and removes old daily files", async () => {
+  const h = await setup(); await h.request();
+  await writeFile(join(h.path, "2026-10-01.jsonl"), "old\n");
+  const log = await h.invoke("log", { since: Date.parse("2026-11-07T12:00:00Z"), limit: 1 });
+  expect(log).toMatchObject({ ok: true, data: { events: [expect.objectContaining({ type: "request" })] } });
+  expect((await h.invoke("log", { since: Date.parse("2026-11-08T12:00:00Z") }))).toMatchObject({ ok: true, data: { events: [] } });
+  await expect(readFile(join(h.path, "2026-10-01.jsonl"))).rejects.toThrow();
+});
+it("CLI timeout withdraws queued request and remote-free status stays bounded", async () => {
+  const h = await setup();
+  const result = await h.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms", "--json"], { threadId: "a" });
+  expect(result.exitCode).toBe(1); expect((await h.view()).pools[0].queue).toHaveLength(0);
+});
+it("uses public SDK imports only", () => {
+  const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge)$/] });
+  expect(scan.violations).toEqual([]); expect(scan.privateDependencies).toEqual([]);
+});
+
+it("manual grant preserves the requested order override and notification failures do not roll back", async () => {
+  const h = await setup(); const first = await h.request("a"); const second = await h.request("b");
+  if (!first.ok || !second.ok || second.data.kind !== "queued") throw new Error("expected queue");
+  h.send.mockRejectedValueOnce(new Error("delivery failed"));
+  expect(await h.invoke("grant", { requestId: second.data.request.id })).toMatchObject({ ok: true, data: { holderThreadId: "b" } });
+  expect((await h.view()).pools[0].queue).toHaveLength(1);
+  expect((await h.view()).pools[0].leases).toHaveLength(1);
+  expect(h.harness.inspection.logEntries).toContainEqual(expect.objectContaining({ level: "warn", message: expect.stringContaining("notify b failed") }));
+});
+it("settings reject invalid intervals and restore refuses malformed state", async () => {
+  const h = await setup();
+  await expect(h.harness.behavior.setSettings({ configuration: JSON.stringify({ ...DEFAULT_SETTINGS, heartbeatIntervalMs: DEFAULT_SETTINGS.leaseTtlMs }) })).rejects.toThrow();
+  await h.harness.lifecycle.dispose();
+  await writeFile(join(h.path, "state.json"), JSON.stringify({ version: 1, leases: "broken" }));
+  const next = await setup(h.path);
+  await expect(next.invoke("status", {})).rejects.toThrow();
+});
