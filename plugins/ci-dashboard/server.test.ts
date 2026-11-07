@@ -1763,7 +1763,7 @@ const finishedNotes: Record<number, object[]> = { 9011: [{ annotation_level: "fa
 function ciScenario() {
   // `removals`: PR number -> createdAt of its RemovedFromMergeQueueEvent (null: none); `lookupFails` answers the timeline query with a GraphQL error. `lookups` lists the PRs asked about.
   const state = { running: [901, 902, 903], deployments: [] as object[], deploymentStatus: [] as object[], reports: [] as { name: string; data: string }[],
-    removals: { 7: "2026-10-20T12:00:30Z", 8: "2026-10-20T12:00:30Z" } as Record<number, string | null>, lookupFails: false, lookups: [] as number[] };
+    removals: { 7: "2026-10-20T12:00:30Z", 8: "2026-10-20T12:00:30Z" } as Record<number, string | null>, reasons: {} as Record<number, string>, states: {} as Record<number, string>, lookupFails: false, lookups: [] as number[] };
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
     const url = new URL(input), path = url.pathname.replace("/repos/acme/widgets", ""), status = url.searchParams.get("status");
@@ -1773,7 +1773,7 @@ function ciScenario() {
       state.lookups.push(number);
       if (state.lookupFails) return Response.json({ errors: [{ message: "boom" }] });
       const createdAt = state.removals[number];
-      return Response.json({ data: { repository: { pullRequest: { timelineItems: { nodes: createdAt ? [{ createdAt }] : [] } } } } });
+      return Response.json({ data: { repository: { pullRequest: { state: state.states[number] ?? "OPEN", timelineItems: { nodes: createdAt ? [{ createdAt, reason: state.reasons[number] ?? "FAILED_CHECKS" }] : [] } } } } });
     }
     if (path === "/actions/runs" && (status === "queued" || status === "in_progress")) return Response.json({ workflow_runs: status === "in_progress" ? state.running.map(runMeta) : [] });
     if ((found = path.match(/^\/actions\/runs\/(\d+)\/jobs$/))) return Response.json({ jobs: [liveRow(Number(found[1]))] });
@@ -1884,6 +1884,20 @@ test("observer: a removal GitHub does not confirm is held, then a queue runner l
     await signalsPass(harness, 301_000);
     expect(sentTo(send)).toHaveLength(3);
     expect(scenario.lookups).toEqual([]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+for (const merged of ["reason", "state"] as const) test(`observer: a PR that merged is not announced as removed (merged ${merged})`, async () => {
+  const scenario = ciScenario();
+  // GitHub records a RemovedFromMergeQueueEvent when the PR merges, too.
+  if (merged === "reason") scenario.reasons[7] = "MERGED"; else scenario.states[7] = "MERGED";
+  const { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(sentTo(send).slice(1).map((line) => line.slice(PREFIX.length + 1, PREFIX.length + 8))).toEqual(["PR #8 r"]);
   } finally { await harness.lifecycle.dispose(); }
 });
 

@@ -492,8 +492,10 @@ export default function plugin(bb: BbPluginApi) {
       const [owner, name] = repo.split("/");
       const { body } = await rt.backfill.run.spend(signal, () => githubRequest("/graphql", token, signal, { method: "POST", body: JSON.stringify({ query: REMOVED_FROM_QUEUE, variables: { owner, name, number } }) }));
       const parsed = removedFromQueueSchema.parse(body);
-      const at = parsed.data.repository?.pullRequest?.timelineItems.nodes.at(-1)?.createdAt;
-      return at ? Date.parse(at) : null;
+      const pr = parsed.data.repository?.pullRequest, last = pr?.timelineItems.nodes.at(-1);
+      // GitHub also records a RemovedFromMergeQueueEvent when the PR merges: that is not a removal.
+      if (!last || /merged/i.test(last.reason ?? "") || pr?.state === "MERGED") return null;
+      return Date.parse(last.createdAt);
     }, removals, now);
     // A merge queue runner loss stands alone only once its removal was given up on (the PR stayed queued).
     if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit, (runId, attempt) => removals.has(`queue:${runId}:${attempt}`)));
@@ -510,8 +512,8 @@ export default function plugin(bb: BbPluginApi) {
     if (JSON.stringify(state) !== before) await bb.storage.kv.set(`observer:${repo}`, state);
     for (const message of messages) await notify(message.threadId, message.text);
   }
-  const REMOVED_FROM_QUEUE = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:1){nodes{... on RemovedFromMergeQueueEvent{createdAt}}}}}}";
-  const removedFromQueueSchema = z.object({ data: z.object({ repository: z.object({ pullRequest: z.object({ timelineItems: z.object({ nodes: z.array(z.object({ createdAt: z.string() })) }) }).nullable() }).nullable() }) });
+  const REMOVED_FROM_QUEUE = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:1){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}";
+  const removedFromQueueSchema = z.object({ data: z.object({ repository: z.object({ pullRequest: z.object({ state: z.string().optional(), timelineItems: z.object({ nodes: z.array(z.object({ createdAt: z.string(), reason: z.string().nullable().optional() })) }) }).nullable() }).nullable() }) });
   async function signalsRepository(repo: string, values: Values, token: string | undefined, signal: AbortSignal) {
     const rt = runtimeFor(repo);
     rt.signal = signal;

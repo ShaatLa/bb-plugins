@@ -102,6 +102,10 @@ describe("confirming queue removals", () => {
   const keys = (events: ObserverEvent[]) => events.map((event) => event.key);
   const lookup = (answers: Record<number, number | null | Error>) => { const asked: number[] = []; return { asked, fn: async (pr: number) => { asked.push(pr); const answer = answers[pr]; if (answer instanceof Error) throw answer; return answer ?? null; } }; };
 
+  it("drops a removal recorded long after the group run ended: it belongs to a later group", async () => {
+    const github = lookup({ 7: now - MIN + 16 * MIN });
+    expect(await confirmRemovals([removal("queue:1:1", 7)], emptyRepoState(), github.fn, new Set(), now)).toEqual([]);
+  });
   it("keeps a removal GitHub shows at or after the group started (a minute of slack), and asks once per PR", async () => {
     const github = lookup({ 7: since + MIN, 8: since - MIN, 9: since - MIN - 1 });
     const out = await confirmRemovals([plain, removal("queue:1:1", 7), removal("queue:1:2", 7), removal("queue:2:1", 8), removal("queue:3:1", 9)], emptyRepoState(), github.fn, new Set(), now);
@@ -129,7 +133,7 @@ describe("confirming queue removals", () => {
     expect([...rejected]).toEqual(["queue:1:1"]);
     github.asked.length = 0;
     // Even a removal that would be confirmed now stays dropped once rejected.
-    const confirming = lookup({ 7: now + 20 * MIN });
+    const confirming = lookup({ 7: now + 5 * MIN });
     expect(await confirmRemovals([old, removal("queue:2:1", 7)], emptyRepoState(), confirming.fn, rejected, now + 20 * MIN).then(keys)).toEqual(["queue:2:1"]);
     expect(github.asked).toEqual([]);
   });

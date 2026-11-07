@@ -76,7 +76,9 @@ const NOT_OWN = new Set<FailureClass>(["collateral_cancel", "superseded", "manua
 // A group run that only failed through an aggregator or cancellations (e.g. the group ahead left the queue) did not remove its PR.
 const OWN_FAILURE = (c: ClassifiedJob) => !NOT_OWN.has(c.class) && c.class !== "consequence";
 const TEST_CLASSES = new Set<FailureClass>(["real", "flake", "unknown", "transient"]);
-const headLosses = (classified: ClassifiedJob[], sha: string) => classified.filter((c) => c.class === "runner_loss" && c.job.headSha === sha).length;
+// Losses in a group the queue invalidated never count against the head's budget.
+const headLosses = (classified: ClassifiedJob[], sha: string) => classified.filter((c) => c.class === "runner_loss" && c.job.headSha === sha
+  && !(c.job.event === "merge_group" && invalidated(classified, c.job.runId, c.job.attempt))).length;
 const lossCount = (classified: ClassifiedJob[], job: JobRecord, limit: number) => `${headLosses(classified, job.headSha)}${limit > 0 ? `/${limit}` : ""}`;
 const describeJob = (classified: ClassifiedJob[], limit: number) => ({ job, class: cls, flakeLabel }: ClassifiedJob) =>
   `${job.jobName}: ${cls}${flakeLabel ? ` ${flakeLabel}` : ""}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit)} on this head)` : ""}`;
@@ -230,7 +232,8 @@ export async function confirmRemovals(events: ObserverEvent[], state: ObserverRe
     let removedAt: number | null;
     try { removedAt = await lookups.get(removal.pullRequest)!; } catch { out.push(event); continue; }
     // A minute of slack: GitHub may stamp the removal a moment before the run records its start.
-    if (removedAt !== null && removedAt >= removal.since - 60_000) out.push(event);
+    // The removal must follow the group run: after it started and within the grace period after it ended (a later one is another group's).
+    if (removedAt !== null && removedAt >= removal.since - 60_000 && removedAt <= event.at + REMOVAL_GRACE_MS) out.push(event);
     else if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key);
   }
   return out;
