@@ -39,6 +39,36 @@ it("Done only ignores intermediate changes, and Off suppresses all pushes", asyn
   await new Promise(resolve => setTimeout(resolve, 10));
   expect(f.send).toHaveBeenCalledTimes(1);
 });
+it("Done only compares the committed status across transient and rolled-back edits", async () => {
+  const f = await fixture("done");
+  f.store.tasks.updateTask(f.task.id, { status: "done" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  f.send.mockClear();
+  f.store.transaction(() => {
+    f.store.tasks.updateTask(f.task.id, { status: "todo" });
+    f.store.tasks.updateTask(f.task.id, { status: "done" });
+  });
+  expect(() => f.store.transaction(() => {
+    f.store.tasks.updateTask(f.task.id, { status: "todo" });
+    f.store.tasks.updateTask(f.task.id, { status: "done" });
+    throw new Error("Rollback");
+  })).toThrow();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(f.send).not.toHaveBeenCalled();
+});
+it("keeps later queued cards coalesced while an earlier push is pending", async () => {
+  const f = await fixture();
+  const second = f.store.tasks.createTask({ projectId: f.project.id, title: "Second", status: "todo" });
+  let release!: (value: { ok: true; channels: ["desktop"] }) => void;
+  f.send.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  f.store.tasks.updateTask(f.task.id, { status: "in_progress" });
+  f.store.tasks.updateTask(second.id, { status: "in_progress" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  f.store.tasks.updateTask(second.id, { status: "done" });
+  release({ ok: true, channels: ["desktop"] });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
+  expect(f.send.mock.calls[1]?.[0]).toMatchObject({ input: { body: "Second · Todo → Done" } });
+});
 it("does not notify rolled-back transactions or status-neutral edits", async () => {
   const f = await fixture();
   expect(() => f.store.transaction(() => { f.store.tasks.updateTask(f.task.id, { status: "done" }); throw new Error("Rollback"); })).toThrow();

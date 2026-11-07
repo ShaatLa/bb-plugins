@@ -16,10 +16,10 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
     try {
       while (!closed && pending.size) {
         const batch = [...pending.values()].slice(0, 128);
-        for (const task of batch) pending.delete(task.id);
         await Promise.resolve();
         for (const before of batch) {
           if (closed) return;
+          pending.delete(before.id);
           // Read after the synchronous transaction: rolled-back and transient changes do not notify.
           const task = tasks.getTask(before.id);
           if (!task || task.status === before.status || task.archivedAt || task.scheduledRole === "template") continue;
@@ -48,7 +48,7 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
     if (closed || !before || before.status === after.status) return;
     // Off projects must not schedule deferred reads during unrelated lifecycle work.
     const mode = tasks.getProject(after.projectId)?.statusNotifications ?? "off";
-    if (mode === "off" || (mode === "done" && after.status !== "done")) return;
+    if (mode === "off") return;
     // Retain only one tiny record per changed card, never task bodies or a history of edits.
     if (!pending.has(before.id)) pending.set(before.id, { id: before.id, status: before.status });
     if (!draining) { draining = true; queueMicrotask(() => { void drain(); }); }
