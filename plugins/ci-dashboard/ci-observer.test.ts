@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyJobs, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
-import { acceptEvents, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type Rendered } from "./ci-observer";
+import { acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type Rendered } from "./ci-observer";
 import { at, classify, failed, failure, job, LOSS, REPO } from "./test-support";
 import { parseRef } from "./ci-refs";
 
@@ -87,6 +87,17 @@ describe("merge queue removal", () => {
     expect(text(queueRemovalEvents(REPO, three, 3).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
     // The middle group's removal was given up on (the PR stayed queued): it does not count.
     expect(text(queueRemovalEvents(REPO, three, 3, undefined, new Set(["queue:62:1"])).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (2/3 on this head)");
+  });
+  it("restarts the count when the PR gets a new head: retry budgets are per head", () => {
+    const loss = (runId: number, minute: number) => classify(queueJob({ runId, jobId: runId * 10, headSha: String(runId).repeat(40).slice(0, 40), createdAt: at(minute), headBranch: `gh-readonly-queue/main/pr-7-${"b".repeat(40)}` }), "runner_loss");
+    const prRun = (sha: string, minute: number) => job({ runId: 900 + minute, jobId: 9000 + minute, event: "pull_request", pullRequests: [7], headSha: sha.repeat(40), createdAt: at(minute) });
+    const classified = [loss(61, 10), loss(62, 20), loss(63, 40)];
+    // Head "a" was pushed before the first two groups, head "f" (the fix) before the third.
+    attachPrHeads([prRun("a", 5), prRun("f", 30), ...classified.map((c) => c.job)], classified);
+    expect(classified.map((c) => c.job.prHead?.[0])).toEqual(["a", "a", "f"]);
+    const line = (key: string) => text(queueRemovalEvents(REPO, classified, 3).find((event) => event.key === key)!);
+    expect(line("queue:62:1")).toContain("runner_loss (2/3 on this head)");
+    expect(line("queue:63:1")).toContain("runner_loss (1/3 on this head)");
   });
   it("regression: a group cancelled because the PR ahead left the queue is not a removal", () => {
     // PR 7 (ahead) really failed and left; PR 8's group, built on it, only failed through its aggregator and cancellations.

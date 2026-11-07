@@ -49,6 +49,8 @@ export type JobRecord = {
   inheritedFrom?: Inherited | null;
   /** Version of the inheritance check that stored `inheritedFrom`; an older "not inherited" is checked again once. */
   inheritCheck?: number;
+  /** In memory only: for a merge queue job, the PR's head commit when its group ran (from the PR's own pull_request runs). */
+  prHead?: string;
 };
 
 export type Inherited = { pullRequest: number; runId: number };

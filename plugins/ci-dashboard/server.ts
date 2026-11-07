@@ -22,7 +22,7 @@ import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-s
 import { handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsOutput } from "./ci-signals-contract";
 import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
 import { alertStreak, type CiInsights } from "./ci-insights";
-import { acceptEvents, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
+import { acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -583,6 +583,7 @@ export default function plugin(bb: BbPluginApi) {
       try {
         const jobs = jobStore.listJobs({ repository: repo, since: new Date(now - days * 86_400_000).toISOString(), until: nowIso });
         const classified = classifyJobs(jobs, { aggregatorJobs, policyJobs, refusalSteps, flakeRules: flake.rules, flakeHash: flake.hash }), reruns = summarizeReruns(jobs), massCancels = detectMassCancel(classified);
+        attachPrHeads(jobs, classified);
         const queueOnly = queueOnlyJobs(jobs, classified), samples = timingSamples(jobs);
         rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, queueOnly, samples, summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo, queueOnly, samples }) };
       } catch (error) { fail("analysis", error); }

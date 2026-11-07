@@ -76,9 +76,22 @@ const NOT_OWN = new Set<FailureClass>(["collateral_cancel", "superseded", "manua
 // A group run that only failed through an aggregator or cancellations (e.g. the group ahead left the queue) did not remove its PR.
 const OWN_FAILURE = (c: ClassifiedJob) => !NOT_OWN.has(c.class) && c.class !== "consequence";
 const TEST_CLASSES = new Set<FailureClass>(["real", "flake", "unknown", "transient"]);
-// Each merge queue group runs on its own merge commit, so a PR's losses are counted across its groups, not per commit sha.
-// shortcut: keyed by PR number, so a new push to the PR does not reset the count; key by the merge commit's second parent (the PR head) if that matters.
-const lossKey = (job: JobRecord) => job.event === "merge_group" ? `pr:${queuePullRequest(job.headBranch) ?? job.headSha}` : job.headSha;
+// Each merge queue group runs on its own merge commit, so losses are counted per PR head across its groups (retry budgets are per head);
+// without a known PR head (no stored pull_request run before the group) the PR number stands in.
+const lossKey = (job: JobRecord) => job.event !== "merge_group" ? job.headSha : job.prHead ?? `pr:${queuePullRequest(job.headBranch) ?? job.headSha}`;
+/** Sets `prHead` on merge queue jobs: the head sha of the PR's latest pull_request job created at or before the group job. */
+export function attachPrHeads(jobs: JobRecord[], classified: ClassifiedJob[]): void {
+  const heads = new Map<number, { at: string; sha: string }[]>();
+  for (const j of jobs) if (j.event === "pull_request" && j.headSha) for (const pr of j.pullRequests) heads.set(pr, [...(heads.get(pr) ?? []), { at: j.createdAt, sha: j.headSha }]);
+  for (const list of heads.values()) list.sort((a, b) => a.at.localeCompare(b.at));
+  for (const { job } of classified) {
+    if (job.event !== "merge_group") continue;
+    const list = heads.get(queuePullRequest(job.headBranch) ?? -1) ?? [];
+    let found: string | undefined;
+    for (const head of list) { if (head.at > job.createdAt) break; found = head.sha; }
+    if (found) job.prHead = found;
+  }
+}
 // Losses in a group the queue invalidated never count against the head's budget.
 // Nor do losses in a group whose removal GitHub never confirmed (`rejected` queue keys): the PR stayed queued, the group was superseded.
 const headLosses = (classified: ClassifiedJob[], job: JobRecord, rejected: ReadonlySet<string>) => classified.filter((c) => c.class === "runner_loss" && lossKey(c.job) === lossKey(job)
