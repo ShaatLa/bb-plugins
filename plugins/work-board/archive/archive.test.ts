@@ -1052,6 +1052,32 @@ describe("archive v13 scheduled tasks", () => {
     expect(target.store.tasks.listTasks({ projectId: f.project.id })).toEqual(before);
   });
 
+  it("rejects orphan provenance pointing at another project's local run without writes", async () => {
+    const f = await seedScheduled();
+    const target = await seedScheduled();
+    target.bb.storage.database().prepare("DELETE FROM task_key_aliases").run();
+    target.bb.storage.database().prepare("UPDATE projects SET prefix = ? WHERE id = ?").run("OTHER", target.project.id);
+    const out = join(await directory(), "foreign-run");
+    await exportProject(f.bb, f.store, f.project.id, out);
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.scheduleSources.find((s: any) => s.taskId === f.expiredTask.id).runId = target.queued.id;
+    await writeFile(path, jsonText(manifest));
+    const before = target.scheduled.run(target.queued.id);
+    await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/referenced scheduled run/);
+    expect(target.store.tasks.getProject(f.project.id)).toBeUndefined();
+    expect(target.scheduled.run(target.queued.id)).toEqual(before);
+  });
+
+  it("does not update a different run when a source is corrupted", async () => {
+    const f = await seedScheduled();
+    const db = f.bb.storage.database();
+    db.prepare("UPDATE task_scheduled_sources SET run_id=? WHERE task_id=?").run(f.queued.id, f.doneTask.id);
+    const before = f.scheduled.run(f.queued.id);
+    f.store.tasks.updateTask(f.doneTask.id, { status: "todo" });
+    expect(f.scheduled.run(f.queued.id)).toEqual(before);
+  });
+
   it("refuses to replace a live local run or an occurrence owned by another run", async () => {
     const f = await seedScheduled();
     const out = join(await directory(), "conflict");

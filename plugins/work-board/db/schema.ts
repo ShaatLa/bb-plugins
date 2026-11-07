@@ -397,6 +397,18 @@ const MIGRATIONS = [
     WHERE id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
   END;`,
   `ALTER TABLE projects ADD COLUMN status_notifications TEXT CHECK(status_notifications IN ('off','all','done'));`,
+  `DROP TRIGGER task_scheduled_status;
+  CREATE TRIGGER task_scheduled_status AFTER UPDATE OF status ON tasks
+  WHEN NEW.status<>OLD.status AND EXISTS(SELECT 1 FROM task_scheduled_sources WHERE task_id=NEW.id AND started_at IS NOT NULL)
+  BEGIN
+    UPDATE task_schedule_runs SET
+      state=CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+      resolved_at=CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,
+      finished_at=CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,
+      payload=json_set(payload,'$.state',CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+        '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.resolvedAt',CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
+    WHERE project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
+  END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

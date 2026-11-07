@@ -451,6 +451,10 @@ export function restoreProject(
       }, ["id"], ["project_id", "template_task_id"]);
     }
     for (const source of manifest.scheduleSources) {
+      const referenced = source.runId && rowOf<{ project_id: string; schedule_id: string; occurrence_key: string; payload: string }>("task_schedule_runs", "id=?", source.runId);
+      // An expired run may be absent, but an existing run must belong to this exact result.
+      if (referenced && (referenced.project_id !== projectId || referenced.schedule_id !== source.scheduleId || referenced.occurrence_key !== source.occurrenceKey || scheduleRunSchema.parse(JSON.parse(referenced.payload)).taskId !== source.taskId))
+        throw new Error(`Import conflict: referenced scheduled run ${source.runId} belongs to another result`);
       if (source.occurrenceKey !== null && rowOf("task_scheduled_sources", "schedule_id=? AND occurrence_key=? AND task_id<>?", source.scheduleId, source.occurrenceKey, source.taskId))
         throw new Error(`Import conflict: occurrence ${source.occurrenceKey} already belongs to another result task`);
       plan("task_scheduled_sources", {
