@@ -413,3 +413,15 @@ it("refreshes an almost-expired held lease and waits for all concurrent uses", (
   auto.send({ type: "done", threadId: "a", useId: first.id }); expect(auto.state.leases).toHaveLength(1);
   auto.send({ type: "done", threadId: "a", useId: second.id }); expect(auto.state.leases).toHaveLength(0);
 });
+it("preserves the other waiter when one detaches and exposes a shared grant", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); const requestId = h.state.requests[0].id;
+  const [first, second] = h.state.requests[0].uses!;
+  h.send({ type: "detach", threadId: "a", useId: first.id });
+  expect(h.state.requests[0]).toMatchObject({ id: requestId, graceUntil: null });
+  acquire(); const third = h.state.requests[0].uses![1];
+  h.open();
+  for (const use of [second, third]) expect(h.send({ type: "heartbeatUse", threadId: "a", useId: use.id }).result)
+    .toMatchObject({ ok: true, data: { kind: "leased", lease: { requestId }, useId: use.id } });
+});
