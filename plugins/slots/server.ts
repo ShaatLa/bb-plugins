@@ -16,7 +16,6 @@ export interface Runtime {
   metrics: typeof metrics;
   probePort: typeof probePort;
   store?: DiskStore;
-  legacySettings?: () => Promise<Record<string, unknown>>;
 }
 export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Result<unknown>>;
 
@@ -49,7 +48,6 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
   const rawConfig = await store.loadConfig();
   const configSchema = z.object({ version: z.literal(1), values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])) }).strict();
-  let migrationDone = rawConfig !== undefined;
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
   const readValues = () => ({ ...defaults, ...explicit }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
@@ -57,12 +55,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     gateIntervalSeconds: number; leaseTtlMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
   }; }
-  function validateField(key: SettingKey, value: unknown, legacy = false) {
+  function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
-    const parsed = legacy && typeof descriptor.default === "number" && typeof value === "string" ? Number(value) : value;
-    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(legacy && (key === "heavyCapacity" || key === "loadMax") && typeof parsed === "number" ? Math.min(parsed, cores) : parsed);
-    else if (typeof parsed !== "string" || !descriptor.options.includes(parsed)) throw new Error("Invalid grant mode");
-    return parsed as number | string;
+    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && (key === "heavyCapacity" || key === "loadMax") && typeof value === "number" ? Math.min(value, cores) : value);
+    else if (typeof value !== "string" || !descriptor.options.includes(value)) throw new Error("Invalid grant mode");
+    return value as number | string;
   }
   for (const key of SETTING_KEYS) if (explicit[key] !== undefined) validateField(key, explicit[key], true);
   async function persistConfig(patch: Partial<SettingValues>, unset: SettingKey[] = []) {
@@ -150,31 +147,6 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   async function initialize() {
     if (initialized) return;
-    if (!migrationDone) {
-      let legacy: Record<string, unknown> = {};
-      try { legacy = await (runtime.legacySettings?.() ?? bb.sdk.plugins.getSettings({ pluginId: bb.pluginId }).then(result => result.values)) ?? {}; } catch { /* Legacy reads may be unavailable after descriptors are removed. */ }
-      for (const key of SETTING_KEYS) {
-        if (legacy[key] === undefined || legacy[key] === defaults[key]) continue;
-        try {
-          const value = validateField(key, legacy[key], true);
-          if (value === defaults[key]) continue;
-          explicit[key] = value;
-        } catch { bb.log.warn(`Slots skipped invalid legacy setting: ${key}`); }
-      }
-      const candidate = readValues();
-      if (candidate.heartbeatIntervalMinutes >= candidate.leaseTtlMinutes) {
-        delete explicit.heartbeatIntervalMinutes; delete explicit.leaseTtlMinutes;
-        bb.log.warn("Slots skipped incompatible legacy settings: heartbeatIntervalMinutes, leaseTtlMinutes");
-      }
-      if (candidate.portFrom > candidate.portTo) {
-        delete explicit.portFrom; delete explicit.portTo;
-        bb.log.warn("Slots skipped incompatible legacy settings: portFrom, portTo");
-      }
-      await store.saveConfig(explicit);
-      migrationDone = true;
-      settings = await getSettings();
-      bb.log.info(`Slots migrated settings: ${Object.keys(explicit).join(", ") || "none"}`);
-    }
     const config = await bb.sdk.system.config();
     if (!config.primaryHostId) throw new Error("Cannot resolve BB server host");
     localHostId = config.primaryHostId;

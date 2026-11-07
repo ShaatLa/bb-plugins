@@ -5,7 +5,9 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.3.0)
+## Sidebar (0.3.1)
+
+Version 0.3.1 removes legacy settings migration; missing `config.json` means all defaults.
 
 Version 0.3.0 adds a grouped settings editor with bounded numeric controls,
 machine-default resets, live readings and an observer thread picker with event switches.
@@ -103,12 +105,13 @@ and observer targets are validated before persistence. Changes publish
 `slots.changed` and apply immediately. `config` powers the CLI and agent tool
 with show/set/unset operations; the two frontend RPCs are not agent tools.
 
-On the first start without `config.json`, migration tolerates unavailable legacy
-reads and copies recognized legacy values only when they differ from the 0.2.5
-(machine-derived where applicable) defaults. Equal-to-default values become unset.
-The file marks migration complete, so it never re-runs; only key names are logged.
-Legacy read failures or ambiguous defaults can lose old overrides; verify the
-observer after upgrading and reselect it if needed. Legacy rows are left untouched.
+### Upgrading from 0.2.x
+
+Settings saved in bb’s plugin settings are not carried over. After upgrading,
+re-run `bb slots observer --thread <id>` (or `bb slots observer --self` from the
+manager) and `bb slots config set <key> <value>` for each setting you had changed.
+An absent `config.json` means empty configuration and all machine/default values.
+Existing `config.json` overrides from 0.3.0 are preserved.
 
 Configuration uses typed server validation. Settings apply to the BB server machine;
 engine `hosts` overrides remain empty. Human units are converted at the boundary.

@@ -3,6 +3,10 @@ name: slots
 description: "Request local resource leases for full test suites, race-detector or fuzz runs, database or service containers, headless-browser jobs, large builds, or local LLM inference."
 ---
 
+Small or focused runs — a single package's unit tests, typecheck, lint, a quick
+build — that finish in a minute or two on a few cores do not need a slot.
+Request one for work that saturates many cores or lots of memory for several minutes.
+
 Request before heavy work such as full test suites, race-detector or fuzz runs,
 database or service containers, headless-browser jobs, large builds, or local LLM
 inference: `bb slots request --pool heavy --job "..." --est 35m`.

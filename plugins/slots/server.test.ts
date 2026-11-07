@@ -12,13 +12,14 @@ import { renderResult } from "./cli.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024 ** 3 }, savedSettings: Record<string, number | string> = {}) {
+async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024 ** 3 }, storedConfig?: Record<string, number | string>) {
   const path = dir ?? await mkdtemp(join(tmpdir(), "slots-test-"));
   if (!dir) cleanups.push(() => rm(path, { recursive: true, force: true }));
+  if (storedConfig) await new DiskStore(path).saveConfig(storedConfig);
   let now = Date.parse("2026-11-07T12:00:00Z");
   const threads = new Map(["a", "b", "child"].map(id => [id, makeThreadResponse({ id, title: `Title ${id}`, environmentId: "env", ...(id === "child" ? { parentThreadId: "a" } : {}) })]));
   const send = vi.fn(async () => ({ threadId: "a" }));
-  const host = createFakePluginHost({ pluginId: "slots", settings: savedSettings, agentSkillIds: ["slots"], sdk: {
+  const host = createFakePluginHost({ pluginId: "slots", agentSkillIds: ["slots"], sdk: {
     hosts: { get: async () => ({ ...makeHostResponse({ id: "local", name: "Work laptop" }), connectMachineId: null, threadStorageRootPath: null }) },
     system: { config: async () => ({ primaryHostId: "local" }) },
     environments: { get: async () => ({ hostId: "local" }) },
@@ -27,7 +28,7 @@ async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024
     }, send },
   } });
   const metrics = vi.fn(async () => ({ memFreePct: 75, load1: 1 }));
-  const runtime = { legacySettings: vi.fn(async () => savedSettings), cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
+  const runtime = { cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
   const { invoke } = await register(host.bb, runtime);
   cleanups.push(() => host.harness.lifecycle.dispose());
   async function configure(values: Record<string, number | string>) {
@@ -311,7 +312,7 @@ it.each([false, true])("uses current definition defaults after reload; explicit 
   expect(result).toMatchObject({ ok: true, data: { hostSettings: { local: { loadMax: explicit ? 18 : 24, capacities: { heavy: explicit ? 4 : 6 } } } } });
 });
 
-it("clamps legacy saved values on smaller machines and surfaces warnings without rewriting them", async () => {
+it("clamps saved values on smaller machines and surfaces warnings without rewriting them", async () => {
   const h = await setup(undefined, { cores: 8, totalMemory: 32 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 12 });
   expect(await h.view()).toMatchObject({
     hostSettings: { local: { loadMax: 8, capacities: { heavy: 8 } } }, settingsWarnings: [
@@ -362,29 +363,9 @@ it("settings RPC validates before saving, unsets defaults, and validates observe
   expect(await invoke("settingsRead", {})).toMatchObject({ ok: true, data: { values: { heavyCapacity: 6 } } });
 });
 
-it("migrates a fake legacy handle once, preserving the observer and ignoring defaults and unknown keys", async () => {
-  const h = await setup();
-  const handle = { get: vi.fn(async () => ({ observerThreadId: "b", heavyCapacity: 2, leaseTtlMinutes: 5, heartbeatIntervalMinutes: 2, portFrom: 50000, portTo: 50010, loadMax: 18, localModelCapacity: 1, unknown: "ignored" })) };
-  h.runtime.legacySettings.mockImplementation(handle.get);
-  await h.view();
-  expect(handle.get).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8"))).toEqual({ version: 1, values: { heavyCapacity: 2, observerThreadId: "b", leaseTtlMinutes: 5, heartbeatIntervalMinutes: 2, portFrom: 50000, portTo: 50010 } });
-  expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: "b" } });
-  const replacement = await h.harness.lifecycle.reload(async bb => { await register(bb, h.runtime); });
-  cleanups.push(() => replacement.harness.lifecycle.dispose());
-  await replacement.harness.behavior.callRpc("settingsRead", {});
-  expect(handle.get).toHaveBeenCalledTimes(1);
-  const logs = h.harness.inspection.logEntries.filter(entry => entry.message.includes("Slots migrated settings:"));
-  expect(logs).toHaveLength(1);
-  expect(logs[0].message).not.toContain(" = ");
-});
 
-it("tolerates unavailable legacy reads and records migration completion", async () => {
-  const h = await setup();
-  h.runtime.legacySettings.mockRejectedValueOnce(new Error("unavailable"));
-  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { setKeys: [], defaults: { heavyCapacity: 4 }, maxima: { heavyCapacity: 18 } } });
-  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8"))).toEqual({ version: 1, values: {} });
-});
+
+
 
 it("config CLI and tool share validation, unset explicit keys, and preserve config on failed writes", async () => {
   const h = await setup();
@@ -403,7 +384,21 @@ it("config CLI and tool share validation, unset explicit keys, and preserve conf
   expect(h.harness.inspection.realtimeSignals).toContainEqual(expect.objectContaining({ channel: SLOTS_CHANGED }));
 });
 
-it("migration skips incompatible legacy pairs without losing the observer", async () => {
-  const h = await setup(undefined, undefined, { observerThreadId: "b", leaseTtlMinutes: 5, portFrom: 50000 });
-  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { setKeys: ["observerThreadId"], values: { observerThreadId: "b", leaseTtlMinutes: 30, portFrom: 41000 } } });
+
+it("missing config uses defaults without consulting old plugin settings or creating config", async () => {
+  const h = await setup();
+  const legacyRead = vi.fn(async () => ({ ok: true, values: { observerThreadId: "b", heavyCapacity: 2 } }));
+  h.harness.sdk.stub("plugins.getSettings", legacyRead);
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { setKeys: [], values: { observerThreadId: "", heavyCapacity: 4, loadMax: 18 } } });
+  expect(legacyRead).not.toHaveBeenCalled();
+  await expect(readFile(join(h.path, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("keeps observer and explicit overrides from an existing config file on restart", async () => {
+  const h = await setup(undefined, undefined, { observerThreadId: "b", heavyCapacity: 2 });
+  expect(await h.invoke("observer", {})).toMatchObject({ ok: true, data: { threadId: "b" } });
+  let invoke = h.invoke;
+  const replacement = await h.harness.lifecycle.reload(async bb => { ({ invoke } = await register(bb, h.runtime)); });
+  cleanups.push(() => replacement.harness.lifecycle.dispose());
+  expect(await invoke("settingsRead", {})).toMatchObject({ ok: true, data: { values: { observerThreadId: "b", heavyCapacity: 2 }, setKeys: expect.arrayContaining(["heavyCapacity", "observerThreadId"]) } });
 });
