@@ -134,8 +134,12 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     renders it reversed (oldest→newest, like a chat) scrolled to the bottom; a
     "Load earlier" control at the top fetches `nextCursor` and **prepends** that page
     (reversed), keeping the viewport anchored by adjusting `scrollTop` by the added
-    height. Live updates (tag invalidation) refetch the newest page only and merge by
-    id. Bubbles (question bubble as the user, answer/interim via
+    height. Every loaded page stays a mounted, tagged query keyed by its
+    cursor (as in 0.1.0's nested `Page`), so an items invalidation refetches **all**
+    loaded pages, not just the newest. Cursors are stable (`created_at|id` never change),
+    so a refreshed page keeps its rows and position; rows are merged by id, and the
+    newest page may gain rows at the bottom. Scroll position is kept unless the user
+    was already at the bottom (then stay pinned to the bottom). Bubbles (question bubble as the user, answer/interim via
     `Markdown` as the agent; `for_me` question as the agent with a "Question for you"
     label). Card actions stay (Open in chat, Pin, Done, Reply).
   - Selection popup. Unlike bb's menu (which floats above the selection), it opens
@@ -210,7 +214,8 @@ availability: 'fixed', id: 'pools', title: 'Reply pools', icon: 'Sent' })`.
   inline code; partial ordered list keeps numbering; chrome dropped; fallback);
   popup draft survives textarea focus, own-button clicks and refreshes, closes on Esc
   and outside focus; Send all awaits a delayed note save and aborts on a failed one;
-  Inbox history prepends older pages in order;
+  Inbox history prepends older pages in order; resolving a deferred item that sits
+  outside the newest 50 updates it in place after invalidation;
   Inbox renders recipients, selecting marks read and keeps the row until another
   is selected; selection popup Send / Add to pool (mock `getSelection`); pools tab
   renders stacked pools, edits note, Send all pending state; message action calls
