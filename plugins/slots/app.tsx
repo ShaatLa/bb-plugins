@@ -1,5 +1,6 @@
-import { definePluginApp, UrlLink } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { ReactNode } from "react";
+import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { cn } from "./lib/utils";
@@ -14,7 +15,8 @@ function duration(ms: number) {
 }
 
 function ThreadLink({ id, titles }: { id: string; titles: StatusView["titles"] }) {
-  return <UrlLink href={`/threads/${encodeURIComponent(id)}`} className="rounded-sm font-medium underline decoration-border underline-offset-4 hover:decoration-current focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">{titles[id] || id}</UrlLink>;
+  const navigate = useBbNavigate();
+  return <Button type="button" variant="link" className="h-auto min-w-0 max-w-full p-0 text-inherit" onClick={() => navigate.toThread(id)}><span className="truncate">{titles[id] || "thread"}</span></Button>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {

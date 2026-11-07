@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { DEFAULT_SETTINGS, type StatusView } from "./contract";
@@ -43,7 +43,8 @@ test("registers a Slots navigation page and renders gate, leases, queue and audi
   for (const text of ["Slot 0", "Run geometry suite", "Port 41001"]) expect(within(pool).getByText(text)).toBeTruthy();
   expect(pool.textContent).toContain("Granted 1m 0s ago · Estimate 2m 0s · Expires in 1m 0s");
   expect(pool.textContent).toContain("Transferred to QA checks from Manager");
-  expect(within(pool).getByRole("link", { name: "Manager" }).getAttribute("href")).toBe("/threads/owner");
+  fireEvent.click(within(pool).getByRole("button", { name: "Manager" }));
+  expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "owner" }));
   const queue = slot.getByRole("list", { name: "heavy queue on laptop" });
   expect(within(queue).getAllByRole("listitem").map(item => item.textContent)).toEqual([
     expect.stringContaining("urgentBrowser testsBrowser geometryEstimate 3m 0s · Waiting 30s"),
@@ -54,7 +55,15 @@ test("registers a Slots navigation page and renders gate, leases, queue and audi
   expect(events.textContent).toContain("QA handoff");
   expect(within(events).queryByText("gate")).toBeNull();
   expect(slot.inspection.rpcCalls[0]).toMatchObject({ method: "status", input: {} });
-  expect(slot.queryByRole("button")).toBeNull();
+  expect(slot.inspection.sdkCalls).toHaveLength(0);
+});
+
+test("uses a short fallback title and navigates without fetching thread details", async () => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, titles: {} } }));
+  const pool = await slot.findByRole("region", { name: "heavy · laptop" });
+  fireEvent.click(within(pool).getAllByRole("button", { name: "thread" })[0]);
+  expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "holder" }));
+  expect(slot.inspection.sdkCalls).toHaveLength(0);
 });
 
 test("shows accessible loading state", () => {
