@@ -17,6 +17,7 @@ describe("time zone conversion for the one-time picker", () => {
     ["2026-06-01T12:00", "Asia/Kolkata", "2026-06-01T06:30:00.000Z"],
     // Berlin spring forward: 03:30 already is CEST (+02:00).
     ["2026-03-29T03:30", "Europe/Berlin", "2026-03-29T01:30:00.000Z"],
+    ["2027-10-31T02:30", "Europe/Berlin", "2027-10-31T00:30:00.000Z"],
     ["2026-07-01T00:00", "UTC", "2026-07-01T00:00:00.000Z"],
   ])("%s in %s", (local, zone, iso) => {
     expect(zonedLocalToIso(local, zone)).toBe(iso);
@@ -25,6 +26,7 @@ describe("time zone conversion for the one-time picker", () => {
   it("rejects malformed input instead of guessing", () => {
     expect(zonedLocalToIso("", "UTC")).toBeNull();
     expect(zonedLocalToIso("2026-13-40T99:99", "UTC")).toBeNull();
+    expect(zonedLocalToIso("2027-03-28T02:30", "Europe/Berlin")).toBeNull();
   });
   it("always names the zone in displayed times", () => {
     expect(formatInZone("2026-01-15T14:00:00.000Z", "America/New_York")).toContain("(America/New_York)");

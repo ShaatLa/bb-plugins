@@ -79,11 +79,12 @@ export function zonedLocalToIso(local: string, timeZone: string): string | null 
   const wall = Date.UTC(year, month - 1, day, hour, minute);
   // Date.UTC rolls 13th months / 25th hours over silently; a round trip catches that.
   if (new Date(wall).toISOString().slice(0, 16) !== local) return null;
-  // Two passes settle the offset when the guess lands on the other side of a DST change.
-  let instant = wall - zoneOffsetMs(wall, timeZone);
-  instant = wall - zoneOffsetMs(instant, timeZone);
-  const result = new Date(instant);
-  return Number.isNaN(result.getTime()) ? null : result.toISOString();
+  // Sample nearby offsets so a folded wall time consistently selects its earlier instant.
+  const candidates = [...new Set([-86_400_000, 0, 86_400_000].map((delta) => wall - zoneOffsetMs(wall + delta, timeZone)))]
+    .filter((instant) => isoToZonedLocal(new Date(instant).toISOString(), timeZone) === local)
+    .sort((a, b) => a - b);
+  // Reject wall times erased by a DST jump instead of silently shifting the user's input.
+  return candidates.length ? new Date(candidates[0]).toISOString() : null;
 }
 
 /** Inverse of zonedLocalToIso, for pre-filling the one-time picker. */
