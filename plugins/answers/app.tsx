@@ -14,7 +14,7 @@ export function useAnswersBadge() {
   return count ? { count, label: `${count} unread answers and questions for you` } : null;
 }
 
-export function ItemCard({ item }: { item: Item }) {
+export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -57,25 +57,29 @@ export function ItemCard({ item }: { item: Item }) {
   const href = `${item.projectId ? `/projects/${encodeURIComponent(item.projectId)}` : ''}/threads/${encodeURIComponent(item.threadId)}${seq === null ? '' : `?msg=${seq}`}`;
   const minutes = Math.max(0, Math.floor((Date.now() - item.createdAt) / 60000));
   const age = minutes < 1 ? 'Just now' : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
-  return <li className="rounded-lg border p-4 space-y-3">
-    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+  // In the Inbox the card is a chat exchange: no per-card header, bubbles, icon-only actions.
+  const label = (text: string) => chat ? null : text;
+  const iconProps = (text: string) => chat ? { 'aria-label': text, title: text, variant: 'ghost' as const } : { variant: 'outline' as const };
+  const agentBubble = chat ? 'max-w-[92%] rounded-2xl rounded-bl-md bg-secondary px-3.5 py-2.5' : 'rounded-lg bg-muted p-3';
+  return <li className={chat ? 'group space-y-1.5' : 'rounded-lg border p-4 space-y-3'}>
+    {chat ? <div className="flex justify-center gap-2 pt-2 text-[11px] text-muted-foreground"><time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>{item.status !== 'answered' && <span>· {item.status}</span>}</div> : <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
       <h2 className="font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
       <span className="rounded border px-1.5 py-0.5">{item.status}</span>
       <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
       {item.threadDeleted && <span>Thread deleted</span>}
-    </div>
-    <div className={`rounded-lg p-3 ${item.kind === 'for_me' ? 'bg-muted' : 'ml-auto max-w-[90%] border'}`}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div></div>
-    {(clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
-    {item.answer && <div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
-    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}
+    </div>}
+    <div className={chat ? `w-fit max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm ${item.kind === 'for_me' ? 'rounded-bl-md bg-secondary' : 'ml-auto rounded-br-md bg-state-active'}` : `rounded-lg p-3 ${item.kind === 'for_me' ? 'bg-muted' : 'ml-auto max-w-[90%] border'}`}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div></div>
+    {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
+    {item.answer && <div className={agentBubble} data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
+    {item.interim && <div><h3 className="text-xs font-medium text-muted-foreground">Interim reply</h3><div className={agentBubble} data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}
     {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
-    <div className="flex flex-wrap gap-2">
-      {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />Open in chat</UrlLink></Button>}
-      <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden />Mark read</Button>
-      <Button size="sm" variant="outline" aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden />{item.pinned ? 'Unpin' : 'Pin'}</Button>
-      <Button size="sm" variant="outline" disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden />Done</Button>
-      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" variant="outline" disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden />Reply</Button>}
+    <div className={chat ? 'flex gap-0.5 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100' : 'flex flex-wrap gap-2'}>
+      {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />{label('Open in chat')}</UrlLink></Button>}
+      {!chat && <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden />Mark read</Button>}
+      <Button size="sm" {...iconProps(item.pinned ? 'Unpin' : 'Pin')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden />{label(item.pinned ? 'Unpin' : 'Pin')}</Button>
+      <Button size="sm" {...iconProps('Done')} disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden />{label('Done')}</Button>
+      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden />{label('Reply')}</Button>}
     </div>
     {replying && <form className="space-y-2" onSubmit={event => { event.preventDefault(); void reply(); }}>
       <textarea aria-label="Reply text" className="w-full rounded border bg-transparent p-2 text-sm" maxLength={8000} value={text} disabled={pending} onChange={event => setText(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void reply(); } }} />
