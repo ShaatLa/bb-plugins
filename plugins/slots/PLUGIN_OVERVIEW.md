@@ -1,4 +1,4 @@
-# Slots plugin overview
+# Machine Slots plugin overview
 
 Coordinates advisory pools (`heavy`, `local-model`) on the BB server host.
 Agents request, gate before each launch, heartbeat on warnings, release promptly,
@@ -15,7 +15,9 @@ Manager operations are unrestricted in v1.
 - `cli.ts`: `bb slots` commands, JSON output, bounded waiting and audit reads.
 - `skills/slots/`: agent workflow. README documents all commands and settings.
 
-Settings are global because this SDK has no host-scoped settings. Capacity is
+Settings are typed number/string/select controls in human units, converted to the
+engine format with cross-field validation. They are global because this SDK has
+no host-scoped settings. Capacity is
 persisted only in settings through `experimental_set`, never overridden in state.
 State and daily audit files live beside the SDK plugin database. Notifications
 use `threads.send` with plugin attribution and mode auto, waking idle agents.
@@ -23,5 +25,7 @@ Notify errors are logged once. Archive/deletion frees work; startup reconciles
 missed lifecycle events. Active holders heartbeat each 15s tick. Gate readings
 are audited to disk without flooding the 50-event sidebar tail.
 
-The frontend consumes RPC `status` and refetches on `slots.changed`. This phase
+The frontend consumes RPC `status` and refetches on `slots.changed`. Snapshots
+leave the transition queue before parallel, cached title resolution (60s TTL,
+invalidated on thread end). CLI plain output is concise; JSON envelopes are unchanged. This phase
 does not modify `app.tsx` or UI files, install, release or deploy the plugin.

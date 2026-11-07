@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings } from "./contract.js";
+import { SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, rpcContract, stateSchema } from "./schemas.js";
@@ -19,27 +19,47 @@ export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Resu
 export default function plugin(bb: BbPluginApi) { return register(bb); }
 export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}) {
   const runtime = { now: Date.now, metrics, probePort, ...overrides };
-  const settingsSchema = z.string().superRefine((text, ctx) => {
-    try { const error = validateSettings({ ...JSON.parse(text), hosts: {} }); if (error) ctx.addIssue({ code: "custom", message: error }); }
-    catch { ctx.addIssue({ code: "custom", message: "Expected JSON settings" }); }
-  });
   const handle = bb.settings.define({
-    configuration: { type: "string", label: "Pool and gate settings (JSON; durations in milliseconds)", experimental_multiline: true,
-      default: JSON.stringify(DEFAULT_SETTINGS, null, 2), experimental_schema: settingsSchema },
+    heavyCapacity: { type: "number", label: "Heavy capacity (0–10000)", default: 4, experimental_schema: z.number().int().min(0).max(10000) },
+    localModelCapacity: { type: "number", label: "Local model capacity (0–10000)", default: 1, experimental_schema: z.number().int().min(0).max(10000) },
+    memFreeMinPct: { type: "number", label: "Minimum memory free % (0–100)", default: 20, experimental_schema: z.number().min(0).max(100) },
+    loadMax: { type: "number", label: "Maximum 1-minute load (0.1–1000)", default: 18, experimental_schema: z.number().min(0.1).max(1000) },
+    gateSamples: { type: "number", label: "Consecutive gate samples (1–100)", default: 2, experimental_schema: z.number().int().min(1).max(100) },
+    gateIntervalSeconds: { type: "number", label: "Gate interval in seconds (1–3600)", default: 15, experimental_schema: z.number().int().min(1).max(3600) },
+    leaseTtlMinutes: { type: "number", label: "Lease TTL in minutes (2–10080)", default: 30, experimental_schema: z.number().int().min(2).max(10080) },
+    heartbeatIntervalMinutes: { type: "number", label: "Heartbeat interval in minutes (1–10079; below TTL)", default: 10, experimental_schema: z.number().int().min(1).max(10079) },
+    observerThreadId: { type: "string", label: "Observer thread ID (optional)", default: "", experimental_schema: z.string().max(200) },
+    portFrom: { type: "number", label: "First dev-server port (1–65535)", default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
+    portTo: { type: "number", label: "Last dev-server port (1–65535; at least first port)", default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
+    grantMode: { type: "select", label: "Grant mode", options: ["auto", "manual"], default: "auto" },
   });
-  const getSettings = async (): Promise<Settings> => ({ ...JSON.parse((await handle.get()).configuration), hosts: {} });
+  const getSettings = async (): Promise<Settings> => {
+    const values = await handle.get();
+    const settings: Settings = {
+      capacities: { heavy: values.heavyCapacity, "local-model": values.localModelCapacity },
+      memFreeMinPct: values.memFreeMinPct, loadMax: values.loadMax, gateSamples: values.gateSamples,
+      gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
+      heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
+      portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
+    };
+    const error = validateSettings(settings);
+    if (error) throw new Error(error);
+    return settings;
+  };
   let settings = await getSettings();
   const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
   let state: State = initialState();
   let localHostId = "";
   let initialized = false;
   let disposed = false;
+  const titles = new Map<string, { until: number; value: Promise<string> }>();
   let queue: Promise<unknown> = Promise.resolve();
   function serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = queue.then(() => { if (disposed) throw new Error("Slots unloaded"); return fn(); });
     queue = next.catch(() => {}); return next;
   }
   async function transition(input: Input, manualSample = false) {
+    if (input.type === "threadEnded") titles.delete(input.threadId);
     const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
     if (!change.result.ok) return change.result;
     await store.save(change.state);
@@ -102,7 +122,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (hostId !== localHostId) throw new Error(`Slots v1 only supports the BB server host (${localHostId}); thread ${threadId} is on ${hostId ?? "an unknown host"}`);
     return thread;
   }
-  const invoke: Invoke = (method, raw) => serial(async () => {
+  const invoke: Invoke = async (method, raw) => {
+    const result = await serial<Result<unknown>>(async () => {
     await initialize(); settings = await getSettings();
     const parsed = inputs[method].safeParse(raw);
     if (!parsed.success) return invalid(parsed.error.message);
@@ -113,11 +134,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (p.hostId && p.hostId !== localHostId) return invalid(`Slots v1 only supports the BB server host (${localHostId})`);
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
-        const ids = new Set([...state.requests.map(r => r.threadId), ...state.leases.flatMap(l => [l.holderThreadId, l.ownerThreadId]), ...state.ports.map(p => p.threadId), ...snapshot.audit.flatMap(e => e.threadId ? [e.threadId] : [])]);
-        const titles: Record<string, string> = {};
-        for (const id of ids) titles[id] = (await lookup(id))?.title ?? id;
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
-        return { ok: true, data: { ...snapshot, titles, hostSettings, localHostId } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId } };
       }
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");
@@ -136,11 +154,27 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       }
       if (method === "setCapacity") {
         settings = { ...settings, capacities: { ...settings.capacities, [p.pool]: p.capacity } };
-        await handle.experimental_set({ configuration: JSON.stringify(settings, null, 2) });
+        await handle.experimental_set(p.pool === "heavy" ? { heavyCapacity: p.capacity } : { localModelCapacity: p.capacity });
       }
       return transition({ ...p, type: method } as Input);
     } catch (error) { return invalid(String(error)); }
-  });
+    });
+    if (method !== "status" || !result.ok) return result;
+    const snapshot = result.data as Omit<import("./contract.js").StatusView, "titles">;
+    const ids = new Set([...snapshot.pools.flatMap(p => [...p.queue.map(r => r.threadId), ...p.leases.flatMap(l => [l.holderThreadId, l.ownerThreadId])]),
+      ...snapshot.ports.map(p => p.threadId), ...snapshot.audit.flatMap(e => e.threadId ? [e.threadId] : [])]);
+    const resolved = await Promise.all([...ids].map(async id => {
+      let entry = titles.get(id);
+      if (!entry || entry.until <= runtime.now()) {
+        entry = { until: runtime.now() + 60000, value: lookup(id).then(thread => thread?.title ?? id).catch(() => id) };
+        titles.delete(id);
+        titles.set(id, entry);
+        if (titles.size > 256) titles.delete(titles.keys().next().value!);
+      }
+      return [id, await entry.value] as const;
+    }));
+    return { ok: true, data: { ...snapshot, titles: Object.fromEntries(resolved) } };
+  };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
   for (const method of Object.keys(inputs) as (keyof RpcMethods)[]) {
@@ -190,6 +224,6 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       await sleep(Math.max(1, Math.min(lastTick + 15000, untilSample) - runtime.now()), undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
     }
   } });
-  bb.onDispose(async () => { disposed = true; await queue; });
+  bb.onDispose(async () => { disposed = true; titles.clear(); await queue; });
   return { invoke };
 }

@@ -1,4 +1,4 @@
-# Slots
+# Machine Slots
 
 Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 0.49.0+ and SDK 0.6.132+. Slots coordinates agents; it never kills or inspects
@@ -7,7 +7,8 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Commands
 
-Every command supports `--json`. Caller identity defaults to the CLI context's
+Plain output summarizes gate readings, requests, pools and audit events in short
+lines. Every command supports `--json`. Caller identity defaults to the CLI context's
 BB_THREAD_ID; holder commands also accept `--thread <id>`.
 
 ```sh
@@ -50,23 +51,27 @@ Binding after a successful probe can still race another application.
 
 ## Settings
 
-Installed plugin settings expose `configuration`: validated JSON with these
-fields. The SDK has no host-scoped settings, so this is global, with `hosts`
-overrides always empty. Durations are milliseconds.
+Installed plugin settings expose typed controls with range validation. The SDK
+has no host-scoped settings, so settings are global and engine `hosts` overrides
+remain empty. Human units are converted at the boundary.
 
-| Field | Default |
-| --- | --- |
-| capacities | `{"heavy":4,"local-model":1}` |
-| memFreeMinPct / loadMax | `20` / `18` |
-| gateSamples / gateIntervalMs | `2` / `15000` |
-| leaseTtlMs / heartbeatIntervalMs | `1800000` / `600000` |
-| observerThreadId | `null` |
-| portRange | `{"from":41000,"to":41099}` |
-| grantMode | `"auto"` (`"manual"` disables automatic grants) |
-| hosts | `{}` (reserved; ignored by server) |
+| Setting | Default | Range |
+| --- | --- | --- |
+| heavyCapacity / localModelCapacity | 4 / 1 | 0–10000 |
+| memFreeMinPct | 20 | 0–100% |
+| loadMax | 18 | 0.1–1000 |
+| gateSamples | 2 | 1–100 |
+| gateIntervalSeconds | 15 | 1–3600 seconds |
+| leaseTtlMinutes | 30 | 2–10080 minutes |
+| heartbeatIntervalMinutes | 10 | 1–10079 minutes, below TTL |
+| observerThreadId | empty | optional thread ID, maximum 200 characters |
+| portFrom / portTo | 41000 / 41099 | 1–65535, first <= last |
+| grantMode | auto | auto / manual |
 
-`capacity` writes this setting via `experimental_set`; there is no capacity
-override in state. Lowering capacity preserves live leases. Settings changes
+The engine's `validateSettings` checks cross-field combinations before use;
+correct invalid heartbeat/TTL or port bounds before continuing operations.
+`capacity` writes the matching capacity field via `experimental_set`; there is
+no capacity override in state. Lowering capacity preserves live leases. Settings changes
 reset gate streaks. TTL is `max(leaseTtlMs, estimate + 15m)`, renewed by heartbeat,
 gate, port, duplicate request, active events and each tick for active holders.
 Idle holders receive one wake-up warning at expiry minus heartbeat interval.
@@ -92,7 +97,8 @@ Malformed state fails startup instead of silently discarding leases.
 `contract.ts` exports `RpcMethods`, `StatusView`, and `SLOTS_CHANGED` =
 `slots.changed`. Each successful transition publishes that realtime channel;
 the sidebar should refetch `status`. It returns titles, effective host settings,
-localHostId and the engine snapshot. Runtime input schemas and `rpcContract`
+localHostId and the engine snapshot. Title lookups run in parallel outside the
+transition queue and share a bounded 60-second cache invalidated on thread end. Runtime input schemas and `rpcContract`
 live in `schemas.ts`; `core/index.ts` remains deterministic and performs no I/O.
 
 ## Development

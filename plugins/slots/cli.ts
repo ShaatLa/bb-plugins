@@ -1,13 +1,54 @@
 import { cliCommand, defineCli, type BbPluginApi, type PluginCliContext, type PluginCliResult } from "@get-bb/plugin-sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
-import type { Result, RpcMethods, RequestOutcome, StatusView } from "./contract.js";
+import type { Result, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
 import { parseSince } from "./runtime.js";
 
+const line = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
+const leaseLine = (lease: Lease) => `${lease.id} ${lease.pool} #${lease.slotIndex} · ${lease.holderThreadId} · ${line(lease.job)} · expires ${new Date(lease.expiresAt).toISOString()}`;
+function humanOutput(method: string, data: unknown): string {
+  switch (method) {
+    case "gate": {
+      const { passed, gate, thresholds } = data as GateOutcome & { thresholds: Record<string, HostSettings> };
+      const settings = Object.values(thresholds ?? {})[0];
+      const reading = gate.latest;
+      return `${passed ? "PASS" : "FAIL"} ${reading ? `memory free ${reading.memFreePct.toFixed(1)}% (min ${settings.memFreeMinPct}%) · load ${reading.load1.toFixed(1)} (max ${settings.loadMax}) · streak ${gate.streak}/${settings.gateSamples} · sampled ${new Date(reading.at).toISOString().slice(11)}` : "no readings"}`;
+    }
+    case "request": {
+      const outcome = data as RequestOutcome;
+      return outcome.kind === "leased" ? `Granted ${leaseLine(outcome.lease)}` :
+        `Queued ${outcome.request.id} · ${outcome.request.pool} · ${outcome.request.priority} · ${line(outcome.request.job)} · estimate ${Math.ceil(outcome.request.estMs / 60000)}m`;
+    }
+    case "status": {
+      const view = data as StatusView;
+      return view.pools.flatMap(p => [
+        `${p.pool} · ${p.leases.length}/${p.capacity} held · ${p.queue.length} queued`,
+        ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
+        ...p.queue.map(r => `  queued ${r.id} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
+      ]).join("\n");
+    }
+    case "log": {
+      const { events } = data as { events: AuditEvent[] };
+      return events.length ? events.map(e => [new Date(e.at).toISOString(), e.type, e.pool, e.requestId, e.leaseId,
+        e.threadId, e.port, e.readings ? `memory ${e.readings.memFreePct.toFixed(1)}% · load ${e.readings.load1.toFixed(1)}` : undefined,
+        e.reason ? line(e.reason) : undefined].filter(v => v !== undefined).join(" · ")).join("\n") : "No events.";
+    }
+    case "release": case "revoke": {
+      const result = data as ReleaseOutcome;
+      return `Released ${result.released.join(", ") || "none"} · returned ${result.returned.join(", ") || "none"} · canceled ${result.canceled.join(", ") || "none"}`;
+    }
+    case "heartbeat": return `Heartbeat refreshed ${(data as { leases: Lease[] }).leases.map(l => l.id).join(", ") || "no leases"}`;
+    case "transfer": case "grant": return leaseLine(data as Lease);
+    case "port": return `Port ${(data as { port: number }).port}`;
+    case "prioritize": return `${(data as SlotRequest).id} priority ${(data as SlotRequest).priority}`;
+    case "setCapacity": return `Capacity ${(data as { capacity: number }).capacity}`;
+    default: return "Done.";
+  }
+}
 export function renderResult(method: string, result: Result<unknown>, json: boolean): PluginCliResult {
   const gate = result.ok && method === "gate" ? result.data as { passed: boolean } : null;
   return { exitCode: !result.ok || gate?.passed === false ? 1 : 0,
-    stdout: json ? JSON.stringify(result) : result.ok ? JSON.stringify(result.data, null, 2) : result.error.message };
+    stdout: json ? JSON.stringify(result) : result.ok ? humanOutput(method, result.data) : result.error.message };
 }
 export function registerCli(bb: BbPluginApi, invoke: Invoke) {
   const json = { type: "boolean", description: "Return bounded JSON" } as const;

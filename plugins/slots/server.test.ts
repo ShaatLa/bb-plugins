@@ -100,7 +100,7 @@ it("skips a bound port and probes both loopback families", async () => {
   cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
   expect(await probePort(port)).toBe(false);
   const h = await setup();
-  await h.harness.behavior.setSettings({ configuration: JSON.stringify({ ...DEFAULT_SETTINGS, portRange: { from: port, to: Math.min(65535, port + 20) } }) });
+  await h.harness.behavior.setSettings({ portFrom: port, portTo: Math.min(65535, port + 20) });
   await h.grant(); const result = await h.invoke("port", { threadId: "a", hostId: "local" });
   expect(result).toMatchObject({ ok: true, data: { port: expect.any(Number) } });
   if (result.ok) expect((result.data as { port: number }).port).toBeGreaterThan(port);
@@ -119,7 +119,7 @@ it("CLI timeout withdraws queued request and remote-free status stays bounded", 
   expect(result.exitCode).toBe(1); expect((await h.view()).pools[0].queue).toHaveLength(0);
 });
 it("uses public SDK imports only", () => {
-  const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge)$/] });
+  const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge|@testing-library\/react)$/] });
   expect(scan.violations).toEqual([]); expect(scan.privateDependencies).toEqual([]);
 });
 
@@ -134,9 +134,59 @@ it("manual grant preserves the requested order override and notification failure
 });
 it("settings reject invalid intervals and restore refuses malformed state", async () => {
   const h = await setup();
-  await expect(h.harness.behavior.setSettings({ configuration: JSON.stringify({ ...DEFAULT_SETTINGS, heartbeatIntervalMs: DEFAULT_SETTINGS.leaseTtlMs }) })).rejects.toThrow();
+  await expect(h.harness.behavior.setSettings({ gateIntervalSeconds: 0 })).rejects.toThrow();
+  await h.harness.behavior.setSettings({ heartbeatIntervalMinutes: 30 });
+  await expect(h.view()).rejects.toThrow("Invalid settings");
   await h.harness.lifecycle.dispose();
   await writeFile(join(h.path, "state.json"), JSON.stringify({ version: 1, leases: "broken" }));
   const next = await setup(h.path);
   await expect(next.invoke("status", {})).rejects.toThrow();
+});
+
+it("converts typed human-unit settings and capacity updates only their matching field", async () => {
+  const h = await setup();
+  await h.harness.behavior.setSettings({ heavyCapacity: 6, localModelCapacity: 2, gateIntervalSeconds: 20, leaseTtlMinutes: 45,
+    heartbeatIntervalMinutes: 5, observerThreadId: " b ", grantMode: "manual" });
+  expect((await h.view()).hostSettings.local).toMatchObject({ capacities: { heavy: 6, "local-model": 2 },
+    gateIntervalMs: 20000, leaseTtlMs: 2700000, heartbeatIntervalMs: 300000, observerThreadId: "b", grantMode: "manual", hosts: {} });
+  await h.invoke("setCapacity", { hostId: "local", pool: "local-model", capacity: 3 });
+  expect((await h.view()).hostSettings.local.capacities).toEqual({ heavy: 6, "local-model": 3 });
+  await h.harness.behavior.setSettings({ portFrom: 50000, portTo: 49999 });
+  await expect(h.view()).rejects.toThrow("Invalid settings");
+});
+it("resolves titles outside the queue in parallel, shares cache entries, expires and invalidates them", async () => {
+  const h = await setup(); await h.request("a"); await h.request("b");
+  const pending = new Map<string, (thread: ReturnType<typeof makeThreadResponse>) => void>();
+  const lookup = vi.fn(({ threadId }: { threadId: string }) => new Promise<ReturnType<typeof makeThreadResponse>>(resolve => pending.set(threadId, resolve)));
+  h.harness.sdk.stub("threads.get", lookup);
+  const first = h.view();
+  await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+  // This mutation completes even while every status title lookup is blocked.
+  expect(await h.invoke("setCapacity", { hostId: "local", pool: "heavy", capacity: 5 })).toMatchObject({ ok: true });
+  const second = h.view();
+  for (const [id, resolve] of pending) resolve(h.threads.get(id)!);
+  expect((await first).titles).toEqual({ a: "Title a", b: "Title b" });
+  await second; await h.view(); expect(lookup).toHaveBeenCalledTimes(2);
+  h.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
+    lookup.mock.calls.push([{ threadId }]); return makeThreadResponse({ ...h.threads.get(threadId), title: `Updated ${threadId}` });
+  });
+  await h.harness.behavior.emitThreadEvent("thread.archived", { thread: h.threads.get("a")! });
+  expect((await h.view()).titles).toEqual({ a: "Updated a", b: "Title b" });
+  expect(lookup).toHaveBeenCalledTimes(3);
+  h.advance(60001); expect((await h.view()).titles).toEqual({ a: "Updated a", b: "Updated b" });
+  expect(lookup).toHaveBeenCalledTimes(5);
+});
+it("renders short human CLI output while preserving JSON envelopes", async () => {
+  const h = await setup();
+  const request = await h.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "full suite", "--est", "5m"], { threadId: "a" });
+  expect(request.stdout).toContain("Queued req-"); expect(request.stdout).toContain("estimate 5m");
+  const gate = await h.harness.behavior.runCli(["gate"], { threadId: "a" });
+  expect(gate.stdout).toBe("PASS memory free 75.0% (min 20%) · load 1.0 (max 18) · streak 1/2 · sampled 12:00:00.000Z");
+  await h.grant();
+  const status = await h.harness.behavior.runCli(["status"]);
+  expect(status.stdout).toContain("heavy · 1/4 held · 0 queued"); expect(status.stdout).toContain("Title a");
+  const log = await h.harness.behavior.runCli(["log", "--limit", "1"]);
+  expect(log.stdout).toContain("2026-11-07T12:00:15.000Z · grant");
+  const json = await h.harness.behavior.runCli(["status", "--json"]);
+  expect(JSON.parse(json.stdout!)).toMatchObject({ ok: true, data: { titles: { a: "Title a" } } });
 });

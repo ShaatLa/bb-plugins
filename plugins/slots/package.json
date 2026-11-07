@@ -8,7 +8,7 @@
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Slots",
+    "name": "Machine Slots",
     "description": "Advisory per-host resource pools, gate checks, leases and ports for heavy local work.",
     "branding": {
       "icon": "Layers"
@@ -40,6 +40,8 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^5.7.0",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "@testing-library/react": "^16.3.3",
+    "jsdom": "^30.1.3"
   }
 }
