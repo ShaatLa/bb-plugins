@@ -1,4 +1,4 @@
-import { definePluginApp, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_Icon as Icon, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -142,10 +142,7 @@ function SlotsPage() {
       <header className="flex items-center justify-between gap-3 py-2">
         <div><h1 className="text-base font-semibold">Machine Slots</h1><p className={empty}>{view?.localHostName && view.localHostName !== view.localHostId ? view.localHostName : "This machine"}</p></div>
         <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{view ? `Updated ${duration(now - view.at)} ago` : "Waiting for status"}</span><Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={refresh}>
-          <svg data-refresh-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`}>
-            <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.8L21 8" />
-            <path d="M21 3v5h-5" />
-          </svg>
+          <Icon name="ArrowReloadHorizontal" fallback="RotateCcw" aria-hidden className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`} />
         </Button></div>
       </header>
       {error && <div role="alert" className="text-sm text-destructive">Unable to refresh status.{view && " Showing the last successful status."}<span className="block text-xs">Retrying automatically every 10 seconds while visible.</span></div>}

@@ -232,14 +232,15 @@ test.each([0, 1, 4])("pluralizes capacity activity for %s slots", async capacity
     .toBe(`Capacity set to ${capacity} ${capacity === 1 ? "slot" : "slots"}`);
 });
 
-test("refresh uses the CI SVG and stays busy until success or failure", async () => {
+test("refresh uses the BB ArrowReloadHorizontal icon and stays busy until success or failure", async () => {
   const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
   const slot = render(status);
   await slot.findByText("Run geometry suite");
   const button = slot.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
-  const icon = button.querySelector("svg[data-refresh-icon]")!;
-  expect(icon.querySelectorAll("path")).toHaveLength(2);
-  expect(icon.querySelector("path")!.getAttribute("d")).toBe("M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.8L21 8");
+  const icon = button.querySelector('[data-icon="ArrowReloadHorizontal"]')!;
+  expect(icon).toBeTruthy();
+  expect(icon.getAttribute("data-icon-fallback")).toBe("RotateCcw");
+  expect(button.querySelector("svg")).toBeNull();
   for (const fails of [false, true]) {
     let finish!: () => void;
     status.mockImplementationOnce(() => new Promise((resolve, reject) => {
