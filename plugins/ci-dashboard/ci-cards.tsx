@@ -9,7 +9,7 @@ import { Summary } from "./components/ui/summary";
 import type { JobSignals } from "./signals-panel";
 import { signalTitle } from "./ci-problems";
 
-function elapsed(ms: number | null) {
+export function elapsed(ms: number | null) {
   if (ms === null) return "—";
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -99,7 +99,7 @@ export function CiJobCauses({ repo, signals, part }: { repo: Metrics; signals: J
       <h5 className="text-sm font-medium">Failure causes</h5>
       <dl className="grid grid-cols-2 gap-3">{causes.map(([label, value]) => <div key={label}>
         <dt className="text-xs text-muted-foreground">{label}</dt>
-        <dd className={`text-lg font-semibold tabular-nums ${label === "Runner losses" && value > 0 ? "text-destructive" : ""}`}>{value.toLocaleString()}</dd>
+        <dd className={`text-lg font-semibold tabular-nums ${label === "Runner losses" && value > 0 ? "text-destructive-text" : ""}`}>{value.toLocaleString()}</dd>
       </div>)}</dl>
       {excluded.length > 0 && <p className="text-xs text-muted-foreground">Excluded: {excluded.join(", ")}</p>}
       {job.backfill.remaining > 0 && <p className="text-xs text-muted-foreground">Loading job history: {job.backfill.remaining.toLocaleString()} attempts left</p>}
@@ -108,7 +108,7 @@ export function CiJobCauses({ repo, signals, part }: { repo: Metrics; signals: J
     </section>;
   return <>
     {block("Runner pools", pools.length, stalled.size ? `${stalled.size} stalled` : "all running", <>
-      {busy.map((pool) => <p key={pool.pool} className={`text-sm ${stalled.has(pool.pool) ? "text-destructive" : ""}`}>{pool.pool} · {pool.inProgress.toLocaleString()} running · {pool.queued.toLocaleString()} waiting</p>)}
+      {busy.map((pool) => <p key={pool.pool} className={`text-sm ${stalled.has(pool.pool) ? "text-destructive-text" : ""}`}>{pool.pool} · {pool.inProgress.toLocaleString()} running · {pool.queued.toLocaleString()} waiting</p>)}
       {idle.length > 0 && <p className="text-xs text-muted-foreground">Idle: {idle.map((pool) => pool.pool).join(", ")}</p>}
     </>)}
     {block("Runner losses", lossCount, topJob && `mostly ${topJob}`, lossGroups.map(([label, rows]) => <div key={label} className="space-y-1"><p className="text-xs text-muted-foreground">{label}</p>
@@ -137,9 +137,9 @@ export function CiTiming({ repo }: { repo: Metrics }) {
   const timing = workflow?.timing ?? data?.timing;
   const successful = workflow?.passed ?? repo.ciOutcomes?.success ?? 0;
   const total = workflow?.total ?? data?.total ?? 0;
-  return <Card role="region" aria-label="CI run timings" className="space-y-4 border-primary/20 p-4 sm:p-5">
+  return <Card role="region" aria-label="CI run timings" className="space-y-4 border-border p-4 sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">{repo.range.label} · {workflow?.name ?? "All workflows"} · successful completed runs only</p></div>
+      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">successful runs only</p></div>
       {data && <label className="flex items-center gap-2 text-xs text-muted-foreground">Summary workflow
         <span className="relative inline-block">
           <select aria-label="Timing workflow" value={workflow ? String(workflow.id) : "all"} onChange={(event) => setSelectedWorkflow(event.target.value)} className="h-9 max-w-64 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground">
@@ -157,14 +157,14 @@ export function CiTiming({ repo }: { repo: Metrics }) {
       <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">{([
         ["Median", timing.medianMs], ["Average", timing.averageMs], ["P95", timing.p95Ms],
       ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground" title={label === "P95" ? "95% of measured successful runs finish within this time or faster; about 5% take longer." : undefined}>{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
-      {!workflow && <p className="text-xs text-muted-foreground">Combined distribution across all workflows: frequent short automation runs can dominate the median. Select a workflow to compare like-for-like durations.</p>}
+      {!workflow && <p className="text-xs text-muted-foreground">Short automation runs can dominate the combined median.</p>}
       <p className="text-xs text-muted-foreground">Total elapsed: {elapsed(timing.count ? timing.totalMs : null)}</p>
-      <p className="text-xs text-muted-foreground">Timing available for {timing.count} of {successful} successful runs · {total - successful} non-successful runs excluded. Estimate from start to last update; reruns may inflate it. Totals add overlapping runs and are not billed runner time.</p>
+      {timing.count < successful && <p className="text-xs text-muted-foreground">Timing available for {timing.count} of {successful} successful runs</p>}
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
         <Summary className="text-sm">By workflow · {data.workflows.length}</Summary>
         <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground"><span>Slowest averages first</span><span>Average</span></div>
-        <ul aria-label="Workflow timings" className="mt-2 space-y-2">{[...data.workflows].sort((a, b) => (b.timing.averageMs ?? -1) - (a.timing.averageMs ?? -1) || a.id - b.id).map((workflow) => <li key={workflow.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted/40 p-3">
+        <ul aria-label="Workflow timings" className="mt-2 space-y-2">{[...data.workflows].sort((a, b) => (b.timing.averageMs ?? -1) - (a.timing.averageMs ?? -1) || a.id - b.id).map((workflow) => <li key={workflow.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted p-3">
           <UrlLink href={`https://github.com/${repo.repository}/actions/workflows/${workflow.id}`} className="min-w-0 break-words text-sm font-medium leading-snug hover:underline">{workflow.name}</UrlLink>
           <span className="whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums">{elapsed(workflow.timing.averageMs)}</span>
           <div className="col-span-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -179,7 +179,7 @@ export function CiTiming({ repo }: { repo: Metrics }) {
       {data.slowRuns.length > 0 && <details className="border-t border-border pt-3">
         <Summary className="text-sm">Longest successful runs · all workflows · top {data.slowRuns.length}</Summary>
         <ul aria-label="Longest CI runs" className="mt-3 space-y-2">{data.slowRuns.map((run) => <li key={run.id}>
-          <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} aria-label={`${run.name} · ${run.branch ?? "Unknown branch"} · #${run.id} · ${elapsed(run.durationMs)}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted/40 p-3 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${run.id}`} aria-label={`${run.name} · ${run.branch ?? "Unknown branch"} · #${run.id} · ${elapsed(run.durationMs)}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2 rounded-md bg-muted p-3 hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="min-w-0 break-words text-sm font-medium leading-snug">{run.name}</span>
             <span className="whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums">{elapsed(run.durationMs)}</span>
             <span className="col-span-2 flex min-w-0 items-baseline justify-between gap-3 text-xs text-muted-foreground"><span className="min-w-0 truncate" title={run.branch ?? "Unknown branch"}>{run.branch ?? "Unknown branch"}</span><span className="shrink-0 tabular-nums">#{run.id}</span></span>

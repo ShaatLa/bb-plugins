@@ -3,7 +3,9 @@ import { expect, test, vi } from "vitest";
 import { capOpenSignals } from "./cache-cleanup";
 import type { Signal } from "./ci-jobs-types";
 import { createBackfill, createLogFetcher, createJobStore, fetchAttemptJobs, jobMigrations } from "./ci-jobs";
-import { fakeGithub, job, runContext, syntheticRun } from "./test-support";
+import type { GitHubRequest } from "./metrics";
+import { finishedRuns } from "./ci-live";
+import { fakeGithub, job, runContext, syntheticRun, zip, SHA } from "./test-support";
 
 function setup() {
   const data = syntheticRun(), db = createFakePluginHost().bb.storage.database();
@@ -40,6 +42,15 @@ test("backfill respects completed attempts, budget and rate limits", async () =>
   expect(await rate.step(signal())).toMatchObject({ processed: 0, pausedUntil: 901000 });
   const full = createBackfill({ store, request }); full.enqueue("o/r", [run]); expect((await full.step(signal())).processed).toBe(3);
   full.enqueue("o/r", [run]); expect((await full.step(signal())).remaining).toBe(0);
+});
+
+test("runs enqueued later but created later are fetched before an older backlog", async () => {
+  const { data, request, store } = setup(); const paths: string[] = [];
+  const backfill = createBackfill({ store, request: async (path, init) => { paths.push(path); return request(path, init); }, maxPerStep: 1 });
+  backfill.enqueue("o/r", [{ ...data.run, status: "completed", run_attempt: 1, created_at: "2020-01-01T00:00:00Z" }]);
+  backfill.enqueue("o/r", [{ ...data.run, id: 999, status: "completed", run_attempt: 1, created_at: "2030-01-01T00:00:00Z" }]);
+  await backfill.step(signal());
+  expect(paths[0]).toContain("/runs/999/");
 });
 
 test("a failing attempt is skipped instead of blocking the backfill queue", async () => {
@@ -146,4 +157,68 @@ test("open signals are capped at 200, most severe and newest first", () => {
   expect(capped.slice(0, 2).map(s => s.id)).toEqual(["s300", "s301"]);
   expect(capped.map(s => s.id)).not.toContain("s0");
   expect(capOpenSignals(all.slice(0, 5))).toHaveLength(5);
+});
+
+test("fast path: a run that left the live poll is fetched ahead of the backlog and its jobs are stored by the following step", async () => {
+  const { data, request, calls, store } = setup();
+  const finishedRun = { id: 1001, status: "completed", conclusion: "failure", run_attempt: 1, name: "CI", event: "merge_group", head_branch: "gh-readonly-queue/main/pr-7-abc", head_sha: SHA, pull_requests: [], created_at: "2026-11-05T10:00:00Z" };
+  const api: GitHubRequest = async (path, init) => path === "/repos/o/r/actions/runs/1001" ? { body: finishedRun, hasNext: false } : request(path, init);
+  // maxPerStep 5 is exactly one attempt of the fixture: only the run that is fetched first gets stored.
+  const backfill = createBackfill({ store, request: api, maxPerStep: 5 });
+  backfill.enqueue("o/r", [{ ...data.run, id: 999, status: "completed", run_attempt: 1, created_at: "2030-01-01T00:00:00Z" }]);
+  // Poll N lists the run as in progress, poll N+1 no longer does.
+  const finished = new Set<number>(); let known: Set<number> | undefined;
+  for (const poll of [{ runIds: [1001, 5], truncated: false }, { runIds: [5], truncated: false }]) { for (const id of finishedRuns(known, poll)) finished.add(id); known = new Set(poll.runIds); }
+  expect([...finished]).toEqual([1001]);
+  expect(store.hasCompletedAttempt("o/r", 1001, 1)).toBe(false);
+  expect(await backfill.resolveFinished("o/r", finished, signal())).toBe(1);
+  expect(finished.size).toBe(0);
+  expect(await backfill.step(signal())).toMatchObject({ processed: 1, remaining: 1, storedFailures: 1 });
+  expect(calls[0]).toContain("/runs/1001/attempts/1/jobs");
+  expect(store.hasCompletedAttempt("o/r", 1001, 1)).toBe(true);
+  expect(store.hasCompletedAttempt("o/r", 999, 1)).toBe(false);
+});
+
+test("fast path: green and missing runs are dropped, in-progress ones are not enqueued, a rate limit keeps the rest for the next call", async () => {
+  const { store } = setup();
+  const row = (id: number, status: string, conclusion: string | null) => ({ id, status, conclusion, run_attempt: 1, created_at: "2026-11-05T10:00:00Z" });
+  const request: GitHubRequest = async (path) => {
+    const id = Number(path.match(/runs\/(\d+)$/)![1]);
+    if (id === 2) throw new Error("GitHub returned 404.");
+    return { body: id === 1 ? row(1, "completed", "success") : id === 3 ? row(3, "in_progress", null) : row(id, "completed", "skipped"), hasNext: false };
+  };
+  const backfill = createBackfill({ store, request });
+  const ids = new Set([1, 2, 3, 4]);
+  expect(await backfill.resolveFinished("o/r", ids, signal())).toBe(0);
+  expect(ids.size).toBe(0);
+  const limited = createBackfill({ store, request: async () => { throw new Error("GitHub returned 403."); } });
+  const rest = new Set([10, 11]);
+  expect(await limited.resolveFinished("o/r", rest, signal())).toBe(0);
+  expect([...rest]).toEqual([10, 11]);
+  expect(await limited.step(signal())).toMatchObject({ processed: 0, pausedUntil: expect.any(Number) });
+  // One call handles at most a step's share of requests; the rest waits for the next call.
+  const bounded = createBackfill({ store, request, maxPerStep: 2 }), many = new Set([4, 5, 6, 7, 8]);
+  await bounded.resolveFinished("o/r", many, signal());
+  expect([...many]).toEqual([6, 7, 8]);
+  // A truncated listing proves nothing about missing runs.
+  expect(finishedRuns(new Set([1]), { runIds: [], truncated: true })).toEqual([]);
+  expect(finishedRuns(new Set([1]), { runIds: [], truncated: false }, true)).toEqual([]);
+  expect(finishedRuns(undefined, { runIds: [], truncated: false })).toEqual([]);
+});
+
+test("failed test names come from the matching artifacts only, FAILED entries only, cached per attempt and bounded by the budget", async () => {
+  const { store } = setup();
+  const junit = '<testsuite><testcase classname="pkg.A" name="passes"/><testcase classname="pkg.A" name="breaks"><failure message="boom">env: SECRET=hunter2</failure></testcase></testsuite>';
+  const paths: string[] = [], downloads: string[] = [];
+  const request: GitHubRequest = async (path) => { paths.push(path); return { body: { artifacts: [
+    { id: 7, name: "test-results-unit", size_in_bytes: 10, created_at: "2026-10-20T10:03:30Z" }, { id: 8, name: "coverage", size_in_bytes: 10, created_at: "2026-10-20T10:03:30Z" }, { id: 9, name: "test-results-old", size_in_bytes: 10, created_at: "2026-10-19T10:03:30Z" }] }, hasNext: false }; };
+  const fetchArtifact = async (path: string) => { downloads.push(path); return zip([{ name: "report.xml", data: junit }]); };
+  const backfill = createBackfill({ store, request, fetchArtifact });
+  const jobs = [job({ conclusion: "failure" })], globs = [/^test-results-/];
+  expect(await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal())).toEqual(["pkg.A.breaks"]);
+  expect(downloads).toEqual(["/repos/o/r/actions/artifacts/7/zip"]);
+  await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal());
+  expect(paths).toHaveLength(1);
+  expect(await backfill.failedTests("o/r", { id: 2, attempt: 1 }, jobs, [], signal())).toBeNull();
+  expect(await createBackfill({ store, request, fetchArtifact, budgetPerHour: 1 }).failedTests("o/r", { id: 3, attempt: 1 }, jobs, globs, signal())).toBeNull();
 });

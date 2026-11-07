@@ -56,7 +56,7 @@ export type ProblemContextInput = {
 };
 
 const DAY = 86_400_000;
-const CLASS_ORDER: FailureClass[] = ["runner_loss", "timeout", "transient", "flake", "real", "refused", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"];
+export const CLASS_ORDER: FailureClass[] = ["runner_loss", "timeout", "transient", "flake", "real", "refused", "consequence", "superseded", "manual_cancel", "collateral_cancel", "unknown"];
 // Generic defaults; a team's own limits and links belong in the investigateNotes setting, never here.
 const ACTIONS: Partial<Record<FailureClass, [string, Actor | null]>> = {
   runner_loss: ["let the next run supersede it, or re-run failed jobs once", "owner_sre"], refused: ["no action, the next run delivers", null],
@@ -101,6 +101,17 @@ function evidence(repository: string, defaultBranch: string | null, { job, class
 const brief = (repository: string, { job, class: cls, reason }: ClassifiedJob) =>
   `- ${timeOf(job)} · ${job.jobName} · ${cls} (${reason}) · ${job.conclusion ?? job.status} · ${jobUrl(repository, job)}${job.runnerName ? ` · ${job.runnerName}` : ""}`;
 
+/**
+ * Verdict "Code looks broken" for the failing jobs of some runs: any real failure = yes; jobs of a run that are not stored or unclassifiable = unknown;
+ * a flake is nondeterminism, not broken code, so red on flakes only reads "no" with the reason. Shared by Investigate prompts and observer messages.
+ */
+export function codeBrokenVerdict(ofRuns: ClassifiedJob[], runIds: number[]): "yes" | "no" | "no (red on flakes only)" | "unknown" {
+  const unstored = runIds.filter((id) => !ofRuns.some((c) => c.job.runId === id));
+  return ofRuns.some((c) => c.class === "real") ? "yes"
+    : !ofRuns.length || unstored.length || ofRuns.some((c) => c.class === "unknown") ? "unknown"
+      : ofRuns.some((c) => c.class === "flake") ? "no (red on flakes only)" : "no";
+}
+
 /** Everything the dashboard already knows about one problem, as plain-text sections; sections without data are left out. Pure: no GitHub requests. */
 export function problemContext(problem: Problem, input: ProblemContextInput): ContextSection[] {
   const { repository, classified, reruns, massCancels, pools, alerts, defaultBranch, backfill, coverage, analysisAt, polledAt, now } = input;
@@ -123,8 +134,7 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
   const ofRuns = classified.filter((c) => runIds.includes(c.job.runId));
   const presentClasses = CLASS_ORDER.filter((cls) => ofRuns.some((c) => c.class === cls));
   const unstored = runIds.filter((id) => !ofRuns.some((c) => c.job.runId === id));
-  const broken = ofRuns.some((c) => c.class === "real" || (c.class === "flake" && c.job.headBranch === defaultBranch)) ? "yes"
-    : !ofRuns.length || unstored.length || ofRuns.some((c) => c.class === "unknown") ? "unknown" : "no";
+  const broken = codeBrokenVerdict(ofRuns, runIds);
   add("Verdict", [
     runIds.length ? `Runs checked: ${runIds.length}${alert ? ` (the consecutive-failure streak)` : ""}` : "Runs checked: none (the problem is not tied to a run)",
     `Non-success jobs by class: ${!runIds.length ? "none (no run involved)" : ofRuns.length ? [...presentClasses, ...(presentClasses.includes("real") ? [] : ["real" as const])].map((cls) => `${ofRuns.filter((c) => c.class === cls).length} ${cls}`).join(", ") : "not stored yet"}`,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { classifyJobs, detectMassCancel, runnerLosses, summarizeReruns } from "./ci-classify";
+import { classifyJobs, detectMassCancel, queueOnlyJobs, runnerLosses, summarizeReruns, timingSamples } from "./ci-classify";
 import type { JobRecord, Signal } from "./ci-jobs-types";
+import { ciSliceReport } from "./agent-ci";
 import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-signals";
 import { at, failed, failure, job, LOSS, MANUAL, REPO, SUPERSEDED, TIMEOUT } from "./test-support";
 
@@ -110,6 +111,45 @@ describe("summarizeAnalysis and sortSignals", () => {
     expect(times).toEqual([...times].sort((a, b) => b - a));
     expect(view.failures).toHaveLength(50);
     expect(view.failures[0]!.url).toMatch(/^https:\/\/github\.com\/acme\/widgets\/actions\/runs\/\d+\/job\/\d+$/);
+  });
+  describe("merge queue", () => {
+    const queue = "gh-readonly-queue/main/pr-12-0123abc";
+    // A merge-queue run tests a new merge commit, never the PR head sha.
+    const pr = "b".repeat(40);
+    const set = [
+      failed({ jobId: 1, runId: 10, event: "merge_group", headBranch: queue }), failed({ jobId: 2, runId: 11, event: "merge_group", headBranch: queue, jobName: "Lint" }),
+      failed({ jobId: 3, runId: 12, event: "merge_group", headBranch: queue, jobName: "Integration tests", annotations: [failure(LOSS)] }),
+      job({ jobId: 4, runId: 5, event: "pull_request", pullRequests: [12], headBranch: "feature", headSha: pr }),
+      failed({ jobId: 5, runId: 5, pullRequests: [12], jobName: "Lint", headSha: pr }),
+      failed({ jobId: 6, runId: 13, pullRequests: [12], jobName: "E2E", headSha: pr }),
+    ];
+    const classified = classifyJobs(set), queueOnly = queueOnlyJobs(set, classified);
+    const summary = summarizeAnalysis({ classified, reruns: [], massCancels: [], losses: runnerLosses(classified), repository: REPO, queueOnly });
+    const row = (jobId: number) => summary.failures.find((f) => f.jobId === jobId)!;
+    it("tags rows with the event, the queue PR and queueOnly", () => {
+      expect(row(1)).toMatchObject({ event: "merge_group", queuePullRequest: 12, queueOnly: true });
+      expect(row(2)).toMatchObject({ event: "merge_group", queuePullRequest: 12, queueOnly: false });
+      expect(row(3)).toMatchObject({ class: "runner_loss", queueOnly: false });
+      expect(row(6)).toMatchObject({ event: "pull_request", queuePullRequest: null, queueOnly: false });
+    });
+    it("splits the failure counts by event", () => {
+      expect(Object.keys(summary.failureCountsByEvent).sort()).toEqual(["merge_group", "pull_request"]);
+      expect(Object.keys(summary.failureCountsByEvent.merge_group!)).toHaveLength(11);
+      expect(summary.failureCountsByEvent.merge_group).toMatchObject({ runner_loss: 1, real: 2 });
+      expect(summary.failureCountsByEvent.pull_request).toMatchObject({ real: 2, runner_loss: 0 });
+    });
+    it("tags reruns with the event and queue PR", () => {
+      const reruns = summarizeReruns([failed({ runId: 20, event: "merge_group", headBranch: queue }), failed({ runId: 20, attempt: 2, jobId: 9, event: "merge_group", headBranch: queue })]);
+      expect(summarizeAnalysis({ classified: [], reruns, massCancels: [], losses: runnerLosses([]), repository: REPO }).reruns[0]).toMatchObject({ event: "merge_group", queuePullRequest: 12 });
+    });
+    it("serves the pools view and puts the timings into the stall view", () => {
+      const samples = timingSamples(set);
+      const output = { repositories: [{ repository: REPO, updatedAt: null, error: null, live: { pools: [], truncated: false, polledAt: null }, signals: [], problems: [], projectId: null,
+        window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null }, ...summarizeAnalysis({ classified, reruns: [], massCancels: [], losses: runnerLosses(classified), repository: REPO, samples }) }], actors: {} } as never;
+      const [pools] = ciSliceReport(output, "pools").repositories as Record<string, unknown>[];
+      expect(pools).toMatchObject({ poolTimings: { "self-hosted": { jobs: 6 } }, poolTimingsByEvent: { merge_group: { "self-hosted": { jobs: 3 } }, pull_request: { "self-hosted": { jobs: 3 } } } });
+      expect(ciSliceReport(output, "stall").repositories[0]).toHaveProperty("poolTimings");
+    });
   });
   it("lists the newest 20 reruns first", () => {
     expect(allReruns).toHaveLength(25);

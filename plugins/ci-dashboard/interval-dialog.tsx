@@ -48,11 +48,11 @@ export function IntervalDialog({ selection, onClose }: { selection: IntervalSele
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{[0, 1].map((key) => <Card key={key} className="space-y-3 p-4"><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-20" /><Skeleton className="h-3 w-3/4" /></Card>)}</div>
       <Card className="space-y-4 p-4"><Skeleton className="h-4 w-32" /><Skeleton className="h-16 w-full" /></Card>
     </LoadingSkeleton>}
-    {error && <div role="alert" className="space-y-3"><p className="text-sm text-destructive">Unable to load interval statistics. Please retry.</p><Button variant="outline" size="sm" onClick={() => setRetry((n) => n + 1)}>Retry</Button></div>}
+    {error && <div role="alert" className="space-y-3"><p className="text-sm text-destructive-text">Unable to load interval statistics. Please retry.</p><Button variant="outline" size="sm" onClick={() => setRetry((n) => n + 1)}>Retry</Button></div>}
     {data && <div className="space-y-3">
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))" }}>
-        <Card className="space-y-2 p-4"><h3 className="text-sm text-muted-foreground">Deployments</h3><p className="text-2xl font-semibold tabular-nums">{deployments == null ? "—" : deployments.toLocaleString()}</p><p className="text-xs text-muted-foreground">All environments and outcomes</p>{data.deployments.error && <p role="alert" className="text-xs text-destructive">{data.deployments.error}</p>}</Card>
-        <Card className="space-y-2 p-4"><h3 className="text-sm text-muted-foreground">CI pass rate</h3><p className="text-2xl font-semibold tabular-nums">{data.ci.value == null ? "—" : `${data.ci.value.toFixed(1)}%`}</p><p className="text-xs text-muted-foreground">{data.ci.detail}</p>{data.ci.error && <p role="alert" className="text-xs text-destructive">{data.ci.error}</p>}</Card>
+        <Card className="space-y-2 p-4"><h3 className="text-sm text-muted-foreground">Deployments</h3><p className="text-2xl font-semibold tabular-nums">{deployments == null ? "—" : deployments.toLocaleString()}</p><p className="text-xs text-muted-foreground">All environments and outcomes</p>{data.deployments.error && <p role="alert" className="text-xs text-destructive-text">{data.deployments.error}</p>}</Card>
+        <Card className="space-y-2 p-4"><h3 className="text-sm text-muted-foreground">CI pass rate</h3><p className="text-2xl font-semibold tabular-nums">{data.ci.value == null ? "—" : `${data.ci.value.toFixed(1)}%`}</p><p className="text-xs text-muted-foreground">{data.ci.detail}</p>{data.ci.error && <p role="alert" className="text-xs text-destructive-text">{data.ci.error}</p>}</Card>
       </div>
       <RepositoryActivity repo={data} />
       <CiOutcomes repo={data} />

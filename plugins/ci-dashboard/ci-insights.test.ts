@@ -1,6 +1,6 @@
 import { classifyDraft } from "./draft-deferrals";
 import { expect, test, vi } from "vitest";
-import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
+import { ciInsightsSchema, ciRunSchema, defaultWorkflow, summarizeCi, summarizeTrends } from "./ci-insights";
 
 function run(id: number, overrides: Partial<ReturnType<typeof ciRunSchema.parse>> = {}) {
   return ciRunSchema.parse({ id, created_at: `2026-10-20T${String(id).padStart(2, "0")}:00:00Z`, conclusion: "failure",
@@ -69,4 +69,68 @@ test("only complete job evidence for an isolated draft rejection is deferred", a
   expect(await classifyDraft({ ...candidate, event: "push" }, "acme/widgets", request, rules)).toBe(false);
   const rows = [run(1, { conclusion: "success" }), run(2, { draftDeferred: true }), run(3), run(4, { draftDeferred: true })];
   expect(summarizeCi(rows, "trunk")).toMatchObject({ main: { eligible: 2, failed: 1 }, workflows: [{ failed: 1, failureId: 3 }], alerts: [{ consecutive: 1, runId: 3 }] });
+});
+
+test("trends summarize durations, counts, start delay and commits per bucket", () => {
+  const start = Date.parse("2026-10-20T00:00:00Z");
+  const empty = () => [0, 1, 2].map((i) => ({ date: new Date(start + (i + 1) * 3_600_000).toISOString(), value: 0 }));
+  const bucket = (timestamp: string) => { const t = Date.parse(timestamp) - start; return t < 0 || t > 3 * 3_600_000 ? -1 : Math.min(2, Math.floor(t / 3_600_000)); };
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const timed = (id: number, created: number, begun: number, finished: number, overrides = {}) =>
+    run(id, { created_at: at(created), run_started_at: at(begun), updated_at: at(finished), conclusion: "success", ...overrides });
+  const runs = [
+    timed(1, 0, 1, 11), timed(2, 5, 5, 35), timed(3, 10, 12, 22), timed(4, 15, 16, 20, { conclusion: "failure" }),
+    timed(5, 20, 20, 21, { conclusion: "cancelled" }), timed(6, 25, 26, 27, { draftDeferred: true, conclusion: "failure" }),
+    // A rerun keeps the original created_at, so its start delay must not count.
+    timed(7, 30, 50, 55, { run_attempt: 2 }),
+    timed(8, 61, 61, 62, { conclusion: null }),
+    timed(9, 200, 201, 202), // outside every bucket
+  ];
+  const commits = [{ committedDate: at(5), additions: 10, deletions: 2 }, { committedDate: at(10), additions: 5, deletions: 0 }, { committedDate: at(130), additions: 0, deletions: 7 }, { committedDate: at(500), additions: 99, deletions: 99 }];
+  const trends = summarizeTrends(runs, commits, bucket, empty);
+  const values = (name: Exclude<keyof typeof trends, "workflows">) => trends[name]!.map((point) => point.value);
+  // Bucket 0 successful durations (min): 10, 30, 10 and the rerun's 5 → median 10, nearest-rank p90 30.
+  expect(values("durationMedian")).toEqual([10 * 60_000, null, null]);
+  expect(values("durationP90")).toEqual([30 * 60_000, null, null]);
+  // Cancelled and deferred-draft runs are not counted; a null conclusion counts as a failure.
+  expect(values("runs")).toEqual([5, 1, 0]);
+  expect(values("failedRuns")).toEqual([1, 1, 0]);
+  // First attempts only (0,0,1,1,1,2 min in bucket 0); a zero wait is a real value.
+  expect(values("startDelay")).toEqual([60_000, 0, null]);
+  expect(values("commits")).toEqual([2, 0, 1]);
+  expect(values("lines")).toEqual([17, 0, 7]);
+  expect(trends.lines![0]!.parts).toEqual([{ key: "additions", value: 15 }, { key: "deletions", value: 2 }]);
+  expect(trends.durationMedian!.map((point) => point.date)).toEqual(empty().map((point) => point.date));
+  // A source that has not loaded yet is omitted, not zero-filled.
+  expect(Object.keys(summarizeTrends(null, commits, bucket, empty)).sort()).toEqual(["commits", "lines"]);
+  expect(Object.keys(summarizeTrends(runs, null, bucket, empty)).sort()).toEqual(["durationMedian", "durationP90", "failedRuns", "runs", "startDelay", "workflows"]);
+});
+
+test("trends are also kept per workflow and the longest-running workflow is the default", () => {
+  const start = Date.parse("2026-10-20T00:00:00Z");
+  const empty = () => [0, 1].map((i) => ({ date: new Date(start + (i + 1) * 3_600_000).toISOString(), value: 0 }));
+  const bucket = (timestamp: string) => { const t = Date.parse(timestamp) - start; return t < 0 || t > 2 * 3_600_000 ? -1 : Math.min(1, Math.floor(t / 3_600_000)); };
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const timed = (id: number, workflow: number, name: string, created: number, minutes: number, overrides = {}) =>
+    run(id, { workflow_id: workflow, name, created_at: at(created), run_started_at: at(created), updated_at: at(created + minutes), conclusion: "success", ...overrides });
+  const runs = [
+    // Workflow 7: many tiny runs. Workflow 3: few long runs, so it has the most successful-run time.
+    ...[1, 2, 3, 4, 5].map((id) => timed(id, 7, "Bookkeeping", id, 0.1)),
+    timed(10, 3, "Pipeline", 10, 30), timed(11, 3, "Pipeline", 20, 20, { conclusion: "failure" }), timed(12, 3, "Pipeline", 70, 40),
+    timed(13, 9, "Outside", 500, 5), { ...timed(14, 3, "Pipeline", 5, 5), workflow_id: undefined },
+  ];
+  const trends = summarizeTrends(runs, null, bucket, empty);
+  expect(trends.workflows!.map(({ id, name, total }) => [id, name, total])).toEqual([[3, "Pipeline", 3], [7, "Bookkeeping", 5]]);
+  const [pipeline, bookkeeping] = trends.workflows!;
+  expect(pipeline!.durationMedian.map((point) => point.value)).toEqual([30 * 60_000, 40 * 60_000]);
+  expect(pipeline!.runs.map((point) => point.value)).toEqual([2, 1]);
+  expect(pipeline!.failedRuns.map((point) => point.value)).toEqual([1, 0]);
+  expect(bookkeeping!.durationMedian.map((point) => point.value)).toEqual([6000, null]);
+  // The pooled series still covers every run (including the one without a workflow id), so it is dominated by the tiny runs.
+  expect(trends.runs!.map((point) => point.value)).toEqual([8, 1]);
+  expect(trends.durationMedian![0]!.value).toBe(6000);
+  expect(defaultWorkflow(trends.workflows!)!.id).toBe(3);
+  expect(defaultWorkflow([])).toBeUndefined();
+  // Ties on successful time fall back to the busier workflow, then the lower id.
+  expect(defaultWorkflow([{ id: 2, total: 1, successMs: 0 }, { id: 5, total: 4, successMs: 0 }, { id: 4, total: 4, successMs: 0 }])!.id).toBe(4);
 });

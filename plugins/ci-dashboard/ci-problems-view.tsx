@@ -10,7 +10,7 @@ import type { Contract, JobSignals } from "./signals-panel";
 type Problem = NonNullable<JobSignals["repo"]>["problems"][number];
 const SHOWN = 5;
 // Severity badges reuse the plugin's small bordered label (see the UTC tag) with a tinted fill.
-const tone = { critical: "border-destructive/30 bg-destructive/10 text-destructive", warning: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400" } as const;
+const tone = { critical: "border-destructive/30 bg-destructive/10 text-destructive-text", warning: "border-warning/30 bg-warning/10 text-warning-text" } as const;
 const message = (cause: unknown) => cause instanceof Error ? cause.message : "The action failed. Try again.";
 
 function ThreadLink({ threadId }: { threadId: string }) {
@@ -43,7 +43,7 @@ function InvestigateMenu({ problem, projectId, busy, onNew, onExisting }: { prob
   };
   return <div ref={root} className="relative" onKeyDown={onKeyDown} onBlur={(event) => { if (open && !root.current?.contains(event.relatedTarget)) setOpen(false); }}>
     <Button ref={trigger} variant="outline" size="sm" disabled={busy} aria-label={`Investigate: ${problem.title}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menu : undefined} onClick={() => setOpen(!open)}>Investigate</Button>
-    {open && <div id={menu} role="menu" aria-label="Investigate" className="absolute right-0 z-10 mt-1 w-56 space-y-1 rounded-md border border-border bg-background p-1 shadow-md">
+    {open && <div id={menu} role="menu" aria-label="Investigate" className="absolute right-0 z-10 mt-1 w-56 space-y-1 rounded-md border border-border bg-popover text-popover-foreground p-1 shadow-md">
       <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start" disabled={!projectId} aria-describedby={projectId ? undefined : hint} onClick={() => { setOpen(false); onNew(); }}>New session</Button>
       {!projectId && <p id={hint} className="px-2 py-1 text-xs text-muted-foreground">No BB project is linked to this repository.</p>}
       <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start" onClick={() => { setOpen(false); setPicking(true); }}>Existing session…</Button>
@@ -68,7 +68,7 @@ export function CiProblems({ repository, signals }: { repository: string; signal
   const [all, setAll] = useState(false), [busy, setBusy] = useState<string | null>(null), [failure, setFailure] = useState<string | null>(null);
   const job = signals.repo;
   if (!job) return signals.loading ? <LoadingSkeleton label="Loading CI problems"><Skeleton className="h-3 w-3/4" /></LoadingSkeleton>
-    : signals.error ? <p role="alert" className="text-sm text-destructive">CI problems failed to load. <Button variant="outline" size="sm" onClick={signals.retry}>Retry</Button></p> : null;
+    : signals.error ? <p role="alert" className="text-sm text-destructive-text">CI problems failed to load. <Button variant="outline" size="sm" onClick={signals.retry}>Retry</Button></p> : null;
   const unhandled = job.problems.filter((problem) => !problem.handled);
   // Handled problems leave the list; they close on their own once the underlying problem resolves.
   const handledRows = [...job.problems.filter((problem) => problem.handled?.state === "investigating"), ...job.problems.filter((problem) => problem.handled?.state === "dismissed")];
@@ -97,9 +97,9 @@ export function CiProblems({ repository, signals }: { repository: string; signal
     </li>;
   };
   return <section aria-label="CI problems" className="space-y-3">
-    {job.error && <p role="alert" className="text-xs text-destructive">{job.error}</p>}
-    {signals.error && <p role="alert" className="text-sm text-destructive">CI problems failed to refresh. <Button variant="outline" size="sm" onClick={signals.retry}>Retry</Button></p>}
-    {failure && <p role="alert" className="text-sm text-destructive">{failure}</p>}
+    {job.error && <p role="alert" className="text-xs text-destructive-text">{job.error}</p>}
+    {signals.error && <p role="alert" className="text-sm text-destructive-text">CI problems failed to refresh. <Button variant="outline" size="sm" onClick={signals.retry}>Retry</Button></p>}
+    {failure && <p role="alert" className="text-sm text-destructive-text">{failure}</p>}
     {shown.length > 0 && <div>
       <ul aria-label="Problems" className="divide-y divide-border">{shown.map(row)}</ul>
       {rows.length > SHOWN && <button type="button" className="mt-1 rounded-sm text-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-expanded={all} onClick={() => setAll(!all)}>{all ? "Show fewer" : `Show all ${rows.length}`}</button>}

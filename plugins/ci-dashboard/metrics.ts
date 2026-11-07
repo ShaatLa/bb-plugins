@@ -1,6 +1,6 @@
 import { classifyDraft, draftCandidate, type DraftRules } from "./draft-deferrals";
 import { z } from "zod";
-import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
+import { ciInsightsSchema, ciRunSchema, summarizeCi, summarizeTrends } from "./ci-insights";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
 import { commitActivitySchema, commitRowSchema, loadCommitActivity, summarizeCommitActivity } from "./commit-activity";
 
@@ -9,6 +9,8 @@ export const repositorySchema = z.string().max(200).regex(
   "Use a GitHub repository in owner/repo format",
 );
 const seriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable() }));
+/** A history chart series; `parts` splits `value` into components charted side by side (e.g. additions and deletions). */
+const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional() }));
 const metricSchema = z.object({
   value: z.number().nonnegative().nullable(),
   detail: z.string(),
@@ -26,12 +28,24 @@ export const metricsSchema = z.object({
   updatedAt: z.string(),
   range: rangeSchema,
   pending: z.array(z.string()).optional(),
+  /** CI run-history listing progress while `ci` is pending; absent otherwise (older snapshots omit it). */
+  loading: z.object({ runs: z.number().int().nonnegative(), done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).nullable().optional(),
   deployments: metricSchema,
   pullRequests: metricSchema,
   pullRequestsCreated: metricSchema,
   commitActivity: commitActivitySchema,
   ci: metricSchema,
   ciInsights: ciInsightsSchema.nullable().optional(),
+  /** Extra history charts; optional so stored snapshots still parse, and each series appears once its source (CI runs or commits) has loaded. */
+  trends: z.object({
+    durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema,
+    startDelay: trendSeriesSchema, commits: trendSeriesSchema, lines: trendSeriesSchema,
+    /** The run-based series again per workflow (only workflows with runs in range), so one busy workflow cannot swamp the rest. */
+    workflows: z.array(z.object({
+      id: z.number().int().positive(), name: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
+      durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+    })),
+  }).partial().optional(),
   ciOutcomes: z.record(z.string(), z.number().int().nonnegative()).nullable(),
   reviewQueue: z.object({
     total: z.number().int().nonnegative().nullable(),
@@ -170,7 +184,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
         historyData.deployments = selected;
         return {
           value: count / days,
-          detail: `${count} deployment records · ${range.label} · all environments and outcomes`,
+          detail: `${count} deployments · all environments`,
           error: null, series, seriesError: null,
         };
       }
@@ -226,7 +240,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
         value: total === 0 ? null : successful / total * 100,
-        detail: total === 0 ? `No completed runs after excluding cancelled, skipped and deferred drafts · ${range.label}` : `${successful} of ${total} completed workflow runs · cancelled, skipped and deferred drafts excluded · ${range.label}`, error: null,
+        detail: total === 0 ? "No completed runs" : `${successful} of ${total} runs passed`, error: null,
       };
     }
     async function incomplete(message: string) {
@@ -289,16 +303,24 @@ export async function loadMetrics(repository: string, token: string | undefined,
           start = finish + 1;
         }
         const reuse = options.reuse, stored = options.previous?.runs, current = now.getTime();
-        const load = async ([start, finish]: [number, number]) => {
-          const key = `${start}-${finish}`;
-          // Accepted staleness: runs older than 48 h can still change (reruns) but are revalidated only hourly.
-          if (reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(key) ?? -Infinity) < 3_600_000) {
-            return new Map(stored.filter((row) => { const time = Date.parse(row.created_at); return time >= start && time <= finish; }).map((row) => [row.id, row]));
+        // Accepted staleness: runs older than 48 h can still change (reruns) but are revalidated only hourly.
+        const reusable = ([start, finish]: [number, number]) => Boolean(reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(`${start}-${finish}`) ?? -Infinity) < 3_600_000);
+        // Progress counts only windows that hit the network, so routine refreshes that reuse stored history report little.
+        const progress = { runs: 0, done: 0, total: windows.filter((window) => !reusable(window)).length };
+        const report = () => { if (progress.total) { result.loading = { ...progress }; options.onProgress?.({ ...result }); } };
+        const load = async (window: [number, number]) => {
+          const [start, finish] = window;
+          if (reusable(window)) {
+            return new Map(stored!.filter((row) => { const time = Date.parse(row.created_at); return time >= start && time <= finish; }).map((row) => [row.id, row]));
           }
           const rows = await history(start, finish);
-          reuse?.checked.set(key, current);
+          reuse?.checked.set(`${start}-${finish}`, current);
+          progress.runs += rows.size;
+          progress.done++;
+          report();
           return rows;
         };
+        report();
         // Read the active tail after closed windows so its pages cannot queue behind old history.
         const results = await Promise.all(windows.slice(0, -1).map(load));
         results.push(await load(windows[windows.length - 1]));
@@ -369,8 +391,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
     catch (reason) { Object.assign(result, failure(reason)); }
     pending.splice(pending.indexOf(key), 1);
     result.pending = [...pending];
+    if (!pending.includes("ci")) delete result.loading;
     const runs = cached?.records.runs ?? historyData.runs;
     if ((key === "ci" || key === "commitActivity") && !pending.includes("ci") && result.ciOutcomes && runs) result.ciInsights = summarizeCi(runs.filter((row) => bucket(row.created_at) >= 0), cached?.records.branch ?? historyData.branch ?? null);
+    if (key === "ci" || key === "commitActivity") {
+      const ready = !pending.includes("ci") && result.ciOutcomes && runs;
+      const rows = commitsComplete ? cached?.records.commits ?? historyData.commits : undefined;
+      const trends = summarizeTrends(ready ? runs.filter((row) => bucket(row.created_at) >= 0) : null, rows ?? null, bucket, emptySeries);
+      if (Object.keys(trends).length) result.trends = trends;
+    }
     options.onProgress?.({ ...result });
   }
   let commitsComplete = false;

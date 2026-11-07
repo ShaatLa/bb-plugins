@@ -1,20 +1,31 @@
 import type { GitHubRequest } from "./metrics";
 import type { JobRecord, PoolQueueState, Signal } from "./ci-jobs-types";
 
-export async function fetchLiveJobs(request: GitHubRequest, repository: string, normalize: (raw: unknown, ctx: { run: any; attempt: number }) => JobRecord): Promise<{ jobs: JobRecord[]; truncated: boolean }> {
-  const jobs: JobRecord[] = []; let truncated = false;
+export async function fetchLiveJobs(request: GitHubRequest, repository: string, normalize: (raw: unknown, ctx: { run: any; attempt: number }) => JobRecord): Promise<{ jobs: JobRecord[]; runIds: number[]; truncated: boolean }> {
+  const jobs: JobRecord[] = [], runIds: number[] = []; let truncated = false;
   for (const status of ["queued", "in_progress"]) {
     const page = await request(`/repos/${repository}/actions/runs?status=${status}&per_page=100`);
     const body = page.body as { workflow_runs?: any[] };
     truncated ||= page.hasNext;
     for (const run of body.workflow_runs ?? []) {
+      runIds.push(run.id);
       const result = await request(`/repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`);
       truncated ||= result.hasNext;
       const rows = (result.body as { jobs?: unknown[] }).jobs ?? [];
       jobs.push(...rows.map((job) => normalize(job, { run, attempt: run.run_attempt ?? 1 })));
     }
   }
-  return { jobs, truncated };
+  return { jobs, runIds, truncated };
+}
+
+/**
+ * Runs seen queued/in progress by the previous poll that this poll no longer lists: they just finished (or moved between the two status lists).
+ * A truncated listing is incomplete, so a run missing from it proves nothing.
+ */
+export function finishedRuns(previous: ReadonlySet<number> | undefined, current: { runIds: number[]; truncated: boolean }, previousTruncated = false): number[] {
+  if (!previous || current.truncated || previousTruncated) return [];
+  const now = new Set(current.runIds);
+  return [...previous].filter((id) => !now.has(id));
 }
 
 export function poolQueueStates(jobs: JobRecord[], recentStarts: Array<{ pool: string | null; startedAt: string }>, now: number): PoolQueueState[] {

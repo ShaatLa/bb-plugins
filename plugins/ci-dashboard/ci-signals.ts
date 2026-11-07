@@ -1,5 +1,5 @@
 import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary, Signal } from "./ci-jobs-types";
-import type { LossTally, MassCancel } from "./ci-classify";
+import { queuePullRequest, summarizeTimings, type LossTally, type MassCancel, type TimingSample } from "./ci-classify";
 
 const HOUR = 3_600_000;
 const FAILED_FINAL = new Set(["failure", "timed_out"]);
@@ -38,7 +38,7 @@ export function buildSignals({ classified, reruns, massCancels, stalls, defaultB
   const byRun = new Map<number, ClassifiedJob[]>();
   for (const c of classified) byRun.set(c.job.runId, [...(byRun.get(c.job.runId) ?? []), c]);
 
-  for (const { job, class: cls } of classified) {
+  for (const { job, class: cls, evidence, flakeLabel } of classified) {
     if (!inWindow(job.completedAt)) continue;
     const base = { where: where(job), since: since(job), until: job.completedAt, open: true } as const;
     const onDefault = isDefault(job.headBranch);
@@ -50,7 +50,8 @@ export function buildSignals({ classified, reruns, massCancels, stalls, defaultB
       title: `Job timed out: ${job.jobName}`, what: `${job.jobName} exceeded the maximum execution time${minutes(job) !== null ? ` after ${minutes(job)} min` : ""} on ${job.runnerName ?? "an unknown runner"} (run ${job.runId})`,
       impact: `${pr} CI red; rerun needed` });
     else if (cls === "flake") out.push({ ...base, id: `flake:${job.jobId}`, kind: "flake", severity: "info", actor: "lead",
-      title: `Flaky job: ${job.jobName}`, what: `${job.jobName} failed at step ${job.failedSteps[0] ?? "unknown"}, then passed at the same sha (run ${job.runId})`,
+      title: `Flaky job: ${job.jobName}`, what: flakeLabel !== undefined ? `${job.jobName} failed at step ${job.failedSteps[0] ?? "unknown"}; matches known flake ${flakeLabel} (failed run ${job.runId})`
+        : `${job.jobName} failed at step ${job.failedSteps[0] ?? "unknown"}, then passed at the same sha in ${evidence ?? "another run"} (failed run ${job.runId})`,
       impact: "Flaky test costs a rerun" });
     else if (cls === "transient") out.push({ ...base, id: `transient:${job.jobId}`, kind: "transient", severity: "info", actor: onDefault ? "lead" : "pr_author",
       title: `Transient failure: ${job.jobName}`, what: `${job.jobName} hit a tool or network failure (run ${job.runId}, attempt ${job.attempt})`,
@@ -84,22 +85,26 @@ const SEVERITY = { critical: 0, warning: 1, info: 2 };
 export const sortSignals = (signals: Signal[]) => [...signals].sort((a, b) => Number(b.open) - Number(a.open) || SEVERITY[a.severity] - SEVERITY[b.severity] || Date.parse(b.since) - Date.parse(a.since));
 
 /** Aggregates the Signals panel and agent views read; pure so it is cached with the analysis. */
-export function summarizeAnalysis({ classified, reruns, losses, massCancels, repository }: {
-  classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; repository: string;
+export function summarizeAnalysis({ classified, reruns, losses, massCancels, repository, queueOnly = new Set(), samples = [] }: {
+  classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; repository: string; queueOnly?: Set<number>; samples?: TimingSample[];
   losses: { byPool: Record<string, LossTally>; byJob: Record<string, LossTally>; byDay: Record<string, LossTally> };
 }) {
   const failureCounts = Object.fromEntries(CLASSES.map((cls) => [cls, 0])) as Record<FailureClass, number>;
-  for (const c of classified) failureCounts[c.class]++;
+  const failureCountsByEvent: Record<string, Record<FailureClass, number>> = {};
+  for (const c of classified) {
+    failureCounts[c.class]++;
+    (failureCountsByEvent[c.job.event] ??= Object.fromEntries(CLASSES.map((cls) => [cls, 0])) as Record<FailureClass, number>)[c.class]++;
+  }
   const when = (c: ClassifiedJob) => Date.parse(c.job.completedAt ?? c.job.createdAt);
   const failures = classified.filter((c) => !HIDDEN_FAILURES.has(c.class)).sort((a, b) => when(b) - when(a)).slice(0, 50).map(({ job, class: cls, reason, evidence }) => ({
-    class: cls, reason, evidence, runId: job.runId, attempt: job.attempt, jobId: job.jobId, jobName: job.jobName, workflowName: job.workflowName,
+    class: cls, reason, evidence, event: job.event, queuePullRequest: job.event === "merge_group" ? queuePullRequest(job.headBranch) : null, queueOnly: queueOnly.has(job.jobId), runId: job.runId, attempt: job.attempt, jobId: job.jobId, jobName: job.jobName, workflowName: job.workflowName,
     branch: job.headBranch, headSha: job.headSha, pullRequests: job.pullRequests, pool: job.pool, runnerName: job.runnerName,
     startedAt: job.startedAt, completedAt: job.completedAt, url: jobUrl(repository, job),
   }));
   return {
-    failureCounts, failures, runnerLosses: losses,
+    failureCounts, failureCountsByEvent, failures, runnerLosses: losses, ...summarizeTimings(samples),
     massCancels: massCancels.map((m) => ({ since: m.since, until: m.until, runners: m.runners, runIds: m.runIds, jobs: m.jobs.length })),
     // Run ids grow with creation time, so they order reruns newest first without timestamps.
-    reruns: [...reruns].sort((a, b) => b.runId - a.runId).slice(0, 20).map((r) => ({ ...r, url: runUrl(repository, r.runId) })),
+    reruns: [...reruns].sort((a, b) => b.runId - a.runId).slice(0, 20).map((r) => ({ ...r, queuePullRequest: r.event === "merge_group" ? queuePullRequest(r.headBranch) : null, url: runUrl(repository, r.runId) })),
   };
 }

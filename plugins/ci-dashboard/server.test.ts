@@ -1,6 +1,6 @@
 import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { createFakePluginHost, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
 import { compress } from "./cache-cleanup";
 import { ciReportSchema } from "./agent-ci";
@@ -9,6 +9,7 @@ import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
 import { resolveRange } from "./date-range";
 import { createJobStore } from "./ci-jobs";
+import { zip } from "./test-support";
 
 vi.mock("./auth", () => ({ resolveGithubToken: vi.fn() }));
 
@@ -440,7 +441,7 @@ test("CI summary, chart, and breakdown use the same runs instead of racing a sec
   });
   const result = await load();
   expect(result.ci.value).toBe(25);
-  expect(result.ci.detail).toContain("1 of 4 completed workflow runs · cancelled, skipped and deferred drafts excluded");
+  expect(result.ci.detail).toContain("1 of 4 runs passed");
   expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 25]);
   expect(result.ciOutcomes).toEqual({ success: 1, failure: 1, cancelled: 1, skipped: 1, timed_out: 1, unknown: 1 });
   expect(result.ci.seriesError).toBeNull();
@@ -819,7 +820,7 @@ test.each([
   expect(result.ci.error).toBeNull();
   expect(result.ci.seriesError).toBeNull();
   expect(result.ci.series?.every((point) => point.value === null)).toBe(true);
-  expect(result.ci.detail).toContain("No completed runs after excluding cancelled, skipped and deferred drafts");
+  expect(result.ci.detail).toContain("No completed runs");
   expect(result.ciOutcomes).toEqual(first === second ? { [first]: 2 } : { [first]: 1, [second]: 1 });
 });
 
@@ -950,7 +951,8 @@ test("a stalled pool opens one critical signal, pushes once and is readable thro
 
     const stall = await harness.behavior.callRpc("ci", { view: "stall" }) as { repositories: Record<string, unknown>[] };
     expect(stall.repositories[0]).toMatchObject({ repository: "acme/widgets", live: { pools: [{ pool: "self-hosted", queued: 1, queuedRunIds: [900] }] }, signals: [{ id: "pool_stall:self-hosted" }] });
-    expect(Object.keys(stall.repositories[0]).sort()).toEqual(["backfill", "error", "live", "repository", "signals", "updatedAt", "window"]);
+    expect(Object.keys(stall.repositories[0]).sort()).toEqual(["backfill", "error", "live", "poolTimings", "repository", "signals", "updatedAt", "window"]);
+    expect((await harness.behavior.callRpc("ci", { view: "pools" }) as { repositories: Record<string, unknown>[] }).repositories[0]).toMatchObject({ poolTimings: {}, poolTimingsByEvent: {} });
     expect((await harness.behavior.callRpc("ci", { view: "failures" }) as { repositories: Record<string, unknown>[] }).repositories[0]).toMatchObject({ failures: [], failureCounts: expect.any(Object) });
 
     // The next loop sees the same stall: the incident is already open, so no second push.
@@ -1531,5 +1533,393 @@ test("hourly retention deletes jobs and kv state of repositories that are no lon
     expect(db.prepare("SELECT repository FROM ci_jobs").all()).toEqual([{ repository: "acme/widgets" }]);
     expect(db.prepare("SELECT repository FROM ci_attempts").all()).toEqual([{ repository: "acme/widgets" }]);
     expect(harness.inspection.logEntries).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringMatching(/^Storage: total [\d.]+ MB \(jobs [\d.]+, history [\d.]+, http cache [\d.]+, snapshots [\d.]+, free pages [\d.]+\)$/) })]));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("metrics progress reports CI listing progress while ci is pending and drops it once ci settles", async () => {
+  const { runs, from } = historyHost();
+  const events: Metrics[] = [];
+  const final = await loadMetrics("acme/widgets", "token", new AbortController().signal, resolveRange(null), undefined, undefined, {
+    partitionCi: true, historyRange: { since: from, until: new Date().toISOString(), label: "repository history", bucketMs: DAY }, onProgress: (metrics) => events.push(structuredClone(metrics)),
+  });
+  const loading = events.filter((metrics) => metrics.loading);
+  expect(loading.length).toBeGreaterThan(2);
+  expect(loading.every((metrics) => metrics.pending?.includes("ci"))).toBe(true);
+  const last = loading[loading.length - 1].loading!;
+  expect(last).toEqual({ runs: expect.any(Number), done: last.total, total: last.total });
+  expect(last.runs).toBeLessThanOrEqual(runs.length);
+  expect(loading[0].loading).toMatchObject({ runs: 0, done: 0 });
+  expect(events.filter((metrics) => !metrics.pending?.includes("ci")).every((metrics) => !("loading" in metrics))).toBe(true);
+  expect("loading" in final).toBe(false);
+});
+
+test("the server publishes at most one listing-progress event per 2 s and keeps pending changes", async () => {
+  historyHost("2026-10-10T00:00:00.000Z");
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 14 });
+    const published = harness.inspection.realtimeSignals.filter((signal) => signal.channel === "metrics-progress").map((signal) => (signal.payload as { metrics: Metrics }).metrics);
+    const ticks = published.filter((metrics) => metrics.loading && metrics.pending?.includes("ci"));
+    // The fake clock is frozen, so every tick after the first with the same pending set must be dropped.
+    const keys = new Set(ticks.map((metrics) => metrics.pending!.join()));
+    expect(ticks.length).toBeGreaterThanOrEqual(1);
+    expect(ticks.length).toBe(keys.size);
+    expect(published.some((metrics) => !metrics.pending?.includes("ci") && !metrics.loading)).toBe(true);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+// --- observer threads: classified CI events pushed to subscribed BB threads ---
+const prOf = (id: number) => id - 894;
+const runMeta = (id: number) => ({ id, name: "CI", event: "merge_group", head_branch: `gh-readonly-queue/main/pr-${prOf(id)}-abc`, head_sha: `sha${id}`, run_attempt: 1, pull_requests: [], status: "in_progress", conclusion: null, created_at: "2026-10-20T11:50:00Z" });
+const liveRow = (id: number) => ({ id: id * 10 + 1, name: "Unit tests", status: "in_progress", conclusion: null, created_at: "2026-10-20T11:50:00Z", started_at: "2026-10-20T11:51:00Z", completed_at: null, labels: ["self-hosted"], runner_name: "runner-1", runner_group_name: null, steps: [] });
+const doneRow = (id: number, name: string, conclusion: string, over: object = {}) => ({ id, name, status: "completed", conclusion, created_at: "2026-10-20T11:50:00Z", started_at: "2026-10-20T11:51:00Z", completed_at: "2026-10-20T12:00:40Z", labels: ["self-hosted"], runner_name: "runner-1", runner_group_name: null,
+  steps: conclusion === "failure" && !("noSteps" in over) ? [{ name: "Run tests", conclusion: "failure" }] : [], ...over });
+// 901: real failure, 902: runner lost, 903: green. All three leave the live poll after the first pass.
+const finishedJobs: Record<number, object[]> = { 901: [doneRow(9011, "Unit tests", "failure")], 902: [doneRow(9021, "Integration", "failure", { noSteps: true, runner_name: "runner-lost-1" })], 903: [doneRow(9031, "Unit tests", "success")] };
+const finishedNotes: Record<number, object[]> = { 9011: [{ annotation_level: "failure", title: null, message: "Process completed with exit code 1.\nenv:\n  API_TOKEN: hunter2-secret" }], 9021: [{ annotation_level: "failure", title: null, message: "The runner has received a shutdown signal to terminate." }] };
+function ciScenario() {
+  // `removals`: PR number -> createdAt of its RemovedFromMergeQueueEvent (null: none); `lookupFails` answers the timeline query with a GraphQL error. `lookups` lists the PRs asked about.
+  const state = { running: [901, 902, 903], deployments: [] as object[], deploymentStatus: [] as object[], reports: [] as { name: string; data: string }[],
+    removals: { 7: "2026-10-20T12:00:30Z", 8: "2026-10-20T12:00:30Z" } as Record<number, string | null>, lookupFails: false, lookups: [] as number[] };
+  const normal = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
+    const url = new URL(input), path = url.pathname.replace("/repos/acme/widgets", ""), status = url.searchParams.get("status");
+    let found: RegExpMatchArray | null;
+    if (url.pathname === "/graphql" && String(options?.body).includes("REMOVED_FROM_MERGE_QUEUE_EVENT")) {
+      const number = JSON.parse(String(options!.body)).variables.number as number;
+      state.lookups.push(number);
+      if (state.lookupFails) return Response.json({ errors: [{ message: "boom" }] });
+      const createdAt = state.removals[number];
+      return Response.json({ data: { repository: { pullRequest: { timelineItems: { nodes: createdAt ? [{ createdAt }] : [] } } } } });
+    }
+    if (path === "/actions/runs" && (status === "queued" || status === "in_progress")) return Response.json({ workflow_runs: status === "in_progress" ? state.running.map(runMeta) : [] });
+    if ((found = path.match(/^\/actions\/runs\/(\d+)\/jobs$/))) return Response.json({ jobs: [liveRow(Number(found[1]))] });
+    if ((found = path.match(/^\/actions\/runs\/(\d+)\/attempts\/1\/jobs$/))) return Response.json({ jobs: finishedJobs[Number(found[1])] ?? [] });
+    if ((found = path.match(/^\/actions\/runs\/(\d+)$/))) return Response.json({ ...runMeta(Number(found[1])), status: "completed", conclusion: found[1] === "903" ? "success" : "failure" });
+    if ((found = path.match(/^\/check-runs\/(\d+)\/annotations$/))) return Response.json(finishedNotes[Number(found[1])] ?? []);
+    if (path === "/actions/runs/901/artifacts") return Response.json({ artifacts: state.reports.map((report, index) => ({ id: 70 + index, name: report.name, size_in_bytes: 300, created_at: "2026-10-20T12:00:50Z" })) });
+    if ((found = url.pathname.match(/^\/repos\/acme\/widgets\/actions\/artifacts\/(\d+)\/zip$/))) return new Response(new Uint8Array(zip([{ name: "report.xml", data: state.reports[Number(found[1]) - 70]!.data }])));
+    if (state.deployments.length && path === "/deployments") return Response.json(state.deployments);
+    if (state.deployments.length && path.match(/^\/deployments\/\d+\/statuses$/)) return Response.json(state.deploymentStatus);
+    return normal(input, options);
+  });
+  return state;
+}
+function observerHost(settings: object = {}, threadsOverride: object = {}) {
+  const send = vi.fn(async (_args: unknown) => ({}));
+  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; archivedAt: number | null }> => ({ id: threadId, archivedAt: null }));
+  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
+    sdk: { threads: { send, get, ...threadsOverride } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
+  return { ...host, send, get };
+}
+const sentTo = (send: { mock: { calls: unknown[][] } }, threadId?: string) => send.mock.calls.map(([args]) => args as { threadId: string; mode: string; originPluginId: string; input: { text: string }[] }).filter((call) => !threadId || call.threadId === threadId).map((call) => call.input[0].text);
+const RUNS = "https://github.com/acme/widgets/actions/runs";
+const PREFIX = "[CI Dashboard]";
+
+test("observer: a merge queue removal and a runner loss reach the thread one loop after the runs finish; green runs and repeats send nothing", async () => {
+  const scenario = ciScenario();
+  let { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    // Poll N: the three runs are in progress. The thread subscribes and gets its confirmation, no history.
+    await signalsPass(harness, 0);
+    expect(sentTo(send)).toEqual([expect.stringMatching(/^\[CI Dashboard\] Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
+    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "auto", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
+    // Poll N+1: they are gone from the live list; the very same loop fetches them, stores their jobs and announces the failures.
+    scenario.running = [];
+    fetchMock.mockClear();
+    await signalsPass(harness);
+    const paths = fetchMock.mock.calls.map(([url]) => new URL(url).pathname.replace("/repos/acme/widgets", ""));
+    for (const id of [901, 902, 903]) expect(paths.filter((path) => path === `/actions/runs/${id}`)).toHaveLength(1);
+    expect(paths).toContain("/actions/runs/901/attempts/1/jobs");
+    expect(paths).toContain("/actions/runs/902/attempts/1/jobs");
+    expect(paths).not.toContain("/actions/runs/903/attempts/1/jobs");
+    const lines = sentTo(send).slice(1);
+    expect(lines.sort()).toEqual([
+      `${PREFIX} PR #7 removed from merge queue · run 901 attempt 1 · Unit tests: real ${RUNS}/901`,
+      `${PREFIX} PR #8 removed from merge queue · run 902 attempt 1 · Integration: runner_loss (1 on this head) ${RUNS}/902`,
+    ].sort());
+    // The removals were confirmed against each PR's merge queue timeline, once per PR; the queue runner loss rides inside PR #8's line.
+    expect([...new Set(scenario.lookups)].sort()).toEqual([7, 8]);
+    const asked = scenario.lookups.length;
+    for (const line of sentTo(send)) { expect(line).not.toContain("hunter2"); expect(line).not.toContain("env:"); expect(line).not.toContain("API_TOKEN"); expect(line.length).toBeLessThanOrEqual(400); }
+    const count = sentTo(send).length;
+    // Nothing repeats on the next loops ...
+    await signalsPass(harness);
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send)).toHaveLength(count);
+    // Sent keys are not looked up again.
+    expect(scenario.lookups).toHaveLength(asked);
+    // ... nor after a restart (sent keys are persisted; the analysis is rebuilt from the stored jobs) ...
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send)).toHaveLength(count);
+    // ... and a thread that subscribes now gets its confirmation but none of the earlier events.
+    const call = async (input: object, threadId = "thr_caller") => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_observe", input, { threadId }) as string);
+    expect(await call({ action: "subscribe", threadId: "thr_late" })).toMatchObject({ observerThreads: ["thr_observer", "thr_late"] });
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send, "thr_late")).toEqual([expect.stringContaining("Subscribed to CI events")]);
+    expect(sentTo(send, "thr_observer")).toHaveLength(count);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: with removals switched off nothing is sent for a confirmed removal, its runner loss included", async () => {
+  const scenario = ciScenario();
+  const { bb, harness, send } = observerHost({ observeQueueRemoval: false, runnerLossLimit: 3 });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(sentTo(send).slice(1)).toEqual([]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: a removal GitHub does not confirm is held, then a queue runner loss stands alone exactly once with N/limit after the grace period", async () => {
+  const scenario = ciScenario();
+  scenario.removals[8] = null; // PR #8 never left the queue
+  const { bb, harness, send } = observerHost({ runnerLossLimit: 3 });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    // PR #7 is confirmed at once; PR #8 and its loss are held, nothing is said about the queued PR yet.
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · run 901 attempt 1 · Unit tests: real ${RUNS}/901`]);
+    // Within the grace period the lookup is repeated.
+    scenario.lookups.length = 0;
+    await signalsPass(harness, 301_000);
+    expect(scenario.lookups).toEqual([8]);
+    expect(sentTo(send)).toHaveLength(2);
+    // After 15 minutes the removal is given up and the loss is announced on its own.
+    await signalsPass(harness, 16 * 60_000);
+    const loss = `${PREFIX} Runner lost · Integration · runner runner-lost-1 · run 902 · 1/3 losses on head sha902 ${RUNS}/902/job/9021`;
+    expect(sentTo(send).slice(2)).toEqual([loss]);
+    // Neither the loss nor the lookup repeats.
+    scenario.lookups.length = 0;
+    await signalsPass(harness, 301_000);
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send)).toHaveLength(3);
+    expect(scenario.lookups).toEqual([]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: a removal confirmed by a removal event from before the group started is not a removal", async () => {
+  const scenario = ciScenario();
+  scenario.removals[7] = "2026-10-20T11:30:00Z"; // an older removal of the same PR; the group started at 11:51
+  const { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(sentTo(send).slice(1).map((line) => line.slice(PREFIX.length + 1, PREFIX.length + 8))).toEqual(["PR #8 r"]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+// PR #8 stayed queued: its last removal event predates the group run (the group was rebuilt after the entry ahead left), so the runner loss in run 902 is no removal.
+for (const cancelled of [false, true]) test(`observer: a queue runner loss whose PR was last removed before the group started stays quiet for the grace period, then ${cancelled ? "is dropped because the group was cancelled" : "stands alone"}`, async () => {
+  const scenario = ciScenario();
+  scenario.removals[8] = "2026-10-20T11:30:00Z"; // the group started at 11:51
+  const original = finishedJobs[902]!;
+  if (cancelled) finishedJobs[902] = [...original, doneRow(9022, "E2E", "cancelled", { noSteps: true })];
+  const { bb, harness, send } = observerHost({ runnerLossLimit: 3 });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    await signalsPass(harness, 301_000);
+    // Within the grace period: PR #7 only, neither a removal nor a loss for PR #8.
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · run 901 attempt 1 · Unit tests: real ${RUNS}/901`]);
+    await signalsPass(harness, 16 * 60_000);
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send).slice(2)).toEqual(cancelled ? [] : [`${PREFIX} Runner lost · Integration · runner runner-lost-1 · run 902 · 1/3 losses on head sha902 ${RUNS}/902/job/9021`]);
+    expect(sentTo(send).some((line) => line.includes("PR #8"))).toBe(false);
+  } finally { finishedJobs[902] = original; await harness.lifecycle.dispose(); }
+});
+
+test("observer: a failed timeline lookup falls back to sending the removal", async () => {
+  const scenario = ciScenario();
+  scenario.lookupFails = true;
+  const { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(scenario.lookups.length).toBeGreaterThan(0);
+    expect(sentTo(send).slice(1).sort()).toEqual([
+      `${PREFIX} PR #7 removed from merge queue · run 901 attempt 1 · Unit tests: real ${RUNS}/901`,
+      `${PREFIX} PR #8 removed from merge queue · run 902 attempt 1 · Integration: runner_loss (1 on this head) ${RUNS}/902`,
+    ]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: failed test names come from the configured artifacts, FAILED entries only", async () => {
+  const scenario = ciScenario();
+  scenario.reports = [{ name: "test-results-unit", data: '<testsuite><testcase classname="cart.Spec" name="passes"/><testcase classname="cart.Spec" name="removes item"><failure message="boom">env:\n  API_TOKEN: hunter2-secret</failure></testcase></testsuite>' }, { name: "coverage", data: "<html>hunter2-secret</html>" }];
+  const { bb, harness, send } = observerHost({ flakeArtifacts: "test-results-*" });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    const queue = sentTo(send).find((line) => line.includes("PR #7"))!;
+    expect(queue).toBe(`${PREFIX} PR #7 removed from merge queue · run 901 attempt 1 · Unit tests: real · failed tests: cart.Spec.removes item ${RUNS}/901`);
+    // The runner loss has no test report to read.
+    expect(sentTo(send).find((line) => line.includes("PR #8"))).not.toContain("failed tests");
+    for (const line of sentTo(send)) expect(line).not.toContain("hunter2");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: batching holds events and sends one digest after the interval", async () => {
+  const scenario = ciScenario();
+  const { bb, harness, send } = observerHost({ observerBatchMinutes: 5 });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(sentTo(send)).toHaveLength(1);
+    await signalsPass(harness, 301_000);
+    const digest = sentTo(send)[1]!.split("\n");
+    expect(digest[0]).toBe(`${PREFIX} 2 CI events`);
+    expect(digest.slice(1).every((line) => line.startsWith("- "))).toBe(true);
+    expect(sentTo(send)).toHaveLength(2);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: a deployment is announced once, when its status becomes final after the type was switched on", async () => {
+  const scenario = ciScenario();
+  scenario.running = [];
+  scenario.deployments = [{ id: 31, environment: "staging", sha: "deadbeefcafe", created_at: "2026-10-20T11:59:00Z" }];
+  scenario.deploymentStatus = [{ state: "in_progress", created_at: "2026-10-20T11:59:30Z" }];
+  const { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.deploymentStatus = [{ state: "success", created_at: "2026-10-20T12:00:30Z", log_url: `${RUNS}/55` }];
+    await signalsPass(harness);
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} Deploy staging success · deadbee · deployment 31 ${RUNS}/55`]);
+    await signalsPass(harness);
+    expect(sentTo(send)).toHaveLength(2);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: a deployment that finished before the type was switched on is history", async () => {
+  const scenario = ciScenario();
+  scenario.running = [];
+  scenario.deployments = [{ id: 32, environment: "staging", sha: "deadbeefcafe", created_at: "2026-10-20T11:00:00Z" }];
+  scenario.deploymentStatus = [{ state: "success", created_at: "2026-10-20T11:30:00Z" }];
+  const { bb, harness, send } = observerHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    await signalsPass(harness);
+    expect(sentTo(send)).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ci_dashboard_observe subscribes, replaces, unsubscribes and lists, defaulting to the calling thread, and refuses archived or unknown threads", async () => {
+  const { bb, harness, send, get } = observerHost({ observerThreads: "" });
+  get.mockImplementation(async ({ threadId }: { threadId: string }) => {
+    if (threadId === "thr_missing") throw new Error("404 thread not found");
+    return { id: threadId, archivedAt: threadId === "thr_archived" ? 1 : null };
+  });
+  try {
+    await plugin(bb);
+    const call = async (input: object, threadId = "thr_caller") => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_observe", input, { threadId }) as string);
+    expect(await call({ action: "list" })).toEqual({ observerThreads: [], events: ["merge queue removals", "runner losses", "default-branch red", "pool stalls", "mass cancels", "deployments"], quietMinutes: 30, batchMinutes: 0 });
+    expect(await call({ action: "subscribe" })).toMatchObject({ observerThreads: ["thr_caller"] });
+    expect(sentTo(send, "thr_caller")).toEqual([expect.stringContaining("Subscribed to CI events for acme/widgets")]);
+    // Subscribing again changes nothing and repeats nothing.
+    await call({ action: "subscribe" });
+    expect(sentTo(send)).toHaveLength(1);
+    expect(await call({ action: "subscribe", threadId: "thr_other" })).toMatchObject({ observerThreads: ["thr_caller", "thr_other"] });
+    expect(await call({ action: "replace" }, "thr_manager")).toMatchObject({ observerThreads: ["thr_manager"] });
+    expect(sentTo(send, "thr_manager")).toHaveLength(1);
+    expect(await call({ action: "unsubscribe" }, "thr_manager")).toMatchObject({ observerThreads: [] });
+    expect(await call({ action: "unsubscribe", threadId: "thr_nobody" })).toMatchObject({ observerThreads: [] });
+    // Subscribing again after leaving is a new subscription with its own confirmation.
+    await call({ action: "subscribe" }, "thr_manager");
+    expect(sentTo(send, "thr_manager")).toHaveLength(2);
+    await expect(call({ action: "subscribe", threadId: "thr_archived" })).rejects.toThrow("archived");
+    await expect(call({ action: "replace", threadId: "thr_missing" })).rejects.toThrow("does not exist");
+    await expect(call({ action: "subscribe", threadId: "not-a-thread" })).rejects.toThrow("not a BB thread id");
+    await expect(call({ action: "bogus" })).rejects.toThrow();
+    expect(await call({ action: "list" })).toMatchObject({ observerThreads: ["thr_manager"] });
+    // The tool writes the same setting the settings UI shows, and the setting is validated.
+    await expect(harness.behavior.setSettings({ observerThreads: "nonsense" })).rejects.toThrow();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a changed observerThreads setting takes effect without a reload: confirmation at once, events from the next loop only to the new list", async () => {
+  const scenario = ciScenario();
+  const { bb, harness, send } = observerHost({ observerThreads: "thr_old" });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    expect(sentTo(send, "thr_old")).toHaveLength(1);
+    await harness.behavior.setSettings({ observerThreads: "thr_new" });
+    await vi.waitFor(() => expect(sentTo(send, "thr_new")).toEqual([expect.stringContaining("Subscribed to CI events")]));
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_new")).toHaveLength(1 + 2);
+    expect(sentTo(send, "thr_old")).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("an archived or deleted thread is removed from the observers", async () => {
+  const { bb, harness } = observerHost({ observerThreads: "thr_a, thr_b, thr_c" });
+  try {
+    await plugin(bb);
+    const list = async () => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_observe", { action: "list" }, { threadId: "thr_x" }) as string).observerThreads;
+    expect(await list()).toEqual(["thr_a", "thr_b", "thr_c"]);
+    expect((await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_b" }) })).errors).toEqual([]);
+    expect(await list()).toEqual(["thr_a", "thr_c"]);
+    await harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_a" }) });
+    expect(await list()).toEqual(["thr_c"]);
+    await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_unrelated" }) });
+    expect(await list()).toEqual(["thr_c"]);
+    expect(harness.inspection.logEntries.filter((entry) => entry.message.includes("thr_b removed"))).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a failing send is logged once per thread and never retried; a vanished thread is dropped", async () => {
+  const scenario = ciScenario();
+  const offline = vi.fn(async (_args: unknown) => { throw new Error("bridge offline"); });
+  const failing = observerHost({}, { send: offline });
+  try {
+    await plugin(failing.bb);
+    await signalsPass(failing.harness, 0);
+    scenario.running = [];
+    await signalsPass(failing.harness);
+    await signalsPass(failing.harness, 301_000);
+    // One confirmation plus two events, each tried exactly once, one log line for the thread.
+    expect(offline).toHaveBeenCalledTimes(3);
+    expect(failing.harness.inspection.logEntries.filter((entry) => entry.level === "warn" && entry.message.includes("thr_observer failed: bridge offline"))).toHaveLength(1);
+  } finally { await failing.harness.lifecycle.dispose(); }
+  const vanished = observerHost({}, { send: vi.fn(async () => { throw new Error("GitHub-free 404: thread not found"); }) });
+  try {
+    await plugin(vanished.bb);
+    await signalsPass(vanished.harness, 0);
+    expect(JSON.parse(await vanished.harness.behavior.callAgentTool("ci_dashboard_observe", { action: "list" }, { threadId: "thr_x" }) as string).observerThreads).toEqual([]);
+    expect(vanished.harness.inspection.logEntries.filter((entry) => entry.message.includes("thr_observer removed from observer threads"))).toHaveLength(1);
+  } finally { await vanished.harness.lifecycle.dispose(); }
+});
+
+test("with no observer thread nothing is sent and the fast path still stores the finished runs", async () => {
+  const scenario = ciScenario();
+  const { bb, harness, send } = observerHost({ observerThreads: "" });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    await signalsPass(harness);
+    expect(send).not.toHaveBeenCalled();
+    expect(bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs").get()).toEqual({ n: 2 });
+    expect(bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs WHERE run_id = 903").get()).toEqual({ n: 0 });
   } finally { await harness.lifecycle.dispose(); }
 });

@@ -25,7 +25,7 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
   production: { error: null, deployment: { environment: "production", state: "success", ref: "v2", createdAt: "2026-10-20T10:00:00Z", updatedAt: "2026-10-20T11:00:00Z", url: "https://github.com/acme/widgets/actions/runs/1" } },
 };
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 test("CI cards show actionable failures, workflow breakdown and overall and individual timing", async () => {
   vi.resetModules();
@@ -42,10 +42,11 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
     expect(slot.getByText("— 3 failed · 25% passed")).toBeTruthy();
     const timings = slot.getByRole("region", { name: "CI run timings" });
     const order = [timings, attention, slot.getByRole("region", { name: "Repository activity in the last 7 days" }),
-      slot.getByRole("heading", { name: "CI pass rate over time" }), slot.getByRole("region", { name: "PRs awaiting review" })];
+      slot.getByRole("combobox", { name: "First chart" }), slot.getByRole("region", { name: "PRs awaiting review" })];
     for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(timings.textContent).toContain("7m 0s");
-    expect(timings.textContent).toContain("Timing available for 2 of 2 successful runs · 3 non-successful runs excluded");
+    // Full timing coverage needs no caveat line.
+    expect(timings.textContent).not.toContain("Timing available");
     expect(slot.getByRole("link", { name: /Unit tests · main · #5/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/5");
     const workflows = slot.getByRole("list", { name: "Workflow timings" });
     expect(workflows.querySelector("li a")?.textContent).toBe("Slower workflow");
@@ -68,16 +69,13 @@ test("timing summary separates CI from frequent short automation without refetch
     const card = await slot.findByRole("region", { name: "CI run timings" });
     const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
     expect(median()).toBe("17m 30s");
-    expect(card.textContent).toContain("Timing available for 2 of 2 successful runs");
     const calls = metrics.mock.calls.length;
     const select = within(card).getByRole("combobox", { name: "Timing workflow" });
     fireEvent.change(select, { target: { value: "all" } });
     expect(median()).toBe("16s");
-    expect(card.textContent).toContain("frequent short automation runs can dominate the median");
-    expect(card.textContent).toContain("Timing available for 5 of 5 successful runs");
+    expect(card.textContent).toContain("Short automation runs can dominate the combined median");
     fireEvent.change(select, { target: { value: "2" } });
     expect(median()).toBe("14s");
-    expect(card.textContent).toContain("Timing available for 3 of 3 successful runs");
     expect(metrics.mock.calls.length).toBe(calls);
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
     await act(async () => {});
@@ -406,7 +404,7 @@ test("renders CI outcomes, review ages, and a linked production deployment", asy
     expect(slot.getByRole("link", { name: "#17 Needs review" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/17");
     expect(slot.getByRole("link", { name: "View deployment" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/1");
     expect(slot.getByText("Created 2h ago")).toBeTruthy();
-    expect(slot.getByText("No reviews yet · excludes drafts · oldest 5")).toBeTruthy();
+    expect(slot.getByText("No reviews yet · excludes drafts")).toBeTruthy();
     const reviewLink = new URL(slot.getByRole("link", { name: "View review queue" }).getAttribute("href")!);
     expect(reviewLink.searchParams.get("q")).toBe("is:pr is:open draft:false review:none");
   } finally { slot.lifecycle.unmount(); }
@@ -458,7 +456,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     await act(async () => {});
     const originalCards = slot.getByRole("region", { name: "acme/widgets" });
     const refreshButton = slot.getByRole("button", { name: "Refresh" });
-    const refreshIcon = refreshButton.querySelector('svg[data-refresh-icon]');
+    const refreshIcon = refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]');
     expect(refreshIcon).not.toBeNull();
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
@@ -468,15 +466,16 @@ test("pending interval and manual refreshes leave the same cards visible without
     expect(slot.getByText("12.0 / day")).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
-    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(true);
     expect(refreshIcon?.classList.contains("motion-reduce:animate-none")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).textContent?.trim()).toBe("");
     expect(slot.getByRole("region", { name: "GitHub CI metrics" }).getAttribute("aria-busy")).toBe("false");
-    expect(slot.queryByText(/Loading|Refreshing/)).toBeNull();
+    // The CI signals panel loads over its own RPC; only dashboard loading text matters here.
+    expect(slot.queryAllByText(/Loading|Refreshing/).filter((node) => !/CI problems|failure causes/.test(node.textContent ?? ""))).toEqual([]);
     await act(async () => { finish(data); });
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
-    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
@@ -500,14 +499,15 @@ test("returning from the sidebar shows cached values immediately while retrying 
   try {
     expect(second.getByText("12.0 / day")).toBeTruthy();
     expect(second.getByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
-    expect(second.queryByText(/Loading|Refreshing/)).toBeNull();
+    // The CI signals panel loads over its own RPC; only dashboard loading text matters here.
+    expect(second.queryAllByText(/Loading|Refreshing/).filter((node) => !/CI problems|failure causes/.test(node.textContent ?? ""))).toEqual([]);
     await act(async () => { reject(new Error("offline")); });
     expect(second.getByText("12.0 / day")).toBeTruthy();
     expect(second.getByRole("alert").textContent).toContain("out of date");
   } finally { second.lifecycle.unmount(); }
 });
 
-test("presets preserve displayed data while updating and ignore superseded responses", async () => {
+test("presets show the loading state instead of the previous range while updating and ignore superseded responses", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));
   let finishDay!: (value: unknown) => void;
@@ -516,13 +516,13 @@ test("presets preserve displayed data while updating and ignore superseded respo
   try {
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 7 });
-    const activity = slot.getByRole("region", { name: "Repository activity in the last 7 days" });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBeTruthy();
     metrics.mockImplementationOnce(() => new Promise((resolve) => { finishDay = resolve; }));
     fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 1 });
-    expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBe(activity);
-    expect(slot.queryByText(/Updating date range/)).toBeNull();
+    expect(slot.queryByRole("region", { name: "Repository activity in the last 7 days" })).toBeNull();
+    expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
     const threeDays = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 3 }) }] };
     metrics.mockResolvedValue(threeDays);
@@ -945,8 +945,8 @@ test("the header says All good, or counts the problems that need attention and t
     try {
       const card = await slot.findByRole("region", { name: "CI health" });
       const header = await within(card).findByText(text);
-      expect(header.className).toContain(critical ? "text-destructive" : text === "All good" ? "text-muted-foreground" : "font-medium");
-      expect(header.className.includes("text-destructive")).toBe(critical);
+      expect(header.className).toContain(critical ? "text-destructive-text" : text === "All good" ? "text-muted-foreground" : "font-medium");
+      expect(header.className.includes("text-destructive-text")).toBe(critical);
     } finally { slot.lifecycle.unmount(); }
   }
 });
@@ -1123,7 +1123,7 @@ test("Details keeps only the overview open; every other section is a closed <det
     const text = (name: string) => within(card).getByRole("region", { name }).textContent;
     const values: Record<string, Element | null> = Object.fromEntries(Array.from(causes.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")]));
     expect(Object.entries(values).map(([key, dd]) => [key, dd?.textContent])).toEqual([["Runner losses", "2"], ["Flaky jobs", "1"], ["Network/tool errors", "3"], ["Real failures", "4"]]);
-    expect(values["Runner losses"]?.className).toContain("text-destructive");
+    expect(values["Runner losses"]?.className).toContain("text-destructive-text");
     expect(causes.textContent).toContain("Excluded: 5 superseded by newer runs, 6 cancelled manually, 7 cancelled with the run, 8 aggregator jobs, 1 timed out");
     expect(causes.textContent).not.toContain("recognizable cause");
     expect(causes.textContent).toContain("Job-level causes are kept for the last 14 days");
@@ -1131,7 +1131,7 @@ test("Details keeps only the overview open; every other section is a closed <det
     expect(text("Runner pools")!.indexOf("stuck-pool")).toBeLessThan(text("Runner pools")!.indexOf("self-hosted"));
     expect(text("Runner pools")).toContain("self-hosted · 12 running · 0 waiting");
     expect(text("Runner pools")).toContain("Idle: idle-pool");
-    expect(within(card).getByText(/stuck-pool · 0 running/).className).toContain("text-destructive");
+    expect(within(card).getByText(/stuck-pool · 0 running/).className).toContain("text-destructive-text");
     expect(text("Runner losses")).toContain("By pool");
     expect(text("Runner losses")).toContain("Integration tests — 2 losses · 51 min runner time");
     expect(text("Reruns")).toContain("CI #7 (feature) failed → passed · 4 min repeated");
@@ -1175,7 +1175,7 @@ test("empty secondary blocks are not rendered and the zero causes stay in plain 
     const card = await slot.findByRole("region", { name: "CI health" });
     const causes = await within(card).findByRole("region", { name: "Failure causes" });
     expect(Array.from(causes.querySelectorAll("dd")).map((dd) => dd.textContent)).toEqual(["0", "0", "0", "0"]);
-    expect(causes.querySelector("dd")?.className).not.toContain("text-destructive");
+    expect(causes.querySelector("dd")?.className).not.toContain("text-destructive-text");
     expect(Array.from(card.querySelectorAll("section[aria-label]")).map((section) => section.getAttribute("aria-label"))).toEqual(["CI problems", "Outcomes", "Failure causes", "Pass rates", "Top failing workflows"]);
     expect(causes.textContent).not.toContain("Job-level causes");
     expect(within(card).getByText("All good")).toBeTruthy();
@@ -1217,4 +1217,134 @@ test("with no open problems the outcomes overview sits in the card; with problem
       expect(!!outcomes.closest("details")).toBe(inside);
     } finally { slot.lifecycle.unmount(); }
   }
+});
+
+test("switching to a range without a snapshot does not show the previous range's numbers", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: {
+    snapshot: (range: unknown) => (range as { days: number }).days === 14 ? null : data,
+    metrics: (range: unknown) => (range as { days: number }).days === 14 ? new Promise(() => {}) : data,
+  }, settings: {} });
+  try {
+    await act(async () => {});
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "14" } });
+    await act(async () => {});
+    expect(slot.queryByText("12.0%")).toBeNull();
+    expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a loading progress line shows runs and percentage while pending and disappears afterwards", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => new Promise(() => {}) }, settings: {} });
+  try {
+    await act(async () => {});
+    const empty = { value: null, detail: "Loading…", series: null, error: null, seriesError: null };
+    const progress = (metrics: object, startedAt: number) => slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt, metrics });
+    await progress({ ...repo, ci: empty, ciOutcomes: null, pending: ["ci"], loading: { runs: 1240, done: 2, total: 5 } }, 1);
+    expect(slot.getByText(/Loading CI history from GitHub · 1,240 runs so far · 40% · first load of a longer range can take a few minutes/)).toBeTruthy();
+    await progress({ ...repo, pending: [] }, 2);
+    expect(slot.queryByText(/Loading CI history from GitHub/)).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("history chart cards are switchable, never duplicate a chart and remember the choice", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const trends = {
+    durationMedian: dates.map((date, index) => ({ date, value: index === 0 ? null : index * 252_000 })),
+    lines: dates.map((date, index) => ({ date, value: index === 6 ? 1234 + 840 : 0, parts: [{ key: "additions", value: index === 6 ? 1234 : 0 }, { key: "deletions", value: index === 6 ? 840 : 0 }] })),
+  };
+  const render = () => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const names = (select: HTMLElement) => within(select).getAllByRole("option").map((option) => option.textContent);
+  const slot = render();
+  try {
+    const first = await slot.findByRole("combobox", { name: "First chart" });
+    const second = slot.getByRole("combobox", { name: "Second chart" });
+    expect(names(first)).not.toContain("Deployment throughput");
+    expect(names(second)).not.toContain("CI pass rate over time");
+    expect(names(first)).toContain("Median CI run duration");
+    fireEvent.change(first, { target: { value: "durationMedian" } });
+    const figure = slot.getByRole("figure", { name: "Median CI run duration" });
+    expect(slot.queryByRole("figure", { name: "CI pass rate over time" })).toBeNull();
+    expect(names(second)).toContain("CI pass rate over time");
+    expect(names(second)).not.toContain("Median CI run duration");
+    // Empty buckets show "—"; the others use the compact duration format.
+    expect(within(figure).getAllByRole("button", { name: /^Median CI run duration · .* · —/ })).toHaveLength(1);
+    expect(within(figure).getByRole("button", { name: /· 4m 12s ·/ })).toBeTruthy();
+    fireEvent.change(second, { target: { value: "lines" } });
+    const lines = slot.getByRole("figure", { name: "Lines changed" });
+    const bars = within(lines).getAllByRole("button", { name: /^Lines changed ·/ });
+    const latest = bars.at(-1)!;
+    expect(latest.textContent).toContain("+1.2K −840");
+    expect(latest.getAttribute("aria-label")).toContain("1,234 added, 840 deleted");
+    // Grouped bars share the largest single part as scale: additions 1234 → 100%, deletions 840 → 68%.
+    const [added, deleted] = ["bg-diff-added", "bg-diff-removed"].map((name) => latest.querySelector<HTMLElement>(`.${name}`)!);
+    expect(added.compareDocumentPosition(deleted) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(added.parentElement).toBe(deleted.parentElement);
+    expect(added.style.height).toBe("100%");
+    expect(parseFloat(deleted.style.height)).toBeCloseTo(840 / 1234 * 100, 1);
+    expect(bars[0]!.textContent).toBe("0");
+    expect(slot.getByText("added")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+  const remounted = render();
+  try {
+    expect(await remounted.findByRole("figure", { name: "Median CI run duration" })).toBeTruthy();
+    expect(remounted.getByRole("figure", { name: "Lines changed" })).toBeTruthy();
+  } finally { remounted.lifecycle.unmount(); }
+});
+
+test("a series that is still loading shows a skeleton and storage failures fall back to the default charts", async () => {
+  vi.resetModules();
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify(["runs", "runs"]));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
+  try {
+    expect(await slot.findByRole("figure", { name: "CI pass rate over time" })).toBeTruthy();
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart" }), { target: { value: "failedRuns" } });
+    expect(slot.getByRole("figure", { name: "Failed CI runs" }).textContent).toContain("History is unavailable.");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("run-based charts default to the heaviest workflow, can pool all workflows and remember the choice", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number) => dates.map((date) => ({ date, value }));
+  const row = (id: number, name: string, successMs: number, median: number) => ({ id, name, total: 3, successMs,
+    durationMedian: flat(median), durationP90: flat(median), runs: flat(3), failedRuns: flat(0), startDelay: flat(1000) });
+  // The tiny workflow outnumbers the pipeline, so the pooled median is misleadingly short.
+  const trends = { ...row(0, "", 0, 12_000), workflows: [row(5, "Pipeline", 9_000_000, 1_500_000), row(8, "Bookkeeping", 60_000, 10_000)] };
+  const render = () => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const latest = (slot: ReturnType<typeof render>, title: string) => slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) }).at(-1)!.getAttribute("aria-label");
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "commits", workflow: 99 }]));
+  const slot = render();
+  try {
+    const workflow = await slot.findByRole("combobox", { name: "First chart workflow" });
+    expect((workflow as HTMLSelectElement).value).toBe("5");
+    expect(within(workflow).getAllByRole("option").map((option) => option.textContent)).toEqual(["All workflows", "Pipeline", "Bookkeeping"]);
+    expect(slot.getByRole("figure", { name: "Median CI run duration" }).textContent).toContain("Pipeline");
+    expect(latest(slot, "Median CI run duration")).toContain("25m 0s");
+    // Only run-based charts have a workflow select.
+    expect(slot.queryByRole("combobox", { name: "Second chart workflow" })).toBeNull();
+    fireEvent.change(workflow, { target: { value: "all" } });
+    expect(latest(slot, "Median CI run duration")).toContain("12s");
+    expect(slot.getByRole("figure", { name: "Median CI run duration" }).textContent).toContain("All workflows");
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
+    expect(latest(slot, "Median CI run duration")).toContain("10s");
+  } finally { slot.lifecycle.unmount(); }
+  const remounted = render();
+  try {
+    expect(((await remounted.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("8");
+  } finally { remounted.lifecycle.unmount(); }
+  // A stored workflow that is no longer in the data falls back to the default one.
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian", workflow: 404 }, { chart: "commits" }]));
+  const stale = render();
+  try {
+    expect(((await stale.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("5");
+  } finally { stale.lifecycle.unmount(); }
 });

@@ -2,6 +2,9 @@
 
 export type JobAnnotation = { level: "failure" | "warning" | "notice"; title: string; message: string };
 
+/** Result of scanning a failed job for user-configured known-flake signatures; `rules` is the version of the rules and artifact globs it was scanned with. */
+export type JobSignature = { rules: string; label: string | null; match: string | null; source: "annotation" | "log" | "artifact" | null };
+
 /** One job of one run attempt, normalized from GET /actions/runs/{id}/attempts/{n}/jobs. */
 export type JobRecord = {
   repository: string;
@@ -35,14 +38,16 @@ export type JobRecord = {
    * Every duration, runner-minute and count must skip carried jobs.
    */
   carried: boolean;
+  /** Absent until scanned; a stored result only counts while `rules` equals the current rules version. */
+  signature?: JobSignature;
 };
 
 export type FailureClass =
   | "runner_loss" // runner lost communication / shutdown signal / failed with no failed step
   | "timeout" // job exceeded the maximum execution time
   | "transient" // tool or network failure (HTTP 5xx, download refused, ECONNRESET...) found in logExcerpt
-  | "flake" // real failed step, then the same job passed later at the same headSha
-  | "real" // real failed step that did not pass later
+  | "flake" // real failed step; the same job passed at the same headSha in some run, or its failure matches a configured known-flake signature
+  | "real" // real failed step; the job never passed at this headSha
   | "refused" // a failed step listed in the refusalSteps setting: an intentional gate refusal, nobody needs to act
   | "consequence" // aggregator job (e.g. "CI summary job") failed or cancelled because another job did
   | "superseded" // cancelled by concurrency: "Canceling since a higher priority waiting request..."
@@ -50,7 +55,7 @@ export type FailureClass =
   | "collateral_cancel" // only "The operation was canceled." (fail-fast or run-level cancel)
   | "unknown";
 
-export type ClassifiedJob = { job: JobRecord; class: FailureClass; reason: string; evidence: string | null };
+export type ClassifiedJob = { job: JobRecord; class: FailureClass; reason: string; evidence: string | null; /** Set when a known-flake signature made this a flake. */ flakeLabel?: string };
 
 /** Static role that acts on a signal; mapped to a display name in settings. */
 export type Actor = "owner_sre" | "pr_author" | "lead" | "manager";
@@ -83,6 +88,7 @@ export type PoolQueueState = {
 
 export type RerunSummary = {
   runId: number;
+  event: string;
   workflowName: string;
   headSha: string;
   headBranch: string | null;

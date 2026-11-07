@@ -46,7 +46,7 @@ export function ThreadPickerDialog({ projectId, problemTitle, onSelect, onClose 
     </div>
     <p id={description} className="my-3 break-words text-xs text-muted-foreground">“{problemTitle}” is sent with the session’s current settings. A busy session receives it in its queue.</p>
     <input aria-label="Filter sessions" placeholder="Filter sessions" value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground" />
-    {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
+    {error && <p role="alert" className="mt-3 text-sm text-destructive-text">{error}</p>}
     <div className="mt-3 max-h-72 space-y-1 overflow-y-auto" aria-busy={loading || sending}>
       {matching.map((thread) => <Button key={thread.id} variant="ghost" disabled={sending} className="h-auto w-full justify-between gap-3 py-2 text-left" onClick={() => void send(thread.id)}>
         <span className="min-w-0 truncate">{threadTitle(thread)}</span><span className="text-xs text-muted-foreground">{thread.status}</span>

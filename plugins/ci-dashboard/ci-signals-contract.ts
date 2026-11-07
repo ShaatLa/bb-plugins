@@ -36,8 +36,17 @@ export const poolStateSchema = z.object({
 
 const tally = z.object({ count: z.number(), runnerMs: z.number() });
 
+const timingStat = z.object({ p50: z.number(), p90: z.number() });
+export const poolTimingSchema = z.object({ jobs: z.number(), queueWaitMs: timingStat, durationMs: timingStat });
+
 export const failureRowSchema = z.object({
   class: failureClass, reason: z.string(), evidence: z.string().nullable(),
+  /** Event of the run: pull_request, push, merge_group... */
+  event: z.string(),
+  /** merge_group only: the PR number parsed from the queue branch name, else null. */
+  queuePullRequest: z.number().nullable(),
+  /** merge_group job that failed while the newest completed pull_request run of the same PR passed the same job: fails only in the queue. */
+  queueOnly: z.boolean(),
   runId: z.number(), attempt: z.number(), jobId: z.number(), jobName: z.string(), workflowName: z.string(),
   branch: z.string().nullable(), headSha: z.string(), pullRequests: z.array(z.number()),
   pool: z.string().nullable(), runnerName: z.string().nullable(),
@@ -45,7 +54,7 @@ export const failureRowSchema = z.object({
 });
 
 export const rerunRowSchema = z.object({
-  runId: z.number(), workflowName: z.string(), headSha: z.string(), headBranch: z.string().nullable(),
+  runId: z.number(), event: z.string(), queuePullRequest: z.number().nullable(), workflowName: z.string(), headSha: z.string(), headBranch: z.string().nullable(),
   attempts: z.number(), outcomes: z.array(z.string().nullable()), finalConclusion: z.string().nullable(),
   repeatedRunnerMs: z.number(), url: z.url(),
 });
@@ -65,6 +74,11 @@ export const repositorySignalsSchema = z.object({
   /** Job-level window the aggregates below cover. */
   window: z.object({ since: timestamp, until: timestamp }),
   failureCounts: z.record(failureClass, z.number()),
+  /** failureCounts split by run event. */
+  failureCountsByEvent: z.record(z.string(), z.record(failureClass, z.number())),
+  /** Queue wait (start - created) and duration percentiles per runner pool over executed jobs of the window; "unknown" when the pool is not known. */
+  poolTimings: z.record(z.string(), poolTimingSchema),
+  poolTimingsByEvent: z.record(z.string(), z.record(z.string(), poolTimingSchema)),
   runnerLosses: z.object({ byPool: z.record(z.string(), tally), byJob: z.record(z.string(), tally), byDay: z.record(z.string(), tally) }),
   massCancels: z.array(z.object({ since: timestamp, until: timestamp, runners: z.array(z.string()), runIds: z.array(z.number()), jobs: z.number() })),
   /** Newest first, at most 50. */

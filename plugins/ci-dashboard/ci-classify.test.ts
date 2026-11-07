@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyJobs, detectMassCancel, runnerLosses, summarizeReruns } from "./ci-classify";
+import { classifyJobs, detectMassCancel, percentile, queueOnlyJobs, queuePullRequest, runnerLosses, summarizeReruns, summarizeTimings, timingSamples } from "./ci-classify";
 import type { FailureClass, JobRecord } from "./ci-jobs-types";
 import { at, classify, failed, failure, job, LOSS, MANUAL, SUPERSEDED, TIMEOUT } from "./test-support";
 
@@ -63,20 +63,25 @@ describe("classifyJobs", () => {
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });
     const pass = (over: Partial<JobRecord> = {}) => job({ runId: 11, jobId: 2, event: "pull_request", headBranch: "feature", ...over });
-    it("a later success of the same job at the same sha makes a flake", () => {
+    it("a success of the same job at the same sha in any run makes a flake", () => {
       expect(one(base)?.class).toBe("real");
-      expect(classifyJobs([base, pass()])[0].class).toBe("flake");
+      expect(classifyJobs([base, pass()])[0]).toMatchObject({ class: "flake", evidence: `${pass().workflowName} run 11` });
+      expect(classifyJobs([base, pass({ runId: 9 })])[0].class).toBe("flake");
+      expect(classifyJobs([base, pass({ workflowName: "Docs" })])[0].class).toBe("flake");
       expect(classifyJobs([base, pass({ runId: 10, attempt: 2 })])[0].class).toBe("flake");
     });
     it.each<[string, Partial<JobRecord>]>([
-      ["an earlier success", { runId: 9 }],
       ["a success at another sha", { headSha: "f".repeat(40) }],
       ["a success of another job", { jobName: "Integration tests" }],
-      ["a success of another workflow", { workflowName: "Docs" }],
       ["a carried success", { carried: true }],
       ["a failed rerun", { conclusion: "failure" }],
     ])("is not a flake with %s", (_name, over) => {
       expect(classifyJobs([base, pass(over)])[0].class).toBe("real");
+    });
+    it("pairs a reusable-workflow job with the same job called directly", () => {
+      // A push run calls the suite as "Checks / X"; its merge-queue run at the same sha ran "X".
+      expect(classifyJobs([{ ...base, jobName: "Checks / Unit tests" }, pass({ jobName: "Unit tests", workflowName: "CI", event: "merge_group" })])[0].class).toBe("flake");
+      expect(classifyJobs([{ ...base, jobName: "Checks / Unit tests" }, pass({ jobName: "Checks / Lint" })])[0].class).toBe("real");
     });
     it("never pairs jobs with an unknown sha", () => {
       expect(classifyJobs([{ ...base, headSha: "" }, pass({ headSha: "" })])[0].class).toBe("real");
@@ -147,5 +152,54 @@ describe("runnerLosses and detectMassCancel", () => {
   });
   it("ignores other failure classes and repeated losses on one runner", () => {
     expect(detectMassCancel([mk("runner-a", 0, 0), mk("runner-a", 0, 10), mk("runner-b", 0, 20), mk("runner-c", 0, 30, "real")])).toEqual([]);
+  });
+});
+
+describe("queuePullRequest", () => {
+  it.each<[string | null, number | null]>([
+    ["gh-readonly-queue/main/pr-123-0123abc", 123], ["gh-readonly-queue/release/1.x/pr-7-deadbeef", 7],
+    ["feature", null], ["main", null], [null, null], ["gh-readonly-queue/main/pr-x-0123abc", null],
+  ])("%s -> %s", (branch, expected) => expect(queuePullRequest(branch)).toBe(expected));
+});
+
+describe("queueOnlyJobs", () => {
+  const queued = (over: Partial<JobRecord> = {}) => failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-12-0123abc", jobId: 900, runId: 90, ...over });
+  const pr = (over: Partial<JobRecord> = {}) => job({ event: "pull_request", headBranch: "feature", pullRequests: [12], runId: 50, ...over });
+  const flagged = (jobs: JobRecord[]) => [...queueOnlyJobs(jobs, classifyJobs(jobs))];
+  it("is true when the same job passed on the PR", () => expect(flagged([queued(), pr()])).toEqual([900]));
+  it("is false when the PR run failed, is absent, or belongs to another PR or job", () => {
+    expect(flagged([queued(), pr({ conclusion: "failure" })])).toEqual([]);
+    expect(flagged([queued()])).toEqual([]);
+    expect(flagged([queued(), pr({ pullRequests: [13] })])).toEqual([]);
+    expect(flagged([queued(), pr({ jobName: "Lint" })])).toEqual([]);
+    expect(flagged([queued(), pr({ workflowName: "Other" })])).toEqual([]);
+  });
+  it("uses the newest PR run", () => {
+    expect(flagged([queued(), pr(), pr({ runId: 60, conclusion: "failure" })])).toEqual([]);
+    expect(flagged([queued(), pr({ conclusion: "failure" }), pr({ runId: 60 })])).toEqual([900]);
+  });
+  it("ignores non-queue events and classes that need no action", () => {
+    expect(flagged([failed({ jobId: 901 }), pr()])).toEqual([]);
+    expect(flagged([queued({ annotations: [failure(LOSS)] }), pr()])).toEqual([]);
+  });
+});
+
+describe("percentile and pool timings", () => {
+  it("uses nearest rank", () => {
+    const list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    expect([percentile(list, 50), percentile(list, 90), percentile(list, 100), percentile([7], 90), percentile([], 50)]).toEqual([5, 9, 10, 7, 0]);
+  });
+  const timed = (waitSeconds: number, durationSeconds: number, over: Partial<JobRecord> = {}) =>
+    job({ createdAt: at(0), startedAt: at(0, waitSeconds), completedAt: at(0, waitSeconds + durationSeconds), ...over });
+  it("summarizes executed jobs per pool and event, skipping carried, skipped, incomplete and untimed jobs", () => {
+    const jobs = [timed(10, 100), timed(20, 200), timed(30, 300), timed(40, 400, { event: "merge_group", pool: null }),
+      timed(5, 5, { carried: true }), timed(5, 5, { conclusion: "skipped" }), timed(5, 5, { status: "in_progress" }), timed(5, 5, { startedAt: null }), timed(5, 5, { completedAt: null }),
+      job({ createdAt: at(1), startedAt: at(0), completedAt: at(0, 30) })];
+    const { poolTimings, poolTimingsByEvent } = summarizeTimings(timingSamples(jobs));
+    expect(poolTimings["self-hosted"]).toEqual({ jobs: 4, queueWaitMs: { p50: 10_000, p90: 30_000 }, durationMs: { p50: 100_000, p90: 300_000 } });
+    expect(poolTimings.unknown).toEqual({ jobs: 1, queueWaitMs: { p50: 40_000, p90: 40_000 }, durationMs: { p50: 400_000, p90: 400_000 } });
+    expect(Object.keys(poolTimingsByEvent).sort()).toEqual(["merge_group", "push"]);
+    expect(poolTimingsByEvent.merge_group!.unknown!.jobs).toBe(1);
+    expect(poolTimingsByEvent.push!["self-hosted"]!.jobs).toBe(4);
   });
 });

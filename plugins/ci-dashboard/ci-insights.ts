@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { percentile } from "./ci-classify";
 
 const timestamp = z.iso.datetime({ offset: true });
 export const ciRunSchema = z.object({
@@ -101,4 +102,75 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
       return durationMs === null ? [] : [{ id: run.id, name: run.name ?? `Run #${run.id}`, branch: run.head_branch ?? null, durationMs }];
     }).sort((a, b) => b.durationMs - a.durationMs || b.id - a.id).slice(0, 5),
   };
+}
+
+/** One bucket of a history chart; `parts` (e.g. additions/deletions) must sum to `value`. */
+export type TrendPoint = { date: string; value: number | null; parts?: { key: string; value: number }[] };
+export const RUN_TREND_KEYS = ["durationMedian", "durationP90", "runs", "failedRuns", "startDelay"] as const;
+export type RunTrends = Record<typeof RUN_TREND_KEYS[number], TrendPoint[]>;
+/** Run-based series of one workflow; `successMs` (total successful-run time) and `total` rank workflows. */
+export type WorkflowTrend = RunTrends & { id: number; name: string; total: number; successMs: number };
+export type Trends = Partial<RunTrends & Record<"commits" | "lines", TrendPoint[]>> & { workflows?: WorkflowTrend[] };
+/** Most workflows kept in a snapshot; the rest are tiny by the ranking below. */
+const MAX_TREND_WORKFLOWS = 20;
+/** The "main pipeline": the workflow with the most successful-run time (ties: more runs, then lower id). */
+export const defaultWorkflow = <T extends { id: number; total: number; successMs: number }>(list: T[]): T | undefined =>
+  list.reduce<T | undefined>((best, item) => !best || item.successMs > best.successMs || (item.successMs === best.successMs && (item.total > best.total || (item.total === best.total && item.id < best.id))) ? item : best, undefined);
+const middle = (sorted: number[]) => (sorted[Math.floor((sorted.length - 1) / 2)]! + sorted[Math.floor(sorted.length / 2)]!) / 2;
+
+/**
+ * Per-bucket history series for the switchable charts. Pass `null` for a source that is not loaded yet:
+ * its series are then omitted so the client can show a loading state. Counts are real zeros; samples-based
+ * series are null (no data) for empty buckets.
+ */
+export function summarizeTrends(
+  runs: Run[] | null, commits: { committedDate: string; additions: number; deletions: number }[] | null,
+  bucket: (timestamp: string) => number, emptySeries: () => { date: string }[],
+): Trends {
+  const dates = emptySeries().map((point) => point.date);
+  const cells = <T,>(make: () => T) => dates.map(make);
+  const series = (values: (number | null)[]): TrendPoint[] => dates.map((date, index) => ({ date, value: values[index]! }));
+  const stat = (lists: number[][], pick: (sorted: number[]) => number) => series(lists.map((list) => list.length ? pick([...list].sort((a, b) => a - b)) : null));
+  const out: Trends = {};
+  const runTrends = (list: Run[]): RunTrends => {
+    const durations = cells(() => [] as number[]), delays = cells(() => [] as number[]);
+    const eligible = cells(() => 0), failed = cells(() => 0);
+    for (const run of list) {
+      const index = bucket(run.created_at);
+      if (index < 0) continue;
+      const took = run.conclusion === "success" ? duration(run) : null;
+      if (took !== null) durations[index]!.push(took);
+      if (!run.draftDeferred && !excluded.has(run.conclusion ?? "")) {
+        eligible[index]!++;
+        if (run.conclusion !== "success") failed[index]!++;
+      }
+      // Only the first attempt: a rerun's created_at is the original creation, which would inflate the wait.
+      if ((run.run_attempt ?? 1) === 1 && run.run_started_at) {
+        const wait = Date.parse(run.run_started_at) - Date.parse(run.created_at);
+        if (wait >= 0) delays[index]!.push(wait);
+      }
+    }
+    return { durationMedian: stat(durations, middle), durationP90: stat(durations, (sorted) => percentile(sorted, 90)),
+      runs: series(eligible), failedRuns: series(failed), startDelay: stat(delays, middle) };
+  };
+  if (runs) {
+    Object.assign(out, runTrends(runs));
+    // Pooled runs are dominated by whichever workflow runs most often, so also keep each workflow apart.
+    const byWorkflow = new Map<number, Run[]>();
+    for (const run of runs) if (run.workflow_id !== undefined && bucket(run.created_at) >= 0) byWorkflow.set(run.workflow_id, [...(byWorkflow.get(run.workflow_id) ?? []), run]);
+    out.workflows = [...byWorkflow].map(([id, list]) => ({ id, name: list.find((run) => run.name)?.name ?? `Workflow ${id}`, total: list.length,
+      successMs: list.reduce((sum, run) => sum + (run.conclusion === "success" ? duration(run) ?? 0 : 0), 0), ...runTrends(list) }))
+      .sort((x, y) => y.successMs - x.successMs || y.total - x.total || x.id - y.id).slice(0, MAX_TREND_WORKFLOWS);
+  }
+  if (commits) {
+    const count = cells(() => 0), added = cells(() => 0), deleted = cells(() => 0);
+    for (const commit of commits) {
+      const index = bucket(commit.committedDate);
+      if (index < 0) continue;
+      count[index]!++; added[index]! += commit.additions; deleted[index]! += commit.deletions;
+    }
+    out.commits = series(count);
+    out.lines = dates.map((date, index) => ({ date, value: added[index]! + deleted[index]!, parts: [{ key: "additions", value: added[index]! }, { key: "deletions", value: deleted[index]! }] }));
+  }
+  return out;
 }

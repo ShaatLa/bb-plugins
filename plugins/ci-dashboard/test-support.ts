@@ -1,4 +1,5 @@
 // Shared synthetic CI data for tests. Neutral names only: real-data regressions live in *.local.test.ts.
+import { deflateRawSync } from "node:zlib";
 import type { ClassifiedJob, JobRecord } from "./ci-jobs-types";
 import type { GitHubRequest } from "./metrics";
 
@@ -56,4 +57,18 @@ export function fakeGithub(data: RunFixture) {
     return { body: { jobs: page === 1 ? jobs.slice(0, midpoint) : jobs.slice(midpoint) }, hasNext: page === 1 && midpoint < jobs.length };
   };
   return { request, calls };
+}
+
+// A minimal zip writer: stored and deflated entries, CRC left zero (the reader ignores it).
+export function zip(entries: { name: string; data: string | Buffer; deflate?: boolean }[]): Buffer {
+  const parts: Buffer[] = [], directory: Buffer[] = []; let offset = 0;
+  for (const { name, data, deflate } of entries) {
+    const raw = Buffer.from(data), packed = deflate ? deflateRawSync(raw) : raw, label = Buffer.from(name), method = deflate ? 8 : 0;
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(method, 8); local.writeUInt32LE(packed.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(label.length, 26);
+    const entry = Buffer.alloc(46); entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt16LE(method, 10); entry.writeUInt32LE(packed.length, 20); entry.writeUInt32LE(raw.length, 24); entry.writeUInt16LE(label.length, 28); entry.writeUInt32LE(offset, 42);
+    parts.push(local, label, packed); directory.push(entry, label); offset += 30 + label.length + packed.length;
+  }
+  const central = Buffer.concat(directory), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(central.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, central, end]);
 }

@@ -44,7 +44,7 @@ test("a job problem carries the job record, its run, the rerun summary and the r
   const sibling = failed({ runId: 7, jobId: 71, jobName: "Lint", annotations: [failure("lint exploded")] }, 6);
   const elsewhere = [failed({ runId: 8, jobId: 80, jobName: "Build", runnerName: "runner-a" }, 4), failed({ runId: 9, jobId: 90, jobName: "Other", runnerName: "runner-b" }, 3), failed({ runId: 10, jobId: 100, jobName: "Build", runnerName: "runner-c" }, 2)];
   const classified = [classify(lost, "runner_loss"), classify(sibling, "real"), ...elsewhere.map((j) => classify(j, "runner_loss")), classify(failed({ runId: 11, jobId: 110, jobName: "Build" }, 1), "flake")];
-  const reruns = [{ runId: 7, workflowName: "CI", headSha: lost.headSha, headBranch: "feature", attempts: 2, outcomes: ["failure", "success"], finalConclusion: "success", repeatedRunnerMs: 120_000 }];
+  const reruns = [{ runId: 7, event: "pull_request", workflowName: "CI", headSha: lost.headSha, headBranch: "feature", attempts: 2, outcomes: ["failure", "success"], finalConclusion: "success", repeatedRunnerMs: 120_000 }];
   const sections = problemContext(problem("runner_loss:70", { runId: 7, attempt: 1, jobId: 70, jobName: "Build", pool: "self-hosted", runnerName: "runner-a", branch: "feature", pullRequests: [12], url: `https://github.com/${REPO}/actions/runs/7/job/70` }), base({ classified, reruns }));
   expect(titles(sections)).toEqual(["Verdict", "Problem", "Failing runs", "Current state", "Evidence (job records)", "Same run", "Recent pattern (stored job history)", "Freshness", "Suggested action"]);
   const all = text(sections);
@@ -125,8 +125,9 @@ test("Verdict is the first section and counts the non-success jobs of every run 
 
 test.each<[string, ReturnType<typeof onMain>[], string]>([
   ["a real failure", [onMain(52, "real")], "yes"],
-  ["a flake on the default branch", [onMain(52, "flake")], "yes"],
-  ["a flake on another branch", [onMain(52, "flake", { headBranch: "feature" })], "no"],
+  ["a flake on the default branch", [onMain(52, "flake")], "no (red on flakes only)"],
+  ["flakes with their consequences", [onMain(52, "flake"), onMain(52, "consequence", { jobId: 2 })], "no (red on flakes only)"],
+  ["a flake and a real failure", [onMain(52, "flake"), onMain(52, "real", { jobId: 2 })], "yes"],
   ["only infrastructure, refusals and cancels", [onMain(52, "runner_loss"), onMain(52, "refused", { jobId: 2 }), onMain(52, "transient", { jobId: 3 }), onMain(52, "timeout", { jobId: 4 }), onMain(52, "superseded", { jobId: 5 })], "no"],
   ["an unrecognised cause", [onMain(52, "unknown")], "unknown"],
   ["jobs that are not stored yet", [], "unknown"],
