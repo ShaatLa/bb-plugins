@@ -598,6 +598,31 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
-  await within(region).findAllByText("Attached");
+  await within(region).findAllByText("Assigned");
   expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
+});
+
+
+it("assigns responsibility without sending a turn or changing task status", async () => {
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+    rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [] }), taskThreadsAttach: () => ({ threadId: "thr_manager" }) }),
+    sdk: { threads: { list: async () => [] } },
+  });
+  fireEvent.click((await slot.findAllByRole("button", { name: "Assign thread" }))[0]!);
+  await slot.findByRole("dialog", { name: "Assign thread" });
+  expect(slot.queryByRole("checkbox", { name: "Use this thread by default" })).toBeNull();
+  fireEvent.change(slot.getByRole("textbox", { name: "Filter loaded threads or enter a thread ID" }), { target: { value: "thr_manager" } });
+  fireEvent.click(slot.getByRole("button", { name: "Assign to thr_manager" }));
+  await waitFor(() => expect(slot.rpcCalls).toContainEqual({ method: "taskThreadsAttach", input: { taskId: TASK_ID, threadId: "thr_manager" } }));
+  await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+  expect(slot.rpcCalls.some(call => ["delegate", "delegateToThread", "updateTask"].includes(call.method))).toBe(false);
+});
+
+it("keeps assignment visible when unassign fails", async () => {
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+    rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker", "Assigned worker")] }), taskThreadsDetach: () => { throw new Error("Could not unassign"); } }),
+  });
+  fireEvent.click((await slot.findAllByRole("button", { name: "Unassign Assigned worker" }))[0]!);
+  await slot.findAllByText("Could not unassign");
+  expect(slot.getAllByRole("button", { name: "Go to thread" }).length).toBeGreaterThan(0);
 });
