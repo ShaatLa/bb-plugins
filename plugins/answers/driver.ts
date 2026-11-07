@@ -10,7 +10,7 @@ const oversized = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
   return error?.status === 413 || error?.statusCode === 413 || error?.code === 'event_data_too_large';
 };
-type State = { last_seq: number };
+type State = { last_seq: number; last_error: string | null };
 export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void) {
   const locks = new Map<string, Promise<unknown>>();
   const scheduled = new Map<string, { dirty: boolean; promise: Promise<void> }>();
@@ -57,11 +57,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   }
   async function drain(id: string) {
     if (signal.aborted) return;
-    const state = db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State | undefined;
-    let projectId: string | null = null;
-    if (!state || state.last_seq === 0) {
-      try { projectId = (await bb.sdk.threads.get({threadId:id,signal})).projectId; }
-      catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
+    const state = db.prepare('SELECT last_seq,last_error FROM threads_state WHERE thread_id=?').get(id) as State | undefined;
+    let projectId: string | null;
+    try { projectId = (await bb.sdk.threads.get({threadId:id,signal})).projectId; }
+    catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
+    if (!state || (state.last_seq === 0 && state.last_error)) {
       const events: Event[] = [];
       let before: number | undefined;
       // shortcut: first sight covers at most 1,500 events; expand if older history becomes a requirement.
@@ -88,6 +88,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   async function attempt(id: string) {
     try {
       await slot(() => drain(id));
+      if (!signal.aborted && db.prepare('UPDATE threads_state SET last_error=NULL,updated_at=? WHERE thread_id=? AND last_error IS NOT NULL').run(Date.now(),id).changes) invalidate();
       const retry = retries.get(id); if (retry?.timer) clearTimeout(retry.timer); retries.delete(id);
     } catch (e) {
       if (signal.aborted) throw e;
@@ -134,7 +135,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   }
   return {
     schedule, reconcile,
-    withThread: <T>(id: string, mutate: () => T | Promise<T>) => locked(id,async () => {await attempt(id); return mutate();}),
+    withThread: <T>(id: string, mutate: () => T | Promise<T>) => locked(id,async () => {
+      await attempt(id);
+      if (!db.prepare('SELECT 1 FROM threads_state WHERE thread_id=?').get(id)) throw new Error('thread not found');
+      return mutate();
+    }),
     deleteThread: (id: string) => locked(id,async () => remove(id)),
     async dispose() {controller.abort(); for (const r of retries.values()) if (r.timer) clearTimeout(r.timer); await Promise.allSettled([...locks.values()]);},
   };

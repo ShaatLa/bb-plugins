@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 
 export const RELEVANT = ['client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed'] as const;
 export const cap = (text: string, max: number) => text.length <= max ? text : text.slice(0, max - '… (truncated, open in chat)'.length) + '… (truncated, open in chat)';
-export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any };
+export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any; createdAt?: number };
 
 /** Apply an ascending page inside the caller's transaction. */
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0) {
@@ -22,7 +22,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
    if (d.initiator === 'user' && d.senderThreadId == null && d.originPluginId !== 'answers' && text && !command) {
-    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),e.seq,d.requestId ?? null,now,now);
+    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),e.seq,d.requestId ?? null,e.createdAt ?? now,now);
    }
   } else if (e.type === 'turn/started' && turn && !d.parentToolCallId) active=turn;
   else if (e.type === 'turn/input/accepted' && turn && active === turn && d.clientRequestId) {
