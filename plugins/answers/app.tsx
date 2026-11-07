@@ -105,7 +105,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
 
 export default definePluginApp(app => {
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: () => <AnswersPanel />, experimental_useBadge: useAnswersBadge });
-  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'action', component: AnswersPanel });
+  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: AnswersPanel });
   app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
     // Message actions have no React hook context; use the public plugin RPC endpoint.
