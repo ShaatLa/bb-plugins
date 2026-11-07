@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, type Item, type ListInput, type Counts } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts } from './contract';
 import { migrations } from './schema';
 import { cap } from './ingest';
 import { createDriver } from './driver';
@@ -15,11 +15,21 @@ const toolInputs = {
   ask: z.object({question:z.string().trim().min(1).max(2000)}).strict(),
 };
 type Row = Record<string, any>;
+export function buildReplyMessage(entries: readonly {quote:string;note:string}[]): string {
+  const message = entries.map(({quote,note}) => {
+    if (quote.length > 20000) throw new Error('Quote exceeds 20,000 characters');
+    const quoted = quote.split('\n').map(line=>line ? '> '+line : '>').join('\n');
+    return quoted + (note ? '\n\n'+note : '');
+  }).join('\n\n');
+  if (message.length > 32000) throw new Error('Message exceeds 32,000 characters — split the pool');
+  return message;
+}
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db,migrations);
   const invalidate = () => bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
-  const driver = createDriver(bb,db,invalidate);
+  const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
+  const driver = createDriver(bb,db,() => {invalidate(); invalidatePools();});
   const sending = new Set<string>();
   const get = (id: string): Row => {
     const item = db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined;
@@ -33,7 +43,8 @@ export default function plugin(bb: BbPluginApi) {
     return db.prepare(`SELECT
       count(CASE WHEN kind='mine' AND status='answered' AND read_at IS NULL THEN 1 END) AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
-      count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe
+      count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
+      count(CASE WHEN read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open')) THEN 1 END) AS inbox
       FROM items WHERE dismissed_at IS NULL`).get() as Counts;
   }
   async function list(raw: ListInput) {
@@ -71,26 +82,126 @@ export default function plugin(bb: BbPluginApi) {
     if ('ids' in p) return commit(`UPDATE items SET read_at=?,updated_at=? WHERE id IN (${p.ids.map(()=>'?').join(',')})`,now,now,...p.ids);
     return commit(`UPDATE items SET read_at=?,updated_at=? WHERE kind='mine' AND status='answered'${p.threadId ? ' AND thread_id=?' : ''}`,now,now,...(p.threadId ? [p.threadId] : []));
   }
+  async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
+    if (sending.has(threadId)) throw new Error('A reply to this thread is already sending');
+    sending.add(threadId);
+    try {return await send();} finally {sending.delete(threadId);}
+  }
+  async function deliver(threadId:string,text:string) {
+    if (text.length>32000) throw new Error('Message exceeds 32,000 characters — split the pool');
+    try {
+      const result=await bb.sdk.threads.send({threadId,mode:'auto',input:[{type:'text',mentions:[],text}]});
+      if (!result.ok) throw new Error('send failed');
+      return {delivery:result.delivery};
+    } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
+  }
+  function checkSources(threadId:string,entries:Row[]) {
+    for (const entry of entries) if (entry.item_id) {
+      const item=get(entry.item_id);
+      if (item.thread_id!==threadId || item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies in this thread');
+    }
+  }
+  function applyReplies(threadId:string,entries:Row[]) {
+    for (const id of new Set(entries.map(e=>e.item_id).filter(Boolean))) {
+      const linked=entries.filter(e=>e.item_id===id);
+      const notes=linked.map(e=>e.note).filter(n=>n.length>0);
+      const answer=(notes.length ? notes : linked.map(e=>e.quote)).join('\n\n');
+      db.prepare("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND thread_id=? AND kind='for_me' AND status='open'").run(answer,Date.now(),id,threadId);
+    }
+  }
+  const unreadWhere = "dismissed_at IS NULL AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))";
   const handlers = {
     list, counts,
+    async recipients(raw:z.infer<typeof inputs.recipients>) {
+      const p=inputs.recipients.parse(raw);
+      const rows=db.prepare(`SELECT thread_id,count(*) AS unread,max(updated_at) AS last_at FROM items WHERE ${unreadWhere} GROUP BY thread_id ORDER BY last_at DESC,thread_id LIMIT 100`).all() as Row[];
+      if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {
+        if (rows.length===100) rows.pop();
+        rows.push({thread_id:p.selected,unread:0,last_at:0});
+        const unread=db.prepare(`SELECT count(*) AS unread,max(updated_at) AS last_at FROM items WHERE thread_id=? AND ${unreadWhere}`).get(p.selected) as Row;
+        Object.assign(rows.at(-1)!,{unread:unread.unread,last_at:unread.last_at ?? 0});
+      }
+      const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
+      const projects=rows.length ? await bb.sdk.projects.list() : [];
+      const recipients=rows.map(r=>{
+        const newest=db.prepare(`SELECT * FROM items WHERE thread_id=? AND ${unreadWhere} ORDER BY updated_at DESC,id DESC LIMIT 1`).get(r.thread_id) as Row|undefined;
+        const fallback=newest ?? db.prepare('SELECT * FROM items WHERE thread_id=? ORDER BY updated_at DESC,id DESC LIMIT 1').get(r.thread_id) as Row|undefined;
+        const thread=threads.find(t=>t.id===r.thread_id), projectId=thread?.projectId ?? fallback?.project_id ?? null;
+        return {threadId:r.thread_id,threadTitle:thread?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at || fallback?.updated_at || 0,preview:(newest ? newest.kind==='mine' ? newest.answer : newest.question : '').slice(0,160)};
+      });
+      return {recipients:recipients.sort((a,b)=>b.lastAt-a.lastAt || a.threadId.localeCompare(b.threadId))};
+    },
+    markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {
+      const p=inputs.markThreadRead.parse(raw), now=Date.now();
+      return commit("UPDATE items SET read_at=?,updated_at=? WHERE thread_id=? AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",now,now,p.threadId);
+    },
+    async pools(raw:z.infer<typeof inputs.pools>) {
+      inputs.pools.parse(raw);
+      const rows=db.prepare('SELECT * FROM pool_entries ORDER BY created_at,rowid').all() as Row[];
+      const ids=[...new Set(rows.map(r=>r.thread_id as string))];
+      const threads=ids.length ? await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200}) : [];
+      return {pools:ids.map(threadId=>{
+        const thread=threads.find(t=>t.id===threadId);
+        return {threadId,threadTitle:thread?.title ?? null,projectId:thread?.projectId ?? null,entries:rows.filter(r=>r.thread_id===threadId).map(r=>({id:r.id,threadId,quote:r.quote,quoteSeq:r.quote_seq,itemId:r.item_id,note:r.note,revision:r.revision,createdAt:r.created_at,updatedAt:r.updated_at}))};
+      })};
+    },
+    async poolAdd(raw:z.infer<typeof inputs.poolAdd>) {
+      const p=inputs.poolAdd.parse(raw);
+      await bb.sdk.threads.get({threadId:p.threadId});
+      checkSources(p.threadId,[{item_id:p.itemId}]);
+      const id='pool_'+randomUUID(),now=Date.now();
+      db.prepare('INSERT INTO pool_entries(id,thread_id,quote,quote_seq,item_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(id,p.threadId,p.quote,p.quoteSeq ?? null,p.itemId ?? null,p.note ?? '',now,now);
+      invalidatePools(); return {id};
+    },
+    poolUpdate(raw:z.infer<typeof inputs.poolUpdate>) {
+      const p=inputs.poolUpdate.parse(raw);
+      if (!db.prepare('UPDATE pool_entries SET note=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(p.note,Date.now(),p.id,p.revision).changes) throw new Error('Pool entry changed or removed — refresh before editing');
+      invalidatePools(); return {revision:p.revision+1};
+    },
+    poolRemove(raw:z.infer<typeof inputs.poolRemove>) {
+      const p=inputs.poolRemove.parse(raw); db.prepare('DELETE FROM pool_entries WHERE id=?').run(p.id); invalidatePools(); return {ok:true as const};
+    },
+    async quoteReply(raw:z.infer<typeof inputs.quoteReply>) {
+      const p=inputs.quoteReply.parse(raw);
+      return guarded(p.threadId,async()=>{
+        await bb.sdk.threads.get({threadId:p.threadId});
+        const entries=[{quote:p.quote,note:p.text,item_id:p.itemId}]; checkSources(p.threadId,entries);
+        const result=await deliver(p.threadId,buildReplyMessage(entries));
+        db.transaction(()=>applyReplies(p.threadId,entries))(); invalidate(); return result;
+      });
+    },
+    async poolSend(raw:z.infer<typeof inputs.poolSend>) {
+      const p=inputs.poolSend.parse(raw);
+      return guarded(p.threadId,async()=>{
+        await bb.sdk.threads.get({threadId:p.threadId});
+        const entries=db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[];
+        if (!entries.length) throw new Error('Pool is empty');
+        checkSources(p.threadId,entries);
+        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]));
+        let keptEdited=0;
+        db.transaction(()=>{
+          for (const entry of entries) {
+            db.prepare('DELETE FROM pool_entries WHERE id=? AND revision=?').run(entry.id,entry.revision);
+            if (db.prepare('SELECT 1 FROM pool_entries WHERE id=?').get(entry.id)) keptEdited++;
+          }
+          applyReplies(p.threadId,entries);
+        })();
+        invalidatePools(); invalidate(); return {...result,sent:entries.length,keptEdited};
+      });
+    },
     markRead,
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
     setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {
-      const p=inputs.reply.parse(raw), item=get(p.id);
-      if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
-      if (sending.has(p.id)) throw new Error('reply already in flight');
-      if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
-      sending.add(p.id);
-      try {
-        let result;
-        try {
-          result=await bb.sdk.threads.send({threadId:item.thread_id,mode:'auto',input:[{type:'text',mentions:[],text:`Re: "${item.question.slice(0,120)}"\n\n${p.text}`} ]});
-          if (!result.ok) throw new Error('send failed');
-        } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
+      const p=inputs.reply.parse(raw), threadId=get(p.id).thread_id as string;
+      return guarded(threadId,async()=>{
+        const item=get(p.id);
+        if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
+        if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
+        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`);
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
-        return {delivery:result.delivery};
-      } finally {sending.delete(p.id);}
+        return result;
+      });
     },
     async save(raw: z.infer<typeof inputs.save>) {
       const p=inputs.save.parse(raw);

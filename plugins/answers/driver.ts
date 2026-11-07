@@ -34,6 +34,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   function remove(id: string) {
     db.transaction(() => {
       db.prepare("DELETE FROM items WHERE thread_id=? AND kind!='saved'").run(id);
+      db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM request_aliases WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM threads_state WHERE thread_id=?').run(id);
       db.prepare('UPDATE items SET thread_deleted=1,updated_at=? WHERE thread_id=?').run(Date.now(),id);
@@ -112,7 +113,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     scheduled.set(id,entry); return entry.promise;
   }
   async function reconcile() {
-    const tracked = db.prepare('SELECT thread_id FROM threads_state').all() as {thread_id:string}[];
+    const tracked = db.prepare('SELECT thread_id FROM threads_state UNION SELECT thread_id FROM pool_entries').all() as {thread_id:string}[];
     for (let i=0;i<tracked.length && !signal.aborted;i+=200) {
       const ids = tracked.slice(i,i+200).map(r=>r.thread_id);
       try {

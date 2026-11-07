@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
-import plugin, { INSTRUCTIONS } from './server';
-import { ITEMS_TAG, COUNTS_TAG, inputs, rpcContract } from './contract';
+import plugin, { INSTRUCTIONS, buildReplyMessage } from './server';
+import { ITEMS_TAG, COUNTS_TAG, POOLS_TAG, inputs, rpcContract } from './contract';
 import { createDriver } from './driver';
 import { migrations } from './schema';
 import Database from 'better-sqlite3';
@@ -34,14 +34,14 @@ describe('server',()=>{
   expect(first.items[0]).toMatchObject({id:'ans_b',threadTitle:'Thread title'});
   const next=await harness.behavior.callRpc('list',{view:'unread',limit:1,cursor:first.nextCursor}) as any;
   expect(next.items[0].id).toBe('ans_a'); expect(next.nextCursor).toBeNull();
-  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:2,waiting:0,forMe:1});
+  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:2,waiting:0,forMe:1,inbox:3});
   await harness.behavior.callRpc('setDismissed',{id:'ans_b',dismissed:true});
   await harness.behavior.callRpc('setPinned',{id:'ans_b',pinned:true});
   expect((await harness.behavior.callRpc('list',{view:'pinned'}) as any).items).toHaveLength(1);
   await harness.behavior.callRpc('markRead',{all:true,threadId:'other'});
   expect((await harness.behavior.callRpc('counts',{}) as any).unread).toBe(1);
   await harness.behavior.callRpc('markRead',{ids:['ans_a']});
-  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:0,waiting:0,forMe:1});
+  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:0,waiting:0,forMe:1,inbox:1});
   expect(db.prepare("SELECT status FROM items WHERE id='ans_b'").get()).toEqual({status:'answered'});
  });
  it('checks calling thread and kind for id-taking tools and requires an active turn',async()=>{
@@ -66,7 +66,7 @@ describe('server',()=>{
   const send=vi.fn(async(_args:unknown)=>{entered.resolve(); return gate.promise;});
   const {harness,db}=setup(send as any); seed(db);
   const first=harness.behavior.callRpc('reply',{id:'ans_one',text:'response'}); await entered.promise;
-  await expect(harness.behavior.callRpc('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('in flight');
+  await expect(harness.behavior.callRpc('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('already sending');
   expect(db.prepare('SELECT status FROM items').get()).toEqual({status:'open'});
   gate.resolve({ok:true,delivery:'queued'}); expect(await first).toEqual({delivery:'queued'});
   await expect(harness.behavior.callRpc('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('already replied');
@@ -103,7 +103,7 @@ describe('server',()=>{
   await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'t'});
   await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
   expect(seen.at(-1)).toBe('deleted');
-  expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]))).toBe(true); off();
+  expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
  });
  it('provides list/read/status CLI commands',async()=>{
   const {harness,db}=setup(); seed(db,'ans_one','mine'); db.prepare("UPDATE items SET status='answered'").run();
@@ -114,10 +114,120 @@ describe('server',()=>{
  });
 });
 
+describe('reply pools and inbox',()=>{
+ it('appends migration 2 without changing existing items',()=>{
+  const db=new Database(':memory:'); db.exec(migrations[0]); seed(db); db.exec(migrations[1]);
+  expect(db.prepare('SELECT question FROM items').get()).toEqual({question:'Question'});
+  expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]); db.close();
+ });
+ it('builds exact Markdown, with empty lines and notes, and enforces caps',()=>{
+  expect(buildReplyMessage([{quote:'**bold**\n\nlast',note:'note'},{quote:'only',note:''}])).toBe('> **bold**\n>\n> last\n\nnote\n\n> only');
+  expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
+  expect(()=>buildReplyMessage([{quote:'x'.repeat(20000),note:'x'.repeat(12000)}])).toThrow('32,000');
+ });
+ it('groups unread recipients, orders them, keeps selected, and reads only inbox kinds',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b'); seed(db,'ans_c','for_me','b'); seed(db,'ans_wait','mine','b'); seed(db,'ans_save','saved','b');
+  db.prepare("UPDATE items SET status='answered',answer=?,updated_at=10 WHERE id='ans_a'").run('x'.repeat(200));
+  db.prepare("UPDATE items SET updated_at=20 WHERE id='ans_b'").run();
+  const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  expect(await call('counts')).toMatchObject({inbox:3});
+  const recipients=(await call('recipients')).recipients;
+  expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['b',2,20],['a',1,10]]);
+  expect(recipients[1].preview).toHaveLength(160);
+  await call('markThreadRead',{threadId:'b'});
+  expect((await call('counts')).inbox).toBe(1);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a']);
+  expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
+  expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
+ });
+ it('validates pool CRUD, revisions, ordering, missing threads and tags',async()=>{
+  const {harness,db}=setup();
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'a',title:'A',projectId:'p'}),makeThreadResponse({id:'b',title:'B',projectId:'p'})]);
+  const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  const a=await call('poolAdd',{threadId:'a',quote:'a',quoteSeq:4});
+  const b=await call('poolAdd',{threadId:'b',quote:'b'});
+  db.prepare('UPDATE pool_entries SET created_at=1 WHERE id=?').run(a.id); db.prepare('UPDATE pool_entries SET created_at=2 WHERE id=?').run(b.id);
+  const pools=(await call('pools')).pools; expect(pools.map((p:any)=>p.threadId)).toEqual(['a','b']);
+  expect(pools[0]).toMatchObject({threadTitle:'A',projectId:'p',entries:[{revision:0,quoteSeq:4,note:''}]});
+  expect(await call('poolUpdate',{id:a.id,note:'edit',revision:0})).toEqual({revision:1});
+  await expect(call('poolUpdate',{id:a.id,note:'stale',revision:0})).rejects.toThrow('changed');
+  await expect(call('poolAdd',{threadId:'a',quote:'x'.repeat(20001)})).rejects.toThrow('validation');
+  expect(()=>inputs.poolAdd.parse({threadId:'a',quote:'x'.repeat(20001)})).toThrow('20,000');
+  await call('poolRemove',a); expect((await call('pools')).pools).toHaveLength(1);
+  harness.sdk.stub('threads.get',async()=>{throw {status:404};});
+  await expect(call('poolAdd',{threadId:'missing',quote:'x'})).rejects.toBeDefined();
+  expect(harness.inspection.experimental_rpcInvalidations.some(tags=>tags?.includes(POOLS_TAG))).toBe(true);
+  expect(rpcContract.pools.tags).toBeDefined(); expect(rpcContract.recipients.tags).toBeDefined();
+ });
+ it('snapshots revisions, keeps edited and newly added entries, and commits linkage with deletes',async()=>{
+  const gate=deferred<{ok:true;delivery:'queued'}>(),entered=deferred<void>();
+  const {harness,db,send}=setup(vi.fn(async()=>{entered.resolve(); return gate.promise;}) as any); seed(db);
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  const a=await call('poolAdd',{threadId:'t',quote:'a',note:'first',itemId:'ans_one'});
+  const b=await call('poolAdd',{threadId:'t',quote:'b',note:'second',itemId:'ans_one'});
+  db.prepare('UPDATE pool_entries SET created_at=1 WHERE id=?').run(a.id); db.prepare('UPDATE pool_entries SET created_at=2 WHERE id=?').run(b.id);
+  const pending=call('poolSend',{threadId:'t'}); await entered.promise;
+  await call('poolUpdate',{id:a.id,note:'edited',revision:0});
+  const c=await call('poolAdd',{threadId:'t',quote:'new'});
+  await expect(call('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('already sending');
+  await expect(call('quoteReply',{threadId:'t',quote:'q',text:'duplicate'})).rejects.toThrow('already sending');
+  await expect(call('poolSend',{threadId:'t'})).rejects.toThrow('already sending');
+  expect(db.prepare('SELECT status FROM items').get()).toEqual({status:'open'});
+  const observations:any[]=[];
+  const off=harness.inspection.experimental_onRpcInvalidation(()=>observations.push({item:db.prepare('SELECT status,answer FROM items').get(),rows:db.prepare('SELECT id FROM pool_entries ORDER BY created_at,id').all()}));
+  gate.resolve({ok:true,delivery:'queued'});
+  expect(await pending).toEqual({delivery:'queued',sent:2,keptEdited:1}); off();
+  expect(send.mock.calls[0][0]).toMatchObject({input:[{text:'> a\n\nfirst\n\n> b\n\nsecond'}]});
+  expect(observations).toHaveLength(2);
+  for (const state of observations) {expect(state.item).toEqual({status:'replied',answer:'first\n\nsecond'}); expect(state.rows.map((r:any)=>r.id)).toEqual([a.id,c.id]);}
+ });
+ it('keeps failed sends, never retries, and checks total size before sending',async()=>{
+  const {harness,db,send}=setup(vi.fn(async()=>{throw new Error('network');}));
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  await call('poolAdd',{threadId:'t',quote:'q'});
+  await expect(call('poolSend',{threadId:'t'})).rejects.toThrow('Delivery uncertain');
+  expect(db.prepare('SELECT count(*) n FROM pool_entries').get()).toEqual({n:1}); expect(send).toHaveBeenCalledTimes(1);
+  await call('poolAdd',{threadId:'t',quote:'x'.repeat(20000),note:'x'.repeat(8000)});
+  await call('poolAdd',{threadId:'t',quote:'x'.repeat(5000)});
+  await expect(call('poolSend',{threadId:'t'})).rejects.toThrow('32,000'); expect(send).toHaveBeenCalledTimes(1);
+ });
+ it('links quote replies, allows follow-ups, uses quotes for empty notes and checks sources',async()=>{
+  const {harness,db}=setup(); seed(db); seed(db,'ans_other','for_me','other');
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',itemId:'ans_other'})).rejects.toThrow('this thread');
+  await call('quoteReply',{threadId:'t',quote:'q',text:'',itemId:'ans_one'});
+  expect(db.prepare("SELECT status,answer,answer_source FROM items WHERE id='ans_one'").get()).toEqual({status:'replied',answer:'q',answer_source:'user'});
+  await call('quoteReply',{threadId:'t',quote:'q',text:'follow-up',itemId:'ans_one'});
+  expect(db.prepare("SELECT answer FROM items WHERE id='ans_one'").get()).toEqual({answer:'q'});
+  await call('poolAdd',{threadId:'other',quote:'one',itemId:'ans_other'}); await call('poolAdd',{threadId:'other',quote:'two',itemId:'ans_other'});
+  await call('poolSend',{threadId:'other'});
+  expect(db.prepare("SELECT answer FROM items WHERE id='ans_other'").get()).toEqual({answer:'one\n\ntwo'});
+ });
+ it('shares guard when reply starts first, including another item in the thread',async()=>{
+  const gate=deferred<{ok:true;delivery:'sent'}>(),entered=deferred<void>();
+  const {harness,db}=setup(vi.fn(async()=>{entered.resolve();return gate.promise;}) as any);seed(db);seed(db,'ans_two');
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p);
+  const first=call('reply',{id:'ans_one',text:'yes'});await entered.promise;
+  for(const [name,p] of [['reply',{id:'ans_two',text:'yes'}],['quoteReply',{threadId:'t',quote:'q',text:''}],['poolSend',{threadId:'t'}]] as const) await expect(call(name,p)).rejects.toThrow('already sending');
+  gate.resolve({ok:true,delivery:'sent'});await first;
+ });
+ it('removes pools on deletion and authoritative removal even for pool-only threads',async()=>{
+  const {harness,db,bb}=setup();
+  await harness.behavior.callRpc('poolAdd',{threadId:'t',quote:'q'});
+  await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
+  expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]);
+  await harness.behavior.callRpc('poolAdd',{threadId:'other',quote:'q'});
+  harness.sdk.stub('threads.get',async()=>{throw {status:404};});
+  const driver=createDriver(bb,db,()=>{});
+  await driver.reconcile(); await driver.dispose();
+  expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]);
+ });
+});
+
 describe('ingestion driver',()=>{
  function driverSetup() {
   const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
-  const db=host.bb.storage.database(); db.exec(migrations[0]); const invalidate=vi.fn();
+  const db=host.bb.storage.database(); db.exec(migrations.join("\n")); const invalidate=vi.fn();
   const driver=createDriver(host.bb,db,invalidate);
   cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
   return {...host,db,driver,invalidate};

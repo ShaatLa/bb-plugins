@@ -45,4 +45,10 @@ CREATE TABLE threads_state (
   last_error     TEXT,
   updated_at     INTEGER NOT NULL
 );`,
+  `CREATE TABLE pool_entries (
+    id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, quote TEXT NOT NULL,
+    quote_seq INTEGER, item_id TEXT, note TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX pool_thread ON pool_entries(thread_id, created_at);`,
 ];
