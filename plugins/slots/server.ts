@@ -28,6 +28,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
   let settingsWarnings: string[] = [];
   const descriptors = {
+    watchPolicy: { type: "select", label: "Load watch", options: ["off", "warn"], default: "warn" },
+    watchCores: { type: "number", label: "Watch cores", default: Math.min(3, Math.max(1, cores - 1)), experimental_schema: z.number().min(1).max(cores) },
+    watchWindowSeconds: { type: "number", label: "Watch window seconds", default: 120, experimental_schema: z.number().int().min(60).max(900) },
+    idleLeaseMinutes: { type: "number", label: "Idle lease minutes", default: 30, experimental_schema: z.number().int().min(10).max(240) },
     heavyCapacity: { type: "number", label: "Heavy jobs", description: `Default ${heavyDefault} · max ${cores} (CPU cores). Zero disables the pool.`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
     localModelCapacity: { type: "number", label: "Local model", description: `Default 1 · max 10000. Zero disables the pool.`, default: 1, experimental_schema: z.number().int().min(0).max(10000) },
     memFreeMinPct: { type: "number", label: "Memory free minimum", description: `Minimum percentage of free memory required to start work.`, default: 20, experimental_schema: z.number().min(0).max(100) },
@@ -51,13 +55,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
   const readValues = () => ({ ...defaults, ...explicit }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
+    watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
-    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && (key === "heavyCapacity" || key === "loadMax") && typeof value === "number" ? Math.min(value, cores) : value);
+    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && (key === "heavyCapacity" || key === "loadMax" || key === "watchCores") && typeof value === "number" ? Math.min(value, cores) : value);
     else if (typeof value !== "string" || !descriptor.options.includes(value)) throw new Error("Invalid grant mode");
     return value as number | string;
   }
@@ -73,8 +78,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (initialized) await transition({ type: "restored" });
   }
   function formView(): SettingsFormView {
-    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax }, defaults,
-      maxima: { heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
+    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
+      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();
@@ -87,6 +92,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   };
   function resolveSettings(values: ReturnType<typeof readValues>): Settings {
     const settings: Settings = {
+      watchPolicy: values.watchPolicy, watchCores: Math.min(values.watchCores, cores), watchWindowSeconds: values.watchWindowSeconds, idleLeaseMinutes: values.idleLeaseMinutes,
       capacities: { heavy: Math.min(values.heavyCapacity, cores), "local-model": values.localModelCapacity },
       memFreeMinPct: values.memFreeMinPct, loadMax: Math.min(values.loadMax, cores), gateSamples: values.gateSamples,
       gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
