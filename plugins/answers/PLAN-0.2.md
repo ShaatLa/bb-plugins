@@ -29,8 +29,17 @@ Builds on 0.1.0 (`PLAN.md`, shipped code in this folder). Not shipped (excluded 
    clips it to the message body node and serializes the range to **Markdown**
    (`ig(range, node, "markdown")`), then quotes that into the composer. That
    serializer is internal (not in SDK 0.6.132), so the plugin does the same with
-   `turndown` on `range.cloneContents()` of the clipped range (headings, lists, code
-   spans/blocks, bold/italic, links, blockquotes). Fallback: `selection.toString()`.
+   `turndown` (headings, lists, code spans/blocks, bold/italic, links, blockquotes)
+   on a reconstructed fragment, mirroring what bb's `ig` does:
+   - clip the range to the message body node;
+   - `range.cloneContents()`, then re-wrap it in shallow clones of every formatting
+     ancestor between `range.commonAncestorContainer` and the body (`strong`, `em`,
+     `a` with `href`, `code`, `pre`, `li`/`ol` with its `start`/`ul`, `blockquote`,
+     `h1`–`h6`), so a selection wholly inside bold/link/code keeps it and a partial
+     list keeps its list context and numbering;
+   - drop renderer chrome from the fragment (`button`, `[aria-hidden="true"]`,
+     `[data-copy]`/copy controls, `svg`).
+   Fallback when conversion throws or yields empty: the clipped range's `toString()`.
 
 ## Data model (migration 2, append-only)
 
@@ -38,10 +47,11 @@ Builds on 0.1.0 (`PLAN.md`, shipped code in this folder). Not shipped (excluded 
 CREATE TABLE pool_entries (
   id          TEXT PRIMARY KEY,           -- "pool_" + random
   thread_id   TEXT NOT NULL,
-  quote       TEXT NOT NULL,              -- ≤ 4,000 chars, plain text
+  quote       TEXT NOT NULL,              -- Markdown, ≤ 20,000 chars (an answer's cap)
   quote_seq   INTEGER,                    -- message seq the quote came from, if known
   item_id     TEXT,                       -- source Answers item, if any
   note        TEXT NOT NULL DEFAULT '',   -- user's reply to this quote, ≤ 8,000
+  revision    INTEGER NOT NULL DEFAULT 0, -- bumped by every poolUpdate
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -65,19 +75,31 @@ New tag `answers:pools`. Every pool write invalidates it (and items/counts when 
   switches to `inbox` (label "N unread answers and questions").
 - `pools()` → `{ pools: { threadId, threadTitle, projectId, entries: PoolEntry[] }[] }`,
   pools ordered by their oldest entry, entries by `created_at`.
-- `poolAdd({ threadId, quote, quoteSeq?, itemId?, note? })` → `{ id }`.
-  Rejects deleted/unknown threads (`threads.get`).
-- `poolUpdate({ id, note })`, `poolRemove({ id })`.
-- `poolSend({ threadId })` → `{ delivery, sent: number }`: builds one message from the
-  thread's entries (snapshot of ids taken before sending), `threads.send` mode `auto`,
-  then deletes exactly those entry ids. In-flight guard per thread (in memory, like
-  `reply`); a send error keeps the entries and surfaces "Delivery uncertain — check the
-  thread before retrying"; never auto-resend. Total message ≤ 32,000 chars, else reject
-  with a clear error (user splits the pool).
-- `quoteReply({ threadId, quote, text, itemId? })` → `{ delivery }` — the popup's
-  immediate **Send**; same format with one entry, same guard and error semantics.
-  If `itemId` is a `for_me` `open` item of that thread, mark it `replied` like `reply`.
-  `poolSend` does the same for entries whose `item_id` is such an item.
+- `poolAdd({ threadId, quote ≤ 20,000, quoteSeq?, itemId?, note? })` → `{ id }`.
+  Rejects deleted/unknown threads (`threads.get`). Oversized quotes are rejected with
+  a visible error, never truncated silently.
+- `poolUpdate({ id, note, revision })` → `{ revision }` (optimistic: rejects a stale
+  `revision`), `poolRemove({ id })`.
+- `poolSend({ threadId })` → `{ delivery, sent, keptEdited }`: inside the thread's send
+  guard, snapshot the entries as `(id, revision, quote, note, item_id)`, build one
+  message, `threads.send` mode `auto`; after success, in **one transaction** delete
+  `WHERE id = ? AND revision = ?` for each snapshot row and apply the `for_me`
+  status updates below. Rows edited during the send survive and are reported as
+  `keptEdited` ("N edited entries were not sent"). A send error keeps every entry and
+  surfaces "Delivery uncertain — check the thread before retrying"; never auto-resend.
+  Total message ≤ 32,000 chars, else reject before sending (user splits the pool).
+- `quoteReply({ threadId, quote ≤ 20,000, text, itemId? })` → `{ delivery }` — the
+  popup's immediate **Send**; same format with one entry, same guard and errors.
+- **One send guard for all three paths.** `reply`, `quoteReply` and `poolSend` share
+  an in-memory guard keyed by thread id (replacing 0.1.0's per-item set): a second send
+  to the same thread while one is in flight is rejected ("A reply to this thread is
+  already sending"). Source-item checks run inside the guard: a `for_me` item that is
+  already `replied` makes `reply` fail as today; `quoteReply`/`poolSend` still send
+  (they are follow-ups) but do not change it.
+- `for_me` linkage: after a successful `quoteReply`/`poolSend`, each referenced `for_me`
+  `open` item of that thread becomes `replied` with `answer_source = 'user'` and
+  `answer` = the notes of the sent entries that reference it, joined by a blank line
+  (the quote alone when every such note is empty), in the same transaction.
 
 Message format (Markdown, as bb renders it):
 
@@ -107,18 +129,29 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     1-line preview), keyboard navigable (`role="listbox"`/`option`, arrows + Enter).
     Selecting a row calls `markThreadRead`; selection kept in component state.
     Empty state: "No unread answers".
-  - Right: the selected recipient's items (`list({ view: 'all', threadId })`), shown
-    oldest→newest like a chat (question bubble as the user, answer/interim via
+  - Right: an Inbox history component for the selected recipient. It loads the newest
+    page (`list({ view: 'all', threadId, limit: 50 })`, newest-first from the server),
+    renders it reversed (oldest→newest, like a chat) scrolled to the bottom; a
+    "Load earlier" control at the top fetches `nextCursor` and **prepends** that page
+    (reversed), keeping the viewport anchored by adjusting `scrollTop` by the added
+    height. Live updates (tag invalidation) refetch the newest page only and merge by
+    id. Bubbles (question bubble as the user, answer/interim via
     `Markdown` as the agent; `for_me` question as the agent with a "Question for you"
     label). Card actions stay (Open in chat, Pin, Done, Reply).
   - Selection popup, modelled on bb's chat selection menu (floating, anchored to the
-    selection rect, `sideOffset` 6, collision padding, Esc closes, does not steal
-    focus on open): on `mouseup`/`keyup` inside an agent message body, if
-    `getSelection()` is one non-collapsed range, clip it to that message's body node
-    (like bb), convert it to Markdown, and show the popover under the selection with
-    textarea
-    (Cmd+Enter = Send), **Send** (`quoteReply`), **Add to pool** (`poolAdd` with
-    `quoteSeq = answerSeq`, `itemId`), Esc/blur closes. Pending state disables buttons.
+    selection rect, `sideOffset` 6, collision padding, does not steal focus on open):
+    on `mouseup`/`keyup` inside a message body (answer, interim or `for_me` question),
+    if `getSelection()` is one non-collapsed range, clip it to that body (like bb),
+    convert it to Markdown and **snapshot** `{ threadId, itemId, quote, quoteSeq, rect }`
+    — `quoteSeq` is the seq of the selected body (`answerSeq`, `interimSeq` or
+    `questionSeq`). From then on the popup owns the draft and no longer depends on the
+    live selection or DOM: it survives focus moving into its textarea, query refreshes
+    and recipient switches. It closes only on Esc, its Close button, a successful
+    action, or focus/pointer leaving the whole popup (`focusout` whose `relatedTarget`
+    is outside it — clicking its own buttons does not close it). Contents: the quote
+    preview, textarea (Cmd+Enter = Send), **Send** (`quoteReply`), **Add to pool**
+    (`poolAdd`). Pending state disables the buttons; on failure the text is kept and
+    the error shown in the popup. Quotes over 20,000 chars show an error instead.
 - Keep the 0.1.0 side-panel restore hook.
 
 ### Right side panel tab "Reply pools"
@@ -127,9 +160,14 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
 availability: 'fixed', id: 'pools', title: 'Reply pools', icon: 'Sent' })`.
 
 - Stacked pools (thread title header with link to the thread, entry count), each entry:
-  quote (blockquote style, clamped, expandable), editable note (textarea, saved on blur
-  via `poolUpdate`), remove button. Footer per pool: **Send all** (`poolSend`, pending
-  state, result "Sent"/"Queued" or the uncertain-delivery error).
+  quote (rendered with `Markdown` as a blockquote, clamped, expandable), editable note
+  (textarea with local draft state, saved by `poolUpdate` on blur and after 800 ms of
+  idle typing, carrying the last known `revision`; shows "Saving…/Saved/Not saved"),
+  remove button. Footer per pool: **Send all**: first flush and **await** every dirty
+  note of that pool; if any save fails, abort the send and keep the drafts; only then
+  `poolSend` (pending state; result "Sent"/"Queued", the `keptEdited` notice, or the
+  uncertain-delivery error). A stale-`revision` rejection reloads the entry and keeps
+  the local draft for the user to re-apply.
 - Empty state: "Select text in an answer and choose Add to pool."
 - When the popup's Add to pool succeeds, the page opens this tab
   (`experimental_useAppPanel().openTab({ tab: { id: 'pools', context: { kind: 'nav-panel',
@@ -146,12 +184,20 @@ availability: 'fixed', id: 'pools', title: 'Reply pools', icon: 'Sent' })`.
 
 ## Tests
 
-- server: migration 2; `recipients` grouping, ordering, `selected` kept with 0 unread,
+- server: migration 2; revision bump and stale-revision rejection; `poolSend` keeps
+  rows edited mid-send (`keptEdited`) and commits deletes + `for_me` updates together;
+  the shared thread guard across `reply`/`quoteReply`/`poolSend`; `for_me` answer from
+  several entries; `recipients` grouping, ordering, `selected` kept with 0 unread,
   `for_me` read semantics; `markThreadRead`; pool CRUD + ordering; message builder
   (multi-line quotes, empty notes, length cap); `poolSend` deletes only the snapshot
   ids, keeps entries on send failure, rejects concurrent sends; `quoteReply` and
   `for_me` → `replied`; deletion removes pools; invalidation of the pools tag.
-- app: Inbox renders recipients, selecting marks read and keeps the row until another
+- app: selection→Markdown on real jsdom DOM ranges (selection fully inside bold, link,
+  inline code; partial ordered list keeps numbering; chrome dropped; fallback);
+  popup draft survives textarea focus, own-button clicks and refreshes, closes on Esc
+  and outside focus; Send all awaits a delayed note save and aborts on a failed one;
+  Inbox history prepends older pages in order;
+  Inbox renders recipients, selecting marks read and keeps the row until another
   is selected; selection popup Send / Add to pool (mock `getSelection`); pools tab
   renders stacked pools, edits note, Send all pending state; message action calls
   `poolAdd`.
