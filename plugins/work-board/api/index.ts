@@ -1,3 +1,4 @@
+import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
@@ -82,6 +83,7 @@ export interface TasksApiStore {
 export function createStore(bb: BbPluginApi): TasksApiStore {
   const database = bb.storage.database();
   const tasks = createTasksStore(database);
+  observeStatusNotifications(bb, tasks);
 
   return {
     tasks,

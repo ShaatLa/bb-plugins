@@ -469,7 +469,7 @@ function GeneralSettings() {
             onValueChange={(defaultScreen) => {
               setBusy(true);
               setError(null);
-              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ defaultScreen }))
+              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ ...preferences.data, defaultScreen }))
                 .then(() => preferences.refresh())
                 .catch((error) => setError(errorMessage(error)))
                 .finally(() => setBusy(false));
@@ -488,6 +488,27 @@ function GeneralSettings() {
           {error ?? preferences.error}
           <Button size="sm" variant="ghost" onClick={preferences.refresh}>Retry</Button>
         </div> : null}
+        <label className="flex flex-wrap items-center justify-between gap-2">
+          Task status notifications
+          <Select value={preferences.data?.statusNotifications ?? "off"}
+            disabled={busy || !preferences.data}
+            onValueChange={(statusNotifications) => {
+              setBusy(true);
+              setError(null);
+              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ ...preferences.data, statusNotifications }))
+                .then(() => preferences.refresh())
+                .catch((error) => setError(errorMessage(error)))
+                .finally(() => setBusy(false));
+            }}>
+            <SelectTrigger aria-label="Task status notifications" className="h-8 w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="all">All status changes</SelectItem>
+              <SelectItem value="done">Done only</SelectItem>
+            </SelectContent>
+          </Select>
+        </label>
+        <p className="text-xs text-muted-foreground">Uses the enabled channels in BB Push notifications. Repeated saves without a status change do not notify.</p>
         <NavigationBadgeSettings />
       </div>
     </details>

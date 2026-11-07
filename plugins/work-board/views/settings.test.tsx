@@ -463,3 +463,21 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
     await harness.dispose();
   }
 });
+
+it("persists status notification mode and preserves it when changing the default screen", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    registerTasksApi(bb, createStore(bb));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    fireEvent.click(settings.getByText("General"));
+    const mode = () => settings.getByRole("combobox", { name: "Task status notifications" });
+    await waitFor(() => expect(mode().getAttribute("disabled")).toBeNull());
+    fireEvent.click(mode());
+    fireEvent.click(await settings.findByRole("option", { name: "Done only" }));
+    await waitFor(() => expect(mode().textContent).toContain("Done only"));
+    expect(await harness.callRpc("getBoardPreferences", null)).toMatchObject({ statusNotifications: "done" });
+    fireEvent.click(settings.getByRole("combobox", { name: "Open by default" }));
+    fireEvent.click(await settings.findByRole("option", { name: "All tasks" }));
+    await waitFor(async () => expect(await harness.callRpc("getBoardPreferences", null)).toMatchObject({ defaultScreen: "all", statusNotifications: "done" }));
+  } finally { cleanup(); await harness.dispose(); }
+});
