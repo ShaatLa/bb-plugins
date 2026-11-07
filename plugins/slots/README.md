@@ -5,6 +5,20 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
+## Sidebar (0.2.0)
+
+The read-only sidebar follows CI Dashboard's cards and disclosures: machine readiness,
+threshold meters, pool usage, lease progress and expiry warnings, queue wait reasons,
+and collapsed human-readable recent activity. Thread titles open their BB threads;
+raw host IDs stay out of the page. Status refreshes on `slots.changed`, with a
+10-second visible-page poll as fallback, a manual refresh button and last-good data
+on errors. `StatusView.localHostName` is an optional display name resolved through
+`bb.sdk.hosts.get`; unavailable names fall back to “This machine”. Request activity
+shows estimates while the matching request or lease remains in the snapshot.
+
+Version 0.2.0 also adds a configurable observer event filter, one-shot queue-wait
+and gate-hold alerts, and `bb slots observer` for manager session handover.
+
 ## Commands
 
 Plain output summarizes gate readings, requests, pools and audit events in short
@@ -131,4 +145,4 @@ npm run build
 
 Server tests use the SDK fake host, a fake clock and metrics, and temporary
 storage. No plugin installation, live three-thread demo or deployment is part
-of this phase. The sidebar is developed separately.
+of this phase. The sidebar is covered by SDK frontend harness tests.

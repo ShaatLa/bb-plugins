@@ -195,7 +195,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       }
       return [id, await entry.value] as const;
     }));
-    return { ok: true, data: { ...snapshot, titles: Object.fromEntries(resolved) } };
+    const localHostName = await bb.sdk.hosts.get({ hostId: localHostId }).then(host => host.name).catch(() => null);
+    return { ok: true, data: { ...snapshot, localHostName, titles: Object.fromEntries(resolved) } };
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);

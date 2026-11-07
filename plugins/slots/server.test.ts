@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeHostResponse, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ async function setup(dir?: string) {
   const threads = new Map(["a", "b", "child"].map(id => [id, makeThreadResponse({ id, title: `Title ${id}`, environmentId: "env", ...(id === "child" ? { parentThreadId: "a" } : {}) })]));
   const send = vi.fn(async () => ({ threadId: "a" }));
   const host = createFakePluginHost({ pluginId: "slots", agentSkillIds: ["slots"], sdk: {
+    hosts: { get: async () => ({ ...makeHostResponse({ id: "local", name: "Work laptop" }), connectMachineId: null, threadStorageRootPath: null }) },
     system: { config: async () => ({ primaryHostId: "local" }) },
     environments: { get: async () => ({ hostId: "local" }) },
     threads: { get: async ({ threadId }: { threadId: string }) => {
@@ -255,4 +256,11 @@ it("startup clears a dead configured observer", async () => {
   await h.harness.behavior.setSettings({ observerThreadId: "missing" });
   expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
   expect((await h.view()).audit).toContainEqual(expect.objectContaining({ type: "observer", reason: expect.stringContaining("missing → none") }));
+});
+
+it("returns the SDK machine display name and tolerates a failed name lookup", async () => {
+  const h = await setup();
+  expect((await h.view()).localHostName).toBe("Work laptop");
+  h.harness.sdk.stub("hosts.get", async () => { throw new Error("offline"); });
+  expect((await h.view()).localHostName).toBeNull();
 });

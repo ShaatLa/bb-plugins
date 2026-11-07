@@ -325,11 +325,11 @@ it("gate-hold alerts only while queued, persists per hold, re-arms on any pass a
 
 it("rounds observer durations and gate readings for human messages", () => {
   const h = harness({ observerThreadId: "manager", grantMode: "manual" });
-  h.send({ type: "request", hostId: "h", threadId: "a", pool: "heavy", job: "long tests", estMs: 65.1 * minute });
+  h.send({ type: "request", hostId: "h", threadId: "a", pool: "heavy", job: "long tests", estMs: (65 * minute + 6000) });
   h.sample(9.4, 40.1234); h.now = 20 * minute + 2000;
   const first = h.send({ type: "tick" });
   expect(observerCopies(first, "queue-wait")[0]).toMatchObject({ text: expect.stringContaining("estimate 1h 5m, waiting 20m") });
   expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 20m: memory free 9% (min 20%), load 40.1 (max 18.0), sampled 00:00Z") });
-  h.sample(50, 1); h.sample(9.4, 40.1234); h.now += 65.1 * minute;
+  h.sample(50, 1); h.sample(9.4, 40.1234); h.now += (65 * minute + 6000);
   expect(observerCopies(h.send({ type: "tick" }), "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 1h 5m") });
 });
