@@ -138,8 +138,20 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     id. Bubbles (question bubble as the user, answer/interim via
     `Markdown` as the agent; `for_me` question as the agent with a "Question for you"
     label). Card actions stay (Open in chat, Pin, Done, Reply).
-  - Selection popup, modelled on bb's chat selection menu (floating, anchored to the
-    selection rect, `sideOffset` 6, collision padding, does not steal focus on open):
+  - Selection popup. Unlike bb's menu (which floats above the selection), it opens
+    **directly under the selected text**:
+    - anchor = the **last line box** of the clipped range (`range.getClientRects()`,
+      last non-empty rect; fallback `getBoundingClientRect()`), so a multi-line
+      selection gets the popup under its final line, not under a whole-block rect;
+    - position is computed in the Inbox history scroll container's content coordinates
+      (`top = rect.bottom − container.top + container.scrollTop + 6`,
+      `left = rect.left − container.left`, clamped to `[8, containerWidth − popupWidth − 8]`)
+      and the popup is `position: absolute` inside that container, so it scrolls
+      together with the text and needs no scroll listeners;
+    - if the popup would extend past the container's bottom and there is room above,
+      it may flip above the selection's first line box; recomputed on container resize
+      (`ResizeObserver`) from the snapshot offsets;
+    - does not steal focus on open (the user clicks into the textarea);
     on `mouseup`/`keyup` inside a message body (answer, interim or `for_me` question),
     if `getSelection()` is one non-collapsed range, clip it to that body (like bb),
     convert it to Markdown and **snapshot** `{ threadId, itemId, quote, quoteSeq, rect }`
@@ -192,7 +204,9 @@ availability: 'fixed', id: 'pools', title: 'Reply pools', icon: 'Sent' })`.
   (multi-line quotes, empty notes, length cap); `poolSend` deletes only the snapshot
   ids, keeps entries on send failure, rejects concurrent sends; `quoteReply` and
   `for_me` → `replied`; deletion removes pools; invalidation of the pools tag.
-- app: selection→Markdown on real jsdom DOM ranges (selection fully inside bold, link,
+- app: popup position under the last line box of a multi-line selection, clamped
+  horizontally, inside the scroll container (mock `getClientRects`);
+  selection→Markdown on real jsdom DOM ranges (selection fully inside bold, link,
   inline code; partial ordered list keeps numbering; chrome dropped; fallback);
   popup draft survives textarea focus, own-button clicks and refreshes, closes on Esc
   and outside focus; Send all awaits a delayed note save and aborts on a failed one;
