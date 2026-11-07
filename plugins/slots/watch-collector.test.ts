@@ -27,6 +27,21 @@ describe("collector", () => {
     await collector.sample(signal());
     expect(args).toEqual(["-U", "1234", "-o", "pid=,lstart=,time="]);
   });
+  it.each(["darwin", "linux"] as const)("resolves every uncached pid at 0.25 core on %s", async platform => {
+    let clock = at + 1000, running = false;
+    const batches: string[] = [];
+    const collector = createCollector({ platform, now: () => clock, exec: async (file, args) => {
+      if (file === "ps") return { stdout: row(1, running ? "00:00.20" : "00:00") + row(2, running ? "00:00.05" : "00:00") };
+      batches.push(args.at(-1)!); return { stdout: "p1\nn/one\np2\nn/two\n" };
+    }, readlink: async path => { batches.push(path); return path; } });
+    await collector.sample(signal()); clock += 1000; running = true;
+    const result = await collector.sample(signal());
+    expect(result.valid).toBe(true);
+    expect(result.perPid).toHaveLength(2);
+    expect(result.unknownCores).toBe(0);
+    expect(batches).toEqual(platform === "darwin" ? ["1,2"] : ["/proc/1/cwd", "/proc/2/cwd"]);
+    expect(result.stats.lsofCalls).toBe(platform === "darwin" ? 1 : 0);
+  });
   it("caches busy identities, refreshes stale cwd, and reports changes", async () => {
     let clock = at + 1000, cpu = 0, cwd = "/old", calls = 0;
     const collector = createCollector({ platform: "darwin", now: () => clock, exec: async (file) => {
@@ -50,13 +65,13 @@ describe("collector", () => {
       if (file === "ps") return { stdout: row(1, cpu) };
       lsof++; if (fail) throw new Error("permission"); return { stdout: "" };
     } });
-    await collector.sample(signal()); clock += 1000; cpu = "00:00.40";
-    expect(await collector.sample(signal())).toMatchObject({ valid: true, unknownCores: 0.4, stats: { lsofCalls: 0 } });
-    clock += 1000; cpu = "00:01.40";
+    await collector.sample(signal()); clock += 1000; cpu = "00:00.20";
+    expect(await collector.sample(signal())).toMatchObject({ valid: true, unknownCores: 0.2, stats: { lsofCalls: 0 } });
+    clock += 1000; cpu = "00:01.20";
     const missing = await collector.sample(signal());
     expect(missing.valid).toBe(false);
     expect(missing.unknownCores).toBeCloseTo(1);
-    fail = true; clock += 1000; cpu = "00:02.40";
+    fail = true; clock += 1000; cpu = "00:02.20";
     expect((await collector.sample(signal())).valid).toBe(false);
     expect(lsof).toBe(2);
   });

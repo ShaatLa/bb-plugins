@@ -72,9 +72,8 @@ export function createCollector(options: CollectorOptions = {}) {
       const capped = busy.slice(0, 500);
       unknownCores = busy.slice(500).reduce((sum, p) => sum + p.cores, 0);
       const unresolved = capped.filter(p => { const entry = cache.get(identity(p)); return !entry || endAt - entry.at >= 300000; });
-      let remainder = unresolved.reduce((sum, p) => sum + p.cores, 0);
-      const selected: typeof unresolved = [];
-      for (const p of unresolved) { if (remainder < 0.5 - 1e-9) break; selected.push(p); remainder -= p.cores; }
+      const unresolvedCores = unresolved.reduce((sum, p) => sum + p.cores, 0);
+      const selected = unresolvedCores >= 0.25 - 1e-9 ? unresolved : [];
       const resolved = new Map<number, string>();
       if (selected.length) {
         const lookupStart = now();
