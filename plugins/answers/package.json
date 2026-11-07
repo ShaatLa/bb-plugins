@@ -54,6 +54,8 @@
     "dist",
     "app.tsx",
     "components",
-    "lib"
+    "lib",
+    "skills",
+    "README.md"
   ]
 }

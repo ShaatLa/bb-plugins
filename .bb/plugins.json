@@ -26,6 +26,10 @@
     {
       "name": "slots",
       "source": "./plugins/slots"
+    },
+    {
+      "name": "answers",
+      "source": "./plugins/answers"
     }
   ]
 }

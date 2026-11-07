@@ -9,6 +9,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
+| **Answers** | User questions and their answers, non-blocking questions for the user, and saved messages. | `answers` | [README](plugins/answers/README.md) |
 
 The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
@@ -35,6 +36,7 @@ Install the plugins you need:
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
 ```
 
 For **Work Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
