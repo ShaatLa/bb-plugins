@@ -34,6 +34,10 @@ export function validateSettings(settings: Settings): string | null {
 }
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const priority = (value: unknown): value is Priority => value === "urgent" || value === "high" || value === "normal";
+const minutes = (ms: number): string => {
+  const total = Math.round(ms / 60_000);
+  return total < 60 ? `${total}m` : `${Math.floor(total / 60)}h${total % 60 ? ` ${total % 60}m` : ""}`;
+};
 const rank = { urgent: 0, high: 1, normal: 2 };
 const sorted = (state: State) => state.requests.map((request, index) => ({ request, index }))
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
@@ -307,7 +311,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (!gateOpen(host(request.hostId).gate, settings)) reasons.push("gate not open");
         if (settings.grantMode === "manual") reasons.push("manual grant mode");
         const position = sorted(state).filter(r => r.hostId === request.hostId && r.pool === request.pool).findIndex(r => r.id === request.id) + 1;
-        const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${request.estMs / 60000}m, waiting ${(ctx.now - request.createdAt) / 60000}m, position ${position}: ${reasons.join(" / ")}.`;
+        const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;
         audit("queue-wait", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id, reason: message });
         observer(request.hostId, "queue-wait", message);
       }
@@ -317,7 +321,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
             ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId)) continue;
         gate.holdAlerted = true;
         const { memFreePct, load1, at } = gate.latest;
-        const message = `Gate on ${hostId} failing for ${(ctx.now - gate.failingSince) / 60000}m: memory free ${memFreePct}% (min ${settings.memFreeMinPct}%), load ${load1} (max ${settings.loadMax}), sampled ${new Date(at).toISOString()}.`;
+        const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;
         audit("gate-hold", { hostId, readings: { memFreePct, load1, at }, reason: message });
         observer(hostId, "gate-hold", message);
       }
