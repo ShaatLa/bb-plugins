@@ -5,7 +5,10 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.2.0)
+## Sidebar (0.2.1)
+
+Version 0.2.1 corrects singular/plural slot and check counts, labels zero-capacity
+pools as unconfigured, and uses the CI Dashboard refresh SVG with a busy indicator.
 
 The read-only sidebar follows CI Dashboard's cards and disclosures: machine readiness,
 threshold meters, pool usage, lease progress and expiry warnings, queue wait reasons,

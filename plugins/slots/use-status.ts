@@ -11,6 +11,7 @@ export function useStatus() {
   const rpc = useRpc<StatusContract>();
   const [snapshot, setSnapshot] = useState<{ view: StatusView; receivedAt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now);
 
   const refreshRef = useRef<() => void>(() => {});
@@ -24,6 +25,7 @@ export function useStatus() {
       if (document.visibilityState === "hidden") return;
       if (pending) { changed ||= fromEvent; return; }
       pending = true;
+      setBusy(true);
       try {
         const result = await rpc.call("status", {});
         if (disposed) return;
@@ -36,6 +38,7 @@ export function useStatus() {
         if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to load Slots status.");
       } finally {
         pending = false;
+        if (!disposed) setBusy(false);
         if (changed && !disposed) { changed = false; void refresh(); }
       }
     }
@@ -56,6 +59,6 @@ export function useStatus() {
     };
   }, [rpc]);
 
-  return { view: snapshot?.view ?? null, error, refresh: () => refreshRef.current(),
+  return { view: snapshot?.view ?? null, error, busy, refresh: () => refreshRef.current(),
     now: snapshot ? snapshot.view.at + Math.max(0, clock - snapshot.receivedAt) : clock };
 }

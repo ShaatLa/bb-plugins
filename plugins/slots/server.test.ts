@@ -186,7 +186,7 @@ it("renders short human CLI output while preserving JSON envelopes", async () =>
   expect(gate.stdout).toBe("PASS memory free 75.0% (min 20%) · load 1.0 (max 18) · streak 1/2 · sampled 12:00:00.000Z");
   await h.grant();
   const status = await h.harness.behavior.runCli(["status"]);
-  expect(status.stdout).toContain("heavy · 1/4 held · 0 queued"); expect(status.stdout).toContain("Title a");
+  expect(status.stdout).toContain("heavy · 1/4 slots held · 0 queued"); expect(status.stdout).toContain("Title a");
   const log = await h.harness.behavior.runCli(["log", "--limit", "1"]);
   expect(log.stdout).toContain("2026-11-07T12:00:15.000Z · grant");
   const json = await h.harness.behavior.runCli(["status", "--json"]);
@@ -263,4 +263,11 @@ it("returns the SDK machine display name and tolerates a failed name lookup", as
   expect((await h.view()).localHostName).toBe("Work laptop");
   h.harness.sdk.stub("hosts.get", async () => { throw new Error("offline"); });
   expect((await h.view()).localHostName).toBeNull();
+});
+
+it.each([0, 1, 4])("pluralizes CLI capacity and pool status for %s slots", capacity => {
+  const noun = capacity === 1 ? "slot" : "slots";
+  expect(renderResult("setCapacity", { ok: true, data: { capacity } }, false).stdout).toBe(`Capacity ${capacity} ${noun}`);
+  expect(renderResult("status", { ok: true, data: { pools: [{ pool: "heavy", capacity, leases: [], queue: [] }], titles: {} } }, false).stdout)
+    .toBe(`heavy · 0/${capacity} ${noun} held · 0 queued`);
 });

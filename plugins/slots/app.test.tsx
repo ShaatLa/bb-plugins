@@ -106,7 +106,7 @@ test("human activity is collapsed by default, newest first and capped at 15", as
   expect(details.open).toBe(true);
   const rows = within(details).getAllByRole("listitem");
   expect(rows).toHaveLength(15);
-  expect(rows[0].textContent).toBe("Capacity set to 191s ago");
+  expect(rows[0].textContent).toBe("Capacity set to 19 slots1s ago");
   expect(rows[14].textContent).toContain("Capacity set to 5");
   expect(slot.container.innerHTML).not.toContain("laptop");
 });
@@ -119,7 +119,7 @@ test("formats event sentences and compact durations", async () => {
     ["grant", undefined, "QA checks got a heavy slot"],
     ["request", undefined, "QA checks asked for a heavy slot (3m)"],
     ["release", "archived", "Lease released — thread archived"],
-    ["capacity", "1", "Capacity set to 1"],
+    ["capacity", "1", "Capacity set to 1 slot"],
     ["warn", undefined, "Expiry warning sent"],
     ["port", undefined, "Port 41000 leased"],
     ["transfer", "from holder-id", "Slot transferred to QA checks"],
@@ -153,7 +153,7 @@ test("renders empty pools, queues, activity and missing machine reading", async 
   const slot = render(() => ({ ok: true, data: { ...fixture, gates: {}, pools: fixture.pools.map(pool => ({ ...pool, leases: [], queue: [] })), ports: [], audit: [] } }));
   expect(await slot.findByText("Checking… (waiting for the first reading)")).toBeTruthy();
   expect(slot.getByText("All 4 slots free")).toBeTruthy();
-  expect(slot.getByText("All 1 slots free")).toBeTruthy();
+  expect(slot.getByText("Slot free")).toBeTruthy();
   expect(slot.getAllByText("Nothing waiting")).toHaveLength(2);
   fireEvent.click(slot.getByText("Recent activity · 0"));
   expect(slot.getByText("No recent activity.")).toBeTruthy();
@@ -202,4 +202,59 @@ test("realtime received during a request fetches a fresh snapshot when it comple
   await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
   await act(async () => { resolve({ ok: true, data: fixture }); });
   expect(status).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  [1, "Slot free", "0 of 1 slot in use"],
+  [4, "All 4 slots free", "0 of 4 slots in use"],
+  [0, "No slots configured", "0 of 0 slots in use"],
+])("uses correct empty-pool and accessible wording for capacity %s", async (capacity, text, label) => {
+  const pool = { ...fixture.pools[1], capacity };
+  const slot = render(() => ({ ok: true, data: { ...fixture, pools: [pool] } }));
+  const card = (await slot.findByRole("img", { name: label })).closest<HTMLElement>('[role="region"]')!;
+  expect(within(card).getByText(text)).toBeTruthy();
+  expect(within(card).getByRole("img", { name: label })).toBeTruthy();
+  expect(within(card).getByText("Nothing waiting")).toBeTruthy();
+  if (capacity === 0) expect(within(slot.getAllByRole("region", { name: "Local model" })[0]).queryByText("Free")).toBeNull();
+});
+
+test.each([1, 2])("uses correct check wording for %s required checks", async gateSamples => {
+  const slot = render(() => ({ ok: true, data: { ...fixture,
+    hostSettings: { laptop: { ...DEFAULT_SETTINGS, gateSamples } },
+    gates: { laptop: { ...fixture.gates.laptop, streak: 0 } },
+  } }));
+  expect(await slot.findByText(`Checking… (0 of ${gateSamples} ${gateSamples === 1 ? "check" : "checks"})`)).toBeTruthy();
+});
+
+test.each([0, 1, 4])("pluralizes capacity activity for %s slots", async capacity => {
+  const { eventSentence } = await import("./app");
+  expect(eventSentence({ seq: 1, at, type: "capacity", reason: String(capacity) }, fixture))
+    .toBe(`Capacity set to ${capacity} ${capacity === 1 ? "slot" : "slots"}`);
+});
+
+test("refresh uses the CI SVG and stays busy until success or failure", async () => {
+  const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
+  const slot = render(status);
+  await slot.findByText("Run geometry suite");
+  const button = slot.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
+  const icon = button.querySelector("svg[data-refresh-icon]")!;
+  expect(icon.querySelectorAll("path")).toHaveLength(2);
+  expect(icon.querySelector("path")!.getAttribute("d")).toBe("M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.8L21 8");
+  for (const fails of [false, true]) {
+    let finish!: () => void;
+    status.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => fails ? reject(new Error("Offline")) : resolve({ ok: true, data: fixture });
+    }));
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(icon.classList.contains("animate-spin")).toBe(true);
+    expect(icon.classList.contains("motion-reduce:animate-none")).toBe(true);
+    fireEvent.click(button);
+    await act(async () => { finish(); });
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    expect(icon.classList.contains("animate-spin")).toBe(false);
+  }
+  expect(status).toHaveBeenCalledTimes(3);
 });

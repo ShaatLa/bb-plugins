@@ -2,6 +2,7 @@ import { cliCommand, defineCli, type BbPluginApi, type PluginCliContext, type Pl
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
 import type { Result, ObserverView, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
+import { plural } from "./lib/plural.js";
 import { parseSince } from "./runtime.js";
 
 const line = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
@@ -26,7 +27,7 @@ function humanOutput(method: string, data: unknown): string {
     case "status": {
       const view = data as StatusView;
       return view.pools.flatMap(p => [
-        `${p.pool} · ${p.leases.length}/${p.capacity} held · ${p.queue.length} queued`,
+        `${p.pool} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
         ...p.queue.map(r => `  queued ${r.id} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
       ]).join("\n");
@@ -45,7 +46,7 @@ function humanOutput(method: string, data: unknown): string {
     case "transfer": case "grant": return leaseLine(data as Lease);
     case "port": return `Port ${(data as { port: number }).port}`;
     case "prioritize": return `${(data as SlotRequest).id} priority ${(data as SlotRequest).priority}`;
-    case "setCapacity": return `Capacity ${(data as { capacity: number }).capacity}`;
+    case "setCapacity": return `Capacity ${plural((data as { capacity: number }).capacity, "slot")}`;
     default: return "Done.";
   }
 }

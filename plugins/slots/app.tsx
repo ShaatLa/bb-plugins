@@ -1,9 +1,10 @@
-import { definePluginApp, experimental_Icon as Icon, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
+import { plural } from "./lib/plural";
 import { cn } from "./lib/utils";
 import type { AuditEvent, StatusView } from "./contract";
 import { useStatus } from "./use-status";
@@ -56,7 +57,7 @@ function machineState(view: StatusView) {
   if (latest.memFreePct < settings.memFreeMinPct) return `Low memory — ${Math.round(latest.memFreePct)}% free, needs ${settings.memFreeMinPct}%`;
   if (latest.load1 >= settings.loadMax) return `Busy — load ${latest.load1.toFixed(1)} is ${latest.load1 === settings.loadMax ? "at" : "above"} ${settings.loadMax}`;
   if (gateOpen(view, view.localHostId)) return "Ready for heavy work";
-  return `Checking… (${gate.streak} of ${settings.gateSamples} checks)`;
+  return `Checking… (${gate.streak} of ${plural(settings.gateSamples, "check")})`;
 }
 
 export function eventSentence(event: AuditEvent, view: StatusView) {
@@ -72,7 +73,7 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
     case "revoke": return "Lease revoked";
     case "transfer": return event.reason === "returned-to-owner" ? `${title} got their slot back` : `Slot transferred to ${title}`;
     case "prioritize": return `Priority updated for ${title}`;
-    case "capacity": return `Capacity set to ${event.reason && /^\d+$/.test(event.reason) ? event.reason : "a new limit"}`;
+    case "capacity": return `Capacity set to ${event.reason && /^\d+$/.test(event.reason) ? plural(Number(event.reason), "slot") : "a new limit"}`;
     case "port": return `Port ${event.port ?? ""} leased`;
     case "port-release": return `Port ${event.port ?? ""} released`;
     case "gate": return "Machine checked";
@@ -95,13 +96,13 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
         {settings && <>limit {settings.loadMax}</>}
         {latest && settings && <Meter label="Load (1 min)" value={latest.load1} threshold={settings.loadMax} max={Math.max(settings.loadMax * 1.25, latest.load1)} lowerIsBetter />}
       </Tile>
-      <Tile label="Heavy slots" value={heavy ? `${heavy.leases.length} of ${heavy.capacity} in use` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
-      <Tile label="Local model" value={local ? local.leases.length ? "In use" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
+      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : `${heavy.leases.length} of ${heavy.capacity} in use` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
+      <Tile label="Local model" value={local ? local.leases.length ? "In use" : local.capacity === 0 ? "No slots configured" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
     </div>
     <div className="grid gap-3 lg:grid-cols-2">{view.pools.map(pool => <Card role="region" aria-label={poolName(pool.pool)} key={`${pool.hostId}/${pool.pool}`} className="min-w-0 space-y-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolName(pool.pool)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
-      <div role="img" aria-label={`${pool.leases.length} of ${pool.capacity} slots in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
-      {pool.leases.length === 0 ? <p className={empty}>All {pool.capacity} slots free</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
+      <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
+      {pool.leases.length === 0 ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
         const elapsed = Math.max(0, now - lease.grantedAt);
         const ports = view.ports.filter(port => port.hostId === lease.hostId && port.threadId === lease.holderThreadId);
         return <li key={lease.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
@@ -135,12 +136,17 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
 }
 
 function SlotsPage() {
-  const { view, error, now, refresh } = useStatus();
+  const { view, error, now, refresh, busy } = useStatus();
   return <div className="h-full min-h-0 flex-1 overflow-y-auto">
     <div className="mx-auto w-full max-w-6xl space-y-3 p-4 md:p-6">
       <header className="flex items-center justify-between gap-3 py-2">
         <div><h1 className="text-base font-semibold">Machine Slots</h1><p className={empty}>{view?.localHostName && view.localHostName !== view.localHostId ? view.localHostName : "This machine"}</p></div>
-        <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{view ? `Updated ${duration(now - view.at)} ago` : "Waiting for status"}</span><Button variant="ghost" size="icon" aria-label="Refresh" onClick={refresh}><Icon name="RefreshCw" className="size-4" aria-hidden /></Button></div>
+        <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{view ? `Updated ${duration(now - view.at)} ago` : "Waiting for status"}</span><Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={refresh}>
+          <svg data-refresh-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`}>
+            <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.8L21 8" />
+            <path d="M21 3v5h-5" />
+          </svg>
+        </Button></div>
       </header>
       {error && <div role="alert" className="text-sm text-destructive">Unable to refresh status.{view && " Showing the last successful status."}<span className="block text-xs">Retrying automatically every 10 seconds while visible.</span></div>}
       {!view && !error && <LoadingSkeleton label="Loading Slots status…"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{[0, 1, 2, 3, 4].map(key => <Card key={key} className="space-y-3 p-4"><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-24" /><Skeleton className="h-3 w-3/4" /></Card>)}</div></LoadingSkeleton>}
