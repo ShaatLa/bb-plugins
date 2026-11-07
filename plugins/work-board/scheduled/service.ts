@@ -392,7 +392,13 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
     // Dispatch uses its own limiter; don't nest the same semaphore around it.
     return reservation.run.id;
    }))).then(async(ids)=>{await Promise.all(ids.filter((id):id is string=>typeof id==="string").map(dispatch));});
-   const day=now.toISOString().slice(0,10);if(day!==cleanupDay){data.cleanup(now);cleanupDay=day;}
+   const day=now.toISOString().slice(0,10);if(day!==cleanupDay){
+    data.cleanup(now);
+    // Recovery cursors outlive scans, but must not outlive the unresolved runs they protect.
+    const retained=new Set(db.prepare<[],{thread_id:string}>("SELECT DISTINCT thread_id FROM task_schedule_runs WHERE thread_id IS NOT NULL AND state IN ('starting','queued','delivery_unknown','cancel_pending','failed') AND resolved_at IS NULL AND json_extract(payload,'$.startedAt') IS NULL AND COALESCE(json_extract(payload,'$.historical'),0)=0").all().map(row=>row.thread_id));
+    for(const prefix of [recoveryPrefix,checkpointPrefix])for(const key of await bb.storage.kv.list(prefix))if(!retained.has(key.slice(prefix.length)))await bb.storage.kv.delete(key);
+    cleanupDay=day;
+   }
   })().finally(()=>{tickFlight=null;});
   return tickFlight;
  }

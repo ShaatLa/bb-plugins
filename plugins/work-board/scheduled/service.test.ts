@@ -392,4 +392,13 @@ describe('Scheduled execution',()=>{
   }finally{await f.harness.dispose();}
  });
 
+ it('cleans orphaned durable recovery checkpoints during daily maintenance',async()=>{
+  const f=fixture();try{
+   await f.bb.storage.kv.set('scheduled-acceptance-checkpoint:thr_expired',{boundary:0,history:{after:100,targets:[]},complete:true});
+   await f.service.runDue();
+   expect(await f.bb.storage.kv.list('scheduled-acceptance-checkpoint:')).toEqual([]);
+   expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(0);
+  }finally{await f.harness.dispose();}
+ });
+
 });
