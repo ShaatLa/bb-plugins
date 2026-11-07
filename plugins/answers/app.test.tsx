@@ -19,6 +19,15 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 }
 
 describe('Answers app', () => {
+  it('reopens the page side panel tab the user left open', async () => {
+    localStorage.setItem('bb-plugin-answers:page-panel-tab', 'tab-1');
+    const app = await loadPluginApp(() => import('./app'));
+    const selectTab = vi.fn(() => true);
+    const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0 }) },
+      experimental_panel: { selectTab }, experimental_panelTabs: { open: false, selectedKey: null, tabs: [{ key: 'tab-1' } as any] } });
+    await waitFor(() => expect(selectTab).toHaveBeenCalledWith('tab-1'));
+    slot.unmount();
+  });
   it('registers navigation, thread tab and message action and renders the inbox', async () => {
     const { app, slot, list } = await setup();
     expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'MessageQuestion' });

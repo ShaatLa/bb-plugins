@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads } from '@get-bb/plugin-sdk/app';
+import { useEffect, useRef, useState } from 'react';
+import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
 import { Button } from './components/ui/button';
 
@@ -103,8 +103,31 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   </section>;
 }
 
+const PANEL_KEY = 'bb-plugin-answers:page-panel-tab';
+
+// bb does not restore the plugin page's side panel, so remember the selected tab and reopen it.
+export function useRememberedPagePanel() {
+  const panel = experimental_useAppPanel();
+  const { open, selectedKey, tabs } = experimental_usePanelTabs();
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!restored.current) {
+      restored.current = true;
+      const saved = localStorage.getItem(PANEL_KEY);
+      if (saved && !open && tabs.some(tab => tab.key === saved)) panel.selectTab(saved);
+      return;
+    }
+    if (open && selectedKey) localStorage.setItem(PANEL_KEY, selectedKey); else localStorage.removeItem(PANEL_KEY);
+  }, [open, selectedKey, tabs, panel]);
+}
+
+function AnswersPage() {
+  useRememberedPagePanel();
+  return <AnswersPanel />;
+}
+
 export default definePluginApp(app => {
-  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: () => <AnswersPanel />, experimental_useBadge: useAnswersBadge });
+  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: AnswersPage, experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: AnswersPanel });
   app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
