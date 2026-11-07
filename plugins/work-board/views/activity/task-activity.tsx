@@ -37,6 +37,7 @@ import type {
   TaskPullRequest,
 } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
+import { withNativeThreadMentions } from "../../shared/thread-links.js";
 import {
   formatFileSize,
   formatRelativeTime,
@@ -249,7 +250,7 @@ function SystemEvent({ comment, nowMs }: { comment: Comment; nowMs: number }) {
   );
 }
 
-function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
+export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
   const { comment, attachments } = entry;
   const agent = comment.kind === "agent";
   const navigate = useBbNavigate();
@@ -283,7 +284,10 @@ function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
             onOpenThread={(threadId) => navigate.toThread(threadId)}
           />
         ) : (
-          <Markdown content={comment.body} className="text-sm [overflow-wrap:anywhere]" />
+          <Markdown
+            content={withNativeThreadMentions(comment.body, window.location.origin)}
+            className="text-sm [overflow-wrap:anywhere]"
+          />
         )}
         {attachments.length > 0 ? (
           <AttachmentTracks
