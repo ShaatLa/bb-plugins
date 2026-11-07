@@ -42,7 +42,8 @@ describe("Slots deterministic engine", () => {
     const h = harness(); h.request("a"); h.request("b");
     h.sample(); h.now = 14_999; h.sample();
     expect(h.state.hosts.h.gate.streak).toBe(1);
-    expect(h.state.audit.filter(e => e.type === "gate")).toHaveLength(2);
+    expect(h.state.audit.filter(e => e.type === "gate")).toHaveLength(0);
+    expect(h.sample().effects).toContainEqual(expect.objectContaining({ type: "audit", event: expect.objectContaining({ type: "gate" }) }));
     h.now = 15_000; h.sample(19, 1);
     expect(h.state.hosts.h.gate.streak).toBe(0);
     h.sample(50, 18); expect(h.state.hosts.h.gate.streak).toBe(0);
@@ -134,9 +135,11 @@ describe("Slots deterministic engine", () => {
 
   it("preserves live leases on capacity reduction, raises immediately, uses lowest free index", () => {
     const h = harness(); h.request("a"); h.request("b"); h.open(); h.open();
+    h.settings.capacities.heavy = 1;
     h.send({ type: "setCapacity", hostId: "h", pool: "heavy", capacity: 1 });
     expect(h.state.leases).toHaveLength(2);
     h.request("c"); h.open(); expect(h.state.leases).toHaveLength(2);
+    h.settings.capacities.heavy = 3;
     h.send({ type: "setCapacity", hostId: "h", pool: "heavy", capacity: 3 });
     h.send({ type: "tick" }); expect(h.state.leases).toHaveLength(3);
     expect(h.state.leases[2].slotIndex).toBe(2);
@@ -205,7 +208,7 @@ describe("Slots deterministic engine", () => {
     h.open(); expect(h.state.leases[0].holderThreadId).toBe("b");
     h.now += minute; h.send({ type: "gate", threadId: "b", hostId: "h" });
     expect(h.state.leases[0].lastHeartbeatAt).toBe(h.now);
-    for (let i = 0; i < 55; i++) h.sample(1, 30);
+    for (let i = 0; i < 55; i++) h.send({ type: "prioritize", requestId: h.state.requests[0].id, priority: "normal" });
     expect(h.state.audit).toHaveLength(50);
     expect(logSince(h.state, { since: h.now, limit: 2 })).toHaveLength(2);
     expect(logSince(h.state, { since: h.now + 1 })).toEqual([]);
@@ -237,4 +240,22 @@ describe("Slots deterministic engine", () => {
     h.settings.hosts.h = { ...structuredClone(DEFAULT_SETTINGS), capacities: { heavy: 0, "local-model": 1 } };
     h.open(); expect(h.state.leases.filter(l => l.hostId === "h")).toEqual([]);
   });
+});
+
+
+it("release cancels all queued pools or a single owned request", () => {
+  const h = harness(); h.request("a"); h.request("a", "normal", "local-model");
+  const id = h.state.requests[0].id;
+  expect(h.send({ type: "release", threadId: "b", leaseId: id }).result.ok).toBe(false);
+  expect(h.send({ type: "release", threadId: "a", leaseId: id }).result).toMatchObject({ ok: true, data: { canceled: [id] } });
+  expect(h.state.requests).toHaveLength(1);
+  h.send({ type: "release", threadId: "a" }); expect(h.state.requests).toHaveLength(0);
+});
+it("warning and grant name exact commands with a UTC expiry", () => {
+  const h = harness(); h.request("a");
+  expect(h.open().effects).toContainEqual(expect.objectContaining({ type: "notify", text: expect.stringContaining("bb slots gate") }));
+  h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
+  const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
+  expect(warning).toMatchObject({ text: expect.stringContaining(new Date(h.state.leases[0].expiresAt).toISOString()) });
+  expect(warning).toMatchObject({ text: expect.stringContaining("bb slots heartbeat") });
 });

@@ -37,7 +37,7 @@ const sorted = (state: State) => state.requests.map((request, index) => ({ reque
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
 const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null });
 export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings): number {
-  return (Object.hasOwn(state.hosts, hostId) ? state.hosts[hostId].capacities[pool] : undefined) ?? settingsFor(settings, hostId).capacities[pool];
+  return settingsFor(settings, hostId).capacities[pool];
 }
 export function gateOpen(gate: GateState, settings: HostSettings): boolean {
   return gate.latest !== null && gate.latest.passed && gate.streak >= settings.gateSamples;
@@ -83,13 +83,13 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
   let data: EngineOutput = null;
   const host = (id: string) => {
     if (!Object.hasOwn(state.hosts, id)) Object.defineProperty(state.hosts, id, {
-      value: { gate: emptyGate(), capacities: {} }, enumerable: true, writable: true, configurable: true,
+      value: { gate: emptyGate() }, enumerable: true, writable: true, configurable: true,
     });
     return state.hosts[id];
   };
   const audit = (type: AuditType, fields: Omit<AuditEvent, "type" | "seq" | "at"> = {}) => {
     const event: AuditEvent = { seq: state.nextAuditSeq++, at: ctx.now, type, ...fields };
-    state.audit.push(event);
+    if (type !== "gate") state.audit.push(event);
     state.audit = state.audit.slice(-50);
     effects.push({ type: "audit", event: structuredClone(event) });
   };
@@ -142,7 +142,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.requests = state.requests.filter(r => r.id !== requestId);
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
-    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Gate before each launch; heartbeat and release promptly.`;
+    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
     notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
@@ -164,8 +164,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         result.returned.push(l.id);
       }
     }
-    if (ended) state.requests = state.requests.filter(r => {
-      if (r.threadId !== threadId) return true;
+    if (ended || leaseId === undefined || leaseId.startsWith("req-")) state.requests = state.requests.filter(r => {
+      if (r.threadId !== threadId || (leaseId !== undefined && r.id !== leaseId)) return true;
       result.canceled.push(r.id);
       audit("release", { hostId: r.hostId, pool: r.pool, threadId, requestId: r.id, reason });
       return false;
@@ -216,8 +216,10 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     case "release": {
       if (input.leaseId !== undefined) {
         const lease = state.leases.find(l => l.id === input.leaseId);
-        if (!lease) return fail("not-found", "Lease not found");
-        if (lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Only owner or holder may release");
+        const request = state.requests.find(r => r.id === input.leaseId);
+        if (!lease && !request) return fail("not-found", "Lease or request not found");
+        if (request && request.threadId !== input.threadId) return fail("forbidden", "Only requester may cancel");
+        if (lease && lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Only owner or holder may release");
       }
       data = release(input.threadId, input.leaseId); break;
     }
@@ -233,7 +235,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      notify(lease.holderThreadId, "transfer", `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Gate before each launch; heartbeat and release promptly.`);
+      notify(lease.holderThreadId, "transfer", `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`);
       data = lease; break;
     }
     case "portLease": {
@@ -270,7 +272,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     }
     case "setCapacity": {
       if (!Number.isSafeInteger(input.capacity) || input.capacity < 0) return fail("invalid-input", "Capacity must be a nonnegative integer");
-      host(input.hostId).capacities[input.pool] = input.capacity;
+      host(input.hostId);
       audit("capacity", { hostId: input.hostId, pool: input.pool, reason: String(input.capacity) });
       data = { capacity: input.capacity }; break;
     }
@@ -279,7 +281,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
-          notify(lease.holderThreadId, "warn", `Lease ${lease.id} (${lease.pool}: ${lease.job}) expires at ${lease.expiresAt}; heartbeat to keep it.`);
+          notify(lease.holderThreadId, "warn", `Lease ${lease.id} (${lease.pool}: ${lease.job}) expires at ${new Date(lease.expiresAt).toISOString()}; run bb slots heartbeat to keep it, or bb slots release ${lease.id}.`);
         }
       }
       schedule(); break;

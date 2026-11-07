@@ -1,3 +1,5 @@
+export const SLOTS_CHANGED = "slots.changed";
+
 /** Wire and persistence contract. All times and durations are milliseconds. */
 export const POOLS = ["heavy", "local-model"] as const;
 export type PoolName = (typeof POOLS)[number];
@@ -50,8 +52,6 @@ export interface AuditEvent {
 }
 export interface HostState {
   gate: GateState;
-  /** Manager overrides persist independently of settings and never revoke leases. */
-  capacities: Partial<Record<PoolName, number>>;
 }
 export interface State {
   version: 1; nextId: number; nextAuditSeq: number;
