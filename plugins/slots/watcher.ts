@@ -32,11 +32,18 @@ export function createWatcher(options: WatcherOptions) {
     });
   }
   async function pathFor(thread: Thread, signal: AbortSignal, fresh = false) {
-    if (!thread.environmentId) throw new Error("Live thread has no environment");
+    if (!thread.environmentId) return null;
     let env = environments.get(thread.environmentId);
     if (fresh || !env || now() - env.at >= 300000) {
       const result = await bounded(options.sdk.environments.get({ environmentId: thread.environmentId }), signal);
-      env = { at: now(), hostId: result.hostId, path: result.hostId !== options.hostId() || result.path === null ? null : await bounded(canonical(result.path), signal) };
+      let path: string | null = null;
+      if (result.hostId === options.hostId() && result.status === "ready" && result.path !== null) {
+        try { path = await bounded(canonical(result.path), signal); }
+        catch (error) {
+          if (signal.aborted || !["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        }
+      }
+      env = { at: now(), hostId: result.hostId, path };
       if (!fresh) environments.set(thread.environmentId, env);
     }
     return env.hostId === options.hostId() ? env.path : null;

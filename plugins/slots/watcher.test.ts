@@ -10,14 +10,16 @@ function setup() {
   const paths: Record<string,string|null> = { a:'/alias',b:'/repo',nested:'/repo/sub',null:null,remote:'/other' };
   const list=vi.fn(async ({offset=0,limit=100})=>[...threads.values()].slice(offset,offset+limit));
   const get=vi.fn(async ({threadId})=>threads.get(threadId)!);
-  const env=vi.fn(async ({environmentId})=>({hostId:environmentId==='remote'?'remote':'local',path:paths[environmentId]}));
+  const statuses: Record<string, string> = {};
+  const env=vi.fn(async ({environmentId})=>({status:statuses[environmentId] ?? "ready",hostId:environmentId==='remote'?'remote':'local',path:paths[environmentId]}));
   const host=createFakePluginHost({sdk:{threads:{list,get},environments:{get:env}}}); disposals.push(()=>host.harness.lifecycle.dispose());
   const sample=vi.fn(async (_signal: AbortSignal)=>({startAt:now-30000,endAt:now,valid:true,unknownCores:0,perPid:[{cwd:'/repo',cores:2},{cwd:'/repo/sub/deep',cores:3},{cwd:'/outside',cores:9}],cwdChanged:[] as {from:string;to:string}[],stats:{psMs:2,lsofMs:3,lsofCalls:1,cacheSize:0}}));
   const preview=vi.fn(async (_usage: Extract<Input,{type:'usage'}>)=>[] as Effect[]);
   const commit=vi.fn(async (_usage: Extract<Input,{type:'usage'}>, _verified:Set<string>)=>{});
   const warn=vi.fn();
-  const watcher=createWatcher({sdk:host.bb.sdk,hostId:()=> 'local',enabled:()=>enabled,now:()=>now,realpath:vi.fn(async (path)=>path==='/alias'?'/repo':path) as any,collector:{sample},preview,commit,warn});
-  return {watcher,sample,preview,commit,warn,list,get,env,threads,paths,advance:(ms=30000)=>now+=ms,off:()=>enabled=false};
+  const canonical=vi.fn(async (path: string)=>path==='/alias'?'/repo':path);
+  const watcher=createWatcher({sdk:host.bb.sdk,hostId:()=> 'local',enabled:()=>enabled,now:()=>now,realpath:canonical as any,collector:{sample},preview,commit,warn});
+  return {watcher,sample,preview,commit,warn,list,get,env,threads,paths,statuses,canonical,advance:(ms=30000)=>now+=ms,off:()=>enabled=false};
 }
 it('merges realpath aliases and duplicate paths, prefers nested groups, ignores null/remote/outside cwd',async()=>{
   const h=setup(); await h.watcher.run();
@@ -68,4 +70,40 @@ it('notification delivery is deadline-bounded and an aborted run cannot stop the
   vi.useFakeTimers(); const h=setup(); h.commit.mockImplementationOnce(()=>new Promise(()=>{}));
   const run=h.watcher.run(); await vi.advanceTimersByTimeAsync(20000); await run;
   expect(h.warn).toHaveBeenCalled(); h.advance(); await h.watcher.run(); expect(h.sample).toHaveBeenCalledTimes(2);
+});
+it.each(['destroyed','creating','provisioning','error','no-environment','null-path','ENOENT','ENOTDIR'])('skips a %s checkout while healthy groups stay valid and attributed',async kind=>{
+  const h=setup();
+  h.threads.set('stale',makeThreadResponse({id:'stale',environmentId:kind==='no-environment'?null:'stale'}));
+  h.paths.stale=kind==='null-path'?null:'/removed';
+  h.statuses.stale=['destroyed','creating','provisioning','error'].includes(kind)?kind:'ready';
+  h.canonical.mockImplementation(async path=>{
+    if(path==='/removed') throw Object.assign(new Error('worktree removed'),{code:kind});
+    return path==='/alias'?'/repo':path;
+  });
+  await h.watcher.run();
+  expect(h.commit.mock.calls[0][0]).toMatchObject({valid:true,subjects:[{key:'/repo/sub',threadIds:['nested'],cores:3},{key:'/repo',threadIds:['a','b'],cores:2}]});
+  expect(h.warn).not.toHaveBeenCalled();
+});
+it.each(['destroyed','no-environment','null-path','ENOENT','ENOTDIR'])('rejects alert verification when a thread becomes %s without invalidating healthy sampling',async kind=>{
+  const h=setup(); await h.watcher.run();
+  const subject={key:'/repo',threadIds:['a','b'],cores:5};
+  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  if(kind==='destroyed') h.statuses.a='destroyed';
+  else if(kind==='no-environment') h.threads.set('a',makeThreadResponse({id:'a',environmentId:null}));
+  else if(kind==='null-path') h.paths.a=null;
+  else h.canonical.mockImplementation(async path=>{if(path==='/alias') throw Object.assign(new Error('removed'),{code:kind});return path;});
+  h.advance(); await h.watcher.run();
+  expect(h.commit.mock.calls[1][0]).toMatchObject({valid:true,resetKeys:['/repo']});
+  expect(h.commit.mock.calls[1][1].size).toBe(0);
+  expect(h.warn).not.toHaveBeenCalled();
+});
+it('environment SDK failures still invalidate the whole interval, including an SDK ENOENT',async()=>{
+  const h=setup(); h.env.mockRejectedValueOnce(Object.assign(new Error('SDK failed'),{code:'ENOENT'}));
+  await h.watcher.run();
+  expect(h.commit.mock.calls[0][0].valid).toBe(false); expect(h.warn).toHaveBeenCalled();
+});
+it('other realpath errors still invalidate the interval',async()=>{
+  const h=setup(); h.canonical.mockRejectedValueOnce(Object.assign(new Error('denied'),{code:'EACCES'}));
+  await h.watcher.run();
+  expect(h.commit.mock.calls[0][0].valid).toBe(false); expect(h.warn).toHaveBeenCalled();
 });

@@ -27,7 +27,7 @@ it.skipIf(!process.env.SLOTS_MEASURE_REPORT)("measures the integrated watcher fo
     hosts: { get: async () => ({ ...makeHostResponse({ id: "local", name: "Measurement host" }), connectMachineId: null, threadStorageRootPath: null }) },
     system: { config: async () => ({ primaryHostId: "local" }) },
     threads: { list: async () => [thread], get: async () => thread, send: async () => { throw new Error("Measurement must not send messages"); } },
-    environments: { get: async () => ({ hostId: "local", path }) },
+    environments: { get: async () => ({ hostId: "local", path, status: "ready" }) },
   } });
   try {
     const { invoke } = await register(host.bb, { store: new DiskStore(dir), watchCollector: collector });
