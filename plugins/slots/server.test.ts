@@ -522,3 +522,11 @@ it("a hung watcher SDK read leaves gate operations and sampler ticks independent
   await vi.waitFor(()=>expect(h.metrics).toHaveBeenCalled());
   watcher.controller.abort(); sampler.controller.abort(); await Promise.all([watcher.done,sampler.done]);
 });
+it("watcher initialization errors leave the loop running for recovery", async () => {
+  const h=await setup(); let calls=0;
+  h.harness.sdk.stub("system.config",async()=>{if(calls++===0) throw new Error("temporary config failure"); return {primaryHostId:"local"};});
+  const service=h.harness.behavior.runService("watcher");
+  await vi.waitFor(()=>expect(h.harness.logEntries.some(e=>e.message.includes("temporary config failure"))).toBe(true));
+  expect((await h.invoke("gate",{threadId:"a",hostId:"local"})).ok).toBe(true);
+  service.controller.abort(); await service.done;
+});

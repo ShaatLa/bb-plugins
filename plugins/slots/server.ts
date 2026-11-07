@@ -323,7 +323,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   });
   for (const event of ["thread.created", "thread.archived", "thread.unarchived", "thread.deleted"] as const) bb.events.on(event, () => { watcher.invalidate(); });
   bb.background.service("watcher", { async start(signal) {
-    if (settings.watchPolicy !== "off") await serial(initialize);
+    if (settings.watchPolicy !== "off") await serial(initialize).catch(error => bb.log.warn(`Slots watcher initialization: ${String(error)}`));
     await watcher.start(signal);
   } });
   bb.background.service("sampler", { async start(signal) {
