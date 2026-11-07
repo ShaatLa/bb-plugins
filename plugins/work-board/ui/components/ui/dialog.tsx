@@ -19,6 +19,18 @@ import {
 } from "./overlay-trigger.js";
 import { Icon } from "../../components/ui/icon.js";
 
+const DialogContainerContext = React.createContext<HTMLElement | undefined>(undefined);
+
+function DialogScope({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
+  return (
+    <DialogContainerContext.Provider value={container ?? undefined}>
+      {/* Layout containment makes fixed modal coordinates follow this pane, not the window. */}
+      <div ref={setContainer} data-dialog-scope="" className={cn("isolate [contain:layout]", className)} {...props} />
+    </DialogContainerContext.Provider>
+  );
+}
+
 interface ResponsiveDialogContextValue extends ResponsiveOverlayContextValue {
   titleId: string;
   descriptionId: string;
@@ -247,6 +259,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
     const { isCompactViewport, open, onOpenChange, titleId, descriptionId } =
       useResponsiveDialog();
     useBrowserDimmingModal(open);
+    const portalContainer = React.useContext(DialogContainerContext);
     const scopeProps = usePortalScopeProps();
     const { content, finishClosing } = useChildrenRetainedWhileClosing(
       open,
@@ -286,7 +299,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
     }
 
     return (
-      <DialogPrimitive.Portal>
+      <DialogPrimitive.Portal container={portalContainer}>
         <DialogOverlay />
         <DialogPrimitive.Content
           ref={ref}
@@ -299,6 +312,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
           className={cn(
             "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg grid-cols-[minmax(0,1fr)] translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-sm duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
             className,
+            portalContainer && "w-[calc(100%-2rem)]",
           )}
           {...props}
         >
@@ -441,6 +455,7 @@ const DialogDescription = React.forwardRef<
 DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export {
+  DialogScope,
   Dialog,
   DialogOverlay,
   DialogTrigger,

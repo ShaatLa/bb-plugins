@@ -25,6 +25,7 @@ import { ManagePanel } from "../views/manage/manage-panel.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { DialogScope } from "@/components/ui/dialog";
 import { TasksRefreshProvider } from "./refresh.js";
 
 const BOARD_MIN_WIDTH = 448;
@@ -201,7 +202,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   }, []);
 
   return (
-    <div className="relative flex h-full min-h-0 bg-background text-foreground">
+    <DialogScope className="relative flex h-full min-h-0 bg-background text-foreground">
       <main ref={mainRef} className="@container flex min-w-0 flex-1 flex-col">
         <TasksTopbar
           route={route}
@@ -246,7 +247,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
         open={newProjectOpen}
         onOpenChange={setNewProjectOpen}
       />
-    </div>
+    </DialogScope>
   );
 }
 

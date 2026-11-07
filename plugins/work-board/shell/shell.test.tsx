@@ -979,6 +979,22 @@ describe("tasks app shell", () => {
     await slot.findByText("No projects yet");
     fireEvent.click(slot.getByRole("button", { name: /New project/ }));
     await slot.findByText("Projects group tasks under a shared key prefix.");
+    expect(slot.getByRole("dialog").closest("[data-dialog-scope]")).not.toBeNull();
+  });
+
+  it("keeps the new task modal inside the Work Board pane", async () => {
+    const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, {
+      rpc: seededRpc(),
+    });
+    await slot.findByText("Tasks Plugin");
+    fireEvent.keyDown(window, { key: "c" });
+    const dialog = await slot.findByRole("dialog");
+    const scope = dialog.closest("[data-dialog-scope]");
+    expect(scope).not.toBeNull();
+    expect(scope?.className).toContain("[contain:layout]");
+    expect(dialog.className).toContain("w-[calc(100%-2rem)]");
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
   });
 
   it("does not paint another scope's empty state while its own rows load", async () => {
