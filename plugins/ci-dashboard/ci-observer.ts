@@ -39,19 +39,27 @@ export const emptyGlobal = (): ObserverGlobal => ({ threads: {}, types: {} });
 export const emptyRepoState = (): ObserverRepoState => ({ sent: {}, pending: [], pendingSince: null, deploys: {} });
 
 // --- lines ---
-export const PREFIX = "[CI Dashboard]";
+// Lines are Markdown (BB chat renders it): a bold source, ids and shas as code, and a short link instead of a bare URL.
+export const PREFIX = "**CI Dashboard**";
 const MAX_LINE = 400, MAX_TESTS = 3, MAX_JOBS = 4, MAX_DIGEST = 30;
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
 /** One line, at most ~400 characters; the link at the end is never the part that gets cut. */
-export const fit = (body: string, url?: string, tag = "") => `${clip(squash(body), MAX_LINE - tag.length - (url ? url.length + 1 : 0))}${tag}${url ? ` ${url}` : ""}`;
+export const fit = (body: string, url?: string, tag = "") => {
+  const link = url ? ` · [${linkLabel(url)}](${url})` : "";
+  return `${clip(squash(body), MAX_LINE - tag.length - link.length)}${tag}${link}`;
+};
+const linkLabel = (url: string) => {
+  const job = url.match(/\/actions\/runs\/(\d+)\/job\/(\d+)/), run = url.match(/\/actions\/runs\/(\d+)/);
+  return job ? `job ${job[2]}` : run ? `run ${run[1]}` : "details";
+};
 /** Marks a line with the open problem it is about, so an agent can claim it with ci_dashboard_manage. Never clipped. */
-const problemTag = (problem?: string) => problem ? ` · problem ${problem}` : "";
+const problemTag = (problem?: string) => problem ? ` · problem \`${problem}\`` : "";
 /** Names the ref to pass to ci_dashboard_metrics (ref=...) for the details this line leaves out. Never clipped. */
-const inspectTag = (ref: string) => ` · inspect ${ref}`;
+const inspectTag = (ref: string) => ` · inspect \`${ref}\``;
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: Pick<JobRecord, "runId" | "jobId">) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
-const sha7 = (sha: string) => sha.slice(0, 7) || "unknown";
+const sha7 = (sha: string) => sha ? `\`${sha.slice(0, 7)}\`` : "unknown";
 const more = (items: string[], max: number) => items.length > max ? `${items.slice(0, max).join(", ")}, +${items.length - max}` : items.join(", ");
 const completedAt = (job: JobRecord) => Date.parse(job.completedAt ?? job.createdAt);
 

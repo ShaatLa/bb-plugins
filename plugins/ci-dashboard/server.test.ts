@@ -1494,7 +1494,7 @@ test("ci_dashboard_manage problem actions: take (default and delegated thread), 
     // The observer line for the stall names the problem id the agent can claim.
     const lines = observerLines(send);
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toMatch(new RegExp(`^\\[CI Dashboard\\] Pool self-hosted stalled · 1 queued, no job start for \\d+ min · problem ${stallId} · inspect pool:self-hosted$`));
+    expect(lines[1]).toMatch(new RegExp(`^\\*\\*CI Dashboard\\*\\* Pool self-hosted stalled · 1 queued, no job start for \\d+ min · problem \`${stallId}\` · inspect \`pool:self-hosted\`$`));
     expect(lines[1].length).toBeLessThanOrEqual(400);
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
     // take defaults to the calling thread ...
@@ -1586,7 +1586,7 @@ test("an archived or deleted investigating thread releases its claim with exactl
     expect(echoes()).toEqual([]);
     expect((await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) })).errors).toEqual([]);
     expect((await problemsOf(harness)).problems[0].handled).toBeNull();
-    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · thread archived`]);
+    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem \`${stallId}\` · thread archived`]);
     // Archiving it again changes nothing and repeats nothing.
     await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) });
     expect(echoes()).toHaveLength(1);
@@ -1597,7 +1597,7 @@ test("an archived or deleted investigating thread releases its claim with exactl
     // A deleted thread releases too; the badge counts the problem again.
     await claimTool(harness, { action: "take", threadId: "thr_gone" });
     await harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_gone" }) });
-    expect(echoes()).toEqual([expect.stringContaining("thread archived"), `${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · thread deleted`]);
+    expect(echoes()).toEqual([expect.stringContaining("thread archived"), `${PREFIX} Claim dropped · ${STALL_TITLE} · problem \`${stallId}\` · thread deleted`]);
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
   } finally { await harness.lifecycle.dispose(); }
 });
@@ -1615,7 +1615,7 @@ test("a claim older than claimTimeoutHours is released with one echo; 0 means ne
     expect(echoes()).toEqual([]);
     await signalsPass(harness, 2 * 3_600_000);
     expect((await problemsOf(harness)).problems[0].handled).toBeNull();
-    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem ${stallId} · no resolution within 24 h`]);
+    expect(echoes()).toEqual([`${PREFIX} Claim dropped · ${STALL_TITLE} · problem \`${stallId}\` · no resolution within 24 h`]);
     await signalsPass(harness);
     expect(echoes()).toHaveLength(1);
     // fix_pending expires the same way, counted from its own time.
@@ -1797,7 +1797,7 @@ function observerHost(settings: object = {}, threadsOverride: object = {}) {
 }
 const sentTo = (send: { mock: { calls: unknown[][] } }, threadId?: string) => send.mock.calls.map(([args]) => args as { threadId: string; mode: string; originPluginId: string; input: { text: string }[] }).filter((call) => !threadId || call.threadId === threadId).map((call) => call.input[0].text);
 const RUNS = "https://github.com/acme/widgets/actions/runs";
-const PREFIX = "[CI Dashboard]";
+const PREFIX = "**CI Dashboard**";
 
 test("observer: a merge queue removal and a runner loss reach the thread one loop after the runs finish; green runs and repeats send nothing", async () => {
   const scenario = ciScenario();
@@ -1806,7 +1806,7 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     await plugin(bb);
     // Poll N: the three runs are in progress. The thread subscribes and gets its confirmation, no history.
     await signalsPass(harness, 0);
-    expect(sentTo(send)).toEqual([expect.stringMatching(/^\[CI Dashboard\] Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
+    expect(sentTo(send)).toEqual([expect.stringMatching(/^\*\*CI Dashboard\*\* Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
     expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "auto", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
     // Poll N+1: they are gone from the live list; the very same loop fetches them, stores their jobs and announces the failures.
     scenario.running = [];
@@ -1819,8 +1819,8 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     expect(paths).not.toContain("/actions/runs/903/attempts/1/jobs");
     const lines = sentTo(send).slice(1);
     expect(lines.sort()).toEqual([
-      `${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect queue:901:1 ${RUNS}/901`,
-      `${PREFIX} PR #8 removed from merge queue · Integration: runner_loss (1 on this head) · inspect queue:902:1 ${RUNS}/902`,
+      `${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`,
+      `${PREFIX} PR #8 removed from merge queue · Integration: runner_loss (1 on this head) · inspect \`queue:902:1\` · [run 902](${RUNS}/902)`,
     ].sort());
     // The removals were confirmed against each PR's merge queue timeline, once per PR; the queue runner loss rides inside PR #8's line.
     expect([...new Set(scenario.lookups)].sort()).toEqual([7, 8]);
@@ -1868,7 +1868,7 @@ test("observer: a removal GitHub does not confirm is held, then a queue runner l
     scenario.running = [];
     await signalsPass(harness);
     // PR #7 is confirmed at once; PR #8 and its loss are held, nothing is said about the queued PR yet.
-    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect queue:901:1 ${RUNS}/901`]);
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`]);
     // Within the grace period the lookup is repeated.
     scenario.lookups.length = 0;
     await signalsPass(harness, 301_000);
@@ -1876,7 +1876,7 @@ test("observer: a removal GitHub does not confirm is held, then a queue runner l
     expect(sentTo(send)).toHaveLength(2);
     // After 15 minutes the removal is given up and the loss is announced on its own.
     await signalsPass(harness, 16 * 60_000);
-    const loss = `${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head sha902 · inspect job:9021 ${RUNS}/902/job/9021`;
+    const loss = `${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head \`sha902\` · inspect \`job:9021\` · [job 9021](${RUNS}/902/job/9021)`;
     expect(sentTo(send).slice(2)).toEqual([loss]);
     // Neither the loss nor the lookup repeats.
     scenario.lookups.length = 0;
@@ -1928,10 +1928,10 @@ for (const cancelled of [false, true]) test(`observer: a queue runner loss whose
     await signalsPass(harness);
     await signalsPass(harness, 301_000);
     // Within the grace period: PR #7 only, neither a removal nor a loss for PR #8.
-    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect queue:901:1 ${RUNS}/901`]);
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`]);
     await signalsPass(harness, 16 * 60_000);
     await signalsPass(harness, 301_000);
-    expect(sentTo(send).slice(2)).toEqual(cancelled ? [] : [`${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head sha902 · inspect job:9021 ${RUNS}/902/job/9021`]);
+    expect(sentTo(send).slice(2)).toEqual(cancelled ? [] : [`${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head \`sha902\` · inspect \`job:9021\` · [job 9021](${RUNS}/902/job/9021)`]);
     expect(sentTo(send).some((line) => line.includes("PR #8"))).toBe(false);
   } finally { finishedJobs[902] = original; await harness.lifecycle.dispose(); }
 });
@@ -1961,7 +1961,7 @@ test("observer: failed test names come from the configured artifacts, FAILED ent
     scenario.running = [];
     await signalsPass(harness);
     const queue = sentTo(send).find((line) => line.includes("PR #7"))!;
-    expect(queue).toBe(`${PREFIX} PR #7 removed from merge queue · Unit tests: real · failed tests: cart.Spec.removes item · inspect queue:901:1 ${RUNS}/901`);
+    expect(queue).toBe(`${PREFIX} PR #7 removed from merge queue · Unit tests: real · failed tests: cart.Spec.removes item · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`);
     // The runner loss has no test report to read.
     expect(sentTo(send).find((line) => line.includes("PR #8"))).not.toContain("failed tests");
     for (const line of sentTo(send)) expect(line).not.toContain("hunter2");
@@ -1996,7 +1996,7 @@ test("observer: a deployment is announced once, when its status becomes final af
     await signalsPass(harness, 0);
     scenario.deploymentStatus = [{ state: "success", created_at: "2026-10-20T12:00:30Z", log_url: `${RUNS}/55` }];
     await signalsPass(harness);
-    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} Deploy staging success · deadbee · deployment 31 ${RUNS}/55`]);
+    expect(sentTo(send).slice(1)).toEqual([`${PREFIX} Deploy staging success · \`deadbee\` · deployment 31 · [run 55](${RUNS}/55)`]);
     await signalsPass(harness);
     expect(sentTo(send)).toHaveLength(2);
   } finally { await harness.lifecycle.dispose(); }

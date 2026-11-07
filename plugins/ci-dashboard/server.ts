@@ -446,7 +446,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   /** One line to the observer threads when a claim is dropped by the plugin (never when an agent or a person releases it, or when the problem resolves). */
   async function echoClaimDropped(values: Values, title: string, id: string, reason: string) {
-    const text = `${PREFIX} ${fit(`Claim dropped · ${title}`, undefined, ` · problem ${id} · ${reason}`)}`;
+    const text = `${PREFIX} ${fit(`Claim dropped · ${title}`, undefined, ` · problem \`${id}\` · ${reason}`)}`;
     for (const threadId of parseObserverThreads(values.observerThreads)) await notify(threadId, text);
   }
   /** Brings subscriptions and event-type start times in line with the settings; new subscribers get the one-line confirmation and no history. */
