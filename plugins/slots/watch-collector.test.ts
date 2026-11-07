@@ -54,6 +54,22 @@ describe("collector", () => {
     expect((await collector.sample(signal())).valid).toBe(false);
     expect(lsof).toBe(2);
   });
+  it.each([
+    { name: "partial output", error: { code: 1, stdout: "p1\nn/work\n" }, valid: true, known: 1, unknown: 0.4 },
+    { name: "timeout", error: { killed: true, stdout: "p1\nn/work\n" }, valid: false, known: 0, unknown: 1.4 },
+    { name: "empty output", error: { code: 1, stdout: "" }, valid: false, known: 0, unknown: 1.4 },
+  ])("handles lsof exit with $name", async ({ error, valid, known, unknown }) => {
+    let clock = at + 1000, running = false;
+    const collector = createCollector({ platform: "darwin", now: () => clock, exec: async file => {
+      if (file === "ps") return { stdout: row(1, running ? "00:01" : "00:00") + row(2, running ? "00:00.40" : "00:00") };
+      throw error;
+    } });
+    await collector.sample(signal()); clock += 1000; running = true;
+    const result = await collector.sample(signal());
+    expect(result.valid).toBe(valid);
+    expect(result.perPid).toHaveLength(known);
+    expect(result.unknownCores).toBeCloseTo(unknown);
+  });
   it("invalidates the 500-process cap and bounds lookup size", async () => {
     let clock = at + 1000, cpu = "00:00", count = 0;
     const collector = createCollector({ platform: "darwin", now: () => clock, exec: async (file, args) => {

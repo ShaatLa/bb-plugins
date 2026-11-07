@@ -82,7 +82,11 @@ export function createCollector(options: CollectorOptions = {}) {
           try {
             const result = await exec("lsof", ["-n", "-P", "-b", "-w", "-a", "-d", "cwd", "-Fpn", "-p", selected.map(p => p.pid).join(",")], execOptions);
             for (const [pid, cwd] of parseLsofCwd(result.stdout)) resolved.set(pid, cwd);
-          } catch { valid = false; }
+          } catch (error) {
+            const failure = error as { stdout?: unknown; killed?: boolean; signal?: string | null; code?: string };
+            if (failure?.killed || failure?.signal || signal.aborted || failure?.code === "ENOENT" || typeof failure?.stdout !== "string") valid = false;
+            else for (const [pid, cwd] of parseLsofCwd(failure.stdout)) resolved.set(pid, cwd);
+          }
         } else {
           const deadline = AbortSignal.any([signal, AbortSignal.timeout(3000)]);
           const abort = new Promise<never>((_, reject) => {
