@@ -1,5 +1,5 @@
 import TurndownService from 'turndown';
-const markdown = new TurndownService({ codeBlockStyle: 'fenced' });
+const markdown = new TurndownService({ codeBlockStyle: 'fenced', headingStyle: 'atx', bulletListMarker: '-' });
 export function clipSelection(range: Range, body: HTMLElement) {
   if (!range.intersectsNode(body)) return null;
   const clipped = range.cloneRange(), bounds = document.createRange();

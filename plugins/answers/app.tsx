@@ -64,7 +64,7 @@ export function ItemCard({ item }: { item: Item }) {
       <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>
-    <div ref={question} className={`rounded-lg p-3 whitespace-pre-wrap break-words ${item.kind === 'for_me' ? 'bg-muted' : 'ml-auto max-w-[90%] border'} ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div>
+    <div className={`rounded-lg p-3 ${item.kind === 'for_me' ? 'bg-muted' : 'ml-auto max-w-[90%] border'}`}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div></div>
     {(clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
     {item.answer && <div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
     {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}

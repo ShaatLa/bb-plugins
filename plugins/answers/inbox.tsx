@@ -6,7 +6,7 @@ import { ItemCard } from './app';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
-type Draft = { threadId: string; itemId: string; quote: string; quoteSeq?: number; top: number; left: number };
+type Draft = { threadId: string; itemId: string; quote: string; quoteSeq?: number; top: number; left: number; width: number };
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
 function HistoryPage({ threadId, cursor, index, depth, receive }: { threadId: string; cursor?: string; index: number; depth: number; receive: (index: number, data: ListResult) => void }) {
@@ -43,7 +43,7 @@ export function Inbox() {
     if (!body || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) return;
     const range = clipSelection(selection.getRangeAt(0), body); if (!range) return;
     const quote = selectionMarkdown(range, body); if (!quote.trim()) return;
-    setDraft({ threadId: selected, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current) });
+    setDraft({ threadId: selected, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(320, scroll.current.clientWidth - 16)), width: Math.min(320, scroll.current.clientWidth - 16) });
     setText(''); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
   }
   async function send(pool: boolean) {
@@ -58,7 +58,7 @@ export function Inbox() {
   }
   const seen = new Set<string>();
   const items = pages.slice(0, depth).flatMap(page => page.items).filter(item => !seen.has(item.id) && !!seen.add(item.id)).reverse();
-  return <div className="grid min-[640px]:grid-cols-[minmax(220px,280px)_1fr] h-[70vh] gap-3">
+  return <div className="grid min-[640px]:grid-cols-[minmax(170px,230px)_1fr] h-[70vh] gap-3">
     <div role="listbox" aria-label="Recipients" className={`overflow-auto ${selected ? 'max-[639px]:hidden' : ''}`}>
       {result.error && <p role="alert">{result.error.message}</p>}
       {result.data?.recipients.length === 0 && <p>No unread answers</p>}
@@ -69,8 +69,8 @@ export function Inbox() {
     </div>
     <div ref={scroll} className={`relative overflow-auto min-w-0 ${!selected ? 'max-[639px]:hidden' : ''}`} onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; }}>
       {selected && <><Button className="min-[640px]:hidden" onClick={() => setSelected(undefined)}>Back</Button><HistoryPage key={selected} threadId={selected} index={0} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <Button onClick={() => { position.current.bottom = false; setDepth(depth + 1); }}>Load earlier</Button>}<ul className="space-y-3" aria-label="History">{items.map(item => <ItemCard key={item.id} item={item} />)}</ul></>}
-      {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10 w-80 max-w-full rounded border bg-background p-3 shadow-lg" style={{ top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
-        <Markdown content={draft.quote} /><textarea aria-label="Quote reply text" maxLength={8000} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(false); } }} />
+      {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10 space-y-2 rounded-lg border bg-background p-3 shadow-lg" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
+        <div className="max-h-32 overflow-auto border-l-2 pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><textarea aria-label="Quote reply text" className="w-full rounded border bg-transparent p-2 text-sm" maxLength={8000} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(false); } }} />
         <Button disabled={pending || draft.quote.length > 20000} onClick={() => void send(false)}>Send</Button><Button disabled={pending || draft.quote.length > 20000} onClick={() => void send(true)}>Add to pool</Button><Button onClick={() => setDraft(null)}>Close</Button>{error && <p role="alert">{error}</p>}
       </div>}
       {!draft && error && <p role="alert">{error}</p>}

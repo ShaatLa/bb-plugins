@@ -79,8 +79,8 @@ export default function plugin(bb: BbPluginApi) {
   }
   function markRead(raw: z.infer<typeof inputs.markRead>) {
     const p=inputs.markRead.parse(raw), now=Date.now();
-    if ('ids' in p) return commit(`UPDATE items SET read_at=?,updated_at=? WHERE id IN (${p.ids.map(()=>'?').join(',')})`,now,now,...p.ids);
-    return commit(`UPDATE items SET read_at=?,updated_at=? WHERE kind='mine' AND status='answered'${p.threadId ? ' AND thread_id=?' : ''}`,now,now,...(p.threadId ? [p.threadId] : []));
+    if ('ids' in p) return commit(`UPDATE items SET read_at=? WHERE id IN (${p.ids.map(()=>'?').join(',')})`,now,...p.ids);
+    return commit(`UPDATE items SET read_at=? WHERE kind='mine' AND status='answered'${p.threadId ? ' AND thread_id=?' : ''}`,now,...(p.threadId ? [p.threadId] : []));
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
     if (sending.has(threadId)) throw new Error('A reply to this thread is already sending');
@@ -133,7 +133,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {
       const p=inputs.markThreadRead.parse(raw), now=Date.now();
-      return commit("UPDATE items SET read_at=?,updated_at=? WHERE thread_id=? AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",now,now,p.threadId);
+      return commit("UPDATE items SET read_at=? WHERE thread_id=? AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",now,p.threadId);
     },
     async pools(raw:z.infer<typeof inputs.pools>) {
       inputs.pools.parse(raw);
