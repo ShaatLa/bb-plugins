@@ -134,11 +134,13 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     renders it reversed (oldest→newest, like a chat) scrolled to the bottom; a
     "Load earlier" control at the top fetches `nextCursor` and **prepends** that page
     (reversed), keeping the viewport anchored by adjusting `scrollTop` by the added
-    height. Every loaded page stays a mounted, tagged query keyed by its
-    cursor (as in 0.1.0's nested `Page`), so an items invalidation refetches **all**
-    loaded pages, not just the newest. Cursors are stable (`created_at|id` never change),
-    so a refreshed page keeps its rows and position; rows are merged by id, and the
-    newest page may gain rows at the bottom. Scroll position is kept unless the user
+    height. The history keeps only the **loaded depth** `n` (pages) in state; cursors are not
+    frozen. Page 1 has no cursor, page k uses the `nextCursor` **returned by the
+    refreshed page k−1**, so an items invalidation rebuilds the whole chain in order and
+    a new item at the top shifts boundary rows into the next page instead of dropping
+    them. Rows are de-duplicated by id across pages (a row seen on an earlier page wins).
+    Pages must not be remounted by cursor key (0.1.0's `key={nextCursor}` reset deeper
+    pages); depth survives refreshes. Scroll position is kept unless the user
     was already at the bottom (then stay pinned to the bottom). Bubbles (question bubble as the user, answer/interim via
     `Markdown` as the agent; `for_me` question as the agent with a "Question for you"
     label). Card actions stay (Open in chat, Pin, Done, Reply).
@@ -169,6 +171,8 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     (`poolAdd`). Pending state disables the buttons; on failure the text is kept and
     the error shown in the popup. Quotes over 20,000 chars show an error instead.
 - Keep the 0.1.0 side-panel restore hook.
+- After every own write the client calls `experimental_useRpcRefresh().refresh()` (added
+  in 0.1.0 after a live case where realtime invalidation did not reach the page).
 
 ### Right side panel tab "Reply pools"
 
@@ -215,7 +219,8 @@ availability: 'fixed', id: 'pools', title: 'Reply pools', icon: 'Sent' })`.
   popup draft survives textarea focus, own-button clicks and refreshes, closes on Esc
   and outside focus; Send all awaits a delayed note save and aborts on a failed one;
   Inbox history prepends older pages in order; resolving a deferred item that sits
-  outside the newest 50 updates it in place after invalidation;
+  outside the newest 50 updates it in place after invalidation; a new item arriving
+  while a boundary row gets its answer neither drops nor freezes that row;
   Inbox renders recipients, selecting marks read and keeps the row until another
   is selected; selection popup Send / Add to pool (mock `getSelection`); pools tab
   renders stacked pools, edits note, Send all pending state; message action calls

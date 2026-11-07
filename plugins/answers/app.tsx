@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
 import { Button } from './components/ui/button';
 
@@ -14,6 +14,8 @@ export function useAnswersBadge() {
 
 function ItemCard({ item }: { item: Item }) {
   const rpc = useRpc<AnswersRpcContract>();
+  // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
+  const { refresh } = experimental_useRpcRefresh();
   const [expanded, setExpanded] = useState(false);
   const question = useRef<HTMLParagraphElement>(null);
   const [clamped, setClamped] = useState(false);
@@ -35,7 +37,7 @@ function ItemCard({ item }: { item: Item }) {
   const [error, setError] = useState('');
   async function act(write: () => Promise<unknown>) {
     setError('');
-    try { await write(); } catch (cause) { setError(message(cause)); }
+    try { await write(); refresh(); } catch (cause) { setError(message(cause)); }
   }
   async function reply() {
     if (sending.current || !text.trim()) return;
@@ -43,7 +45,7 @@ function ItemCard({ item }: { item: Item }) {
     setPending(true); setError(''); setFeedback('');
     try {
       const result = await rpc.call('reply', { id: item.id, text });
-      setFeedback(result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setReplying(false);
+      refresh(); setFeedback(result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setReplying(false);
     } catch (cause) {
       setError(`Delivery uncertain — check the thread before retrying. ${message(cause)}`);
     } finally { sending.current = false; setPending(false); }
@@ -97,6 +99,8 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
 
 export function AnswersPanel({ threadId }: { threadId?: string }) {
   const rpc = useRpc<AnswersRpcContract>();
+  // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
+  const { refresh } = experimental_useRpcRefresh();
   const { projects } = experimental_useSidebarThreads();
   const [view, setView] = useState<View>(threadId ? 'all' : 'unread');
   const [query, setQuery] = useState('');
@@ -108,7 +112,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
     <div className="flex flex-wrap gap-2">
       <input aria-label="Search answers" type="search" placeholder="Search answers" maxLength={4000} className="rounded border bg-transparent px-3 py-1 text-sm" value={query} onChange={event => setQuery(event.target.value)} />
       <select aria-label="Project" className="rounded border bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
-      <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden />Mark all read</Button>
+      <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden />Mark all read</Button>
     </div>
     {error && <p role="alert">{error}</p>}
     <Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} />
