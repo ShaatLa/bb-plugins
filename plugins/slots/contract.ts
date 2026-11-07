@@ -114,7 +114,14 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
+export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode"] as const;
+export type SettingKey = (typeof SETTING_KEYS)[number];
+export type SettingValues = Record<SettingKey, number | string>;
+export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number }
 export interface RpcMethods {
+  settingsRead: { input: Record<string, never>; output: Result<SettingsFormView> };
+  config: { input: { operation?: "show" | "set" | "unset"; key?: SettingKey; value?: number | string }; output: Result<SettingsFormView> };
+  settingsWrite: { input: { values?: Partial<SettingValues>; unset?: SettingKey[] }; output: Result<SettingsFormView> };
   observer: { input: ObserverParams; output: Result<ObserverView> };
   request: { input: RequestParams; output: Result<RequestOutcome> };
   release: { input: ReleaseParams; output: Result<ReleaseOutcome> };

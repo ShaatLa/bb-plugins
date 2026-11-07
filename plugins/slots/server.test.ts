@@ -12,7 +12,7 @@ import { renderResult } from "./cli.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024 ** 3 }, savedSettings: Record<string, number> = {}) {
+async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024 ** 3 }, savedSettings: Record<string, number | string> = {}) {
   const path = dir ?? await mkdtemp(join(tmpdir(), "slots-test-"));
   if (!dir) cleanups.push(() => rm(path, { recursive: true, force: true }));
   let now = Date.parse("2026-11-07T12:00:00Z");
@@ -27,9 +27,13 @@ async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024
     }, send },
   } });
   const metrics = vi.fn(async () => ({ memFreePct: 75, load1: 1 }));
-  const runtime = { cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
+  const runtime = { legacySettings: vi.fn(async () => savedSettings), cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
   const { invoke } = await register(host.bb, runtime);
   cleanups.push(() => host.harness.lifecycle.dispose());
+  async function configure(values: Record<string, number | string>) {
+    const result = await invoke("settingsWrite", { values });
+    if (!result.ok) throw new Error(result.error.message);
+  }
   async function view() { const result = await invoke("status", {}); if (!result.ok) throw new Error(result.error.message); return result.data as StatusView; }
   async function request(threadId = "a") {
     return await invoke("request", { threadId, hostId: "local", pool: "heavy", job: "tests", estMs: 60000 }) as Result<RequestOutcome>;
@@ -38,7 +42,7 @@ async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024
     await request(threadId); await invoke("gate", { threadId, hostId: "local" }); now += 15000; await invoke("gate", { threadId, hostId: "local" });
     return (await view()).pools[0].leases.find(l => l.ownerThreadId === threadId)!;
   }
-  return { ...host, invoke, view, request, grant, threads, send, metrics, path, runtime, advance: (ms: number) => { now += ms; } };
+  return { ...host, invoke, view, request, grant, threads, send, metrics, path, runtime, configure, advance: (ms: number) => { now += ms; } };
 }
 it("parses macOS/Linux memory and duration/ISO log bounds", () => {
   expect(parseMemoryPressure("System-wide memory free percentage: 24%\n")).toBe(24);
@@ -102,7 +106,7 @@ it("skips a bound port and probes both loopback families", async () => {
   cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
   expect(await probePort(port)).toBe(false);
   const h = await setup();
-  await h.harness.behavior.setSettings({ portFrom: port, portTo: Math.min(65535, port + 20) });
+  await h.configure({ portFrom: port, portTo: Math.min(65535, port + 20) });
   await h.grant(); const result = await h.invoke("port", { threadId: "a", hostId: "local" });
   expect(result).toMatchObject({ ok: true, data: { port: expect.any(Number) } });
   if (result.ok) expect((result.data as { port: number }).port).toBeGreaterThan(port);
@@ -136,9 +140,9 @@ it("manual grant preserves the requested order override and notification failure
 });
 it("settings reject invalid intervals and restore refuses malformed state", async () => {
   const h = await setup();
-  await expect(h.harness.behavior.setSettings({ gateIntervalSeconds: 0 })).rejects.toThrow();
-  await h.harness.behavior.setSettings({ heartbeatIntervalMinutes: 30 });
-  await expect(h.view()).rejects.toThrow("Invalid settings");
+  await expect(h.configure({ gateIntervalSeconds: 0 })).rejects.toThrow();
+  await expect(h.configure({ heartbeatIntervalMinutes: 30 })).rejects.toThrow("Invalid settings");
+  expect((await h.view()).hostSettings.local.heartbeatIntervalMs).toBe(600000);
   await h.harness.lifecycle.dispose();
   await writeFile(join(h.path, "state.json"), JSON.stringify({ version: 1, leases: "broken" }));
   const next = await setup(h.path);
@@ -147,14 +151,14 @@ it("settings reject invalid intervals and restore refuses malformed state", asyn
 
 it("converts typed human-unit settings and capacity updates only their matching field", async () => {
   const h = await setup();
-  await h.harness.behavior.setSettings({ heavyCapacity: 6, localModelCapacity: 2, gateIntervalSeconds: 20, leaseTtlMinutes: 45,
+  await h.configure({ heavyCapacity: 6, localModelCapacity: 2, gateIntervalSeconds: 20, leaseTtlMinutes: 45,
     heartbeatIntervalMinutes: 5, observerThreadId: " b ", grantMode: "manual" });
   expect((await h.view()).hostSettings.local).toMatchObject({ capacities: { heavy: 6, "local-model": 2 },
     gateIntervalMs: 20000, leaseTtlMs: 2700000, heartbeatIntervalMs: 300000, observerThreadId: "b", grantMode: "manual", hosts: {} });
   await h.invoke("setCapacity", { hostId: "local", pool: "local-model", capacity: 3 });
   expect((await h.view()).hostSettings.local.capacities).toEqual({ heavy: 6, "local-model": 3 });
-  await h.harness.behavior.setSettings({ portFrom: 50000, portTo: 49999 });
-  await expect(h.view()).rejects.toThrow("Invalid settings");
+  await expect(h.configure({ portFrom: 50000, portTo: 49999 })).rejects.toThrow("Invalid settings");
+  expect((await h.view()).hostSettings.local.portRange.from).toBe(41000);
 });
 it("resolves titles outside the queue in parallel, shares cache entries, expires and invalidates them", async () => {
   const h = await setup(); await h.request("a"); await h.request("b");
@@ -195,13 +199,13 @@ it("renders short human CLI output while preserving JSON envelopes", async () =>
 
 it("validates and parses comma-separated observer settings, including empty and whitespace", async () => {
   const h = await setup();
-  await h.harness.behavior.setSettings({ observerEvents: " grant, warn,grant ", observerQueueWaitMinutes: 3, observerGateHoldMinutes: 2 });
+  await h.configure({ observerEvents: " grant, warn,grant ", observerQueueWaitMinutes: 3, observerGateHoldMinutes: 2 });
   expect((await h.view()).hostSettings.local).toMatchObject({ observerEvents: ["grant", "warn"], observerQueueWaitMs: 180000, observerGateHoldMs: 120000 });
-  await expect(h.harness.behavior.setSettings({ observerEvents: "warn,unknown" })).rejects.toThrow();
-  await expect(h.harness.behavior.setSettings({ observerEvents: "warn," })).rejects.toThrow();
-  await expect(h.harness.behavior.setSettings({ observerGateHoldMinutes: 0 })).rejects.toThrow();
-  await expect(h.harness.behavior.setSettings({ observerQueueWaitMinutes: -1 })).rejects.toThrow();
-  await h.harness.behavior.setSettings({ observerEvents: " " });
+  await expect(h.configure({ observerEvents: "warn,unknown" })).rejects.toThrow();
+  await expect(h.configure({ observerEvents: "warn," })).rejects.toThrow();
+  await expect(h.configure({ observerGateHoldMinutes: 0 })).rejects.toThrow();
+  await expect(h.configure({ observerQueueWaitMinutes: -1 })).rejects.toThrow();
+  await h.configure({ observerEvents: " " });
   expect((await h.view()).hostSettings.local.observerEvents).toEqual([]);
 });
 it("loads 0.1.0 state with default alert flags and retains leases, ports and queues", async () => {
@@ -252,8 +256,7 @@ it.each(["thread.archived", "thread.deleted"] as const)("clears and audits an en
   expect((await h.view()).audit.at(-1)).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
 });
 it("startup clears a dead configured observer", async () => {
-  const h = await setup();
-  await h.harness.behavior.setSettings({ observerThreadId: "missing" });
+  const h = await setup(undefined, undefined, { observerThreadId: "missing" });
   expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
   expect((await h.view()).audit).toContainEqual(expect.objectContaining({ type: "observer", reason: expect.stringContaining("missing → none") }));
 });
@@ -283,22 +286,22 @@ it.each([
 it("keeps explicit values, permits disabled pools, and rejects writes above machine limits", async () => {
   const h = await setup(undefined, { cores: 24, totalMemory: 128 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 2 });
   expect(await h.view()).toMatchObject({ hostSettings: { local: { loadMax: 18, capacities: { heavy: 2 } } } });
-  await expect(h.harness.behavior.setSettings({ loadMax: 25 })).rejects.toThrow("Load limit cannot exceed 24 CPU cores");
-  await expect(h.harness.behavior.setSettings({ heavyCapacity: 25 })).rejects.toThrow("Heavy capacity cannot exceed 24 CPU cores");
+  await expect(h.configure({ loadMax: 25 })).rejects.toThrow("Load limit cannot exceed 24 CPU cores");
+  await expect(h.configure({ heavyCapacity: 25 })).rejects.toThrow("Heavy capacity cannot exceed 24 CPU cores");
   expect(await h.invoke("setCapacity", { hostId: "local", pool: "heavy", capacity: 25 })).toMatchObject({ ok: false, error: { message: "Heavy capacity cannot exceed 24 CPU cores" } });
   const cli = await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "25"]);
   expect(cli.exitCode).toBe(1);
   expect(cli.stdout).toContain("Heavy capacity cannot exceed 24 CPU cores");
   expect((await h.view()).hostSettings.local.capacities.heavy).toBe(2);
-  await h.harness.behavior.setSettings({ loadMax: 12, heavyCapacity: 0 });
+  await h.configure({ loadMax: 12, heavyCapacity: 0 });
   expect((await h.view()).hostSettings.local).toMatchObject({ loadMax: 12, capacities: { heavy: 0 } });
-  await expect(h.harness.behavior.setSettings({ loadMax: 0 })).rejects.toThrow();
+  await expect(h.configure({ loadMax: 0 })).rejects.toThrow();
 });
 
 it.each([false, true])("uses current definition defaults after reload; explicit settings: %s", async explicit => {
   const h = await setup();
   await h.view();
-  if (explicit) await h.harness.behavior.setSettings({ loadMax: 18, heavyCapacity: 4 });
+  if (explicit) await h.configure({ loadMax: 18, heavyCapacity: 4 });
   let invoke = h.invoke;
   const replacement = await h.harness.lifecycle.reload(async bb => {
     ({ invoke } = await register(bb, { ...h.runtime, cores: () => 24, totalMemory: () => 128 * 1024 ** 3 }));
@@ -325,7 +328,7 @@ it("clamps legacy saved values on smaller machines and surfaces warnings without
 
 it("uses the resolved limit in gate CLI and observer hold messages", async () => {
   const h = await setup(undefined, { cores: 6, totalMemory: 64 * 1024 ** 3 });
-  await h.harness.behavior.setSettings({ observerThreadId: "b", observerGateHoldMinutes: 1 });
+  await h.configure({ observerThreadId: "b", observerGateHoldMinutes: 1 });
   h.metrics.mockResolvedValue({ memFreePct: 75, load1: 25 });
   await h.request();
   const gate = await h.harness.behavior.runCli(["gate"], { threadId: "a" });
@@ -335,4 +338,72 @@ it("uses the resolved limit in gate CLI and observer hold messages", async () =>
   try {
     await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("(max 6.0)") })] })));
   } finally { service.controller.abort(); await service.done; }
+});
+
+it("settings RPC validates before saving, unsets defaults, and validates observer targets", async () => {
+  const h = await setup();
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { cores: 18, heavyDefault: 4, values: { heavyCapacity: 4 } } });
+  expect(await h.invoke("settingsWrite", { values: { ["heavyCapacity"]: 19 } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsWrite", { values: { ["portFrom"]: 42000 } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsWrite", { values: { ["heartbeatIntervalMinutes"]: 60 } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsWrite", { values: { ["grantMode"]: "invalid" } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsWrite", { values: { ["unknown"]: 1 } })).toMatchObject({ ok: false });
+  expect((await h.view()).hostSettings.local.portRange.from).toBe(41000);
+  expect(await h.invoke("settingsWrite", { values: { ["heavyCapacity"]: 2 } })).toMatchObject({ ok: true });
+  expect(await h.invoke("settingsWrite", { unset: ["heavyCapacity"] })).toMatchObject({ ok: true, data: { values: { heavyCapacity: 4 } } });
+  expect(await h.invoke("settingsWrite", { values: { ["observerThreadId"]: "missing" } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsWrite", { values: { ["observerThreadId"]: "b" } })).toMatchObject({ ok: true });
+  expect(await h.invoke("settingsWrite", { values: { ["observerEvents"]: "warn,expire" } })).toMatchObject({ ok: true });
+  expect((await h.view()).hostSettings.local).toMatchObject({ observerThreadId: "b", observerEvents: ["warn", "expire"] });
+  expect(await h.invoke("settingsWrite", { values: { ["observerThreadId"]: "" } })).toMatchObject({ ok: true });
+  let invoke = h.invoke;
+  const replacement = await h.harness.lifecycle.reload(async bb => { ({ invoke } = await register(bb, { ...h.runtime, cores: () => 24, totalMemory: () => 128 * 1024 ** 3 })); });
+  cleanups.push(() => replacement.harness.lifecycle.dispose());
+  expect(await invoke("settingsRead", {})).toMatchObject({ ok: true, data: { values: { heavyCapacity: 6 } } });
+});
+
+it("migrates a fake legacy handle once, preserving the observer and ignoring defaults and unknown keys", async () => {
+  const h = await setup();
+  const handle = { get: vi.fn(async () => ({ observerThreadId: "b", heavyCapacity: 2, leaseTtlMinutes: 5, heartbeatIntervalMinutes: 2, portFrom: 50000, portTo: 50010, loadMax: 18, localModelCapacity: 1, unknown: "ignored" })) };
+  h.runtime.legacySettings.mockImplementation(handle.get);
+  await h.view();
+  expect(handle.get).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8"))).toEqual({ version: 1, values: { heavyCapacity: 2, observerThreadId: "b", leaseTtlMinutes: 5, heartbeatIntervalMinutes: 2, portFrom: 50000, portTo: 50010 } });
+  expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: "b" } });
+  const replacement = await h.harness.lifecycle.reload(async bb => { await register(bb, h.runtime); });
+  cleanups.push(() => replacement.harness.lifecycle.dispose());
+  await replacement.harness.behavior.callRpc("settingsRead", {});
+  expect(handle.get).toHaveBeenCalledTimes(1);
+  const logs = h.harness.inspection.logEntries.filter(entry => entry.message.includes("Slots migrated settings:"));
+  expect(logs).toHaveLength(1);
+  expect(logs[0].message).not.toContain(" = ");
+});
+
+it("tolerates unavailable legacy reads and records migration completion", async () => {
+  const h = await setup();
+  h.runtime.legacySettings.mockRejectedValueOnce(new Error("unavailable"));
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { setKeys: [], defaults: { heavyCapacity: 4 }, maxima: { heavyCapacity: 18 } } });
+  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8"))).toEqual({ version: 1, values: {} });
+});
+
+it("config CLI and tool share validation, unset explicit keys, and preserve config on failed writes", async () => {
+  const h = await setup();
+  expect((await h.harness.behavior.runCli(["config", "set", "heavyCapacity", "2"])).exitCode).toBe(0);
+  expect((await h.harness.behavior.runCli(["config", "show"])).stdout).toContain("heavyCapacity = 2");
+  expect((await h.harness.behavior.runCli(["config", "set", "loadMax", "19"])).exitCode).toBe(1);
+  expect((await h.harness.behavior.runCli(["config", "set", "portFrom", "42000"])).exitCode).toBe(1);
+  expect((await h.harness.behavior.runCli(["config", "set", "unknown", "1"])).exitCode).toBe(1);
+  expect((await h.harness.behavior.runCli(["config", "unset", "heavyCapacity", "--json"])).stdout).toContain('"setKeys":[]');
+  const response = await h.harness.behavior.callAgentTool("slots_config", { operation: "set", key: "loadMax", value: 12 });
+  expect(JSON.parse(response as string)).toMatchObject({ ok: true, data: { values: { loadMax: 12 }, setKeys: ["loadMax"] } });
+  vi.spyOn(h.runtime.store, "saveConfig").mockRejectedValueOnce(new Error("disk full"));
+  expect(await h.invoke("settingsWrite", { values: { loadMax: 10 } })).toMatchObject({ ok: false });
+  expect((await h.view()).hostSettings.local.loadMax).toBe(12);
+  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8"))).toEqual({ version: 1, values: { loadMax: 12 } });
+  expect(h.harness.inspection.realtimeSignals).toContainEqual(expect.objectContaining({ channel: SLOTS_CHANGED }));
+});
+
+it("migration skips incompatible legacy pairs without losing the observer", async () => {
+  const h = await setup(undefined, undefined, { observerThreadId: "b", leaseTtlMinutes: 5, portFrom: 50000 });
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { setKeys: ["observerThreadId"], values: { observerThreadId: "b", leaseTtlMinutes: 30, portFrom: 41000 } } });
 });

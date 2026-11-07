@@ -7,6 +7,7 @@ import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { plural } from "./lib/plural";
 import { cn } from "./lib/utils";
 import type { AuditEvent, StatusView } from "./contract";
+import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
 export function duration(ms: number) {
@@ -154,5 +155,6 @@ function SlotsPage() {
 }
 
 export default definePluginApp(app => {
+  app.slots.settingsSection({ id: "settings", title: "Machine Slots", description: "Machine capacity, checks, leases and manager notifications.", component: SlotsSettings });
   app.slots.navPanel({ id: "slots", title: "Slots", icon: "Layers", path: "slots", component: SlotsPage });
 });

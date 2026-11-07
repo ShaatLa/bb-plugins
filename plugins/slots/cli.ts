@@ -1,7 +1,7 @@
 import { cliCommand, defineCli, type BbPluginApi, type PluginCliContext, type PluginCliResult } from "@get-bb/plugin-sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
-import type { Result, ObserverView, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
+import type { Result, SettingsFormView, ObserverView, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
 import { plural } from "./lib/plural.js";
 import { parseSince } from "./runtime.js";
 
@@ -9,6 +9,7 @@ const line = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
 const leaseLine = (lease: Lease) => `${lease.id} ${lease.pool} #${lease.slotIndex} · ${lease.holderThreadId} · ${line(lease.job)} · expires ${new Date(lease.expiresAt).toISOString()}`;
 function humanOutput(method: string, data: unknown): string {
   switch (method) {
+    case "config": return Object.entries((data as SettingsFormView).values).map(([key, value]) => `${key} = ${value}`).join("\n");
     case "observer": {
       const view = data as ObserverView;
       return `Observer ${view.threadId ? `${view.threadId} · ${line(view.title ?? view.threadId)}` : "none"} · events: ${view.events.join(", ") || "none"}`;
@@ -78,6 +79,11 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     },
   });
   bb.cli.register(defineCli({ name: "slots", summary: "Advisory local resource leases and machine gate", commands: {
+    config: cliCommand({ summary: "Show, set or unset Machine Slots configuration", options: { json }, positionals: [
+      { name: "operation", description: "show, set or unset", required: false },
+      { name: "key", description: "Setting name", required: false },
+      { name: "value", description: "New value", required: false },
+    ], async run(i) { return renderResult("config", await invoke("config", { operation: i.positionals.operation ?? "show", ...(i.positionals.key ? { key: i.positionals.key } : {}), ...(i.positionals.value !== undefined ? { value: i.positionals.value } : {}) }), !!i.options.json); } }),
     observer: cliCommand({ summary: "Show or change the observer and event filter", options: {
       json, thread: { type: "string", description: "New observer thread ID" },
       self: { type: "boolean", description: "Make the calling thread the observer" },

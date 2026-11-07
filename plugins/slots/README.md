@@ -5,7 +5,10 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.2.5)
+## Sidebar (0.3.0)
+
+Version 0.3.0 adds a grouped settings editor with bounded numeric controls,
+machine-default resets, live readings and an observer thread picker with event switches.
 
 Version 0.2.5 keeps dashboard values compact, leaving default and maximum
 explanations in the settings labels. Clamp warnings remain visible.
@@ -43,6 +46,7 @@ BB_THREAD_ID; holder commands also accept `--thread <id>`.
 bb slots request --pool heavy --job "full test suite" --est 35m --priority normal --wait --timeout 30m
 bb slots gate
 bb slots heartbeat
+bb slots config [show | set <key> <value> | unset <key>] [--json]
 bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold] [--json]
 bb slots release [lease-or-request]
 bb slots status
@@ -60,7 +64,7 @@ withdraws the queued request on timeout/disconnect and exits 1. Default timeout
 is 30m; maximum 60m (BB's CLI headers timeout is 65m). Tools return immediately;
 grant messages wake idle threads. Tool names are `slots_request`, `slots_release`,
 `slots_heartbeat`, `slots_gate`, `slots_status`, `slots_transfer`, `slots_port`,
-`slots_observer`, `slots_prioritize`, `slots_revoke`, `slots_grant`, `slots_setCapacity`, `slots_log`.
+`slots_config`, `slots_observer`, `slots_prioritize`, `slots_revoke`, `slots_grant`, `slots_setCapacity`, `slots_log`.
 The native tools are enabled alongside the bundled `slots` skill.
 
 `gate` samples freshly and exits 1 when the reading fails; it prints readings
@@ -80,9 +84,34 @@ Binding after a successful probe can still race another application.
 
 ## Settings
 
-Installed plugin settings expose typed controls with range validation. The SDK
-has no host-scoped settings, so settings are global and engine `hosts` overrides
-remain empty. Human units are converted at the boundary.
+The custom Machine Slots settings section groups Slots, Machine check (with
+collapsed Advanced checks), Leases, Manager / observer, Grant mode and Dev-server
+ports. Changes apply immediately; server validation errors appear inline. Reset
+to default unsets the key so machine defaults follow the next start. The observer
+picker lists active sessions across projects; the server rejects sessions on other
+hosts. Clear disables the observer without changing event preferences.
+
+Only the grouped editor is shown: Machine Slots no longer defines host-rendered
+settings descriptors. Configuration lives in atomic `config.json` beside `state.json`,
+with only explicitly set keys. Defaults and maxima continue to follow the machine.
+`bb plugin config slots` no longer applies; use `bb slots config` or `slots_config`.
+
+The frontend RPCs `settingsRead` and `settingsWrite` return values, defaults,
+maxima and explicitly set keys. Writes accept a partial `values` object and/or
+an `unset` key list. Per-field schemas, machine maxima, cross-field combinations
+and observer targets are validated before persistence. Changes publish
+`slots.changed` and apply immediately. `config` powers the CLI and agent tool
+with show/set/unset operations; the two frontend RPCs are not agent tools.
+
+On the first start without `config.json`, migration tolerates unavailable legacy
+reads and copies recognized legacy values only when they differ from the 0.2.5
+(machine-derived where applicable) defaults. Equal-to-default values become unset.
+The file marks migration complete, so it never re-runs; only key names are logged.
+Legacy read failures or ambiguous defaults can lose old overrides; verify the
+observer after upgrading and reselect it if needed. Legacy rows are left untouched.
+
+Configuration uses typed server validation. Settings apply to the BB server machine;
+engine `hosts` overrides remain empty. Human units are converted at the boundary.
 The load limit defaults to the available CPU core count and cannot exceed it.
 Heavy capacity defaults to `max(1, min(floor(cores / 4), floor(totalMemGiB / 16)))`
 and is capped at the CPU core count; 0 still disables the pool. For 18 cores and
@@ -111,7 +140,7 @@ remain policy choices rather than machine-derived limits.
 
 The engine's `validateSettings` checks cross-field combinations before use;
 correct invalid heartbeat/TTL or port bounds before continuing operations.
-`capacity` writes the matching capacity field via `experimental_set`; there is
+`capacity` writes the matching capacity field in `config.json`; there is
 no capacity override in state. Lowering capacity preserves live leases. Settings changes
 reset gate streaks. TTL is `max(leaseTtlMs, estimate + 15m)`, renewed by heartbeat,
 gate, port, duplicate request, active events and each tick for active holders.

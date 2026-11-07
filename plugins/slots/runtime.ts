@@ -66,6 +66,15 @@ export class DiskStore {
     await writeFile(join(this.dir, "state.json.tmp"), JSON.stringify(state), { mode: 0o600 });
     await rename(join(this.dir, "state.json.tmp"), join(this.dir, "state.json"));
   }
+  async loadConfig(): Promise<unknown | undefined> {
+    try { return JSON.parse(await readFile(join(this.dir, "config.json"), "utf8")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  }
+  async saveConfig(values: unknown) {
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(join(this.dir, "config.json.tmp"), JSON.stringify({ version: 1, values }), { mode: 0o600 });
+    await rename(join(this.dir, "config.json.tmp"), join(this.dir, "config.json"));
+  }
   async audit(event: AuditEvent) {
     await mkdir(this.dir, { recursive: true });
     await appendFile(join(this.dir, `${new Date(event.at).toISOString().slice(0, 10)}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 });

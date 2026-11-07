@@ -1,9 +1,9 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, PluginSettingDescriptor } from "@get-bb/plugin-sdk";
 import * as os from "node:os";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings } from "./contract.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
@@ -16,6 +16,7 @@ export interface Runtime {
   metrics: typeof metrics;
   probePort: typeof probePort;
   store?: DiskStore;
+  legacySettings?: () => Promise<Record<string, unknown>>;
 }
 export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Result<unknown>>;
 
@@ -27,25 +28,67 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const cores = Math.max(1, runtime.cores());
   const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
   let settingsWarnings: string[] = [];
-  const handle = bb.settings.define({
-    heavyCapacity: { type: "number", label: `Heavy capacity (default: ${heavyDefault}, max: ${cores} = CPU cores; 0 disables)`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
-    localModelCapacity: { type: "number", label: "Local model capacity (0–10000)", default: 1, experimental_schema: z.number().int().min(0).max(10000) },
-    memFreeMinPct: { type: "number", label: "Minimum memory free % (0–100)", default: 20, experimental_schema: z.number().min(0).max(100) },
-    loadMax: { type: "number", label: `Maximum 1-minute load (default and max: ${cores} = CPU cores)`, default: cores, experimental_schema: z.number().positive().max(cores, `Load limit cannot exceed ${cores} CPU cores`) },
-    gateSamples: { type: "number", label: "Consecutive gate samples (1–100)", default: 2, experimental_schema: z.number().int().min(1).max(100) },
-    gateIntervalSeconds: { type: "number", label: "Gate interval in seconds (1–3600)", default: 15, experimental_schema: z.number().int().min(1).max(3600) },
-    leaseTtlMinutes: { type: "number", label: "Lease TTL in minutes (2–10080)", default: 30, experimental_schema: z.number().int().min(2).max(10080) },
-    heartbeatIntervalMinutes: { type: "number", label: "Heartbeat interval in minutes (1–10079; below TTL)", default: 10, experimental_schema: z.number().int().min(1).max(10079) },
-    observerThreadId: { type: "string", label: "Observer thread ID (optional)", default: "", experimental_schema: z.string().max(200) },
-    observerEvents: { type: "string", label: "Observer events (comma-separated; empty disables)", default: DEFAULT_SETTINGS.observerEvents.join(","), experimental_schema: observerEventsSchema },
-    observerQueueWaitMinutes: { type: "number", label: "Observer queue wait in minutes", default: 20, experimental_schema: z.number().int().min(1).max(10080) },
-    observerGateHoldMinutes: { type: "number", label: "Observer gate hold in minutes", default: 15, experimental_schema: z.number().int().min(1).max(10080) },
-    portFrom: { type: "number", label: "First dev-server port (1–65535)", default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
-    portTo: { type: "number", label: "Last dev-server port (1–65535; at least first port)", default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
-    grantMode: { type: "select", label: "Grant mode", options: ["auto", "manual"], default: "auto" },
-  });
+  const descriptors = {
+    heavyCapacity: { type: "number", label: "Heavy jobs", description: `Default ${heavyDefault} · max ${cores} (CPU cores). Zero disables the pool.`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
+    localModelCapacity: { type: "number", label: "Local model", description: `Default 1 · max 10000. Zero disables the pool.`, default: 1, experimental_schema: z.number().int().min(0).max(10000) },
+    memFreeMinPct: { type: "number", label: "Memory free minimum", description: `Minimum percentage of free memory required to start work.`, default: 20, experimental_schema: z.number().min(0).max(100) },
+    loadMax: { type: "number", label: "Load limit", description: `Default and max ${cores} (CPU cores). Lower this to reserve machine capacity.`, default: cores, experimental_schema: z.number().positive().max(cores, `Load limit cannot exceed ${cores} CPU cores`) },
+    gateSamples: { type: "number", label: "Checks in a row", description: `Consecutive passing readings required before automatic grants.`, default: 2, experimental_schema: z.number().int().min(1).max(100) },
+    gateIntervalSeconds: { type: "number", label: "Seconds between checks", description: `Time between machine readings while work is waiting.`, default: 15, experimental_schema: z.number().int().min(1).max(3600) },
+    leaseTtlMinutes: { type: "number", label: "Lease time", description: `Base lease time in minutes; estimates may extend it.`, default: 30, experimental_schema: z.number().int().min(2).max(10080) },
+    heartbeatIntervalMinutes: { type: "number", label: "Heartbeat interval", description: `Minutes before expiry to warn an idle holder; must be below lease time.`, default: 10, experimental_schema: z.number().int().min(1).max(10079) },
+    observerThreadId: { type: "string", label: "Observer", description: `Session receiving manager notifications; leave empty for none.`, default: "", experimental_schema: z.string().max(200) },
+    observerEvents: { type: "string", label: "Observer events", description: `Comma-separated event names; empty disables notifications.`, default: DEFAULT_SETTINGS.observerEvents.join(","), experimental_schema: observerEventsSchema },
+    observerQueueWaitMinutes: { type: "number", label: "Request wait threshold", description: `Minutes before alerting the manager about queued work.`, default: 20, experimental_schema: z.number().int().min(1).max(10080) },
+    observerGateHoldMinutes: { type: "number", label: "Machine busy threshold", description: `Minutes before alerting the manager about a failing machine check.`, default: 15, experimental_schema: z.number().int().min(1).max(10080) },
+    portFrom: { type: "number", label: "Ports from", description: `First port available for development servers.`, default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
+    portTo: { type: "number", label: "Ports to", description: `Last port available; must be at least the first port.`, default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
+    grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
+  } satisfies Record<string, PluginSettingDescriptor>;
+  const defaults = Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as SettingValues;
+  const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
+  const rawConfig = await store.loadConfig();
+  const configSchema = z.object({ version: z.literal(1), values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])) }).strict();
+  let migrationDone = rawConfig !== undefined;
+  let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
+  const readValues = () => ({ ...defaults, ...explicit }) as Awaited<ReturnType<typeof effectiveValues>>;
+  function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
+    heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
+    gateIntervalSeconds: number; leaseTtlMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
+    observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
+  }; }
+  function validateField(key: SettingKey, value: unknown, legacy = false) {
+    const descriptor = descriptors[key];
+    const parsed = legacy && typeof descriptor.default === "number" && typeof value === "string" ? Number(value) : value;
+    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(legacy && (key === "heavyCapacity" || key === "loadMax") && typeof parsed === "number" ? Math.min(parsed, cores) : parsed);
+    else if (typeof parsed !== "string" || !descriptor.options.includes(parsed)) throw new Error("Invalid grant mode");
+    return parsed as number | string;
+  }
+  for (const key of SETTING_KEYS) if (explicit[key] !== undefined) validateField(key, explicit[key], true);
+  async function persistConfig(patch: Partial<SettingValues>, unset: SettingKey[] = []) {
+    const next = { ...explicit };
+    for (const key of SETTING_KEYS) if (patch[key] !== undefined) next[key] = validateField(key, patch[key]);
+    for (const key of unset) delete next[key];
+    resolveSettings({ ...readValues(), ...next, ...Object.fromEntries(unset.map(key => [key, defaults[key]])) } as ReturnType<typeof readValues>);
+    await store.saveConfig(next);
+    explicit = next;
+    settings = await getSettings();
+    if (initialized) await transition({ type: "restored" });
+  }
+  function formView(): SettingsFormView {
+    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax }, defaults,
+      maxima: { heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
+  }
   const getSettings = async (): Promise<Settings> => {
-    const values = await handle.get();
+    const current = readValues();
+    const settings = resolveSettings(current);
+    settingsWarnings = [
+      ...(current.loadMax > cores ? [`Saved load limit ${current.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+      ...(current.heavyCapacity > cores ? [`Saved heavy capacity ${current.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+    ];
+    return settings;
+  };
+  function resolveSettings(values: ReturnType<typeof readValues>): Settings {
     const settings: Settings = {
       capacities: { heavy: Math.min(values.heavyCapacity, cores), "local-model": values.localModelCapacity },
       memFreeMinPct: values.memFreeMinPct, loadMax: Math.min(values.loadMax, cores), gateSamples: values.gateSamples,
@@ -57,14 +100,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
-    settingsWarnings = [
-      ...(values.loadMax > cores ? [`Saved load limit ${values.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
-      ...(values.heavyCapacity > cores ? [`Saved heavy capacity ${values.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
-    ];
     return settings;
-  };
+  }
   let settings = await getSettings();
-  const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
   let state: State = initialState();
   let localHostId = "";
   let initialized = false;
@@ -112,6 +150,31 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   async function initialize() {
     if (initialized) return;
+    if (!migrationDone) {
+      let legacy: Record<string, unknown> = {};
+      try { legacy = await (runtime.legacySettings?.() ?? bb.sdk.plugins.getSettings({ pluginId: bb.pluginId }).then(result => result.values)) ?? {}; } catch { /* Legacy reads may be unavailable after descriptors are removed. */ }
+      for (const key of SETTING_KEYS) {
+        if (legacy[key] === undefined || legacy[key] === defaults[key]) continue;
+        try {
+          const value = validateField(key, legacy[key], true);
+          if (value === defaults[key]) continue;
+          explicit[key] = value;
+        } catch { bb.log.warn(`Slots skipped invalid legacy setting: ${key}`); }
+      }
+      const candidate = readValues();
+      if (candidate.heartbeatIntervalMinutes >= candidate.leaseTtlMinutes) {
+        delete explicit.heartbeatIntervalMinutes; delete explicit.leaseTtlMinutes;
+        bb.log.warn("Slots skipped incompatible legacy settings: heartbeatIntervalMinutes, leaseTtlMinutes");
+      }
+      if (candidate.portFrom > candidate.portTo) {
+        delete explicit.portFrom; delete explicit.portTo;
+        bb.log.warn("Slots skipped incompatible legacy settings: portFrom, portTo");
+      }
+      await store.saveConfig(explicit);
+      migrationDone = true;
+      settings = await getSettings();
+      bb.log.info(`Slots migrated settings: ${Object.keys(explicit).join(", ") || "none"}`);
+    }
     const config = await bb.sdk.system.config();
     if (!config.primaryHostId) throw new Error("Cannot resolve BB server host");
     localHostId = config.primaryHostId;
@@ -146,7 +209,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const nextEvents = parseObserverEvents(events);
     const target = threadId ? await localThread(threadId) : null;
     if (previousThreadId === threadId && previousEvents.join(",") === nextEvents.join(",")) return;
-    await handle.experimental_set({ observerThreadId: threadId ?? "", observerEvents: nextEvents.join(",") });
+    await persistConfig({ ...(previousThreadId !== threadId ? { observerThreadId: threadId ?? "" } : {}),
+      ...(previousEvents.join(",") !== nextEvents.join(",") ? { observerEvents: nextEvents.join(",") } : {}) });
     settings = await getSettings();
     await transition({ type: "observer", hostId: localHostId, previousThreadId, previousEvents, previousEnded, title: target?.title ?? threadId });
   }
@@ -160,6 +224,26 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     try {
       if (p.threadId) await localThread(p.threadId);
       if (p.hostId && p.hostId !== localHostId) return invalid(`Slots v1 only supports the BB server host (${localHostId})`);
+      if (method === "settingsRead") return { ok: true, data: formView() };
+      if (method === "settingsWrite" || method === "config") {
+        let patch: Partial<SettingValues> = p.values ?? {};
+        let unset: SettingKey[] = p.unset ?? [];
+        if (method === "config") {
+          if (p.operation === "show") return { ok: true, data: formView() };
+          if (!p.key || (p.operation === "set" && p.value === undefined)) throw new Error("Config set needs key and value; unset needs a key");
+          if (p.operation === "unset") unset = [p.key];
+          else patch = { [p.key]: typeof defaults[p.key as SettingKey] === "number" && typeof p.value === "string" ? Number(p.value) : p.value };
+        }
+        const candidate = { ...readValues(), ...patch, ...Object.fromEntries(unset.map(key => [key, defaults[key]])) } as ReturnType<typeof readValues>;
+        if (("observerThreadId" in patch || unset.includes("observerThreadId")) && candidate.observerThreadId.trim()) await localThread(candidate.observerThreadId.trim());
+        const previousThreadId = settings.observerThreadId, previousEvents = settings.observerEvents;
+        await persistConfig(patch, unset);
+        if (previousThreadId !== settings.observerThreadId || previousEvents.join(",") !== settings.observerEvents.join(",")) {
+          const target = settings.observerThreadId ? await lookup(settings.observerThreadId) : null;
+          await transition({ type: "observer", hostId: localHostId, previousThreadId, previousEvents, title: target?.title ?? settings.observerThreadId });
+        }
+        return { ok: true, data: formView() };
+      }
       if (method === "observer") {
         const target = p.clear ? null : p.self ? p.threadId : p.toThreadId ?? settings.observerThreadId;
         if (p.clear || p.self || p.toThreadId || p.events !== undefined) await changeObserver(target, p.events ?? settings.observerEvents.join(","));
@@ -188,7 +272,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       }
       if (method === "setCapacity") {
         if (p.pool === "heavy" && p.capacity > cores) return invalid(`Heavy capacity cannot exceed ${cores} CPU cores`);
-        await handle.experimental_set(p.pool === "heavy" ? { heavyCapacity: p.capacity } : { localModelCapacity: p.capacity });
+        await persistConfig(p.pool === "heavy" ? { heavyCapacity: p.capacity } : { localModelCapacity: p.capacity });
         settings = await getSettings();
       }
       return transition({ ...p, type: method } as Input);
@@ -213,7 +297,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
-  for (const method of Object.keys(inputs) as (keyof RpcMethods)[]) {
+  const agentMethods = (Object.keys(inputs) as (keyof RpcMethods)[]).filter(method => !["settingsRead", "settingsWrite"].includes(method));
+  for (const method of agentMethods) {
     bb.agents.registerTool({ name: `slots_${method}`, description: `Slots ${method}. Returns immediately. Manager operations are unrestricted.`,
       parameters: z.object(Object.fromEntries(Object.entries(inputs[method].shape).filter(([key]) => key !== "threadId"))),
       async execute(params, ctx) {
@@ -227,11 +312,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     });
   }
   registerCli(bb, invoke);
-  bb.agents.configure(() => ({ tools: Object.keys(inputs).map(m => `slots_${m}`), skills: ["slots"] }));
-  handle.onChange(() => { void serial(async () => {
-    settings = await getSettings();
-    if (initialized) await transition({ type: "restored" });
-  }).catch(error => bb.log.error(String(error))); });
+  bb.agents.configure(() => ({ tools: agentMethods.map(m => `slots_${m}`), skills: ["slots"] }));
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, ({ thread }) => serial(async () => {
     await initialize();
     if (settings.observerThreadId === thread.id) await changeObserver(null, settings.observerEvents.join(","), true);

@@ -268,3 +268,40 @@ test("keeps summary values compact and shows clamped-setting warnings", async ()
   expect(slot.getByRole("alert").textContent).toBe("Saved load limit 24 exceeds 18 CPU cores; using 18.");
   expect(slot.container.textContent).not.toContain("(auto)");
 });
+
+test("settings groups, bounded steppers, reset, events, picker selection and inline errors", async () => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } },
+  });
+  const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
+    gateIntervalSeconds: 15, leaseTtlMinutes: 30, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
+    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto" };
+  const write = vi.fn((input: unknown) => {
+    const change = input as { values?: Record<string, unknown>; unset?: string[] };
+    const key = change.unset?.[0] ?? Object.keys(change.values ?? {})[0];
+    const value = change.unset ? null : change.values?.[key];
+    if (key === "portFrom") return { ok: false, error: { code: "invalid-input", message: "Invalid port range" } };
+    return { ok: true, data: { cores: 18, heavyDefault: 4, values: { ...values, [key]: value === null ? 4 : value } } };
+  });
+  const slot = renderSlot(app.settingsSections[0], {}, { rpc: {
+    settingsRead: () => ({ ok: true, data: { cores: 18, heavyDefault: 4, values } }), settingsWrite: write,
+    status: () => ({ ok: true, data: fixture }),
+  }, sdk: { threads: { list: async () => [{ id: "manager", title: "Manager session", status: "idle" }] as any,
+    get: async () => ({ title: "Manager session" }) as any } } });
+  await slot.findByRole("region", { name: "Slots" });
+  for (const name of ["Machine check", "Leases", "Manager / observer", "Grant mode", "Dev-server ports"]) expect(slot.getByRole("region", { name })).toBeTruthy();
+  const heavy = slot.getByRole("spinbutton", { name: "Heavy jobs capacity" });
+  fireEvent.change(heavy, { target: { value: "19" } });
+  expect(write).not.toHaveBeenCalled();
+  expect((heavy as HTMLInputElement).value).toBe("4");
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Reset Heavy jobs capacity to default" })); });
+  expect(write).toHaveBeenLastCalledWith({ unset: ["heavyCapacity"] });
+  await act(async () => { fireEvent.click(slot.getByRole("switch", { name: "Expiry warning" })); });
+  expect(write).toHaveBeenLastCalledWith({ values: { observerEvents: "expire" } });
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Choose thread…" })); });
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: /Manager session/ })); });
+  expect(write).toHaveBeenLastCalledWith({ values: { observerThreadId: "manager" } });
+  await act(async () => { fireEvent.change(slot.getByRole("spinbutton", { name: "From port" }), { target: { value: "42000" } }); });
+  expect(slot.getByRole("alert").textContent).toBe("Invalid port range");
+});

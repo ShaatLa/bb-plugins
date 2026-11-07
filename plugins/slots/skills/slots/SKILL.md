@@ -26,3 +26,9 @@ Manager commands: `prioritize <req> --priority high|urgent|normal`,
 Manager commands are unrestricted. V1 supports only the BB server host.
 
 On start, a manager session runs `bb slots observer --self`.
+
+Configuration: `bb slots config` shows effective values. Use
+`bb slots config set <key> <value>` and `bb slots config unset <key>` (reset to
+the current machine default); every operation supports `--json`. The `slots_config`
+tool accepts `operation` (`show`, `set`, `unset`), plus `key` and `value` as needed.
+Configuration is plugin-owned; `bb plugin config slots` no longer applies.
