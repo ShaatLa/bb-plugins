@@ -23,9 +23,14 @@ Builds on 0.1.0 (`PLAN.md`, shipped code in this folder). Not shipped (excluded 
 4. **From the regular bb chat** too: bb's message action (also offered in the
    assistant-message text-selection menu) "Add to reply pool" adds the selected text
    (or the whole message) to that thread's pool.
-5. Agent message formatting is preserved in the Inbox (host `Markdown`, the chat
-   renderer). Known limit: a quote is the selection's plain text
-   (`Selection.toString()`), so lists/code/bold inside the quote become plain lines.
+5. Agent message formatting is preserved, both in the Inbox (host `Markdown`, the
+   chat renderer) and **inside quotes**: do it the way bb's own chat "Add to chat"
+   selection action does. bb (thread-detail bundle) takes the single selection range,
+   clips it to the message body node and serializes the range to **Markdown**
+   (`ig(range, node, "markdown")`), then quotes that into the composer. That
+   serializer is internal (not in SDK 0.6.132), so the plugin does the same with
+   `turndown` on `range.cloneContents()` of the clipped range (headings, lists, code
+   spans/blocks, bold/italic, links, blockquotes). Fallback: `selection.toString()`.
 
 ## Data model (migration 2, append-only)
 
@@ -106,9 +111,12 @@ sends just the quote. Ingestion already ignores these sends (`originPluginId`).
     oldest→newest like a chat (question bubble as the user, answer/interim via
     `Markdown` as the agent; `for_me` question as the agent with a "Question for you"
     label). Card actions stay (Open in chat, Pin, Done, Reply).
-  - Selection popup: on `mouseup`/`keyup` inside an agent message body, if
-    `getSelection()` is non-empty and within one message, show a popover anchored under
-    the selection rect (fixed position, clamped to viewport) with textarea
+  - Selection popup, modelled on bb's chat selection menu (floating, anchored to the
+    selection rect, `sideOffset` 6, collision padding, Esc closes, does not steal
+    focus on open): on `mouseup`/`keyup` inside an agent message body, if
+    `getSelection()` is one non-collapsed range, clip it to that message's body node
+    (like bb), convert it to Markdown, and show the popover under the selection with
+    textarea
     (Cmd+Enter = Send), **Send** (`quoteReply`), **Add to pool** (`poolAdd` with
     `quoteSeq = answerSeq`, `itemId`), Esc/blur closes. Pending state disables buttons.
 - Keep the 0.1.0 side-panel restore hook.
@@ -162,4 +170,7 @@ Terra is skipped: in 0.1.0 it stopped twice without a blocker.
 
 - `experimental_tab` for nav panels and `experimental_useAppPanel` are experimental APIs.
 - Selection inside host `Markdown` relies on plain DOM selection in the plugin page.
-- Plain-text quotes lose inner formatting (accepted).
+- In the chat, `messageAction` receives bb's `selectedText`; use it as-is.
+- Markdown reconstruction from rendered HTML can differ from the agent's source in
+  edge cases (tables, math); the quote still reads correctly. `turndown` is a new
+  runtime dependency (~10 kB).
