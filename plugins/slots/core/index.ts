@@ -1,3 +1,4 @@
+import { updateWatch } from "./watch.js";
 import {
   DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS,
   type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput,
@@ -26,6 +27,9 @@ export function validateSettings(settings: Settings): string | null {
     Array.isArray(s.observerEvents) && s.observerEvents.every(e => OBSERVER_EVENTS.includes(e)) &&
     Number.isSafeInteger(s.observerQueueWaitMs) && s.observerQueueWaitMs > 0 &&
     Number.isSafeInteger(s.observerGateHoldMs) && s.observerGateHoldMs > 0 &&
+    ["off", "warn"].includes(s.watchPolicy) && Number.isFinite(s.watchCores) && s.watchCores >= 1 &&
+    Number.isInteger(s.watchWindowSeconds) && s.watchWindowSeconds >= 60 && s.watchWindowSeconds <= 900 &&
+    Number.isInteger(s.idleLeaseMinutes) && s.idleLeaseMinutes >= 10 && s.idleLeaseMinutes <= 240 &&
     (s.grantMode === "auto" || s.grantMode === "manual") &&
     Number.isSafeInteger(s.portRange.from) && Number.isSafeInteger(s.portRange.to) &&
     s.portRange.from >= 1 && s.portRange.to <= 65535 && s.portRange.from <= s.portRange.to;
@@ -121,6 +125,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     });
   };
   const free = (l: Lease, type: "release" | "expire" | "revoke", reason: string) => {
+    if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
     const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id}: ${reason}.`;
@@ -185,6 +190,17 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     return result;
   };
   switch (input.type) {
+    case "usage": {
+      if (![input.startAt, input.endAt].every(n => Number.isSafeInteger(n) && n >= 0) || !Number.isFinite(input.unknownCores) || input.unknownCores < 0 || input.subjects.some(s => !text(s.key) || !s.threadIds.length || s.threadIds.some(t => !text(t)) || !Number.isFinite(s.cores) || s.cores < 0)) return fail("invalid-input", "Invalid usage");
+      for (const alert of updateWatch(host(input.hostId), state.leases, input, ctx)) {
+        audit(alert.reason, { hostId: input.hostId, reason: alert.text });
+        const recipients = alert.reason === "unleased-load" && alert.subject.threadIds.length === 1 ? [...alert.subject.threadIds] : [];
+        const config = settingsFor(ctx.settings, input.hostId);
+        if (config.observerThreadId && config.observerEvents.includes(alert.reason) && !recipients.includes(config.observerThreadId)) recipients.push(config.observerThreadId);
+        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, text: alert.text, watch: { hostId: input.hostId, subject: alert.subject } });
+      }
+      break;
+    }
     case "request": {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
@@ -391,8 +407,19 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!input.previousEnded && input.previousThreadId && input.previousThreadId !== next) notify(input.previousThreadId, "observer", `Observer handed over to ${input.title ?? "none"}.`);
       break;
     }
-    case "restored": for (const id of Object.keys(state.hosts)) reset(id); break;
+    case "restored":
+      for (const id of Object.keys(state.hosts)) { reset(id); const w = state.hosts[id].watch; if (w) { w.lastEndAt = null; for (const s of Object.values(w.subjects)) { s.intervals = []; s.episode = false; } } }
+      for (const l of state.leases) l.idle = { since: null, alerted: false };
+      break;
     default: return fail("invalid-input", "Unknown operation");
+  }
+  for (const old of original.leases.filter(l => l.pool === "heavy")) {
+    const current = state.leases.find(l => l.id === old.id);
+    if (!current || current.holderThreadId !== old.holderThreadId) { const h = host(old.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[old.holderThreadId] = ctx.now; }
+  }
+  for (const l of state.leases.filter(l => l.pool === "heavy")) {
+    const old = original.leases.find(o => o.id === l.id);
+    if (!old || old.holderThreadId !== l.holderThreadId) { l.idle = { since: null, alerted: false }; l.holdingSince = ctx.now; }
   }
   cleanupPorts();
   return { state, effects, result: { ok: true, data: structuredClone(data) } };

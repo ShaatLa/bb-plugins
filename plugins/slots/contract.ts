@@ -4,9 +4,10 @@ export const SLOTS_CHANGED = "slots.changed";
 export const POOLS = ["heavy", "local-model"] as const;
 export type PoolName = (typeof POOLS)[number];
 export type Priority = "urgent" | "high" | "normal";
-export const OBSERVER_EVENTS = ["warn", "expire", "revoke", "queue-wait", "gate-hold", "grant", "release", "transfer", "capacity"] as const;
+export const OBSERVER_EVENTS = ["warn", "expire", "revoke", "queue-wait", "gate-hold", "grant", "release", "transfer", "capacity", "unleased-load", "idle-lease"] as const;
 export type ObserverEvent = (typeof OBSERVER_EVENTS)[number];
 export interface HostSettings {
+  watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
   capacities: Record<PoolName, number>;
   memFreeMinPct: number;
   loadMax: number;
@@ -26,10 +27,11 @@ export interface Settings extends HostSettings {
   hosts: Record<string, HostSettings>;
 }
 export const DEFAULT_SETTINGS: Settings = {
+  watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30,
   capacities: { heavy: 4, "local-model": 1 },
   memFreeMinPct: 20, loadMax: 18, gateSamples: 2, gateIntervalMs: 15_000,
   leaseTtlMs: 1_800_000, heartbeatIntervalMs: 600_000,
-  observerEvents: ["warn", "expire", "revoke", "queue-wait", "gate-hold"],
+  observerEvents: ["warn", "expire", "revoke", "queue-wait", "gate-hold", "unleased-load", "idle-lease"],
   observerQueueWaitMs: 1_200_000, observerGateHoldMs: 900_000,
   observerThreadId: null, portRange: { from: 41000, to: 41099 },
   grantMode: "auto", hosts: {},
@@ -45,6 +47,7 @@ export interface Lease {
   id: string; requestId: string; hostId: string; pool: PoolName; slotIndex: number;
   ownerThreadId: string; holderThreadId: string; job: string; estMs: number;
   grantedAt: number; lastHeartbeatAt: number; expiresAt: number; warnedAt: number | null;
+  idle?: { since: number | null; alerted: boolean }; holdingSince?: number;
   uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
 }
 export interface GateReadings { memFreePct: number; load1: number; at: number }
@@ -55,13 +58,21 @@ export interface GateState {
 }
 export interface PortLease { hostId: string; threadId: string; port: number; createdAt: number }
 export type AuditType = "request" | "grant" | "release" | "expire" | "warn" | "revoke" |
-  "use-expired" | "use-dropped" | "unclaimed" | "transfer" | "gate" | "prioritize" | "capacity" | "port" | "port-release" | "queue-wait" | "gate-hold" | "observer";
+  "use-expired" | "use-dropped" | "unclaimed" | "transfer" | "gate" | "prioritize" | "capacity" | "port" | "port-release" | "queue-wait" | "gate-hold" | "observer" | "unleased-load" | "idle-lease";
 export interface AuditEvent {
   seq: number; at: number; type: AuditType; hostId?: string; pool?: PoolName;
   threadId?: string; requestId?: string; leaseId?: string; port?: number;
   readings?: GateReadings; reason?: string; manual?: boolean;
 }
+export interface UsageSubject { key: string; threadIds: string[]; cores: number }
+export interface WatchState {
+  lastEndAt: number | null; settings: string; heavyEndAt: Record<string, number>;
+  subjects: Record<string, { threadIds: string[]; intervals: { startAt: number; endAt: number; cores: number }[]; episode: boolean; lastAlertAt: number | null; seenAt: number }>;
+}
+export interface WatchRunStats { at: number; durationMs: number; cpuMs: number; psMs: number; lsofMs: number; lsofCalls: number }
+export interface WatchDiagnostics { last: WatchRunStats | null; average10m: Omit<WatchRunStats, "at"> & { runs: number } }
 export interface HostState {
+  watch?: WatchState;
   gate: GateState;
 }
 export interface State {
@@ -79,6 +90,7 @@ export interface StatusSnapshot {
 /** What the `status` RPC returns: the engine snapshot plus server-resolved display data. */
 export interface StatusView extends StatusSnapshot {
   /** Thread id -> title for every holder, owner and requester in the snapshot. */
+  watcher?: WatchDiagnostics;
   titles: Record<string, string>;
   /** Effective settings per host in the snapshot (thresholds for the UI). */
   hostSettings: Record<string, HostSettings>;
@@ -117,7 +129,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number }
@@ -146,6 +158,7 @@ export interface RpcMethods {
 export type RpcRequest<K extends keyof RpcMethods> = RpcMethods[K]["input"];
 export type RpcResponse<K extends keyof RpcMethods> = RpcMethods[K]["output"];
 export type Input =
+  | { type: "usage"; hostId: string; startAt: number; endAt: number; valid: boolean; unknownCores: number; subjects: UsageSubject[]; resetKeys?: string[] }
   | { type: "request"; hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority }
   | ({ type: "acquire" } & Omit<RequestParams, "wait" | "timeoutMs">)
   | { type: "done" | "detach" | "heartbeatUse"; threadId: string; useId: string }
@@ -160,9 +173,9 @@ export type Input =
   | ({ type: "grant" } & GrantParams)
   | ({ type: "setCapacity" } & SetCapacityParams)
   | { type: "threadEnded"; threadId: string; reason: "archived" | "deleted" }
-  | { type: "observer"; hostId: string; previousThreadId: string | null; previousEvents: ObserverEvent[]; previousEnded?: boolean; title: string | null }
+  | { type: "observer" | "unleased-load" | "idle-lease"; hostId: string; previousThreadId: string | null; previousEvents: ObserverEvent[]; previousEnded?: boolean; title: string | null }
   | { type: "tick" } | { type: "restored" };
-export type Effect = { type: "notify"; threadId: string; text: string; reason: AuditType } |
+export type Effect = { type: "notify"; threadId: string; text: string; reason: AuditType; watch?: { hostId: string; subject: UsageSubject } } |
   { type: "audit"; event: AuditEvent };
 export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
   Lease | PortLease | SlotRequest | { capacity: number } | null;

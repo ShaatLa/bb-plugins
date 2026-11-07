@@ -490,3 +490,43 @@ it("prints the wrapper through the CLI", async () => {
   const result = await h.harness.behavior.runCli(["wrapper"], { threadId: "a" });
   expect(result.exitCode).toBe(0); expect(result.stdout).toContain('bb slots acquire');
 });
+
+it("validates watch settings, machine defaults/clamp, and preserves explicit 0.3.x observer filters", async () => {
+  const h = await setup(undefined, { cores: 2, totalMemory: 8 * 1024 ** 3 }, { observerEvents: "warn,expire", watchCores: 8 });
+  expect((await h.view()).hostSettings.local).toMatchObject({ watchPolicy: "warn", watchCores: 2, watchWindowSeconds: 120, idleLeaseMinutes: 30, observerEvents: ["warn", "expire"] });
+  const invalid: Record<string, string | number>[] = [{watchPolicy:"pause"},{watchCores:0},{watchCores:3},{watchWindowSeconds:59},{watchWindowSeconds:901},{idleLeaseMinutes:9},{idleLeaseMinutes:241}];
+  for (const values of invalid) await expect(h.configure(values)).rejects.toThrow();
+  await h.configure({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
+  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8")).values).toMatchObject({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
+  expect((await h.invoke("config", {operation:"unset",key:"watchCores"}))).toMatchObject({ok:true,data:{values:{watchCores:1}}});
+  expect((await h.harness.behavior.runCli(["status","--json"])).stdout).toContain('"average10m"');
+});
+it("restores 0.3.x leases/config without watch fields and keeps the original config file", async () => {
+  const h=await setup(); await h.grant(); await h.configure({observerEvents:"warn"});
+  const config=await readFile(join(h.path,"config.json"),"utf8");
+  const saved=JSON.parse(await readFile(join(h.path,"state.json"),"utf8"));
+  for(const host of Object.values(saved.hosts) as any[]) delete host.watch;
+  for(const lease of saved.leases) {delete lease.idle;delete lease.holdingSince;}
+  await writeFile(join(h.path,"state.json"),JSON.stringify(saved));
+  const restored=await setup(h.path);
+  expect((await restored.view()).pools[0].leases).toHaveLength(1);
+  expect((await restored.view()).hostSettings.local).toMatchObject({watchPolicy:"warn",watchCores:3,observerEvents:["warn"]});
+  expect(await readFile(join(h.path,"config.json"),"utf8")).toBe(config);
+});
+it("a hung watcher SDK read leaves gate operations and sampler ticks independent", async () => {
+  const h=await setup(); await h.view();
+  h.harness.sdk.stub("threads.list", ()=>new Promise(()=>{}));
+  const watcher=h.harness.behavior.runService("watcher");
+  const sampler=h.harness.behavior.runService("sampler");
+  const gate=await h.invoke("gate",{threadId:"a",hostId:"local"}); expect(gate.ok).toBe(true);
+  await vi.waitFor(()=>expect(h.metrics).toHaveBeenCalled());
+  watcher.controller.abort(); sampler.controller.abort(); await Promise.all([watcher.done,sampler.done]);
+});
+it("watcher initialization errors leave the loop running for recovery", async () => {
+  const h=await setup(); let calls=0;
+  h.harness.sdk.stub("system.config",async()=>{if(calls++===0) throw new Error("temporary config failure"); return {primaryHostId:"local"};});
+  const service=h.harness.behavior.runService("watcher");
+  await vi.waitFor(()=>expect(h.harness.logEntries.some(e=>e.message.includes("temporary config failure"))).toBe(true));
+  expect((await h.invoke("gate",{threadId:"a",hostId:"local"})).ok).toBe(true);
+  service.controller.abort(); await service.done;
+});
