@@ -2,6 +2,8 @@ import { ScheduledView } from "../views/scheduled/index.js";
 import { ArchiveView } from "../views/archive/index";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useKanbanPanel, projectForRoute } from "./kanban-view.js";
+import type { TaskViewMode } from "./routes.js";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { useProjects, useTasksQuery } from "./data.js";
 import { DEFAULT_BOARD_PREFERENCES } from "../shared/project-settings";
@@ -17,7 +19,6 @@ import { loadLastProjectId, storeLastProjectId, loadViewMode, storeViewMode } fr
 import { startupRoute } from "./startup-route.js";
 import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
-import { BoardView } from "../views/board/index.js";
 import { DetailView } from "../views/detail/index.js";
 import { NewTaskDialog } from "../views/manage/new-task-dialog.js";
 import { NewProjectDialog } from "../views/manage/new-project-dialog.js";
@@ -27,8 +28,6 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { DialogScope } from "@/components/ui/dialog";
 import { TasksRefreshProvider } from "./refresh.js";
-
-const BOARD_MIN_WIDTH = 448;
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -49,11 +48,9 @@ function hasOpenOverlay(): boolean {
 
 function RouteOutlet({
   route,
-  boardUsable,
   onBack,
 }: {
   route: ResolvedTasksRoute;
-  boardUsable: boolean;
   onBack: () => void;
 }) {
   switch (route.kind) {
@@ -70,11 +67,8 @@ function RouteOutlet({
     case "task":
       return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
     case "project":
-      return route.view === "board" && boardUsable ? (
-        <BoardView projectId={route.projectId} />
-      ) : (
-        <ListView projectId={route.projectId} />
-      );
+      // The board lives only in the native right panel (one BoardView).
+      return <ListView projectId={route.projectId} />;
   }
 }
 
@@ -147,20 +141,47 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
 
-  const mainRef = useRef<HTMLElement>(null);
-  const [boardUsable, setBoardUsable] = useState(true);
+  // Native selectedKey+open decide "Board"; route/local preference is only intent.
+  const kanban = useKanbanPanel();
+  const viewProject = projectForRoute(route, projects.data);
+  const viewProjectId = viewProject?.id ?? null;
+  const appliedBoardIntent = useRef<string | null>(null);
+  const rememberView = (view: TaskViewMode) => {
+    if (viewProjectId === null) return;
+    storeViewMode(viewProjectId, view);
+    const explicit = parseTasksRoute(subPath);
+    if (explicit.kind === "project" && explicit.view !== null && explicit.view !== view) {
+      const next: TasksRoute = { kind: "project", projectId: explicit.projectId, view };
+      if (view === "board") appliedBoardIntent.current = tasksRouteToSubPath(next);
+      tasksNavigation.go(next, { replace: true });
+    }
+  };
+  const changeView = (view: TaskViewMode) => {
+    if (view === "board" ? !kanban.active && !kanban.show() : kanban.active && !kanban.hide()) return;
+    rememberView(view);
+  };
+  // A board intent opens the native tab once per navigation; a later external
+  // close is never undone by the same (stale) route.
+  const boardIntent =
+    !isRoot && !opening && route.kind === "project" && route.view === "board" ? resolvedSubPath : null;
   useEffect(() => {
-    const main = mainRef.current;
-    if (!main || typeof ResizeObserver === "undefined") return;
-    const update = () => {
-      const mainWidth = main.clientWidth;
-      setBoardUsable(!(mainWidth > 0 && mainWidth < BOARD_MIN_WIDTH));
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(main);
-    return () => observer.disconnect();
-  }, []);
+    if (boardIntent === null) {
+      appliedBoardIntent.current = null;
+      return;
+    }
+    if (appliedBoardIntent.current === boardIntent) return;
+    appliedBoardIntent.current = boardIntent;
+    if (!kanban.active) kanban.show();
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [boardIntent]);
+  // Closing/switching the native tab elsewhere demotes the remembered view.
+  const wasBoardActive = useRef(kanban.active);
+  useEffect(() => {
+    const was = wasBoardActive.current;
+    wasBoardActive.current = kanban.active;
+    if (was && !kanban.active) rememberView("list");
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [kanban.active]);
 
   const lastBrowseRouteRef = useRef<TasksRoute | null>(null);
   useEffect(() => {
@@ -203,7 +224,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
 
   return (
     <DialogScope className="relative flex h-full min-h-0 bg-background text-foreground">
-      <main ref={mainRef} className="@container flex min-w-0 flex-1 flex-col">
+      <main className="@container flex min-w-0 flex-1 flex-col">
         <TasksTopbar
           route={route}
           projects={projects.data}
@@ -217,6 +238,8 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
                       : null,
                 }
           }
+          view={kanban.active ? "board" : "list"}
+          onViewChange={changeView}
           onNavigate={navigation.go}
           onNewTask={() => setNewTaskOpen(true)}
         />
@@ -234,7 +257,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
               }
             />
           ) : (
-            <RouteOutlet route={route} boardUsable={boardUsable} onBack={backFromTask} />
+            <RouteOutlet route={route} onBack={backFromTask} />
           )}
         </div>
       </main>

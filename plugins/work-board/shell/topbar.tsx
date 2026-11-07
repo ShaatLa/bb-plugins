@@ -1,12 +1,11 @@
 import { useTaskStatuses } from "./task-statuses.js";
 import { useCallback, useMemo } from "react";
-import { experimental_useAppPanel } from "@get-bb/plugin-sdk/app";
-import { toast } from "sonner";
-import { KANBAN_TAB } from "./kanban-panel.js";
 import type { Project, Task } from "../shared/contract.js";
 import { groupTasksByStatus } from "../views/list/lib.js";
 import { listAllTasks, useTasksQuery } from "./data.js";
 import type { ResolvedTasksRoute, TaskViewMode, TasksRoute } from "./routes.js";
+import { projectForRoute } from "./kanban-view.js";
+import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -169,6 +168,9 @@ interface TasksTopbarProps {
   route: ResolvedTasksRoute;
   projects: Project[] | undefined;
   pagerScope: { projectId: string | null } | null;
+  /** "board" exactly while the native right panel shows the Kanban tab. */
+  view: TaskViewMode;
+  onViewChange: (view: TaskViewMode) => void;
   onNavigate: (route: TasksRoute) => void;
   onNewTask: () => void;
 }
@@ -177,20 +179,12 @@ export function TasksTopbar({
   route,
   projects,
   pagerScope,
+  view,
+  onViewChange,
   onNavigate,
   onNewTask,
 }: TasksTopbarProps) {
-  const appPanel = experimental_useAppPanel();
-  const project = useMemo(() => {
-    if (route.kind === "project") {
-      return (projects ?? []).find((p) => p.id === route.projectId) ?? null;
-    }
-    if (route.kind === "task") {
-      const prefix = route.taskKey.split("-", 1)[0] ?? "";
-      return (projects ?? []).find((p) => p.prefix === prefix) ?? null;
-    }
-    return null;
-  }, [route, projects]);
+  const project = useMemo(() => projectForRoute(route, projects), [route, projects]);
 
   const breadcrumb = (() => {
     switch (route.kind) {
@@ -286,61 +280,11 @@ export function TasksTopbar({
           onNavigate={onNavigate}
         />
       ) : null}
-      {route.kind === "project" ? (
-        <span className="hidden @md:block">
-          <ViewToggle
-            view={route.view}
-            onChange={(view) => onNavigate({ ...route, view })}
-          />
-        </span>
-      ) : null}
-      {project ? (
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 shrink-0 max-md:pointer-coarse:size-9"
-          aria-label="Open kanban in side panel"
-          onClick={() => {
-            if (!appPanel.openTab({ tab: KANBAN_TAB })) {
-              toast.error("Could not open the kanban panel");
-              return;
-            }
-            if (route.kind === "project" && route.view !== "list") {
-              onNavigate({ ...route, view: "list" });
-            }
-          }}
-        >
-          <Icon name="PanelRight" className="size-3.5" />
-        </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Open kanban in side panel</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      ) : null}
-      <TooltipProvider delayDuration={300}>
-        <Tooltip disableHoverableContent>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9",
-                route.kind === "scheduled" && "bg-state-active text-foreground",
-              )}
-              aria-label="Scheduled"
-              aria-pressed={route.kind === "scheduled"}
-              onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
-            >
-              <Icon name="Clock" className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Scheduled</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      {project ? <ViewToggle view={view} onChange={onViewChange} /> : null}
+      <ScheduledButton
+        active={route.kind === "scheduled"}
+        onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
+      />
       <RefreshTasksButton />
       <TooltipProvider delayDuration={300}>
         <Tooltip>
