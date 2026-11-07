@@ -128,10 +128,10 @@ test("formats event sentences and compact durations", async () => {
     ["prioritize", "high", "Priority updated for QA checks"],
     ["port-release", undefined, "Port 41000 released"],
     ["unleased-load", undefined, "High checkout load without a heavy slot"],
-    ["idle-lease", undefined, "Heavy lease idle during checkout activity"],
-    ["use-expired", undefined, "A heavy use expired"],
-    ["use-dropped", undefined, "A heavy use was dropped"],
-    ["unclaimed", undefined, "A granted slot was not claimed"],
+    ["idle-lease", undefined, "Heavy slot held while its checkout stayed idle"],
+    ["use-expired", undefined, "A wrapped run stopped renewing; its use expired"],
+    ["use-dropped", undefined, "A lent slot returned to its owner; the borrower's runs were dropped"],
+    ["unclaimed", undefined, "Slot released because no run claimed it"],
   ] as const) expect(eventSentence({ ...base, type, reason, port: 41000 }, fixture)).toBe(text);
   const slot = render();
   const summary = await slot.findByText("Recent activity · 2");

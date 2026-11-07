@@ -78,10 +78,10 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
     case "port": return `Port ${event.port ?? ""} leased`;
     case "port-release": return `Port ${event.port ?? ""} released`;
     case "unleased-load": return "High checkout load without a heavy slot";
-    case "idle-lease": return "Heavy lease idle during checkout activity";
-    case "use-expired": return "A heavy use expired";
-    case "use-dropped": return "A heavy use was dropped";
-    case "unclaimed": return "A granted slot was not claimed";
+    case "idle-lease": return "Heavy slot held while its checkout stayed idle";
+    case "use-expired": return "A wrapped run stopped renewing; its use expired";
+    case "use-dropped": return "A lent slot returned to its owner; the borrower's runs were dropped";
+    case "unclaimed": return "Slot released because no run claimed it";
     case "gate": return "Machine checked";
   }
 }

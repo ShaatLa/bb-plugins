@@ -22,7 +22,7 @@ const events = [
   ["transfer", "Slot transferred", "A lease changed holders."],
   ["capacity", "Capacity changed", "A pool capacity was changed."],
   ["unleased-load", "Unleased load", "A checkout used many cores without a heavy slot."],
-  ["idle-lease", "Idle heavy lease", "A heavy lease was idle for a while."],
+  ["idle-lease", "Idle heavy lease", "A heavy slot was held while its checkout stayed idle for the configured minutes."],
 ] as const;
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return <Card role="region" aria-label={title} className="space-y-4 p-4"><h3 className="text-sm font-medium">{title}</h3>{children}</Card>;

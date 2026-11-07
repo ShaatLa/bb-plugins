@@ -15,9 +15,11 @@ sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 
 Use `--pool local-model` for LLM inference. A holder may reuse its lease for
 nested, sequential or concurrent runs without another gate check. Signal the
-process group to cancel. A timed-out acquire exits 75 and keeps its queue
-position briefly; rerun the same command. Manual
-`bb slots request --wait` keeps its queue position on timeout until canceled.
+process group to cancel. `bb slots request --wait` timeout exits 75 and keeps
+the request queued until canceled or the thread ends; rerun the same command
+to keep waiting. `acquire` / `slots-run` timeout exits 75 and keeps its queue
+position for one heartbeat interval (10 minutes by default); rerun within that
+time.
 For scripts, `bb slots acquire` returns a use ID; renew with `bb slots heartbeat
 --use <id>` and finish with `bb slots done <id>`. Manual request, heartbeat and
 release remain available.
