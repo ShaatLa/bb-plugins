@@ -396,6 +396,7 @@ const MIGRATIONS = [
         '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.resolvedAt',CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
     WHERE id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
   END;`,
+  `ALTER TABLE projects ADD COLUMN status_notifications TEXT CHECK(status_notifications IN ('off','all','done'));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

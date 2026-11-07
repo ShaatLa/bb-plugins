@@ -385,4 +385,4 @@ Scheduled snapshots use archive v13; imports still accept v1–v12. Imported sch
 
 ## Status push notifications
 
-Settings → General → Task status notifications applies to all projects: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. UI, CLI and agent updates use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
+Settings → select a project → Archiving and activity → Task status notifications applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. UI, CLI and agent updates use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.

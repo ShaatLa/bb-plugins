@@ -1,7 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, expect, it, vi } from "vitest";
 import { createStore } from "./api";
-import { BOARD_PREFERENCES_KEY } from "./shared/project-settings";
+import { migrateSettings } from "./settings";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { for (const h of hosts.splice(0)) await h.harness.dispose(); });
@@ -10,8 +10,8 @@ async function fixture(mode = "all", fail = false) {
   const host = createFakePluginHost({ pluginId: "work-board", sdk: { plugins: { callRpc: send } } });
   hosts.push(host);
   const store = createStore(host.bb);
-  await host.bb.storage.kv.set(BOARD_PREFERENCES_KEY, { defaultScreen: "all", statusNotifications: mode });
   const project = store.tasks.createProject({ name: "Push test", prefix: "PUSH", color: "blue" });
+  store.tasks.updateProject(project.id, { statusNotifications: mode as "all" | "done" | "off" });
   const task = store.tasks.createTask({ projectId: project.id, title: "Ship it", status: "todo" });
   return { ...host, store, project, task, send };
 }
@@ -34,7 +34,7 @@ it("Done only ignores intermediate changes, and Off suppresses all pushes", asyn
   expect(f.send).not.toHaveBeenCalled();
   f.store.tasks.updateTask(f.task.id, { status: "done" });
   await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
-  await f.bb.storage.kv.set(BOARD_PREFERENCES_KEY, { defaultScreen: "all", statusNotifications: "off" });
+  f.store.tasks.updateProject(f.project.id, { statusNotifications: "off" });
   f.store.tasks.updateTask(f.task.id, { status: "todo" });
   await new Promise(resolve => setTimeout(resolve, 10));
   expect(f.send).toHaveBeenCalledTimes(1);
@@ -54,4 +54,25 @@ it("push failure cannot roll back the card and is not automatically resent", asy
   f.store.tasks.updateTask(f.task.id, { status: "done" });
   await new Promise(resolve => setTimeout(resolve, 10));
   expect(f.send).toHaveBeenCalledTimes(1);
+});
+it("keeps another project's notifications off", async () => {
+  const f = await fixture("all");
+  const other = f.store.tasks.createProject({ name: "Silent", prefix: "SIL", color: "red" });
+  const task = f.store.tasks.createTask({ projectId: other.id, title: "Private", status: "todo" });
+  f.store.tasks.updateTask(task.id, { status: "done" });
+  f.store.tasks.updateTask(f.task.id, { status: "done" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  expect(f.send.mock.calls[0]?.[0]).toMatchObject({ input: { title: "PUSH-1 · Done" } });
+});
+it("migrates the old global mode once, preserves explicit choices and defaults new projects to Off", async () => {
+  const f = await fixture("done");
+  f.bb.storage.database().prepare("UPDATE projects SET status_notifications=NULL WHERE id=?").run(f.project.id);
+  await f.bb.storage.kv.set("board:preferences", { defaultScreen: "active", statusNotifications: "all" });
+  await migrateSettings(f.bb);
+  expect(f.store.tasks.getProject(f.project.id)?.statusNotifications).toBe("all");
+  expect(await f.bb.storage.kv.get("board:preferences")).toEqual({ defaultScreen: "active" });
+  f.store.tasks.updateProject(f.project.id, { statusNotifications: "done" });
+  await migrateSettings(f.bb);
+  expect(f.store.tasks.getProject(f.project.id)?.statusNotifications).toBe("done");
+  expect(f.store.tasks.createProject({ name: "New", prefix: "NEW", color: "blue" }).statusNotifications).toBe("off");
 });

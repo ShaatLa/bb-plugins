@@ -16,7 +16,7 @@ describe("Tasks plugin scaffold", () => {
       await plugin(bb);
       expect(store.tasks.getProject(legacy.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
       expect(store.tasks.getProject(explicit.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
-      expect(await harness.callRpc("getBoardPreferences", null)).toEqual({ defaultScreen: "active", statusNotifications: "off" });
+      expect(await harness.callRpc("getBoardPreferences", null)).toEqual({ defaultScreen: "active" });
       await harness.callRpc("updateProject", { projectId: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" });
       const replacement = await harness.lifecycle.reload(plugin);
       try {

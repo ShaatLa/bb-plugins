@@ -2,7 +2,6 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { TasksStore } from "./db/store";
 import type { Task } from "./db/types";
-import { BOARD_PREFERENCES_KEY, boardPreferencesSchema, DEFAULT_BOARD_PREFERENCES } from "./shared/project-settings";
 import { statusLabel } from "./shared/statuses";
 
 const pushOutput = z.object({ ok: z.literal(true), channels: z.array(z.enum(["web", "desktop", "mobile"])) });
@@ -18,16 +17,17 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
       while (!closed && pending.size) {
         const batch = [...pending.values()].slice(0, 128);
         for (const task of batch) pending.delete(task.id);
-        const preferences = boardPreferencesSchema.parse(await bb.storage.kv.get(BOARD_PREFERENCES_KEY) ?? DEFAULT_BOARD_PREFERENCES);
-        if (preferences.statusNotifications === "off") continue;
+        await Promise.resolve();
         for (const before of batch) {
           if (closed) return;
           // Read after the synchronous transaction: rolled-back and transient changes do not notify.
           const task = tasks.getTask(before.id);
           if (!task || task.status === before.status || task.archivedAt || task.scheduledRole === "template") continue;
           if (task.ordinaryVisible === false && task.status !== "done") continue;
-          if (preferences.statusNotifications === "done" && task.status !== "done") continue;
-          const statuses = tasks.getProject(task.projectId)?.statuses;
+          const project = tasks.getProject(task.projectId);
+          if (!project || !project.statusNotifications || project.statusNotifications === "off") continue;
+          if (project.statusNotifications === "done" && task.status !== "done") continue;
+          const statuses = project.statuses;
           try {
             const result = await bb.sdk.plugins.callRpc({
               pluginId: "push-notifications", method: "notifications.send",

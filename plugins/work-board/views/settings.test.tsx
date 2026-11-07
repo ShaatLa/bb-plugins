@@ -464,20 +464,26 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
   }
 });
 
-it("persists status notification mode and preserves it when changing the default screen", async () => {
+it("saves notification modes independently for each selected project", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
-    registerTasksApi(bb, createStore(bb));
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
+    registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
-    fireEvent.click(settings.getByText("General"));
     const mode = () => settings.getByRole("combobox", { name: "Task status notifications" });
-    await waitFor(() => expect(mode().getAttribute("disabled")).toBeNull());
+    await settings.findByRole("combobox", { name: "Task status notifications" });
     fireEvent.click(mode());
     fireEvent.click(await settings.findByRole("option", { name: "Done only" }));
-    await waitFor(() => expect(mode().textContent).toContain("Done only"));
-    expect(await harness.callRpc("getBoardPreferences", null)).toMatchObject({ statusNotifications: "done" });
-    fireEvent.click(settings.getByRole("combobox", { name: "Open by default" }));
-    fireEvent.click(await settings.findByRole("option", { name: "All tasks" }));
-    await waitFor(async () => expect(await harness.callRpc("getBoardPreferences", null)).toMatchObject({ defaultScreen: "all", statusNotifications: "done" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done"));
+    expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("off");
+    fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
+    await waitFor(() => expect(mode().textContent).toContain("Off"));
+    fireEvent.click(mode());
+    fireEvent.click(await settings.findByRole("option", { name: "All status changes" }));
+    await waitFor(() => expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("all"));
+    expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done");
   } finally { cleanup(); await harness.dispose(); }
 });

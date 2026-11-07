@@ -32,6 +32,7 @@ export interface Folder {
 export interface Project {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   id: string;
   name: string;
   prefix: string;
@@ -157,6 +158,7 @@ export interface CreateProjectInput {
 export interface UpdateProjectInput {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   name?: string;
   prefix?: string;
   color?: string;

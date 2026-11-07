@@ -1,5 +1,5 @@
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema } from "../shared/project-settings";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -78,6 +78,7 @@ interface FolderRow {
 interface ProjectRow {
   auto_archive_after_days: string | null;
   stale_idle_minutes: string | null;
+  status_notifications: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -381,6 +382,7 @@ function projectFromRow(row: ProjectRow): Project {
   return {
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
+    statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -698,8 +700,8 @@ export function createTasksStore(db: PluginDatabase) {
     >(
       `
       INSERT INTO projects
-        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at, auto_archive_after_days, stale_idle_minutes)
-      VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'off', '45')
+        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at, auto_archive_after_days, stale_idle_minutes, status_notifications)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'off', '45', 'off')
     `,
     ).run(
       id,
@@ -756,12 +758,12 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string, string, string]
+        [string, string, string, string | null, string | null, string, string, string, string, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?
       WHERE id = ?
     `,
       ).run(
@@ -781,6 +783,7 @@ export function createTasksStore(db: PluginDatabase) {
         JSON.stringify(statuses),
         autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
+        statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
         id,
       );
       return requireProject(id);
