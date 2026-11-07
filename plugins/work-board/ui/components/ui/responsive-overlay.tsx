@@ -272,6 +272,7 @@ interface DrawerDismissalHandlers {
 }
 
 interface ResponsiveDrawerShellProps extends DrawerDismissalHandlers {
+  portalContainer?: HTMLElement;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   closeOnBackdropClick?: boolean;
@@ -334,6 +335,7 @@ export function useResponsiveDrawerRealization({
 }
 
 export function ResponsiveDrawerShell({
+  portalContainer,
   open,
   onOpenChange,
   onAfterCloseAutoFocus,
@@ -356,6 +358,7 @@ export function ResponsiveDrawerShell({
 
   return (
     <PersistentResponsiveDrawerShell
+      portalContainer={portalContainer}
       open={open}
       onOpenChange={onOpenChange}
       onAfterCloseAutoFocus={onAfterCloseAutoFocus}
@@ -383,6 +386,7 @@ export function ResponsiveDrawerShell({
 }
 
 interface PersistentResponsiveDrawerShellProps extends DrawerDismissalHandlers {
+  portalContainer?: HTMLElement;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   closeOnBackdropClick?: boolean;
@@ -644,6 +648,7 @@ type PersistentDrawerDrag = {
 };
 
 export function PersistentResponsiveDrawerShell({
+  portalContainer,
   open,
   onOpenChange,
   onAfterCloseAutoFocus,
@@ -814,7 +819,7 @@ export function PersistentResponsiveDrawerShell({
     [requestClose, setDragPosition],
   );
 
-  const portalTarget = typeof document === "undefined" ? null : document.body;
+  const portalTarget = typeof document === "undefined" ? null : portalContainer ?? document.body;
   if (portalTarget === null) {
     return null;
   }

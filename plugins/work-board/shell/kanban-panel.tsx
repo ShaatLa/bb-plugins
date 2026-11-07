@@ -6,6 +6,7 @@ import { TasksRefreshProvider } from "./refresh.js";
 import { parseTasksRoute, useTasksNavigation } from "./routes.js";
 import { ScheduledButton } from "./scheduled-button.js";
 import { loadLastProjectId } from "./view-preference.js";
+import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
 
@@ -40,5 +41,5 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
 }
 
 export function KanbanPanel(props: PluginNavPanelProps) {
-  return <TasksRefreshProvider><TaskStatusesProvider><KanbanPanelContent {...props} /></TaskStatusesProvider></TasksRefreshProvider>;
+  return <DialogScope className="relative h-full min-h-0"><TasksRefreshProvider><TaskStatusesProvider><KanbanPanelContent {...props} /></TaskStatusesProvider></TasksRefreshProvider></DialogScope>;
 }

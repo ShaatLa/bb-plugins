@@ -427,6 +427,13 @@ describe("kanban side panel", () => {
     expect(slot.rpcCalls.filter(({ method }) => method === "listTasks")).toHaveLength(1);
   });
 
+  it("keeps the right-board creation dialog in its pane", async () => {
+    const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc() });
+    fireEvent.click(await slot.findByRole("button", { name: "New Todo task" }));
+    const dialog = await slot.findByRole("dialog");
+    expect(dialog.closest("[data-dialog-scope]")).toBeTruthy();
+  });
+
   it("the right-board Scheduled action opens Scheduled in the main surface without touching tabs", async () => {
     const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc(), ...panelOptions(nativePanel("tab-kanban")) });
     const region = await slot.findByRole("region", { name: "Project kanban" });

@@ -270,6 +270,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       const domProps = stripRadixContentProps(props);
       return (
         <ResponsiveDrawerShell
+          portalContainer={portalContainer}
           open={open}
           contentClassName={compactContentClassName}
           onOpenChange={onOpenChange}
