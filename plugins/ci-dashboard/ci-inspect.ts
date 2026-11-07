@@ -119,12 +119,14 @@ function inspectJob(ref: string, jobId: number, input: InspectInput): Inspection
   if (job.event === "merge_group") related.push({ ref: queueRef(job.runId, job.attempt), at: FIRST - 1 });
   if (job.pool) related.push({ ref: poolRef(job.pool), at: FIRST - 3 });
   for (const number of job.pullRequests) related.push({ ref: prRef(number), at: FIRST - 4 });
+  if (job.inheritedFrom) related.push({ ref: prRef(job.inheritedFrom.pullRequest), at: FIRST - 1 }, { ref: runRef(job.inheritedFrom.runId), at: FIRST - 1 });
   for (const problem of input.problems) if (problem.where.jobId === jobId) related.push({ ref: problem.id, at: FIRST - 1 });
   const duration = job.startedAt && job.completedAt ? Date.parse(job.completedAt) - Date.parse(job.startedAt) : null;
   return {
     ref, kind: "job", summary: `${job.jobName} · ${found ? `${found.class} (${found.reason})` : `${job.status}${job.conclusion ? ` / ${job.conclusion}` : ""}, not classified`} · run ${job.runId} attempt ${job.attempt}`,
     facts: { name: job.jobName, workflow: job.workflowName, event: job.event, branch: job.headBranch, sha: sha7(job.headSha), pullRequests: job.pullRequests, ...(pr === null ? {} : { queuePullRequest: pr }),
       status: job.status, conclusion: job.conclusion, ...(found ? { class: found.class, reason: found.reason } : {}), ...(found?.flakeLabel ? { label: clip(found.flakeLabel, 60) } : {}),
+      ...(job.inheritedFrom ? { inheritedFrom: job.inheritedFrom } : {}),
       failedSteps: job.failedSteps.slice(0, 5).map((step) => clip(step, 80)), runner: job.runnerName, pool: job.pool, startedAt: job.startedAt, completedAt: job.completedAt, ...(duration === null ? {} : { duration: seconds(duration) }),
       ...(tests?.length ? { failedTests: tests.slice(0, 5).map((name) => clip(name.replace(/\s+/g, " "), 100)), ...(tests.length > 5 ? { moreTests: tests.length - 5 } : {}) } : {}),
       url: `https://github.com/${input.repository}/actions/runs/${job.runId}/job/${job.jobId}` },
@@ -139,10 +141,13 @@ function inspectQueue(ref: string, runId: number, attempt: number, input: Inspec
   const classes = counts(jobs.map((c) => c.class)), own = jobs.some((c) => isOwn(c) && c.class !== "consequence"), list = rows(jobs.map(jobRow), LIST);
   const related: { ref: string; at: number }[] = [{ ref: runRef(runId, attempt), at: FIRST }, { ref: shaRef(first.headSha), at: FIRST - 2 }];
   if (pr !== null) related.push({ ref: prRef(pr), at: FIRST - 1 });
+  // The origin of the failure, when the group ahead already failed it (the first inherited job names it; every distinct origin is related).
+  const origins = jobs.flatMap((c) => c.job.inheritedFrom ? [c.job.inheritedFrom] : []);
+  for (const origin of origins) related.push({ ref: prRef(origin.pullRequest), at: FIRST - 1 }, { ref: runRef(origin.runId), at: FIRST - 1 });
   for (const problem of input.problems) if (problem.where.runId === runId) related.push({ ref: problem.id, at: FIRST - 1 });
   return {
     ref, kind: "queue", summary: `${pr === null ? "Merge queue run" : `PR #${pr} merge queue run`} ${runId} attempt ${attempt} · removal ${status} · ${jobs.length} non-success job(s)`,
-    facts: { pullRequest: pr, confirmation: status, ownFailure: own, classes, jobs: list.rows, ...(list.more ? { moreJobs: list.more } : {}), url: `https://github.com/${input.repository}/actions/runs/${runId}` },
+    facts: { pullRequest: pr, confirmation: status, ownFailure: own, ...(origins[0] ? { inheritedFrom: origins[0] } : {}), classes, jobs: list.rows, ...(list.more ? { moreJobs: list.more } : {}), url: `https://github.com/${input.repository}/actions/runs/${runId}` },
     related: cap(related),
   };
 }

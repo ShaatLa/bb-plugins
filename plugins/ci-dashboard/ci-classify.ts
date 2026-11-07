@@ -18,6 +18,12 @@ export type ClassifyOptions = { aggregatorJobs?: string[]; policyJobs?: string[]
 export const SIGNATURE_REASON = "matches a known flaky signature";
 export const BUILD_REASON = "build or setup failed";
 export const PASS_REASON = "same job passed at the same sha";
+/** Own failures a group run can inherit; runner losses, timeouts, transient and refused failures never are. */
+export const INHERITABLE = new Set<FailureClass>(["real", "flake", "unknown"]);
+/** A merge queue failure whose group may have been built on a failed group ahead. */
+export const inheritable = (c: ClassifiedJob) => c.job.event === "merge_group" && c.job.headSha !== "" && INHERITABLE.has(c.class) && queuePullRequest(c.job.headBranch) !== null;
+/** How long a removal line waits for an unfinished inherited-failure check (no budget) before it goes out untagged. */
+export const INHERIT_WAIT_MS = 15 * 60_000;
 export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): ClassifiedJob[] {
   // Same code, same job: a pass in any run or workflow at this sha means the failure was not deterministic.
   // Reusable workflows prefix callee jobs ("Caller / Job"), so the leaf name pairs a push run with its merge-queue run.
@@ -32,7 +38,9 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
     const find = (re: RegExp) => messages.find((m) => re.test(m)) ?? null;
     const make = (cls: FailureClass, reason: string, evidence: string | null = null): Omit<ClassifiedJob, "job"> => ({ class: cls, reason, evidence });
     if ((opts.aggregatorJobs ?? []).includes(job.jobName)) return make("consequence", "aggregator failed because another job did");
-    let hit = find(/lost communication with the server|received a shutdown signal/i);
+    // The runner's shutdown notice can arrive only as a log error line, not as an annotation: it outranks every other label.
+    let hit = find(/lost communication with the server|received a shutdown signal/i)
+      ?? job.logExcerpt?.split("\n").filter((l) => l.includes("##[error]")).map(stripTimestamp).find((l) => /lost communication with the server|received a shutdown signal/i.test(l)) ?? null;
     if (hit) return make("runner_loss", "runner lost or shut down", hit);
     if (job.conclusion === "failure" && !job.failedSteps.length && !messages.length) return make("runner_loss", "no failed step");
     if ((hit = find(/exceeded the maximum execution time/i))) return make("timeout", "job exceeded maximum execution time", hit);
@@ -58,7 +66,10 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
     }
     return make("unknown", "no recognizable cause");
   };
-  return jobs.filter((job) => job.status === "completed" && !job.carried && BAD.has(job.conclusion ?? "")).map((job) => ({ job, ...verdict(job) }));
+  return jobs.filter((job) => job.status === "completed" && !job.carried && BAD.has(job.conclusion ?? "")).map((job) => {
+    const v = verdict(job);
+    return { job, ...v, ...(job.inheritedFrom && INHERITABLE.has(v.class) ? { reason: `${v.reason}, inherited from #${job.inheritedFrom.pullRequest}` } : {}) };
+  });
 }
 
 const QUEUE_ONLY_CLASSES = new Set<FailureClass>(["real", "flake", "transient", "timeout", "unknown"]);

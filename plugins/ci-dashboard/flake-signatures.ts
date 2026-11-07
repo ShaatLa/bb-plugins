@@ -47,7 +47,7 @@ export const parseArtifactGlobs = (text: string): RegExp[] =>
 // Pure JS hash: this module is also bundled into the browser app (via ci-classify), which has no node:crypto.
 const fnv1a = (text: string) => { let hash = 0x811c9dc5; for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193); return (hash >>> 0).toString(16).padStart(8, "0"); };
 /** Bump when scan semantics change: stored jobs are then re-scanned once under the new rules. */
-const SCAN_VERSION = "reports-over-logs-v1";
+const SCAN_VERSION = "reports-over-logs-v3";
 /** Parsed settings plus a version of the normalized rules and globs; blank rules disable the feature (hash ""). */
 export function flakeSettings(signatures: string, artifacts: string) {
   const parsed = parseFlakeRules(signatures).rules, globs = parseArtifactGlobs(artifacts);

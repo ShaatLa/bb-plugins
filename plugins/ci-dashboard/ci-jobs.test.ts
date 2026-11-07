@@ -1,11 +1,13 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { expect, test, vi } from "vitest";
 import { capOpenSignals } from "./cache-cleanup";
-import type { Signal } from "./ci-jobs-types";
-import { createBackfill, createLogFetcher, createJobStore, fetchAttemptJobs, jobMigrations } from "./ci-jobs";
+import { classifyJobs } from "./ci-classify";
+import type { JobRecord, Signal } from "./ci-jobs-types";
+import { queueRemovalEvents } from "./ci-observer";
+import { createBackfill, createLogFetcher, createJobStore, fetchAttemptJobs, jobMigrations, logExcerpt } from "./ci-jobs";
 import type { GitHubRequest } from "./metrics";
 import { finishedRuns } from "./ci-live";
-import { fakeGithub, job, runContext, syntheticRun, zip, SHA } from "./test-support";
+import { at, failed, fakeGithub, job, LOSS, REPO, runContext, syntheticRun, zip, SHA } from "./test-support";
 
 function setup() {
   const data = syntheticRun(), db = createFakePluginHost().bb.storage.database();
@@ -82,7 +84,7 @@ test("log streaming stops at the first error and keeps 30 lines", async () => {
   let cancelled = false, reads = 0;
   const body = new ReadableStream<Uint8Array>({ pull(controller) { reads++; controller.enqueue(new TextEncoder().encode(reads === 1 ? Array.from({ length: 40 }, (_, i) => `line ${i}\n`).join("") + "##[error] broken\n" : "extra\n")); }, cancel() { cancelled = true; } }, { highWaterMark: 0 });
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body }));
-  try { const result = await createLogFetcher("token", new AbortController().signal)("/logs"); expect(result.split("\n")).toHaveLength(30); expect(result).toContain("line 11"); expect(result).toContain("##[error] broken"); expect(reads).toBe(1); expect(cancelled).toBe(true); } finally { vi.unstubAllGlobals(); }
+  try { const result = await createLogFetcher("token", new AbortController().signal)("/logs"); expect(result.split("\n")).toHaveLength(30); expect(result).toContain("line 11"); expect(result).toContain("##[error] broken"); expect(reads).toBe(2); /* one more read to see that the line after the error is not another error */ expect(cancelled).toBe(true); } finally { vi.unstubAllGlobals(); }
 });
 
 // --- storage: slim rows, no skipped jobs, retention ---
@@ -221,4 +223,106 @@ test("failed test names come from the matching artifacts only, FAILED entries on
   expect(paths).toHaveLength(1);
   expect(await backfill.failedTests("o/r", { id: 2, attempt: 1 }, jobs, [], signal())).toBeNull();
   expect(await createBackfill({ store, request, fetchArtifact, budgetPerHour: 1 }).failedTests("o/r", { id: 3, attempt: 1 }, jobs, globs, signal())).toBeNull();
+});
+
+test("logExcerpt keeps up to 30 lines before the first error and the error lines right after it", () => {
+    const lines = [...Array.from({ length: 40 }, (_, i) => `l${i}`), "##[error]exit 130", "##[error]shutdown signal", "after"];
+    const text = logExcerpt(lines.join("\n"))!.split("\n");
+    expect(text).toHaveLength(31);
+    expect(text.slice(-2)).toEqual(["##[error]exit 130", "##[error]shutdown signal"]);
+    expect(logExcerpt("no errors")).toBeNull();
+});
+
+// --- inherited merge queue failures ---
+const BUILD = { match: "pkg/core: build failed" };
+const sha = (c: string) => c.repeat(40);
+/** A failed group run attempt of PR `pr`: its head branch names the PR, its head commit is `head`. */
+const group = (pr: number, runId: number, head: string, over: Partial<JobRecord> = {}, minute = 5) => failed({ event: "merge_group", headBranch: `gh-readonly-queue/main/pr-${pr}-${head.slice(0, 7)}`, runId, jobId: runId * 10, headSha: head, buildFailure: BUILD, ...over }, minute);
+function inheritance(jobs: JobRecord[], parents: Record<string, string>, options: { budgetPerHour?: number; now?: () => number } = {}) {
+  const db = createFakePluginHost().bb.storage.database();
+  for (const sql of jobMigrations) db.prepare(sql).run();
+  const store = createJobStore(db), calls: string[] = [];
+  for (const j of jobs) store.saveAttempt(REPO, j.runId, j.attempt, [j], true);
+  const request: GitHubRequest = async (path) => { calls.push(path); const parent = parents[path.split("/").pop()!]; return { body: { parents: parent ? [{ sha: parent }] : [] }, hasNext: false }; };
+  const backfill = createBackfill({ store, request, ...options });
+  const stored = () => classifyJobs(store.listJobs({ repository: REPO, since: "2020", until: "2030" }));
+  return { calls, stored, add: (j: JobRecord) => store.saveAttempt(REPO, j.runId, j.attempt, [j], true), resolve: () => backfill.resolveInherited(REPO, stored(), signal()), of: (runId: number) => stored().find((c) => c.job.runId === runId)! };
+}
+test("a group built on the failed group ahead inherits its failure, and the line says so", async () => {
+  const { resolve, of, calls, stored } = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"))], { [sha("a")]: sha("1"), [sha("b")]: sha("a") });
+  expect(await resolve()).toBe(2);
+  expect(of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  expect(of(50).job.inheritedFrom).toBeNull();
+  expect(of(51)).toMatchObject({ class: "real", reason: "build or setup failed, inherited from #7", evidence: BUILD.match });
+  expect(of(50).reason).toBe("build or setup failed");
+  expect(calls).toEqual(expect.arrayContaining([`/repos/${REPO}/git/commits/${sha("a")}`, `/repos/${REPO}/git/commits/${sha("b")}`]));
+  expect(calls).toHaveLength(2);
+  const lines = queueRemovalEvents(REPO, stored()).map((event) => event.render());
+  expect(lines.find((line) => line.startsWith("PR #8"))).toContain("PR #8 removed (inherited from #7) · Unit tests: real (build or setup failed) inherited from #7");
+  expect(lines.find((line) => line.startsWith("PR #7"))).toContain("PR #7 removed from merge queue · Unit tests: real (build or setup failed) ·");
+});
+test("a group checked before the group ahead was stored is re-checked from the cached parent and then inherits", async () => {
+  const { resolve, of, calls, add } = inheritance([group(8, 51, sha("b"))], { [sha("a")]: sha("1"), [sha("b")]: sha("a") }, { now: () => Date.parse(at(10)) });
+  await resolve();
+  expect(of(51).job.inheritedFrom).toBeNull();
+  add(group(7, 50, sha("a")));
+  await resolve();
+  expect(of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  // B's parent came from the cache; only A's own parent was asked for.
+  expect(calls.filter((path) => path.endsWith(sha("b")))).toHaveLength(1);
+});
+test("a group in between that did not run the job passes the base through; one that ran and passed it stops the walk", async () => {
+  const docsOnly = group(9, 52, sha("x"), { jobName: "Docs", conclusion: "success", failedSteps: [], annotations: [] });
+  const through = inheritance([group(7, 50, sha("a")), docsOnly, group(8, 51, sha("b"))], { [sha("a")]: sha("1"), [sha("x")]: sha("a"), [sha("b")]: sha("x") });
+  await through.resolve();
+  expect(through.of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  const passed = group(9, 52, sha("x"), { conclusion: "success", failedSteps: [], annotations: [] });
+  const stopped = inheritance([group(7, 50, sha("a")), passed, group(8, 51, sha("b"))], { [sha("a")]: sha("1"), [sha("x")]: sha("a"), [sha("b")]: sha("x") });
+  await stopped.resolve();
+  expect(stopped.of(51).job.inheritedFrom).toBeNull();
+});
+test("another job or another signature is not inherited", async () => {
+  const other = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), { jobName: "Integration" })], { [sha("b")]: sha("a") });
+  await other.resolve();
+  expect(other.of(51).job.inheritedFrom).toBeNull();
+  const different = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), { buildFailure: { match: "pkg/other: build failed" } })], { [sha("b")]: sha("a") });
+  await different.resolve();
+  expect(different.of(51)).toMatchObject({ reason: "build or setup failed", job: { inheritedFrom: null } });
+  // No shared signal at all (plain failures): nothing to compare, so never inherited.
+  const plain = inheritance([group(7, 50, sha("a"), { buildFailure: null }), group(8, 51, sha("b"), { buildFailure: null })], { [sha("b")]: sha("a") });
+  await plain.resolve();
+  expect(plain.of(51).job.inheritedFrom).toBeNull();
+});
+test("a base that is no group head is not inherited; the answer is cached and never asked again", async () => {
+  const { resolve, of, calls } = inheritance([group(7, 50, sha("a")), group(7, 50, sha("a"), { attempt: 2, jobId: 501 }, 8)], { [sha("a")]: sha("1") });
+  expect(await resolve()).toBe(2);
+  expect(of(50).job.inheritedFrom).toBeNull();
+  expect(calls).toHaveLength(1); // two attempts of one head: one request
+  expect(await resolve()).toBe(0);
+  expect(calls).toHaveLength(1);
+});
+test("a chain A, B, C with the same failure traces C back to A; runner losses are never checked", async () => {
+  const { resolve, of, calls } = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b")), group(9, 52, sha("c")), group(10, 53, sha("d"), { buildFailure: null, annotations: [{ level: "failure", title: "", message: LOSS }] })],
+    { [sha("a")]: sha("1"), [sha("b")]: sha("a"), [sha("c")]: sha("b"), [sha("d")]: sha("c") });
+  await resolve();
+  expect(of(52).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  expect(of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  expect(of(50).job.inheritedFrom).toBeNull();
+  expect(of(53).class).toBe("runner_loss");
+  expect(of(53).job.inheritedFrom).toBeUndefined();
+  expect(calls).toHaveLength(3); // c, b and a, each asked once
+});
+test("the lookup is charged to the budget; without budget the job stays unchecked and is retried after the refill", async () => {
+  let time = 0;
+  const { resolve, of, calls, stored } = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), {}, 9)], { [sha("a")]: sha("1"), [sha("b")]: sha("a") }, { budgetPerHour: 1, now: () => time });
+  expect(await resolve()).toBe(0);
+  expect(calls).toHaveLength(1); // the one token went to B's base; A's base found no budget
+  expect(of(51).job.inheritedFrom).toBeUndefined();
+  const [held] = queueRemovalEvents(REPO, stored().filter((c) => c.job.runId === 51), 0, Date.parse(at(9)) + 60_000);
+  expect(held).toBeUndefined(); // waiting for the check instead of charging PR #8
+  expect(queueRemovalEvents(REPO, stored().filter((c) => c.job.runId === 51), 0, Date.parse(at(9)) + 16 * 60_000)[0]!.render()).toContain("PR #8 removed from merge queue");
+  time = 3_600_000;
+  expect(await resolve()).toBe(2);
+  expect(of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  expect(calls).toHaveLength(2);
 });

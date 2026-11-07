@@ -60,6 +60,10 @@ describe("classifyJobs", () => {
     expect(one(cancelled(SUPERSEDED, { jobName: "CI summary" }), { aggregatorJobs: ["CI summary"] })?.class).toBe("consequence");
   });
 
+  it("a shutdown notice that only reached the log is a runner loss, above everything else", () => {
+    const excerpt = "line\n2026-11-07T15:46:42.70Z ##[error]Process completed with exit code 130.\n2026-11-07T15:46:42.71Z ##[error]The runner has received a shutdown signal.";
+    expect(one(failed({ logExcerpt: excerpt }))).toMatchObject({ class: "runner_loss", evidence: "##[error]The runner has received a shutdown signal." });
+  });
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });
     const pass = (over: Partial<JobRecord> = {}) => job({ runId: 11, jobId: 2, event: "pull_request", headBranch: "feature", ...over });
@@ -206,5 +210,17 @@ describe("percentile and pool timings", () => {
     expect(Object.keys(poolTimingsByEvent).sort()).toEqual(["merge_group", "push"]);
     expect(poolTimingsByEvent.merge_group!.unknown!.jobs).toBe(1);
     expect(poolTimingsByEvent.push!["self-hosted"]!.jobs).toBe(4);
+  });
+});
+
+describe("inherited failures", () => {
+  const group = (over: Partial<JobRecord> = {}) => failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-8-abc123", buildFailure: { match: "pkg/core: build failed" }, inheritedFrom: { pullRequest: 7, runId: 50 }, ...over });
+  it("keeps the class and evidence and names the origin in the reason", () => {
+    expect(one(group())).toMatchObject({ class: "real", reason: "build or setup failed, inherited from #7", evidence: "pkg/core: build failed" });
+    expect(one(group({ inheritedFrom: null }))?.reason).toBe("build or setup failed");
+  });
+  it("never tags runner losses, timeouts, transient or refused failures", () => {
+    for (const j of [group({ annotations: [failure(LOSS)] }), group({ annotations: [failure(TIMEOUT)] }), group({ logExcerpt: "##[error] ECONNRESET" })]) expect(one(j)!.reason).not.toContain("inherited");
+    expect(one(group(), { refusalSteps: ["Run tests"] })).toMatchObject({ class: "refused", reason: "intentional refusal by a gate step" });
   });
 });

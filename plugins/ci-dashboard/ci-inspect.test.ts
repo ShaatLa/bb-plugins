@@ -59,6 +59,13 @@ describe("inspect", () => {
     expect(get("queue:50:1", { queueStatus: () => "rejected" }).facts).toMatchObject({ confirmation: "rejected" });
     expect(() => get("queue:51:1")).toThrow(/No merge queue attempt 51:1/);
   });
+  it("job and queue: show where an inherited failure came from and relate its PR and run", () => {
+    const origin = { pullRequest: 6, runId: 49 }, inheritedJobs = [{ ...classified[0]!, job: { ...classified[0]!.job, inheritedFrom: origin }, reason: "build or setup failed, inherited from #6" }, ...classified.slice(1)];
+    expect(get("job:500", { classified: inheritedJobs })).toMatchObject({ facts: { inheritedFrom: origin }, related: expect.arrayContaining(["pr:6", "run:49"]) });
+    expect(get("queue:50:1", { classified: inheritedJobs })).toMatchObject({ facts: { inheritedFrom: origin }, related: expect.arrayContaining(["pr:6", "run:49"]) });
+    expect(get("job:500").facts).not.toHaveProperty("inheritedFrom");
+    expect(get("queue:50:1").facts).not.toHaveProperty("inheritedFrom");
+  });
   it("pool: live state, timings, stall and recent losses as refs", () => {
     const result = get("pool:self-hosted");
     expect(result.facts).toMatchObject({ queued: 2, inProgress: 1, openStall: true, runnerLosses: 2, queueWait: { p50: "1s", p90: "5s" }, duration: { p50: "60s", p90: "120s" } });

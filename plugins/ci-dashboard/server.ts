@@ -471,7 +471,7 @@ export default function plugin(bb: BbPluginApi) {
     if (rt.analysis) {
       const { classified, massCancels } = rt.analysis;
       // Queue removals are built even with removals off: they decide whether a merge queue runner loss stands alone.
-      if (enabled.queue || enabled.loss) events.push(...queueRemovalEvents(repo, classified, values.runnerLossLimit));
+      if (enabled.queue || enabled.loss) events.push(...queueRemovalEvents(repo, classified, values.runnerLossLimit, token && rt.backfill ? now : undefined, rt.removalRejected));
       if (enabled.red) events.push(...defaultRedEvents(repo, classified, withoutBenignAlerts(rt.alerts ?? [], classified), rt.alertStreaks));
       for (const opening of opened) {
         const event = opening.kind === "pool_stall" && enabled.stall ? stallEvent(opening, rt.pools, now) : opening.kind === "mass_cancel" && enabled.mass ? massCancelEvent(opening, massCancels) : null;
@@ -498,7 +498,7 @@ export default function plugin(bb: BbPluginApi) {
       return Date.parse(last.createdAt);
     }, removals, now);
     // A merge queue runner loss stands alone only once its removal was given up on (the PR stayed queued).
-    if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit, (runId, attempt) => removals.has(`queue:${runId}:${attempt}`)));
+    if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit, (runId, attempt) => removals.has(`queue:${runId}:${attempt}`), removals));
     const accepted = acceptEvents(state, global, confirmed, config);
     // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_manage.
     const openProblems = new Set((await problemsOf(repo, rt)).map((problem) => problem.id));
@@ -578,14 +578,20 @@ export default function plugin(bb: BbPluginApi) {
     }
     // 3. analysis, recomputed at most every five minutes even while the backfill stores rows (the live pool state above stays per minute) unless the backfill stored failures.
     const analysisKey = JSON.stringify([days, aggregatorJobs, policyJobs, refusalSteps, flake.hash]);
-    const recompute = !rt.analysis || rt.analysis.key !== analysisKey || now - rt.analysis.at >= 300_000 || dirty;
-    if (recompute) {
+    let recompute = !rt.analysis || rt.analysis.key !== analysisKey || now - rt.analysis.at >= 300_000 || dirty;
+    const analyze = () => {
       try {
         const jobs = jobStore.listJobs({ repository: repo, since: new Date(now - days * 86_400_000).toISOString(), until: nowIso });
         const classified = classifyJobs(jobs, { aggregatorJobs, policyJobs, refusalSteps, flakeRules: flake.rules, flakeHash: flake.hash }), reruns = summarizeReruns(jobs), massCancels = detectMassCancel(classified);
         const queueOnly = queueOnlyJobs(jobs, classified), samples = timingSamples(jobs);
         rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, queueOnly, samples, summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo, queueOnly, samples }) };
       } catch (error) { fail("analysis", error); }
+    };
+    if (recompute) analyze();
+    // 3b. Merge queue failures built on a failed group ahead are marked on the stored jobs; marking changes the classification, so it is redone.
+    if (token && rt.analysis && rt.backfill) {
+      try { if (await rt.backfill.run.resolveInherited(repo, rt.analysis.classified, signal, flake.artifacts)) { analyze(); recompute = true; } }
+      catch (error) { fail("inherited failures", error); }
     }
     // 4. signals and push. Without a successful live poll the stall state is unknown, so incidents are left untouched instead of resolved.
     let opened: Signal[] = [];

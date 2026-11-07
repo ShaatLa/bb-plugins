@@ -106,7 +106,7 @@ describe("log scan", () => {
       // The same log without rules keeps today's early stop.
       Object.assign(counters, { reads: 0, cancelled: false }); stream([lead, "cleanup\n"], counters);
       expect(await fetcher()("/logs")).toBe(excerpt);
-      expect(counters.reads).toBe(1);
+      expect(counters.reads).toBe(2); // one more read to see that the line after the error is not another error
     } finally { vi.unstubAllGlobals(); }
   });
   it("also finds a signature before the error and reads the whole log when nothing matches", async () => {
@@ -349,7 +349,8 @@ describe("re-scan of stored jobs", () => {
     const db = createFakePluginHost().bb.storage.database();
     for (const sql of jobMigrations) db.prepare(sql).run();
     const store = createJobStore(db);
-    for (const j of jobs) store.saveAttempt(j.repository, j.runId, j.attempt, [j], true);
+    // Jobs of one run attempt are saved together: saving an attempt replaces its jobs.
+    for (const j of jobs) store.saveAttempt(j.repository, j.runId, j.attempt, jobs.filter((x) => x.runId === j.runId && x.attempt === j.attempt), true);
     return store;
   }
   const real = (n: number, over: Partial<JobRecord> = {}) => failed({ jobId: n, runId: n, headSha: String(n).repeat(40).slice(0, 40), ...over }, n);
@@ -387,17 +388,40 @@ describe("re-scan of stored jobs", () => {
     expect(text).toHaveBeenCalledTimes(1);
     expect(stored(store)[0]!.signature).toEqual({ rules: config(SOCKET).hash, label: null, match: null, source: null });
   });
-  it("a recognized report decides without fetching the log, and a build failure is stored on the job", async () => {
+  it("a recognized report decides over a matching log, and a build failure is stored on the job", async () => {
     const store = storeWith(real(1, { createdAt: at(1), startedAt: at(2), completedAt: at(3) }));
     const listing = vi.fn(async (_path: string) => ({ body: { artifacts: [{ id: 9, name: "test-results-a", size_in_bytes: 10, expired: false, created_at: at(2) }] }, hasNext: false }));
     const text = logging(() => true);
     const backfill = createBackfill({ store, request: listing, fetchText: text, fetchArtifact: async () => zip([{ name: "r.json", data: GO_BUILD_FAILED }]), maxPerStep: 10 });
     await backfill.step(signal(), { ...config("lock_busy => FLAKE-7"), ...flakeSettings("lock_busy => FLAKE-7", "test-results-*") });
-    expect(text).not.toHaveBeenCalled();
+    // The log is still read once for runner-loss evidence after the first error; its rule hit does not count over the report.
+    expect(text).toHaveBeenCalledTimes(1);
     const [job] = stored(store);
     expect(job!.buildFailure).toEqual({ match: "app/db" });
     expect(job!.signature).toMatchObject({ label: null, source: null });
     expect(classifyJobs([job!], {})[0]).toMatchObject({ class: "real", reason: "build or setup failed" });
+  });
+  it("a sibling whose refreshed log shows a runner shutdown stops being a candidate, so the report goes to the lone remaining job", async () => {
+    const store = storeWith(real(1, { createdAt: at(1), startedAt: at(2), completedAt: at(3) }), real(2, { runId: 1, headSha: "1".repeat(40), jobName: "Integration", createdAt: at(1), startedAt: at(2), completedAt: at(3) }));
+    const listing = vi.fn(async (_path: string) => ({ body: { artifacts: [{ id: 9, name: "test-results-a", size_in_bytes: 10, expired: false, created_at: at(2) }] }, hasNext: false }));
+    const text = vi.fn(async (path: string) => path.includes("/jobs/2/") ? "x\n##[error]Process completed with exit code 130.\n##[error]The runner has received a shutdown signal." : "y\n##[error]Process completed with exit code 1.");
+    const backfill = createBackfill({ store, request: listing, fetchText: text, fetchArtifact: async () => zip([{ name: "r.json", data: GO_BUILD_FAILED }]), maxPerStep: 10 });
+    await backfill.step(signal(), { ...config("lock_busy => FLAKE-7"), ...flakeSettings("lock_busy => FLAKE-7", "test-results-*") });
+    const classified = classifyJobs(stored(store), {});
+    expect(classified.find((c) => c.job.jobId === 2)).toMatchObject({ class: "runner_loss" });
+    expect(classified.find((c) => c.job.jobId === 1)).toMatchObject({ class: "real", reason: "build or setup failed" });
+  });
+  it("with a tight budget every step stores some re-scanned attempts instead of refetching logs forever", async () => {
+    const store = storeWith(...[1, 2, 3, 4, 5].map((n) => real(n, { createdAt: at(n), startedAt: at(n), completedAt: at(n) })));
+    const listing = vi.fn(async (_path: string) => ({ body: { artifacts: [] }, hasNext: false }));
+    const text = vi.fn(async () => "y\n##[error]Process completed with exit code 1.");
+    const backfill = createBackfill({ store, request: listing, fetchText: text, budgetPerHour: 100_000, maxPerStep: 3 });
+    const flake = { ...config("lock_busy => FLAKE-7"), ...flakeSettings("lock_busy => FLAKE-7", "test-results-*") };
+    const done = () => stored(store).filter((j) => j.signature?.rules === flake.hash).length;
+    await backfill.step(signal(), flake);
+    expect(done()).toBeGreaterThan(0);
+    for (let i = 0; i < 6 && done() < 5; i++) await backfill.step(signal(), flake);
+    expect(done()).toBe(5);
   });
   it("spends the backfill budget, newest job first, and continues on the next step", async () => {
     const store = storeWith(real(1), real(2), real(3));

@@ -61,11 +61,15 @@ describe("merge queue removal", () => {
     expect(queueRemovalEvents(REPO, [classify(queueJob({ jobName: "CI summary" }), "consequence")])).toEqual([]);
     expect(queueRemovalEvents(REPO, [classify(queueJob({ jobName: "CI summary" }), "consequence"), classify(queueJob({ jobId: 501 }), "real")]).map((event) => event.key)).toEqual(["queue:50:1"]);
   });
-  it("produces neither a removal nor a loss for a group the queue invalidated", () => {
+  it("produces neither a removal nor a loss for a group the queue invalidated; fail-fast cancels next to an own failure are a removal", () => {
     for (const cancel of ["collateral_cancel", "superseded", "manual_cancel"] as const) {
-      const group = [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 2, jobName: "Lint" }), "runner_loss"), classify(queueJob({ jobId: 3, jobName: "E2E" }), cancel)];
-      expect(queueRemovalEvents(REPO, group, 3), cancel).toEqual([]);
-      expect(runnerLossEvents(REPO, group, "main", 3, () => true), cancel).toEqual([]);
+      // Invalidated: only cancellations, no own failure.
+      const rebuilt = [classify(queueJob({ jobId: 2, jobName: "Lint" }), cancel), classify(queueJob({ jobId: 3, jobName: "E2E" }), cancel)];
+      expect(queueRemovalEvents(REPO, rebuilt, 3), cancel).toEqual([]);
+      // An own failure with cancelled siblings ran to its own end: a removal; its loss never stands alone (the group had cancellations).
+      const failed = [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 2, jobName: "Lint" }), "runner_loss"), classify(queueJob({ jobId: 3, jobName: "E2E" }), cancel)];
+      expect(queueRemovalEvents(REPO, failed, 3).map((event) => event.key), cancel).toEqual(["queue:50:1"]);
+      expect(runnerLossEvents(REPO, failed, "main", 3, () => true), cancel).toEqual([]);
     }
     // Another attempt of the same run is a different group and is not affected.
     expect(queueRemovalEvents(REPO, [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 3, attempt: 2 }), "collateral_cancel")]).map((event) => event.key)).toEqual(["queue:50:1"]);
@@ -75,7 +79,14 @@ describe("merge queue removal", () => {
     expect(text(queueRemovalEvents(REPO, group, 3)[0]!)).toContain("Unit tests: real, Lint: runner_loss (2/3 on this head), E2E: runner_loss (2/3 on this head)");
     expect(text(queueRemovalEvents(REPO, group)[0]!)).toContain("Lint: runner_loss (2 on this head)");
     // The count covers the whole head, not only this attempt.
-    expect(text(queueRemovalEvents(REPO, [...group, classify(queueJob({ runId: 60, jobId: 9 }), "runner_loss")], 3)[0]!)).toContain("Lint: runner_loss (3/3 on this head)");
+    expect(text(queueRemovalEvents(REPO, [...group, classify(queueJob({ runId: 60, jobId: 9 }), "runner_loss")], 3)[0]!)).toContain("Lint: runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+  });
+  it("counts a PR's losses across its groups (each group has its own merge commit), skipping groups whose removal was never confirmed", () => {
+    const loss = (runId: number, head: string) => classify(queueJob({ runId, jobId: runId * 10, headSha: head.repeat(40), headBranch: `gh-readonly-queue/main/pr-7-${head.repeat(40)}` }), "runner_loss");
+    const three = [loss(61, "a"), loss(62, "b"), loss(63, "c")];
+    expect(text(queueRemovalEvents(REPO, three, 3).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+    // The middle group's removal was given up on (the PR stayed queued): it does not count.
+    expect(text(queueRemovalEvents(REPO, three, 3, undefined, new Set(["queue:62:1"])).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (2/3 on this head)");
   });
   it("regression: a group cancelled because the PR ahead left the queue is not a removal", () => {
     // PR 7 (ahead) really failed and left; PR 8's group, built on it, only failed through its aggregator and cancellations.
@@ -422,3 +433,24 @@ describe("inspect refs in event lines", () => {
     }
   });
 });
+
+describe("inherited merge queue failures", () => {
+  const BUILD = "build or setup failed";
+  const inherited = (over = {}) => ({ ...classify(queueJob({ inheritedFrom: { pullRequest: 6, runId: 49 }, ...over }), "real"), reason: `${BUILD}, inherited from #6` });
+  it("headlines a removal whose every own failure is inherited, and tags each job", () => {
+    const [event] = queueRemovalEvents(REPO, [inherited(), inherited({ jobName: "Lint", jobId: 501 }), classify(queueJob({ jobName: "CI summary", jobId: 502 }), "consequence")]);
+    expect(text(event!)).toBe(`PR #7 removed (inherited from #6) · Unit tests: real (${BUILD}) inherited from #6, Lint: real (${BUILD}) inherited from #6, CI summary: consequence · inspect queue:50:1 ${RUN_URL}`);
+  });
+  it("keeps the plain headline when only some failures are inherited or the origins differ", () => {
+    const own = { ...classify(queueJob({ jobName: "Lint", jobId: 501 }), "real"), reason: BUILD };
+    expect(text(queueRemovalEvents(REPO, [inherited(), own])[0]!)).toContain("PR #7 removed from merge queue · Unit tests: real (build or setup failed) inherited from #6, Lint: real (build or setup failed) ·");
+    expect(text(queueRemovalEvents(REPO, [inherited(), inherited({ jobName: "Lint", jobId: 501, inheritedFrom: { pullRequest: 5, runId: 48 } })])[0]!)).toContain("PR #7 removed from merge queue");
+  });
+  it("stays inside 400 characters", () => {
+    const jobs = Array.from({ length: 6 }, (_, i) => inherited({ jobName: `A fairly long job name ${i}`, jobId: 600 + i }));
+    const line = text(queueRemovalEvents(REPO, jobs)[0]!, ["x".repeat(300)]);
+    expect(line.length).toBeLessThanOrEqual(400);
+    expect(line.endsWith(RUN_URL)).toBe(true);
+  });
+});
+
