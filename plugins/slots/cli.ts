@@ -1,7 +1,8 @@
 import { cliCommand, defineCli, type BbPluginApi, type PluginCliContext, type PluginCliResult } from "@get-bb/plugin-sdk";
+import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
-import type { Result, SettingsFormView, ObserverView, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
+import type { Result, SettingsFormView, ObserverView, RpcMethods, RequestOutcome, UseOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
 import { plural } from "./lib/plural.js";
 import { parseSince } from "./runtime.js";
 
@@ -64,7 +65,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
   const id = (name: string, required = true) => [{ name, description: `${name} identifier`, required }] as const;
   async function call(method: keyof RpcMethods, params: Record<string, unknown>, ctx: PluginCliContext, needsThread = true) {
     if (needsThread && !params.threadId) params.threadId = ctx.threadId;
-    if (["request", "gate", "port", "setCapacity"].includes(method)) params.hostId = (await bb.sdk.system.config()).primaryHostId;
+    if (["request", "acquire", "gate", "port", "setCapacity"].includes(method)) params.hostId = (await bb.sdk.system.config()).primaryHostId;
     return invoke(method, params);
   }
   const simple = (method: keyof RpcMethods, summary: string, needsThread = true) => cliCommand({ summary,
@@ -139,9 +140,59 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
         return renderResult("request", { ok: false, error: { code: "not-found", message: String(error) } }, !!o.json);
       }
     } }),
+    acquire: cliCommand({ summary: "Acquire a use and wait for a slot", options: {
+      json, thread, pool, job: { type: "string", required: true, description: "Job description" },
+      est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority,
+      timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
+    }, async run(i, c) {
+      const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
+      if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
+      let result = await call("acquire", { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) }, c);
+      if (!result.ok) return renderResult("acquire", result, !!o.json);
+      const initial = result.data as UseOutcome, useId = initial.useId;
+      const status = await invoke("status", {});
+      if (!status.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", status, !!o.json); }
+      const ttl = Object.values((status.data as StatusView).hostSettings)[0].heartbeatIntervalMs;
+      const renew = Math.max(30, Math.floor(ttl / 3000));
+      const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}` });
+      if (initial.kind === "leased") return success(initial);
+      const deadline = Date.now() + timeout;
+      try {
+        while (Date.now() < deadline) {
+          await sleep(Math.min(3000, deadline - Date.now()), undefined, { signal: c.signal });
+          result = await invoke("heartbeatUse", { threadId: caller, useId });
+          if (!result.ok) return renderResult("acquire", result, !!o.json);
+          if ((result.data as UseOutcome).kind === "leased") return success(result.data as UseOutcome);
+        }
+        result = await invoke("detach", { threadId: caller, useId });
+        if (!result.ok) return renderResult("acquire", result, !!o.json);
+        const outcome = result.data as UseOutcome | { kind: "queued"; position: number };
+        if (outcome.kind === "leased") return success(outcome);
+        const message = `still queued at position ${(outcome as { position: number }).position}; retry within ${ttl / 60000}m to keep it`;
+        return { exitCode: 75, stdout: o.json ? JSON.stringify({ ok: false, error: { code: "timeout", message } }) : message };
+      } catch (error) {
+        await invoke("done", { threadId: caller, useId });
+        return renderResult("acquire", { ok: false, error: { code: "not-found", message: String(error) } }, !!o.json);
+      }
+    } }),
+    done: cliCommand({ summary: "Finish a wrapper use", options: { json, thread }, positionals: id("use"), async run(i,c) {
+      const result = await call("done", { threadId: i.options.thread, useId: i.positionals.use }, c);
+      if (!result.ok && result.error.code === "not-found") return { exitCode: 0, stdout: i.options.json ? JSON.stringify(result) : "Done." };
+      return renderResult("done", result, !!i.options.json);
+    } }),
+    wrapper: cliCommand({ summary: "Print the slots-run shell wrapper", options: {}, async run() {
+      if (process.platform === "win32") return { exitCode: 1, stdout: "slots-run requires macOS or Linux" };
+      return { exitCode: 0, stdout: await readFile(new URL("./slots-run.sh", import.meta.url), "utf8") };
+    } }),
     release: cliCommand({ summary: "Release leases or cancel queued requests", options: { json, thread }, positionals: id("id", false),
       async run(i, c) { return renderResult("release", await call("release", { threadId: i.options.thread, ...(i.positionals.id ? { leaseId: i.positionals.id } : {}) }, c), !!i.options.json); } }),
-    heartbeat: simple("heartbeat", "Extend held leases"), gate: simple("gate", "Take a fresh machine sample; exit 1 on failure"),
+    heartbeat: cliCommand({ summary: "Extend held leases or a use", options: { json, thread, use: { type: "string", description: "Use ID" } }, async run(i,c) {
+      if (!i.options.use) return renderResult("heartbeat", await call("heartbeat", { threadId: i.options.thread }, c), !!i.options.json);
+      const result = await call("heartbeatUse", { threadId: i.options.thread, useId: i.options.use }, c);
+      const output = renderResult("heartbeatUse", result, !!i.options.json);
+      if (!result.ok && (result.error.code === "not-found" || result.error.code === "forbidden")) output.exitCode = 2;
+      return output;
+    } }), gate: simple("gate", "Take a fresh machine sample; exit 1 on failure"),
     status: simple("status", "Show pools, queue, gate and effective settings", false),
     transfer: cliCommand({ summary: "Transfer a lease to a QA child", options: { json, thread, to: { type: "string", required: true, description: "Child thread ID" }, lease: { type: "string", description: "Lease ID (required if ambiguous)" } },
       async run(i,c) { return renderResult("transfer", await call("transfer", { threadId: i.options.thread, toThreadId: i.options.to, ...(i.options.lease ? { leaseId: i.options.lease } : {}) }, c), !!i.options.json); } }),

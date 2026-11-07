@@ -416,3 +416,17 @@ it("keeps observer and explicit overrides from an existing config file on restar
   cleanups.push(() => replacement.harness.lifecycle.dispose());
   expect(await invoke("settingsRead", {})).toMatchObject({ ok: true, data: { values: { observerThreadId: "b", heavyCapacity: 2 }, setKeys: expect.arrayContaining(["heavyCapacity", "observerThreadId"]) } });
 });
+
+it("exposes acquire, use heartbeat and done through CLI and RPC", async () => {
+  const h = await setup();
+  const queued = await h.harness.behavior.runCli(["acquire", "--pool", "heavy", "--job", "test", "--est", "1m", "--timeout", "1ms"], { threadId: "a" });
+  expect(queued.exitCode).toBe(75);
+  expect((await h.view()).pools[0].queue[0].graceUntil).not.toBeNull();
+  const acquired = await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  if (!acquired.ok) throw new Error(acquired.error.message);
+  const useId = (acquired.data as { useId: string }).useId;
+  expect((await h.harness.behavior.runCli(["heartbeat", "--use", useId], { threadId: "b" })).exitCode).toBe(2);
+  expect((await h.harness.behavior.runCli(["heartbeat", "--use", useId], { threadId: "a" })).exitCode).toBe(0);
+  expect((await h.harness.behavior.runCli(["done", useId], { threadId: "a" })).exitCode).toBe(0);
+  expect((await h.view()).pools[0].queue).toHaveLength(0);
+});

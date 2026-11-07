@@ -127,6 +127,10 @@ export interface RpcMethods {
   settingsWrite: { input: { values?: Partial<SettingValues>; unset?: SettingKey[] }; output: Result<SettingsFormView> };
   observer: { input: ObserverParams; output: Result<ObserverView> };
   request: { input: RequestParams; output: Result<RequestOutcome> };
+  acquire: { input: RequestParams; output: Result<UseOutcome> };
+  done: { input: { threadId: string; useId: string }; output: Result<null> };
+  detach: { input: { threadId: string; useId: string }; output: Result<UseOutcome | { kind: "queued"; position: number }> };
+  heartbeatUse: { input: { threadId: string; useId: string }; output: Result<UseOutcome> };
   release: { input: ReleaseParams; output: Result<ReleaseOutcome> };
   heartbeat: { input: HeartbeatParams; output: Result<HeartbeatOutcome> };
   gate: { input: GateParams; output: Result<GateOutcome> };

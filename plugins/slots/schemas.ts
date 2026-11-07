@@ -15,6 +15,10 @@ export const inputs = {
   config: z.object({ operation: z.enum(["show", "set", "unset"]).default("show"), key: z.enum(SETTING_KEYS).optional(), value: z.union([z.number(), z.string()]).optional() }).strict(),
   observer: z.object({ threadId: id.optional(), self: z.boolean().optional(), toThreadId: id.optional(), clear: z.boolean().optional(), events: observerEventsSchema.optional() }).strict().refine(p => Number(!!p.self) + Number(!!p.toThreadId) + Number(!!p.clear) <= 1 && (!p.self || !!p.threadId), "Choose self, target thread or clear; self requires a caller"),
   request: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), wait: z.literal(false).optional(), timeoutMs: time.optional() }).strict(),
+  acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional() }).strict(),
+  done: z.object({ ...thread, useId: id }).strict(),
+  detach: z.object({ ...thread, useId: id }).strict(),
+  heartbeatUse: z.object({ ...thread, useId: id }).strict(),
   release: z.object({ ...thread, leaseId: id.optional() }).strict(),
   heartbeat: z.object(thread).strict(), gate: z.object({ ...thread, ...host }).strict(),
   status: z.object({ hostId: id.optional() }).strict(),
@@ -32,7 +36,7 @@ function method<K extends keyof RpcMethods>(key: K) {
 }
 export const rpcContract = defineRpcContract({
   config: method("config"), settingsRead: method("settingsRead"), settingsWrite: method("settingsWrite"),
-  observer: method("observer"), request: method("request"), release: method("release"), heartbeat: method("heartbeat"),
+  observer: method("observer"), request: method("request"), acquire: method("acquire"), done: method("done"), detach: method("detach"), heartbeatUse: method("heartbeatUse"), release: method("release"), heartbeat: method("heartbeat"),
   gate: method("gate"), status: method("status"), transfer: method("transfer"), port: method("port"),
   prioritize: method("prioritize"), revoke: method("revoke"), grant: method("grant"), setCapacity: method("setCapacity"), log: method("log"),
 });
