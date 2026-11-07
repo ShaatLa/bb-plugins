@@ -87,8 +87,8 @@ function comment(
 describe("CommentCard thread links", () => {
   it("hands the host Markdown a native thread mention for a same-origin thread URL only", () => {
     const body = [
-      `${window.location.origin}/projects/proj_b5z5rb5gce/threads/thr_ukkbq8m5iq`,
-      "https://example.com/projects/proj_b5z5rb5gce/threads/thr_ukkbq8m5iq",
+      `${window.location.origin}/projects/proj_example1/threads/thr_example1`,
+      "https://example.com/projects/proj_example1/threads/thr_example1",
       "https://example.com/docs",
     ].join("\n");
     render(
@@ -99,8 +99,8 @@ describe("CommentCard thread links", () => {
     );
     expect(screen.getByTestId("markdown").textContent).toBe(
       [
-        "@thread:thr_ukkbq8m5iq",
-        "https://example.com/projects/proj_b5z5rb5gce/threads/thr_ukkbq8m5iq",
+        "@thread:thr_example1",
+        "https://example.com/projects/proj_example1/threads/thr_example1",
         "https://example.com/docs",
       ].join("\n"),
     );

@@ -2,21 +2,21 @@ import { describe, expect, it } from "vitest";
 import { withNativeThreadMentions } from "./thread-links.js";
 
 const ORIGIN = "http://127.0.0.1:38886";
-const PATH = "/projects/proj_b5z5rb5gce/threads/thr_ukkbq8m5iq";
+const PATH = "/projects/proj_example1/threads/thr_example1";
 const run = (body: string, origin: string | null = ORIGIN) =>
   withNativeThreadMentions(body, origin);
 
 describe("withNativeThreadMentions", () => {
   it("turns same-origin absolute, autolink and relative thread references into mentions", () => {
-    expect(run(`See ${ORIGIN}${PATH}.`)).toBe("See @thread:thr_ukkbq8m5iq.");
-    expect(run(`<${ORIGIN}${PATH}>`)).toBe("@thread:thr_ukkbq8m5iq");
-    expect(run(`(${PATH})`)).toBe("(@thread:thr_ukkbq8m5iq)");
+    expect(run(`See ${ORIGIN}${PATH}.`)).toBe("See @thread:thr_example1.");
+    expect(run(`<${ORIGIN}${PATH}>`)).toBe("@thread:thr_example1");
+    expect(run(`(${PATH})`)).toBe("(@thread:thr_example1)");
     expect(run("/threads/thr_abc123")).toBe("@thread:thr_abc123");
-    expect(run(`${ORIGIN}${PATH}/`)).toBe("@thread:thr_ukkbq8m5iq");
+    expect(run(`${ORIGIN}${PATH}/`)).toBe("@thread:thr_example1");
   });
 
   it("keeps a message anchor and drops nothing else", () => {
-    expect(run(`${ORIGIN}${PATH}#msg=42`)).toBe("@thread:thr_ukkbq8m5iq#msg=42");
+    expect(run(`${ORIGIN}${PATH}#msg=42`)).toBe("@thread:thr_example1#msg=42");
     expect(run(`${ORIGIN}${PATH}#other`)).toBe(`${ORIGIN}${PATH}#other`);
     expect(run(`${ORIGIN}${PATH}?tab=files`)).toBe(`${ORIGIN}${PATH}?tab=files`);
   });
@@ -42,7 +42,7 @@ describe("withNativeThreadMentions", () => {
       `[ref]: ${ORIGIN}${PATH}`,
       `\`\`\`\n${ORIGIN}${PATH}\n\`\`\``,
       `~~~sh\ncurl ${PATH}\n~~~`,
-      `${ORIGIN}/projects/proj_b5z5rb5gce`,
+      `${ORIGIN}/projects/proj_example1`,
       `${ORIGIN}/plugins/work-board/work-board/task/WB-1`,
       `see src/threads/thr_abc.ts`,
     ];
@@ -51,7 +51,7 @@ describe("withNativeThreadMentions", () => {
 
   it("resumes rewriting after a closed fence and keeps surrounding text", () => {
     expect(run(`\`\`\`\n${PATH}\n\`\`\`\nAfter ${PATH}, then \`${PATH}\` and ${PATH}`)).toBe(
-      `\`\`\`\n${PATH}\n\`\`\`\nAfter @thread:thr_ukkbq8m5iq, then \`${PATH}\` and @thread:thr_ukkbq8m5iq`,
+      `\`\`\`\n${PATH}\n\`\`\`\nAfter @thread:thr_example1, then \`${PATH}\` and @thread:thr_example1`,
     );
   });
 });
