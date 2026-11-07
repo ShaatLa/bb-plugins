@@ -13,10 +13,10 @@ const fixture: StatusView = {
   pools: [
     { hostId: "laptop", pool: "heavy", capacity: 4,
       leases: [{ id: "lease-1", requestId: "request-1", hostId: "laptop", pool: "heavy", slotIndex: 0,
-        ownerThreadId: "owner", holderThreadId: "holder", job: "Run geometry suite", estMs: 120_000,
+        ownerThreadId: "owner", holderThreadId: "holder", job: "Run end-to-end suite", estMs: 120_000,
         grantedAt: at - 60_000, expiresAt: at + 60_000, lastHeartbeatAt: at, warnedAt: null }],
       queue: [
-        { id: "request-2", hostId: "laptop", pool: "heavy", threadId: "urgent", job: "Browser geometry", estMs: 180_000, priority: "urgent", createdAt: at - 30_000 },
+        { id: "request-2", hostId: "laptop", pool: "heavy", threadId: "urgent", job: "Browser tests", estMs: 180_000, priority: "urgent", createdAt: at - 30_000 },
         { id: "request-3", hostId: "laptop", pool: "heavy", threadId: "normal", job: "Build package", estMs: 60_000, priority: "normal", createdAt: at - 90_000 },
       ] },
     { hostId: "laptop", pool: "local-model", capacity: 1, leases: [], queue: [] },
@@ -52,7 +52,7 @@ test("renders summary, capacity cells, lease progress, queue and SDK thread navi
   expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "owner" }));
   const queue = within(pool).getByRole("list", { name: "Heavy jobs queue" });
   expect(within(queue).getAllByRole("listitem").map(item => item.textContent)).toEqual([
-    expect.stringContaining("#1Browser testsurgentBrowser geometryEstimate 3m · waiting 30s"),
+    expect.stringContaining("#1Browser testsurgentBrowser testsEstimate 3m · waiting 30s"),
     expect.stringContaining("#2Build agentBuild packageEstimate 1m · waiting 1m"),
   ]);
   expect(slot.getByText("Next — waiting for the machine check")).toBeTruthy();
@@ -185,7 +185,7 @@ test("refreshes via realtime and button, polls while visible, preserves stale da
   status.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(slot.getByRole("alert").textContent).toContain("Showing the last successful status.");
-  expect(slot.getByText("Run geometry suite")).toBeTruthy();
+  expect(slot.getByText("Run end-to-end suite")).toBeTruthy();
   await act(async () => { vi.advanceTimersByTime(10_000); });
   expect(status).toHaveBeenCalledTimes(5);
   expect(slot.queryByRole("alert")).toBeNull();
@@ -235,7 +235,7 @@ test.each([0, 1, 4])("pluralizes capacity activity for %s slots", async capacity
 test("refresh uses the BB ArrowReloadHorizontal icon and stays busy until success or failure", async () => {
   const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
   const slot = render(status);
-  await slot.findByText("Run geometry suite");
+  await slot.findByText("Run end-to-end suite");
   const button = slot.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
   const icon = button.querySelector('[data-icon="ArrowReloadHorizontal"]')!;
   expect(icon).toBeTruthy();

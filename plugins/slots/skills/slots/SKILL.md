@@ -1,9 +1,11 @@
 ---
 name: slots
-description: "Request local resource leases for full Vitest, Go race, PG containers, headless geometry or local LLM work."
+description: "Request local resource leases for full test suites, race-detector or fuzz runs, database or service containers, headless-browser jobs, large builds, or local LLM inference."
 ---
 
-Request before heavy work: `bb slots request --pool heavy --job "..." --est 35m`.
+Request before heavy work such as full test suites, race-detector or fuzz runs,
+database or service containers, headless-browser jobs, large builds, or local LLM
+inference: `bb slots request --pool heavy --job "..." --est 35m`.
 Use `--pool local-model` for LLM inference. Add `--wait --timeout 30m` in a
 background shell run, or wait idle for the grant message. Tools `slots_request`
 and peers return immediately; notifications wake idle threads. One request or

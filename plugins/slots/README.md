@@ -5,7 +5,9 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.2.2)
+## Sidebar (0.2.3)
+
+Version 0.2.3 makes the skill and examples project-neutral and documents machine tuning.
 
 Version 0.2.2 uses BB’s built-in `ArrowReloadHorizontal` refresh icon (fallback
 `RotateCcw`), retaining the busy indicator and reduced-motion support.
@@ -32,7 +34,7 @@ lines. Every command supports `--json`. Caller identity defaults to the CLI cont
 BB_THREAD_ID; holder commands also accept `--thread <id>`.
 
 ```sh
-bb slots request --pool heavy --job "full Vitest" --est 35m --priority normal --wait --timeout 30m
+bb slots request --pool heavy --job "full test suite" --est 35m --priority normal --wait --timeout 30m
 bb slots gate
 bb slots heartbeat
 bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold] [--json]
@@ -75,6 +77,7 @@ Binding after a successful probe can still race another application.
 Installed plugin settings expose typed controls with range validation. The SDK
 has no host-scoped settings, so settings are global and engine `hosts` overrides
 remain empty. Human units are converted at the boundary.
+The default load limit (18) and free-memory threshold (20%) are starting points to tune to the machine (e.g. load limit ≈ CPU core count).
 
 | Setting | Default | Range |
 | --- | --- | --- |
