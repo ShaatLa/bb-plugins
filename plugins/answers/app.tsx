@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
+import { Inbox, Pools } from './inbox';
 import { Button } from './components/ui/button';
 
 const views: [View, string][] = [['unread', 'Unread'], ['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
@@ -8,16 +9,16 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 
 export function useAnswersBadge() {
   const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
-  const count = data ? data.unread + data.forMe : 0;
+  const count = data ? data.inbox : 0;
   return count ? { count, label: `${count} unread answers and questions for you` } : null;
 }
 
-function ItemCard({ item }: { item: Item }) {
+export function ItemCard({ item }: { item: Item }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
   const [expanded, setExpanded] = useState(false);
-  const question = useRef<HTMLParagraphElement>(null);
+  const question = useRef<HTMLDivElement>(null);
   const [clamped, setClamped] = useState(false);
   // Offer Expand only when the 2-line clamp actually hides text.
   useEffect(() => {
@@ -63,10 +64,10 @@ function ItemCard({ item }: { item: Item }) {
       <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>
-    <p ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.question}</p>
+    <div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div>
     {(clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
-    {item.answer && <Markdown content={item.answer} />}
-    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><Markdown content={item.interim} /></div>}
+    {item.answer && <div data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
+    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><div data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}
     {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
     <div className="flex flex-wrap gap-2">
       {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />Open in chat</UrlLink></Button>}
@@ -102,20 +103,21 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
   const { projects } = experimental_useSidebarThreads();
-  const [view, setView] = useState<View>(threadId ? 'all' : 'unread');
+  const [view, setView] = useState<View | 'inbox'>(threadId ? 'all' : 'inbox');
   const [query, setQuery] = useState('');
   const [projectId, setProjectId] = useState('');
   const [error, setError] = useState('');
   return <section className="h-full overflow-auto p-4 space-y-4">
     <h1 className="text-lg font-semibold">{threadId ? 'My questions' : 'Answers'}</h1>
-    <nav aria-label="Answer views" className="flex flex-wrap gap-1">{views.map(([value, label]) => <Button key={value} size="sm" variant="ghost" aria-pressed={view === value} onClick={() => setView(value)}>{label}</Button>)}</nav>
-    <div className="flex flex-wrap gap-2">
+    {threadId && <Pools threadId={threadId} />}
+    <nav aria-label="Answer views" className="flex flex-wrap gap-1"><Button size="sm" variant="ghost" aria-pressed={view === 'inbox'} onClick={() => setView('inbox')}>Inbox</Button>{views.map(([value, label]) => <Button key={value} size="sm" variant="ghost" aria-pressed={view === value} onClick={() => setView(value)}>{label}</Button>)}</nav>
+    {view !== 'inbox' && <div className="flex flex-wrap gap-2">
       <input aria-label="Search answers" type="search" placeholder="Search answers" maxLength={4000} className="rounded border bg-transparent px-3 py-1 text-sm" value={query} onChange={event => setQuery(event.target.value)} />
       <select aria-label="Project" className="rounded border bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
       <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden />Mark all read</Button>
-    </div>
+    </div>}
     {error && <p role="alert">{error}</p>}
-    <Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} />
+    {view === 'inbox' ? <Inbox /> : <Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} />}
   </section>;
 }
 
@@ -145,6 +147,15 @@ function AnswersPage() {
 export default definePluginApp(app => {
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: AnswersPage, experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: AnswersPanel });
+  app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <Pools /> });
+  app.slots.messageAction({ id: 'pool', title: 'Add to reply pool', icon: 'Sent', async run({ threadId, message, selectedText, experimental_panel }) {
+    const input = rpcContract.poolAdd.input.parse({ threadId, quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq });
+    const response = await fetch('/api/v1/plugins/answers/rpc/poolAdd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    const body = await response.json();
+    if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? 'Unable to add to reply pool');
+    rpcContract.poolAdd.output.parse(body.result);
+    experimental_panel.openTab({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
+  } });
   app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
     // Message actions have no React hook context; use the public plugin RPC endpoint.

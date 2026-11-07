@@ -16,3 +16,9 @@ CLI:
 - `bb answers status`
 
 Statuses: `mine` items are `waiting`, `deferred`, or `answered`; `for_me` items are `open` or `replied`; saved items have status `saved`.
+
+The Answers page defaults to Inbox: unread answers and open questions for the user grouped by recipient thread. Opening a recipient marks its items read and retains that recipient while selected. History is oldest to newest; Load earlier preserves the reading position. Waiting, For me, Pinned, Saved and All retain search and project filters.
+
+Selecting agent text in Inbox opens a Markdown quote draft under the selection. Send calls quoteReply immediately; Add to pool saves the quote and note and opens Reply pools. The draft survives refreshes and recipient changes until closed, outside focus/pointer, Esc or a successful action. In regular chat, Add to reply pool uses selected text or the whole message and opens My questions.
+
+Reply pools are stacked by recipient in the Answers side panel and appear above items in My questions. Notes autosave after 800 ms idle or blur, with optimistic revisions. Send all first awaits dirty note saves and aborts on save failure. Edited entries retained during delivery are reported and kept. On uncertain delivery, check the thread before retrying; never auto-resend. Quote limit: 20,000 characters; note: 8,000; combined pool message: 32,000. Oversized content is rejected rather than truncated.

@@ -13,7 +13,8 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const app = await loadPluginApp(() => import('./app'));
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
-  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
+  fireEvent.click(slot.getByRole('button', { name: 'All' }));
   await slot.findByText('What changed?');
   return { app, slot, list, markRead };
 }
@@ -32,9 +33,9 @@ describe('Answers app', () => {
     const { app, slot, list } = await setup();
     expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'MessageQuestion' });
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
-    expect(app.messageActions[0]).toMatchObject({ title: 'Save to Answers' });
+    expect(app.messageActions[1]).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'unread', limit: 50 }));
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
     fireEvent.click(slot.getByRole('button', { name: 'Waiting' }));
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
@@ -88,10 +89,10 @@ it('shows the badge sum and clears a zero badge on counts invalidation', async (
   const app = await loadPluginApp(() => import('./app'));
   const useBadge = app.navPanels[0]!.experimental_useBadge!;
   function Badge() { const badge = useBadge(); return <span>{badge?.count ?? 'No badge'}</span>; }
-  let counts = { unread: 2, waiting: 5, forMe: 3 };
+  let counts = { unread: 2, waiting: 5, forMe: 3, inbox: 5 };
   const slot = renderSlot({ ...app.navPanels[0]!, component: Badge }, { subPath: '' }, { rpc: { counts: () => counts } });
   expect(await slot.findByText('5')).toBeTruthy();
-  counts = { unread: 0, waiting: 5, forMe: 0 };
+  counts = { unread: 0, waiting: 5, forMe: 0, inbox: 0 };
   await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:counts']); });
   expect(await slot.findByText('No badge')).toBeTruthy();
 });
@@ -101,6 +102,6 @@ it('saves selected message text using its message sequence', async () => {
   const app = await loadPluginApp(() => import('./app'));
   const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved' } }) }));
   vi.stubGlobal('fetch', fetch);
-  await app.messageActions[0]!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
+  await app.messageActions[1]!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));
 });
