@@ -182,7 +182,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     } }),
     wrapper: cliCommand({ summary: "Print the slots-run shell wrapper", options: {}, async run() {
       if (process.platform === "win32") return { exitCode: 1, stdout: "slots-run requires macOS or Linux" };
-      return { exitCode: 0, stdout: await readFile(new URL("./slots-run.sh", import.meta.url), "utf8") };
+      return { exitCode: 0, stdout: await readFile(new URL(import.meta.url.includes("/dist/") ? "../slots-run.sh" : "./slots-run.sh", import.meta.url), "utf8") };
     } }),
     release: cliCommand({ summary: "Release leases or cancel queued requests", options: { json, thread }, positionals: id("id", false),
       async run(i, c) { return renderResult("release", await call("release", { threadId: i.options.thread, ...(i.positionals.id ? { leaseId: i.positionals.id } : {}) }, c), !!i.options.json); } }),
