@@ -21,7 +21,7 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 describe('Answers app', () => {
   it('registers navigation, thread tab and message action and renders the inbox', async () => {
     const { app, slot, list } = await setup();
-    expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'Inbox' });
+    expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'MessageQuestion' });
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'action' });
     expect(app.messageActions[0]).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();

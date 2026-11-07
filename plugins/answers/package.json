@@ -11,7 +11,7 @@
     "name": "Answers",
     "description": "Track questions, answers and saved messages.",
     "branding": {
-      "icon": "Inbox"
+      "icon": "MessageQuestion"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

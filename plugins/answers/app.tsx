@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { definePluginApp, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
 import { Button } from './components/ui/button';
 
@@ -55,15 +55,15 @@ function ItemCard({ item }: { item: Item }) {
     {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><Markdown content={item.interim} /></div>}
     {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
     <div className="flex flex-wrap gap-2">
-      {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}>Open in chat</UrlLink></Button>}
-      <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}>Mark read</Button>
-      <Button size="sm" variant="outline" aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}>{item.pinned ? 'Unpin' : 'Pin'}</Button>
-      <Button size="sm" variant="outline" disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}>Done</Button>
-      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" variant="outline" disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}>Reply</Button>}
+      {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />Open in chat</UrlLink></Button>}
+      <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden />Mark read</Button>
+      <Button size="sm" variant="outline" aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden />{item.pinned ? 'Unpin' : 'Pin'}</Button>
+      <Button size="sm" variant="outline" disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden />Done</Button>
+      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" variant="outline" disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden />Reply</Button>}
     </div>
     {replying && <form className="space-y-2" onSubmit={event => { event.preventDefault(); void reply(); }}>
       <textarea aria-label="Reply text" className="w-full rounded border bg-transparent p-2 text-sm" maxLength={8000} value={text} disabled={pending} onChange={event => setText(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void reply(); } }} />
-      <Button type="submit" size="sm" disabled={pending || !text.trim()}>{pending ? 'Sending…' : 'Send reply'}</Button>
+      <Button type="submit" size="sm" disabled={pending || !text.trim()}><Icon name="Sent" aria-hidden />{pending ? 'Sending…' : 'Send reply'}</Button>
     </form>}
     {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
@@ -74,7 +74,7 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
   const [next, setNext] = useState(false);
   return <>
     {result.isLoading && <p role="status">Loading answers…</p>}
-    {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}>Retry</Button></div>}
+    {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
       {!cursor && !result.data.items.length && <p className="text-muted-foreground">No answers in this view.</p>}
       <ul aria-label="Answers" className="space-y-3">{result.data.items.map(item => <ItemCard key={item.id} item={item} />)}</ul>
@@ -96,7 +96,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
     <div className="flex flex-wrap gap-2">
       <input aria-label="Search answers" type="search" placeholder="Search answers" maxLength={4000} className="rounded border bg-transparent px-3 py-1 text-sm" value={query} onChange={event => setQuery(event.target.value)} />
       <select aria-label="Project" className="rounded border bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
-      <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); } catch (cause) { setError(message(cause)); } }}>Mark all read</Button>
+      <Button size="sm" variant="outline" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden />Mark all read</Button>
     </div>
     {error && <p role="alert">{error}</p>}
     <Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} />
@@ -104,9 +104,9 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
 }
 
 export default definePluginApp(app => {
-  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'Inbox', path: 'answers', component: () => <AnswersPanel />, experimental_useBadge: useAnswersBadge });
-  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'Inbox', context: { kind: 'thread' }, availability: 'action', component: AnswersPanel });
-  app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Inbox', async run({ threadId, message, selectedText }) {
+  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: () => <AnswersPanel />, experimental_useBadge: useAnswersBadge });
+  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'action', component: AnswersPanel });
+  app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
     // Message actions have no React hook context; use the public plugin RPC endpoint.
     const response = await fetch('/api/v1/plugins/answers/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
