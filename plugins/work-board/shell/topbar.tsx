@@ -209,6 +209,15 @@ export function TasksTopbar({
         );
       case "archive":
         return <span className="font-semibold">Archive</span>;
+      case "scheduled":
+        return (
+          <span className="flex items-center gap-2">
+            <span className="whitespace-nowrap font-semibold">Scheduled</span>
+            <span className="hidden text-xs font-normal text-muted-foreground @md:inline">
+              recurring and one-time agent work
+            </span>
+          </span>
+        );
       case "manage":
         return (
           <span className="flex items-center gap-2">
@@ -311,6 +320,27 @@ export function TasksTopbar({
           </Tooltip>
         </TooltipProvider>
       ) : null}
+      <TooltipProvider delayDuration={300}>
+        <Tooltip disableHoverableContent>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9",
+                route.kind === "scheduled" && "bg-state-active text-foreground",
+              )}
+              aria-label="Scheduled"
+              aria-pressed={route.kind === "scheduled"}
+              onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
+            >
+              <Icon name="Clock" className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Scheduled</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <RefreshTasksButton />
       <TooltipProvider delayDuration={300}>
         <Tooltip>
@@ -329,7 +359,7 @@ export function TasksTopbar({
           <TooltipContent side="bottom">Work Board settings</TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" ? (
+      {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" && route.kind !== "scheduled" ? (
         <Button
           size="sm"
           className="h-7 gap-1.5 max-md:pointer-coarse:h-9"

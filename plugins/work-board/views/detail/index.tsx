@@ -55,6 +55,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ScheduledSourceBanner } from "../scheduled/source-banner.js";
 
 interface DetailViewProps {
   taskKey: string;
@@ -536,6 +537,7 @@ function TaskDetail({
               onError={push}
             />,
           )}
+          <ScheduledSourceBanner task={task} />
           {task.type === "epic" ||
           epic.data ||
           parentTask ||

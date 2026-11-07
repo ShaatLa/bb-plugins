@@ -1,3 +1,4 @@
+import { ScheduledView } from "../views/scheduled/index.js";
 import { ArchiveView } from "../views/archive/index";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -63,6 +64,8 @@ function RouteOutlet({
       return <ManagePanel />;
     case "archive":
       return <ArchiveView />;
+    case "scheduled":
+      return <ScheduledView tab={route.tab} />;
     case "task":
       return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
     case "project":
