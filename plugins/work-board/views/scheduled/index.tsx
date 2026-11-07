@@ -167,7 +167,7 @@ interface ListProps {
 function ListState({ error, loading, empty, emptyText, children }: { error: string | null; loading: boolean; empty: boolean; emptyText: string; children: ReactNode }) {
   if (loading) return <ListSkeleton />;
   if (error) return <p role="alert" className="p-4 text-sm text-destructive">{error}</p>;
-  if (empty) return <EmptyState icon="Clock" title={emptyText} />;
+  if (empty) return <div className="grid flex-1 place-items-center"><EmptyState icon="Clock" title={emptyText} /></div>;
   return <>{children}</>;
 }
 
@@ -534,7 +534,7 @@ export function ScheduledView({ tab }: { tab: ScheduledTab }) {
           </Button>
         </div>
       </div>
-      <div className="min-h-0 flex-1" role="tabpanel" aria-label={TAB_LABELS[tab]}>
+      <div className="flex min-h-0 flex-1 flex-col" role="tabpanel" aria-label={TAB_LABELS[tab]}>
         {tab === "all" ? <SchedulesList key={listKey} {...listProps} /> : null}
         {tab === "attention" ? <RunsList key={listKey} attention {...listProps} /> : null}
         {tab === "history" ? <RunsList key={listKey} attention={false} {...listProps} /> : null}
