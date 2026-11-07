@@ -15,6 +15,18 @@ export function useAnswersBadge() {
 function ItemCard({ item }: { item: Item }) {
   const rpc = useRpc<AnswersRpcContract>();
   const [expanded, setExpanded] = useState(false);
+  const question = useRef<HTMLParagraphElement>(null);
+  const [clamped, setClamped] = useState(false);
+  // Offer Expand only when the 2-line clamp actually hides text.
+  useEffect(() => {
+    const node = question.current;
+    if (!node) return;
+    const measure = () => setClamped(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    return () => observer?.disconnect();
+  }, [item.question]);
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState('');
   const [pending, setPending] = useState(false);
@@ -49,8 +61,8 @@ function ItemCard({ item }: { item: Item }) {
       <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>
-    <p className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.question}</p>
-    <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>
+    <p ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.question}</p>
+    {(clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
     {item.answer && <Markdown content={item.answer} />}
     {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><Markdown content={item.interim} /></div>}
     {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
