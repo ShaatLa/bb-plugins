@@ -32,6 +32,8 @@ it.skipIf(!process.env.SLOTS_MEASURE_REPORT)("measures the integrated watcher fo
   try {
     const { invoke } = await register(host.bb, { store: new DiskStore(dir), watchCollector: collector });
     expect((await invoke("status", {})).ok).toBe(true);
+    // Fail before the timer if the sandbox denies process inspection.
+    await promisify(execFile)("ps", ["-U", String(process.getuid!()), "-o", "pid=,lstart=,time="], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
     const start = Date.now();
     const service = host.harness.behavior.runService("watcher");
     await sleep(300500);
