@@ -127,12 +127,12 @@ describe('ingestion driver',()=>{
   const calls:any[]=[];
   harness.sdk.stub('threads.events.list',async(args:any)=>{
    calls.push(args);
-   if (args.order==='desc' && args.limit==='500') throw {status:413};
+   if (args.order==='desc' && args.limit==='100') throw {status:413};
    if (args.order==='desc') return [{seq:100,type:'client/turn/requested',createdAt:123,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'question'}]},scope:{kind:'thread'}}];
    return [];
   });
   await driver.schedule('t');
-  expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','500',undefined],['desc','250',undefined],['asc','200','100']]);
+  expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','100',undefined],['desc','50',undefined],['asc','100','100']]);
   expect(calls.every(c=>c.types.length===5)).toBe(true);
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
@@ -144,10 +144,10 @@ describe('ingestion driver',()=>{
   let fail=true; const limits:string[]=[];
   harness.sdk.stub('threads.events.list',async(args:any)=>{limits.push(args.limit); if(fail) throw {status:413}; return [];});
   await expect(driver.schedule('t')).rejects.toThrow('oversized event after seq 42');
-  expect(limits).toEqual(['200','100','50','25','12','6','3','1']);
+  expect(limits).toEqual(['100','50','25','12','6','3','1']);
   expect(db.prepare('SELECT last_seq,last_error FROM threads_state').get()).toMatchObject({last_seq:42,last_error:'Error: oversized event after seq 42'});
   fail=false; await vi.advanceTimersByTimeAsync(30000);
-  expect(limits.at(-1)).toBe('200'); expect(db.prepare('SELECT last_error FROM threads_state').get()).toEqual({last_error:null});
+  expect(limits.at(-1)).toBe('100'); expect(db.prepare('SELECT last_error FROM threads_state').get()).toEqual({last_error:null});
  });
  it('coalesces triggers and limits drains to two globally',async()=>{
   const {harness,driver}=driverSetup();

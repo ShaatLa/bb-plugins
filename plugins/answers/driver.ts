@@ -65,8 +65,9 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       const events: Event[] = [];
       let before: number | undefined;
       // shortcut: first sight covers at most 1,500 events; expand if older history becomes a requirement.
-      for (let n=0;n<3;n++) {
-        const result = await page(id,before,'desc',500);
+      // bb caps thread event pages at 100.
+      for (let n=0;n<15;n++) {
+        const result = await page(id,before,'desc',100);
         events.push(...result.events);
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
@@ -76,7 +77,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
-      const result = await page(id,cursor,'asc',200);
+      const result = await page(id,cursor,'asc',100);
       if (signal.aborted) return;
       if (result.events.length) {
         db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now()))(); invalidate();
