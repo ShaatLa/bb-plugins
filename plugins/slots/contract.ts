@@ -65,6 +65,15 @@ export interface StatusSnapshot {
   at: number; pools: PoolSnapshot[];
   gates: Record<string, GateState>; ports: PortLease[]; audit: AuditEvent[];
 }
+/** What the `status` RPC returns: the engine snapshot plus server-resolved display data. */
+export interface StatusView extends StatusSnapshot {
+  /** Thread id -> title for every holder, owner and requester in the snapshot. */
+  titles: Record<string, string>;
+  /** Effective settings per host in the snapshot (thresholds for the UI). */
+  hostSettings: Record<string, HostSettings>;
+  /** The BB server host id; the only host whose gate is sampled in v1. */
+  localHostId: string;
+}
 export interface SlotsError {
   code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use";
   message: string; readings?: GateReadings;
@@ -96,7 +105,7 @@ export interface RpcMethods {
   release: { input: ReleaseParams; output: Result<ReleaseOutcome> };
   heartbeat: { input: HeartbeatParams; output: Result<HeartbeatOutcome> };
   gate: { input: GateParams; output: Result<GateOutcome> };
-  status: { input: StatusParams; output: Result<StatusSnapshot> };
+  status: { input: StatusParams; output: Result<StatusView> };
   transfer: { input: TransferParams; output: Result<Lease> };
   port: { input: PortParams; output: Result<PortLease> };
   prioritize: { input: PrioritizeParams; output: Result<SlotRequest> };
