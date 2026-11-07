@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input,
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
+import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
 export interface Runtime {
@@ -16,6 +17,8 @@ export interface Runtime {
   metrics: typeof metrics;
   probePort: typeof probePort;
   store?: DiskStore;
+  watchCollector?: Parameters<typeof createWatcher>[0]["collector"];
+  realpath?: Parameters<typeof createWatcher>[0]["realpath"];
 }
 export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Result<unknown>>;
 
@@ -116,7 +119,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const next = queue.then(() => { if (disposed) throw new Error("Slots unloaded"); return fn(); });
     queue = next.catch(() => {}); return next;
   }
-  async function transition(input: Input, manualSample = false) {
+  async function transition(input: Input, manualSample = false, verified = new Set<string>()) {
     if (input.type === "threadEnded") titles.delete(input.threadId);
     const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
     if (!change.result.ok) return change.result;
@@ -125,6 +128,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const effect of change.effects) {
       if (effect.type === "audit") await store.audit(effect.event);
       else {
+        if (effect.watch && (!verified.has(effect.watch.subject.key) || settings.watchPolicy === "off")) continue;
         try {
           await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
             input: [{ type: "text", text: `[Slots] ${effect.text}`, mentions: [] }] });
@@ -231,7 +235,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
-        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings, watcher: watcher.diagnostics() } };
       }
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");
@@ -300,6 +304,16 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     await initialize();
     if (state.leases.some(l => l.holderThreadId === thread.id)) await transition({ type: "heartbeat", threadId: thread.id });
   }));
+  const watcher = createWatcher({ sdk: bb.sdk, hostId: () => localHostId, enabled: () => initialized && settings.watchPolicy !== "off" && !disposed,
+    now: runtime.now, collector: runtime.watchCollector, realpath: runtime.realpath, warn: error => bb.log.warn(`Slots watcher: ${String(error)}`),
+    preview: usage => serial(async () => apply(state, usage, { now: runtime.now(), settings }).effects),
+    commit: (usage, verified) => serial(async () => transition(usage, false, verified)),
+  });
+  for (const event of ["thread.created", "thread.archived", "thread.unarchived", "thread.deleted"] as const) bb.events.on(event, () => { watcher.invalidate(); });
+  bb.background.service("watcher", { async start(signal) {
+    if (settings.watchPolicy !== "off") await serial(initialize);
+    await watcher.start(signal);
+  } });
   bb.background.service("sampler", { async start(signal) {
     let lastSample = -Infinity;
     let lastTick = -Infinity;
@@ -321,6 +335,6 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       await sleep(Math.max(1, Math.min(lastTick + 15000, untilSample) - runtime.now()), undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
     }
   } });
-  bb.onDispose(async () => { disposed = true; titles.clear(); await queue; });
+  bb.onDispose(async () => { disposed = true; watcher.dispose(); titles.clear(); await queue; });
   return { invoke };
 }
