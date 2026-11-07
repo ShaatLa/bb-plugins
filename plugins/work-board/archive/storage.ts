@@ -10,6 +10,7 @@ import {
   assertNoSecretsInValue,
 } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
+import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
   archiveTaskSchema,
@@ -18,10 +19,14 @@ import {
   type ProjectArchive,
 } from "./contract";
 
+// Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
+export const historicalRun = (run: ScheduleRun): ScheduleRun => ({ ...run, threadId: null, queueId: null, requestId: null, historical: true });
 type SqlValue = string | number | null;
 type Row = Record<string, SqlValue>;
 export const sha256 = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
+
+const withoutVisibility = <T extends { ordinaryVisible?: boolean }>({ ordinaryVisible: _derived, ...task }: T) => task;
 
 export function captureProject(
   bb: BbPluginApi,
@@ -43,9 +48,19 @@ export function captureProject(
     const tasks = store.tasks
       .listTasks({ projectId })
       .sort((a, b) => a.id.localeCompare(b.id));
+    // Constant statements: three batch reads cover every schedule table (sources/results may outlive schedules).
+    const scheduleDb = bb.storage.database();
+    const scheduleRows = scheduleDb.prepare<[string], { id: string; template_task_id: string; title: string; rule: string; created_at: string; updated_at: string }>(
+      "SELECT s.id, s.template_task_id, t.title, s.rule, s.created_at, s.updated_at FROM task_schedules s JOIN tasks t ON t.id=s.template_task_id WHERE s.project_id=? ORDER BY s.id",
+    ).all(projectId);
+    const sourceRows = scheduleDb.prepare<[string], { task_id: string; schedule_id: string; schedule_title: string; role: string; scheduled_for: string | null; started_at: string | null; run_id: string | null; occurrence_key: string | null }>(
+      "SELECT ss.* FROM task_scheduled_sources ss JOIN tasks t ON t.id=ss.task_id WHERE t.project_id=? ORDER BY ss.task_id",
+    ).all(projectId);
+    const runRows = scheduleDb.prepare<[string], { payload: string }>("SELECT payload FROM task_schedule_runs WHERE project_id=? ORDER BY id").all(projectId);
+    const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 12,
+      version: 13,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -54,6 +69,20 @@ export function captureProject(
         .sort((a, b) => a.id.localeCompare(b.id)),
       taskIds: tasks.map((task) => task.id),
       templates: structured.listTemplates(projectId),
+      // Portable definitions only: paused, unassigned and never scheduled, so a restore cannot reactivate old targets.
+      schedules: scheduleRows.map(row => scheduleSchema.parse({
+        id: row.id, projectId, templateTaskId: row.template_task_id, title: row.title, rule: JSON.parse(row.rule),
+        target: { kind: "unassigned" }, enabled: false, nextDueAt: null, createdAt: row.created_at, updatedAt: row.updated_at, overlapRunIds: [],
+      })),
+      scheduleSources: sourceRows.map(row => scheduleSourceSchema.parse({
+        taskId: row.task_id, scheduleId: row.schedule_id, scheduleTitle: row.schedule_title, role: row.role,
+        scheduledFor: row.scheduled_for, startedAt: row.started_at, runId: row.run_id, occurrenceKey: row.occurrence_key,
+      })),
+      scheduleRuns: runRows.map(row => {
+        const run = historicalRun(scheduleRunSchema.parse(JSON.parse(row.payload)));
+        // A run may outlive its result task; the dangling link is not portable.
+        return { ...run, taskId: run.taskId && taskIdSet.has(run.taskId) ? run.taskId : null };
+      }),
     });
     // Resource invariant: every related table is read once per project (constant statement count),
     // grouped in memory; statements must not scale with task or comment count.
@@ -105,8 +134,9 @@ export function captureProject(
       activityHistory: historyTasks.has(task.id),
       dependencies: (dependenciesByTask.get(task.id) ?? []).map(row => row.blockingTaskId),
       pullRequests: linksByTask.get(task.id) ?? [],
+      // ordinaryVisible is derived from scheduled sources, not task data.
       task: {
-        ...task,
+        ...withoutVisibility(task),
         labelIds: (labelsByTask.get(task.id) ?? []).map((link) => link.labelId).sort(),
       },
       comments: [...(commentsByTask.get(task.id) ?? [])].sort(byId),
@@ -190,6 +220,8 @@ export function restoreProject(
     assertNoSecretsInValue(archive.manifest.project.statuses, "statuses");
   if (archive.manifest.gitSync) assertNoSecretsInValue(archive.manifest.gitSync, "Git sync configuration");
   for (const record of archive.records) for (const link of record.pullRequests ?? []) assertNoSecretsInValue(link, "PR link");
+  for (const source of archive.manifest.scheduleSources) assertNoSecrets(source.scheduleTitle, "schedule title");
+  for (const run of archive.manifest.scheduleRuns) assertNoSecrets(`${run.scheduleTitle} ${run.reason ?? ""}`, "schedule run");
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
@@ -313,7 +345,7 @@ export function restoreProject(
         throw new Error(`Invalid epic link: ${task.id}`);
     }
     for (const record of records) {
-      const { key: _key, labelIds, ...task } = record.task;
+      const { key: _key, labelIds, ordinaryVisible: _derived, ...task } = record.task;
       if (labelIds.some((id) => !labels.has(id)))
         throw new Error(`Unknown task label: ${task.id}`);
       const current = store.tasks.getTask(task.id);
@@ -406,6 +438,42 @@ export function restoreProject(
           ["task_id"],
         );
       }
+    }
+    // Schedules, sources and history go in after every task exists. All references are validated while planning,
+    // before any write; schedules are forced paused/unassigned and runs forced historical.
+    const rowOf = <T>(table: string, where: string, ...args: SqlValue[]) => db.prepare<SqlValue[], T>(`SELECT * FROM ${table} WHERE ${where}`).get(...args);
+    for (const schedule of manifest.schedules) {
+      const other = rowOf<{ id: string }>("task_schedules", "template_task_id=? AND id<>?", schedule.templateTaskId, schedule.id);
+      if (other) throw new Error(`Import conflict: template task already belongs to schedule ${other.id}`);
+      plan("task_schedules", {
+        id: schedule.id, project_id: projectId, template_task_id: schedule.templateTaskId, rule: JSON.stringify(schedule.rule),
+        target: JSON.stringify({ kind: "unassigned" }), enabled: 0, next_due_at: null, created_at: schedule.createdAt, updated_at: schedule.updatedAt,
+      }, ["id"], ["project_id", "template_task_id"]);
+    }
+    for (const source of manifest.scheduleSources) {
+      if (source.occurrenceKey !== null && rowOf("task_scheduled_sources", "schedule_id=? AND occurrence_key=? AND task_id<>?", source.scheduleId, source.occurrenceKey, source.taskId))
+        throw new Error(`Import conflict: occurrence ${source.occurrenceKey} already belongs to another result task`);
+      plan("task_scheduled_sources", {
+        task_id: source.taskId, schedule_id: source.scheduleId, schedule_title: source.scheduleTitle, role: source.role,
+        scheduled_for: source.scheduledFor, started_at: source.startedAt, run_id: source.runId, occurrence_key: source.occurrenceKey,
+      }, ["task_id"]);
+    }
+    for (const run of manifest.scheduleRuns) {
+      const current = rowOf<{ payload: string; project_id: string; schedule_id: string }>("task_schedule_runs", "id=?", run.id);
+      if (current) {
+        if (current.project_id !== projectId || current.schedule_id !== run.scheduleId) throw new Error(`ID belongs to another owner: task_schedule_runs ${run.id}`);
+        const local = scheduleRunSchema.parse(JSON.parse(current.payload));
+        // The same history re-imported on its own server must keep the local live IDs.
+        if (JSON.stringify(historicalRun(local)) === JSON.stringify(run)) continue;
+        if (!local.historical && ["starting", "queued", "running", "delivery_unknown", "cancel_pending"].includes(local.state))
+          throw new Error(`Import cannot replace an active scheduled run: ${run.id}`);
+      }
+      if (rowOf("task_schedule_runs", "schedule_id=? AND occurrence_key=? AND id<>?", run.scheduleId, run.occurrenceKey, run.id))
+        throw new Error(`Import conflict: occurrence ${run.occurrenceKey} already has another run`);
+      plan("task_schedule_runs", {
+        id: run.id, schedule_id: run.scheduleId, project_id: projectId, occurrence_key: run.occurrenceKey, state: run.state,
+        resolved_at: run.resolvedAt, finished_at: run.finishedAt, thread_id: null, payload: JSON.stringify(historicalRun(run)),
+      }, ["id"], ["project_id", "schedule_id"]);
     }
     db.pragma("defer_foreign_keys = ON");
     for (const { table, row, keys } of changes) {

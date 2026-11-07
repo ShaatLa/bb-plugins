@@ -24,6 +24,7 @@ import {
 } from "../attachments";
 import { exportProject, importProject, readProjectArchive } from ".";
 import { jsonText } from "./contract";
+import { createScheduledStore } from "../scheduled/store";
 import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
 
@@ -823,7 +824,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(12);
+  expect(manifest.version).toBe(13);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -863,7 +864,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(12);
+  expect(manifest.version).toBe(13);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -916,4 +917,150 @@ it.each(["tasks-plus", "agent-board"])("imports %s archives and upgrades attachm
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)?.description).toBe(`[Artifact](${oldUrl.replace(sourcePlugin, "work-board")})`);
   expect((await readAttachmentContent(target.store.tasks, source.attachment.id)).content).toEqual(Buffer.from([0, 255, 42, 7]));
+});
+
+// Fixture: paused/active schedules with queued, completed, one-time and expired-history results.
+async function seedScheduled() {
+  const source = await seed();
+  const scheduled = createScheduledStore(source.bb, source.store);
+  const now = new Date("2026-11-01T08:00:00Z");
+  const rule = { kind: "daily" as const, time: "09:00", timezone: "UTC" };
+  const recurring = scheduled.create({ projectId: source.project.id, title: "Daily check", rule, target: { kind: "thread", threadId: "thr_server_local" } }, now);
+  const done = scheduled.reserve(recurring.id, "slot:done", "2026-11-01T09:00:00.000Z", now).run;
+  const doneTask = scheduled.createRunTask(done.id);
+  scheduled.markStarted(done.id, { threadId: "thr_server_local", requestId: "req_done", title: "Worker", presetName: "Existing thread" }, now);
+  source.store.tasks.updateTask(doneTask.id, { status: "done" });
+  scheduled.updateRun(done.id, { state: "completed", finishedAt: now.toISOString(), queueId: "q_done" }, now);
+  const queued = scheduled.reserve(recurring.id, "slot:queued", "2026-11-02T09:00:00.000Z", now).run;
+  const queuedTask = scheduled.createRunTask(queued.id);
+  scheduled.updateRun(queued.id, { state: "queued", threadId: "thr_server_local", queueId: "q_live", requestId: "req_live" }, now);
+  const once = scheduled.create({ projectId: source.project.id, title: "Once", rule: { kind: "once", at: "2026-12-01T09:00:00+00:00", timezone: "UTC" }, target: { kind: "preset", presetId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" } }, now);
+  const onceRun = scheduled.reserve(once.id, "once", "2026-12-01T09:00:00.000Z", now).run;
+  const onceTask = scheduled.createRunTask(onceRun.id);
+  scheduled.markStarted(onceRun.id, { threadId: "thr_once", requestId: "req_once", title: "Once", presetName: "Preset" }, now);
+  scheduled.updateRun(onceRun.id, { state: "failed", reason: "Agent failed" }, now);
+  // Expired history and a deleted schedule must still leave the result task and its provenance.
+  const gone = scheduled.create({ projectId: source.project.id, title: "Deleted schedule", rule, target: { kind: "thread", threadId: "thr_gone" } }, now);
+  const old = scheduled.reserve(gone.id, "slot:gone", "2026-10-01T09:00:00.000Z", now).run;
+  const goneTask = scheduled.createRunTask(old.id);
+  scheduled.markStarted(old.id, { threadId: "thr_gone", requestId: "req_gone", title: "Gone", presetName: "Existing thread" }, now);
+  scheduled.updateRun(old.id, { state: "completed", finishedAt: "2026-10-01T09:05:00.000Z" }, now);
+  const expired = scheduled.reserve(gone.id, "slot:expired", "2026-10-02T09:00:00.000Z", now).run;
+  const expiredTask = scheduled.createRunTask(expired.id);
+  scheduled.markStarted(expired.id, { threadId: "thr_gone", requestId: "req_expired", title: "Gone", presetName: "Existing thread" }, now);
+  scheduled.updateRun(expired.id, { state: "completed", finishedAt: "2026-10-02T09:05:00.000Z" }, now);
+  scheduled.cleanup(new Date("2026-11-02T00:00:00Z"));
+  expect(() => scheduled.run(expired.id)).toThrow();
+  // Unresolved incidents are never age-deleted, so this run outlives its deleted schedule.
+  const goneRun = scheduled.reserve(gone.id, "slot:incident", "2026-11-01T09:00:00.000Z", now).run;
+  scheduled.updateRun(goneRun.id, { state: "failed", reason: "Target unavailable" }, now);
+  scheduled.remove(gone.id);
+  return { ...source, scheduled, recurring, once, gone, done, queued, onceRun, goneRun, expired, doneTask, queuedTask, onceTask, goneTask, expiredTask };
+}
+
+describe("archive v13 scheduled tasks", () => {
+  it("round-trips definitions, provenance and run history as paused, unassigned, historical records", async () => {
+    const f = await seedScheduled();
+    const out = join(await directory(), "scheduled-v13");
+    await exportProject(f.bb, f.store, f.project.id, out);
+    const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
+    expect(manifest.version).toBe(13);
+    expect(manifest.schedules).toHaveLength(2);
+    expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    const scheduled = createScheduledStore(target.bb, target.store);
+    const imported = scheduled.get(f.recurring.id);
+    expect(imported).toMatchObject({ enabled: false, nextDueAt: null, target: { kind: "unassigned" }, rule: f.recurring.rule, title: "Daily check" });
+    expect(scheduled.get(f.once.id)).toMatchObject({ enabled: false, nextDueAt: null, target: { kind: "unassigned" }, rule: f.once.rule });
+    // Queued work is retained as history only: no live IDs, never returned to the runtime.
+    expect(scheduled.pending()).toEqual([]);
+    expect(scheduled.run(f.queued.id)).toMatchObject({ state: "queued", historical: true, threadId: null, queueId: null, requestId: null, occurrenceKey: "slot:queued", taskId: f.queuedTask.id });
+    expect(scheduled.run(f.done.id)).toMatchObject({ state: "completed", historical: true, threadId: null, queueId: null });
+    expect(scheduled.run(f.onceRun.id)).toMatchObject({ state: "failed", reason: "Agent failed", historical: true });
+    expect(scheduled.source(f.doneTask.id)).toEqual(f.scheduled.source(f.doneTask.id));
+    expect(scheduled.source(f.queuedTask.id)).toMatchObject({ role: "recurring_run", startedAt: null, runId: f.queued.id, occurrenceKey: "slot:queued" });
+    expect(scheduled.source(f.onceTask.id)).toMatchObject({ role: "one_time_run", runId: f.onceRun.id });
+    // Results of a deleted schedule and of expired history keep their independent provenance.
+    expect(scheduled.run(f.goneRun.id)).toMatchObject({ scheduleId: f.gone.id, state: "failed", reason: "Target unavailable" });
+    expect(() => scheduled.get(f.gone.id)).toThrow();
+    expect(() => scheduled.run(f.expired.id)).toThrow();
+    for (const task of [f.goneTask, f.expiredTask]) expect(scheduled.source(task.id)).toEqual(f.scheduled.source(task.id));
+    expect(scheduled.source(f.expiredTask.id)).toMatchObject({ scheduleId: f.gone.id, scheduleTitle: "Deleted schedule", runId: f.expired.id, occurrenceKey: "slot:expired", role: "recurring_run" });
+    // Old occurrence keys still prevent a duplicate send after resume.
+    expect(scheduled.reserve(f.recurring.id, "slot:queued", "2026-11-02T09:00:00.000Z")).toMatchObject({ created: false, run: { id: f.queued.id } });
+    expect(() => scheduled.reserve(f.gone.id, "slot:expired", "2026-10-02T09:00:00.000Z")).toThrow("already ran");
+    // Hidden templates and pre-start instances stay out of the ordinary list; direct and result lookups keep them.
+    const ordinary = target.store.tasks.listTasks({ projectId: f.project.id, ordinaryOnly: true }).map(task => task.id);
+    expect(ordinary).not.toContain(f.recurring.templateTaskId);
+    expect(ordinary).not.toContain(f.queuedTask.id);
+    expect(ordinary).toContain(f.onceTask.id);
+    expect(target.store.tasks.getTask(f.recurring.templateTaskId)).toBeDefined();
+    expect(scheduled.results({ projectId: f.project.id, limit: 100 }).results.map(result => result.task.id).sort())
+      .toEqual([f.doneTask.id, f.queuedTask.id, f.onceTask.id, f.goneTask.id, f.expiredTask.id].sort());
+    const again = join(await directory(), "again");
+    await exportProject(target.bb, target.store, f.project.id, again);
+    expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
+    // Re-importing on its own server keeps live queue IDs; a second import changes nothing.
+    await importProject(f.bb, f.store, out, true);
+    expect(f.scheduled.run(f.queued.id)).toMatchObject({ queueId: "q_live", historical: false });
+    expect(f.scheduled.get(f.recurring.id)).toMatchObject({ enabled: false, target: { kind: "unassigned" } });
+  });
+
+  it("imports v1-v12 archives without schedules and refuses scheduled data below v13", async () => {
+    const f = await seedScheduled();
+    const out = join(await directory(), "old");
+    await exportProject(f.bb, f.store, f.project.id, out);
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.version = 12;
+    await writeFile(path, jsonText(manifest));
+    await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/require archive v13/);
+    delete manifest.schedules;
+    delete manifest.scheduleSources;
+    delete manifest.scheduleRuns;
+    await writeFile(path, jsonText(manifest));
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    const scheduled = createScheduledStore(target.bb, target.store);
+    expect(scheduled.list({}).schedules).toEqual([]);
+    expect(scheduled.runs({}).runs).toEqual([]);
+    expect(target.store.tasks.getTask(f.queuedTask.id)).toBeDefined();
+  });
+
+  it.each([
+    ["a template that belongs to another schedule", (m: any) => { m.scheduleSources.find((s: any) => s.role === "template").scheduleId = "00000000-0000-4000-8000-000000000001"; }],
+    ["a schedule without its template source", (m: any) => { m.scheduleSources = m.scheduleSources.filter((s: any) => s.role !== "template"); }],
+    ["a source for an unknown task", (m: any) => { m.scheduleSources[0].taskId = "task_missing"; }],
+    ["a run from another project", (m: any) => { m.scheduleRuns[0].projectId = "other_project"; }],
+    ["a run linked to an unrelated task", (m: any) => { m.scheduleRuns[0].taskId = m.taskIds.find((id: string) => !m.scheduleSources.some((s: any) => s.taskId === id)); }],
+    ["a source that disagrees with its retained run", (m: any) => { m.scheduleSources.find((s: any) => s.runId).occurrenceKey = "slot:other"; }],
+    ["duplicate occurrence keys", (m: any) => { m.scheduleRuns[1].occurrenceKey = m.scheduleRuns[0].occurrenceKey; m.scheduleRuns[1].scheduleId = m.scheduleRuns[0].scheduleId; }],
+  ])("rejects %s before changing existing project data", async (_name, tamper) => {
+    const f = await seedScheduled();
+    const out = join(await directory(), "invalid");
+    await exportProject(f.bb, f.store, f.project.id, out);
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    target.store.tasks.updateTask(f.task.id, { title: "Local edit" });
+    const before = target.store.tasks.listTasks({ projectId: f.project.id });
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    tamper(manifest);
+    await writeFile(path, jsonText(manifest));
+    await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow();
+    expect(target.store.tasks.listTasks({ projectId: f.project.id })).toEqual(before);
+  });
+
+  it("refuses to replace a live local run or an occurrence owned by another run", async () => {
+    const f = await seedScheduled();
+    const out = join(await directory(), "conflict");
+    await exportProject(f.bb, f.store, f.project.id, out);
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.scheduleRuns.find((run: any) => run.id === f.queued.id).reason = "Edited elsewhere";
+    await writeFile(path, jsonText(manifest));
+    await expect(importProject(f.bb, f.store, out, true)).rejects.toThrow(/active scheduled run/);
+    expect(f.scheduled.run(f.queued.id)).toMatchObject({ queueId: "q_live", reason: null });
+  });
 });
