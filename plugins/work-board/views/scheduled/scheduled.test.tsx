@@ -148,6 +148,7 @@ it("creates a schedule with a preset target and server-computed preview", async 
   const slot = open("scheduled", rpc);
   fireEvent.click(await slot.findByRole("button", { name: "New schedule" }));
   const create = await slot.findByRole("button", { name: "Create schedule" });
+  expect(within(slot.getByRole("dialog")).getByRole("button", { name: "Project" })).toBeTruthy();
   expect((create as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(slot.getByLabelText("Schedule title"), { target: { value: "Morning digest" } });
   await slot.findByText(/Next runs/);

@@ -291,6 +291,7 @@ function ThreadPicker({ value, onChange }: { value: string; onChange: (threadId:
 function ScheduleForm({
   initial,
   scheduleId,
+  showProjectPicker,
   onClose,
   onSaved,
   onBack,
@@ -298,6 +299,7 @@ function ScheduleForm({
 }: {
   initial: Draft;
   scheduleId: string | null;
+  showProjectPicker: boolean;
   onClose: () => void;
   onSaved: () => void;
   onBack?: () => void;
@@ -402,8 +404,8 @@ function ScheduleForm({
             className="mt-2 min-h-24 overflow-y-auto"
           />
         </div>
-        <div className="grid gap-3 @sm:grid-cols-2">
-          {scheduleId === null ? (
+        <div className={cn("grid gap-3", showProjectPicker && "@sm:grid-cols-2")}>
+          {showProjectPicker ? (
             <Field label="Project">
               <OptionPicker
                 label="Project"
@@ -583,6 +585,7 @@ export function ScheduleDialog({
           <ScheduleForm
             initial={detail.data ? draftFromDetail(detail.data) : (initialDraft ?? blankDraft(defaultProjectId))}
             scheduleId={scheduleId}
+            showProjectPicker={scheduleId === null && defaultProjectId === null}
             onClose={onClose}
             onSaved={onSaved}
             onBack={onBack}

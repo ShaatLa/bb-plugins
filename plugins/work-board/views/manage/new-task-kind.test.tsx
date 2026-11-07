@@ -222,6 +222,7 @@ describe("New task creation kind chooser", () => {
     await choose(slot, "Scheduled task");
 
     const scheduleTitle = (await slot.findByLabelText("Schedule title")) as HTMLInputElement;
+    expect(slot.queryByRole("button", { name: "Project" })).toBeNull();
     expect(scheduleTitle.value).toBe(""); // the ordinary draft is not sent to the schedule form
     fireEvent.change(scheduleTitle, { target: { value: "Morning digest" } });
     await slot.findByText(/Next runs/);
