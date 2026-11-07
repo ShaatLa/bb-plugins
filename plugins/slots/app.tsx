@@ -94,14 +94,14 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
         {latest && settings && <Meter label="Memory free" value={latest.memFreePct} threshold={settings.memFreeMinPct} max={100} />}
       </Tile>
       <Tile label="Load (1 min)" value={latest ? latest.load1.toFixed(1) : "—"}>
-        {settings && <>limit {settings.loadMax}{view.loadMaxAuto && " · CPU cores (auto)"}</>}
+        {settings && <>limit {settings.loadMax}</>}
         {latest && settings && <Meter label="Load (1 min)" value={latest.load1} threshold={settings.loadMax} max={Math.max(settings.loadMax * 1.25, latest.load1)} lowerIsBetter />}
       </Tile>
-      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : `${heavy.leases.length} of ${heavy.capacity} in use${view.heavyCapacityAuto ? " (auto)" : ""}` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
+      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : `${heavy.leases.length} of ${heavy.capacity} in use` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
       <Tile label="Local model" value={local ? local.leases.length ? "In use" : local.capacity === 0 ? "No slots configured" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
     </div>
     <div className="grid gap-3 lg:grid-cols-2">{view.pools.map(pool => <Card role="region" aria-label={poolName(pool.pool)} key={`${pool.hostId}/${pool.pool}`} className="min-w-0 space-y-4 p-4 sm:p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolName(pool.pool)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use{pool.pool === "heavy" && view.heavyCapacityAuto && " (auto)"}</span></div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolName(pool.pool)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
       <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
       {pool.leases.length === 0 ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
         const elapsed = Math.max(0, now - lease.grantedAt);

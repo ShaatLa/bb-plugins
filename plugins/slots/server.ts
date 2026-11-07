@@ -26,7 +26,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     totalMemory: os.totalmem, ...overrides };
   const cores = Math.max(1, runtime.cores());
   const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
-  let settingsView = { loadMaxAuto: false, heavyCapacityAuto: false, settingsWarnings: [] as string[] };
+  let settingsWarnings: string[] = [];
   const handle = bb.settings.define({
     heavyCapacity: { type: "number", label: `Heavy capacity (default: ${heavyDefault}, max: ${cores} = CPU cores; 0 disables)`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
     localModelCapacity: { type: "number", label: "Local model capacity (0–10000)", default: 1, experimental_schema: z.number().int().min(0).max(10000) },
@@ -57,14 +57,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
-    settingsView = {
-      loadMaxAuto: values.loadMax === cores,
-      heavyCapacityAuto: values.heavyCapacity === heavyDefault,
-      settingsWarnings: [
-        ...(values.loadMax > cores ? [`Saved load limit ${values.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
-        ...(values.heavyCapacity > cores ? [`Saved heavy capacity ${values.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
-      ],
-    };
+    settingsWarnings = [
+      ...(values.loadMax > cores ? [`Saved load limit ${values.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+      ...(values.heavyCapacity > cores ? [`Saved heavy capacity ${values.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+    ];
     return settings;
   };
   let settings = await getSettings();
@@ -173,7 +169,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
-        return { ok: true, data: { ...snapshot, hostSettings, localHostId, ...settingsView } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings } };
       }
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");

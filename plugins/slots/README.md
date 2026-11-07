@@ -5,10 +5,13 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.2.4)
+## Sidebar (0.2.5)
 
-Version 0.2.4 derives load and heavy-capacity defaults and limits from the machine,
-labels matching defaults “(auto)”, and warns when saved limits need clamping.
+Version 0.2.5 keeps dashboard values compact, leaving default and maximum
+explanations in the settings labels. Clamp warnings remain visible.
+
+Version 0.2.4 derives load and heavy-capacity defaults and limits from the machine
+and warns when saved limits need clamping.
 
 Version 0.2.3 makes the skill and examples project-neutral and documents machine tuning.
 
@@ -87,9 +90,7 @@ and is capped at the CPU core count; 0 still disables the pool. For 18 cores and
 Unset settings follow the current machine on each plugin start. Saved values
 (including an explicit 18) stay saved; values above a smaller machine’s maximum
 are clamped at use time with warnings in status, without rewriting the saved value.
-The UI marks effective values equal to their machine defaults “(auto)”; a saved
-value equal to the default still remains saved. Unset a setting to resume following
-the machine. Memory free (20%), timing, TTLs, ports and local-model capacity (1)
+Unset a setting to resume following the machine. Memory free (20%), timing, TTLs, ports and local-model capacity (1)
 remain policy choices rather than machine-derived limits.
 
 | Setting | Default | Range |

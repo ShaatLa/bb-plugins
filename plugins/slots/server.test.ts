@@ -276,13 +276,13 @@ it.each([
   [18, 64, 4], [8, 128, 2], [32, 32, 2], [1, 4, 1], [0, 0, 1],
 ])("derives limits from %s cores and %s GiB", async (cores, memoryGiB, capacity) => {
   const h = await setup(undefined, { cores, totalMemory: memoryGiB * 1024 ** 3 });
-  expect(await h.view()).toMatchObject({ loadMaxAuto: true, heavyCapacityAuto: true,
+  expect(await h.view()).toMatchObject({
     hostSettings: { local: { loadMax: Math.max(1, cores), capacities: { heavy: capacity, "local-model": 1 } } }, settingsWarnings: [] });
 });
 
 it("keeps explicit values, permits disabled pools, and rejects writes above machine limits", async () => {
   const h = await setup(undefined, { cores: 24, totalMemory: 128 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 2 });
-  expect(await h.view()).toMatchObject({ loadMaxAuto: false, heavyCapacityAuto: false, hostSettings: { local: { loadMax: 18, capacities: { heavy: 2 } } } });
+  expect(await h.view()).toMatchObject({ hostSettings: { local: { loadMax: 18, capacities: { heavy: 2 } } } });
   await expect(h.harness.behavior.setSettings({ loadMax: 25 })).rejects.toThrow("Load limit cannot exceed 24 CPU cores");
   await expect(h.harness.behavior.setSettings({ heavyCapacity: 25 })).rejects.toThrow("Heavy capacity cannot exceed 24 CPU cores");
   expect(await h.invoke("setCapacity", { hostId: "local", pool: "heavy", capacity: 25 })).toMatchObject({ ok: false, error: { message: "Heavy capacity cannot exceed 24 CPU cores" } });
@@ -310,7 +310,7 @@ it.each([false, true])("uses current definition defaults after reload; explicit 
 
 it("clamps legacy saved values on smaller machines and surfaces warnings without rewriting them", async () => {
   const h = await setup(undefined, { cores: 8, totalMemory: 32 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 12 });
-  expect(await h.view()).toMatchObject({ loadMaxAuto: false, heavyCapacityAuto: false,
+  expect(await h.view()).toMatchObject({
     hostSettings: { local: { loadMax: 8, capacities: { heavy: 8 } } }, settingsWarnings: [
       "Saved load limit 18 exceeds 8 CPU cores; using 8.", "Saved heavy capacity 12 exceeds 8 CPU cores; using 8.",
     ] });

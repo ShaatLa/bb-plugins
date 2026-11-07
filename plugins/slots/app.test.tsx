@@ -260,10 +260,11 @@ test("refresh uses the BB ArrowReloadHorizontal icon and stays busy until succes
   expect(status).toHaveBeenCalledTimes(3);
 });
 
-test("labels matching machine defaults and shows clamped-setting warnings", async () => {
-  const slot = render(() => ({ ok: true, data: { ...fixture, loadMaxAuto: true, heavyCapacityAuto: true,
+test("keeps summary values compact and shows clamped-setting warnings", async () => {
+  const slot = render(() => ({ ok: true, data: { ...fixture,
     settingsWarnings: ["Saved load limit 24 exceeds 18 CPU cores; using 18."] } }));
-  expect(await slot.findByText("limit 18 · CPU cores (auto)")).toBeTruthy();
-  expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toContain("1 of 4 in use (auto)");
+  expect(await slot.findByText("limit 18")).toBeTruthy();
+  expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toContain("1 of 4 in use");
   expect(slot.getByRole("alert").textContent).toBe("Saved load limit 24 exceeds 18 CPU cores; using 18.");
+  expect(slot.container.textContent).not.toContain("(auto)");
 });
