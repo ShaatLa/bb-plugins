@@ -150,6 +150,11 @@ describe("runnerLosses and detectMassCancel", () => {
     expect(detectMassCancel(hits, { minRunners: 4 })).toHaveLength(0);
     expect(detectMassCancel(hits, { windowMs: 20_000 })).toHaveLength(0);
   });
+  it("ignores a merge queue rebuild that cancels in-flight group jobs, but not lost runners in the queue", () => {
+    const queue = (runner: string, cls: FailureClass) => classify(failed({ runId: 2, event: "merge_group", runnerName: runner, completedAt: at(0, 0) }), cls);
+    expect(detectMassCancel(["q-a", "q-b", "q-c", "q-d"].map((r) => queue(r, "collateral_cancel")))).toEqual([]);
+    expect(detectMassCancel(["q-a", "q-b", "q-c"].map((r) => queue(r, "runner_loss")))).toHaveLength(1);
+  });
   it("ignores other failure classes and repeated losses on one runner", () => {
     expect(detectMassCancel([mk("runner-a", 0, 0), mk("runner-a", 0, 10), mk("runner-b", 0, 20), mk("runner-c", 0, 30, "real")])).toEqual([]);
   });

@@ -285,6 +285,10 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
       }
       return enqueued;
     },
+    /** Failed test names that failedTests already extracted for this attempt; never fetches. */
+    cachedFailedTests(repository: string, run: { id: number; attempt: number }, globs: RegExp[]): string[] | null {
+      return testCache.get(`${repository}#${run.id}#${run.attempt}#${globs.map(g => g.source).join(",")}`) ?? null;
+    },
     /** Names of the failed tests in the attempt's test-report artifacts (the configured globs, FAILED entries only); null without globs, budget or a readable report. Cached per attempt. */
     async failedTests(repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], globs: RegExp[], signal: AbortSignal): Promise<string[] | null> {
       if (!globs.length || !fetchArtifact) return null;

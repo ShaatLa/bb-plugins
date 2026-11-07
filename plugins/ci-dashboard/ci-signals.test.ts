@@ -142,13 +142,28 @@ describe("summarizeAnalysis and sortSignals", () => {
       const reruns = summarizeReruns([failed({ runId: 20, event: "merge_group", headBranch: queue }), failed({ runId: 20, attempt: 2, jobId: 9, event: "merge_group", headBranch: queue })]);
       expect(summarizeAnalysis({ classified: [], reruns, massCancels: [], losses: runnerLosses([]), repository: REPO }).reruns[0]).toMatchObject({ event: "merge_group", queuePullRequest: 12 });
     });
-    it("serves the pools view and puts the timings into the stall view", () => {
+    it("puts the timings, overall and by event, into the stall view", () => {
       const samples = timingSamples(set);
       const output = { repositories: [{ repository: REPO, updatedAt: null, error: null, live: { pools: [], truncated: false, polledAt: null }, signals: [], problems: [], projectId: null,
         window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null }, ...summarizeAnalysis({ classified, reruns: [], massCancels: [], losses: runnerLosses(classified), repository: REPO, samples }) }], actors: {} } as never;
-      const [pools] = ciSliceReport(output, "pools").repositories as Record<string, unknown>[];
+      const [pools] = ciSliceReport(output, "stall").repositories as Record<string, unknown>[];
       expect(pools).toMatchObject({ poolTimings: { "self-hosted": { jobs: 6 } }, poolTimingsByEvent: { merge_group: { "self-hosted": { jobs: 3 } }, pull_request: { "self-hosted": { jobs: 3 } } } });
-      expect(ciSliceReport(output, "stall").repositories[0]).toHaveProperty("poolTimings");
+    });
+    it("serves problems alone, and puts problems before a compact open-signals list", () => {
+      const signal = (n: number, open: boolean) => ({ id: `s${n}`, kind: "flake", severity: "info", title: `t${n}`, what: "w", impact: "i", actor: "lead", where: {}, since: at(0), until: null, open });
+      const problem = { id: "p1", kind: "signal", severity: "warning", title: "p", what: "w", impact: "i", where: {}, since: at(0), handled: null };
+      const base = { repository: REPO, updatedAt: null, error: null, live: { pools: [], truncated: false, polledAt: null }, projectId: null,
+        window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null },
+        signals: [...Array.from({ length: 3 }, (_, n) => signal(n, true)), ...Array.from({ length: 30 }, (_, n) => signal(100 + n, false))], problems: [problem] };
+      const output = { repositories: [{ ...base, ...summarizeAnalysis({ classified: [], reruns: [], massCancels: [], losses: runnerLosses([]), repository: REPO }) }], actors: {} } as never;
+      const only = ciSliceReport(output, "problems").repositories[0] as Record<string, unknown>;
+      expect(only.problems).toHaveLength(1); expect(only).not.toHaveProperty("signals");
+      const row = ciSliceReport(output, "signals").repositories[0] as Record<string, unknown>;
+      const keys = Object.keys(row);
+      expect(keys.indexOf("problems")).toBeLessThan(keys.indexOf("signals"));
+      // Open signals only, compact rows without the where block.
+      expect(row.signals).toHaveLength(3);
+      expect((row.signals as Record<string, unknown>[])[0]).toEqual({ id: "s0", kind: "flake", severity: "info", title: "t0", what: "w", since: at(0), actor: "lead" });
     });
   });
   it("lists the newest 20 reruns first", () => {

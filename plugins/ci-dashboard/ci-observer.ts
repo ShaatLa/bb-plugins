@@ -3,6 +3,7 @@ import { queuePullRequest, type MassCancel } from "./ci-classify";
 import { alertProblemId, CLASS_ORDER, codeBrokenVerdict } from "./ci-problems";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, FailureClass, JobRecord, PoolQueueState, Signal } from "./ci-jobs-types";
+import { jobRef, poolRef, queueRef, runRef } from "./ci-refs";
 import type { GitHubRequest } from "./metrics";
 
 // Server-only. Observer threads get short, classified CI event lines pushed to them so agents watching CI do not poll.
@@ -39,13 +40,15 @@ export const emptyRepoState = (): ObserverRepoState => ({ sent: {}, pending: [],
 
 // --- lines ---
 export const PREFIX = "[CI Dashboard]";
-const MAX_LINE = 400, MAX_TESTS = 5, MAX_JOBS = 4, MAX_DIGEST = 30;
+const MAX_LINE = 400, MAX_TESTS = 3, MAX_JOBS = 4, MAX_DIGEST = 30;
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
 /** One line, at most ~400 characters; the link at the end is never the part that gets cut. */
 export const fit = (body: string, url?: string, tag = "") => `${clip(squash(body), MAX_LINE - tag.length - (url ? url.length + 1 : 0))}${tag}${url ? ` ${url}` : ""}`;
-/** Marks a line with the open problem it is about, so an agent can claim it with ci_dashboard_problem. Never clipped. */
+/** Marks a line with the open problem it is about, so an agent can claim it with ci_dashboard_manage. Never clipped. */
 const problemTag = (problem?: string) => problem ? ` · problem ${problem}` : "";
+/** Names the ref to pass to ci_dashboard_metrics (ref=...) for the details this line leaves out. Never clipped. */
+const inspectTag = (ref: string) => ` · inspect ${ref}`;
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: Pick<JobRecord, "runId" | "jobId">) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
 const sha7 = (sha: string) => sha.slice(0, 7) || "unknown";
@@ -91,7 +94,7 @@ export function queueRemovalEvents(repository: string, classified: ClassifiedJob
       ...(pr === null ? {} : { removal: { pullRequest: pr, since: Number.isFinite(started) ? started : completedAt(jobs[0]!.job) } }),
       type: "queue", key: `queue:${runId}:${attempt}`, dedupe: "once", at: Math.max(...jobs.map((c) => completedAt(c.job))),
       tests: jobs.some((c) => TEST_CLASSES.has(c.class)) ? { run: { id: runId, attempt }, jobs: jobs.map((c) => c.job) } : undefined,
-      render: (tests) => fit(`${pr === null ? "Merge queue run failed" : `PR #${pr} removed from merge queue`} · run ${runId} attempt ${attempt} · ${more(jobs.map(describeJob(classified, limit)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId)),
+      render: (tests) => fit(`${pr === null ? "Merge queue run failed" : `PR #${pr} removed from merge queue`} · ${more(jobs.map(describeJob(classified, limit)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId), inspectTag(queueRef(runId, attempt))),
     };
   });
 }
@@ -108,7 +111,7 @@ export function runnerLossEvents(repository: string, classified: ClassifiedJob[]
     : job.event === "push" && defaultBranch !== null && job.headBranch === defaultBranch)).map(({ job }): ObserverEvent => ({
     type: "loss", key: `loss:${job.jobId}`, dedupe: "once", at: completedAt(job),
     problem: `runner_loss:${job.jobId}`,
-    render: (_tests, problem) => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · run ${job.runId} · ${lossCount(classified, job, limit)} losses on head ${sha7(job.headSha)}`, jobUrl(repository, job), problemTag(problem)) }));
+    render: (_tests, problem) => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · ${lossCount(classified, job, limit)} losses on head ${sha7(job.headSha)}`, jobUrl(repository, job), problemTag(problem) + inspectTag(jobRef(job.jobId))) }));
 }
 
 export const classCounts = (jobs: ClassifiedJob[]) => CLASS_ORDER.map((cls) => [cls, jobs.filter((c) => c.class === cls).length] as const).filter(([, n]) => n > 0).map(([cls, n]) => `${n} ${cls}`).join(", ") || "none stored";
@@ -123,14 +126,14 @@ export function defaultRedEvents(repository: string, classified: ClassifiedJob[]
     const runIds = streaks.get(alert.runId) ?? [alert.runId], verdict = codeBrokenVerdict(classified.filter((c) => runIds.includes(c.job.runId)), runIds);
     const at = Math.max(Date.parse(alert.createdAt), ...jobs.map((c) => completedAt(c.job)));
     return [{ type: "red", key: `red:${alert.runId}:${attempt}`, dedupe: "once", at, problem: alertProblemId(alert),
-      render: (_tests, problem) => fit(`${alert.name} red on ${alert.branch} · run ${alert.runId} · jobs: ${classCounts(jobs)} · Code looks broken: ${verdict}`, runUrl(repository, alert.runId), problemTag(problem)) }];
+      render: (_tests, problem) => fit(`${alert.name} red on ${alert.branch} · jobs: ${classCounts(jobs)} · Code looks broken: ${verdict}`, runUrl(repository, alert.runId), problemTag(problem) + inspectTag(runRef(alert.runId, attempt))) }];
   });
 }
 
 /** 4. A newly opened pool stall signal. */
 export function stallEvent(signal: Signal, pools: PoolQueueState[], now: number): ObserverEvent {
   const pool = signal.where.pool ?? "unknown", queued = pools.find((state) => state.pool === pool)?.queued ?? 0, minutes = Math.max(0, Math.floor((now - Date.parse(signal.since)) / 60_000));
-  return { type: "stall", key: signal.id, dedupe: "quiet", at: now, problem: signal.id, render: (_tests, problem) => fit(`Pool ${pool} stalled · ${queued} queued, no job start for ${minutes} min`, undefined, problemTag(problem)) };
+  return { type: "stall", key: signal.id, dedupe: "quiet", at: now, problem: signal.id, render: (_tests, problem) => fit(`Pool ${pool} stalled · ${queued} queued, no job start for ${minutes} min`, undefined, problemTag(problem) + inspectTag(poolRef(pool))) };
 }
 
 /** 5. A newly opened mass-cancel signal; `groups` are the analysis' mass cancels the signal id refers to. */
@@ -139,7 +142,7 @@ export function massCancelEvent(signal: Signal, groups: MassCancel[]): ObserverE
   if (!group) return null;
   const pool = signal.where.pool;
   return { type: "mass", key: signal.id, dedupe: "once", at: Date.parse(group.until), problem: signal.id,
-    render: (_tests, problem) => fit(`${group.jobs.length} jobs lost/cancelled within 2 min${pool ? ` in ${pool}` : ""} · runs ${more(group.runIds.map(String), MAX_TESTS)}`, undefined, problemTag(problem)) };
+    render: (_tests, problem) => fit(`${group.jobs.length} jobs lost/cancelled within 2 min${pool ? ` in ${pool}` : ""} · ${group.runIds.length} runs`, undefined, problemTag(problem) + inspectTag(runRef(Math.max(...group.runIds)))) };
 }
 
 // --- deployments ---
@@ -151,7 +154,19 @@ const FINAL = new Set(["success", "failure", "error"]);
  * 6. Deployments that reached a final status. At most one list request plus `maxStatuses` status requests per call; deployments seen in a final state
  * (or superseded) are remembered in `state.deploys` and cost nothing afterwards. Older than `since` are ignored.
  */
-export async function deploymentEvents({ request, repository, state, since, now, maxStatuses = 10 }: { request: GitHubRequest; repository: string; state: ObserverRepoState; since: number; now: number; maxStatuses?: number }): Promise<ObserverEvent[]> {
+/** How a failed deployment's run failed: only on a by-design gate step (refused, with the step), on anything else, or not stored yet (null). */
+export type DeployRunOutcome = (runId: number) => { refused: string } | "failed" | null;
+const DEPLOY_WAIT_MS = 10 * 60_000;
+/** Classifies a deployment run from its classified jobs: a run that failed only on refusal steps (plus their consequences) was refused, not broken. */
+export function deployRunOutcome(classified: ClassifiedJob[]): DeployRunOutcome {
+  return (runId) => {
+    const own = classified.filter((c) => c.job.runId === runId && !NOT_OWN.has(c.class) && c.class !== "consequence");
+    if (!own.length) return null;
+    const refused = own.filter((c) => c.class === "refused");
+    return refused.length === own.length ? { refused: refused[0]!.evidence ?? refused[0]!.job.failedSteps[0] ?? "gate step" } : "failed";
+  };
+}
+export async function deploymentEvents({ request, repository, state, since, now, maxStatuses = 10, runOutcome = () => null }: { request: GitHubRequest; repository: string; state: ObserverRepoState; since: number; now: number; maxStatuses?: number; runOutcome?: DeployRunOutcome }): Promise<ObserverEvent[]> {
   const list = z.array(deploymentRow).parse((await request(`/repos/${repository}/deployments?per_page=30`)).body);
   for (const [id, seen] of Object.entries(state.deploys)) if (seen < since) delete state.deploys[id];
   const events: ObserverEvent[] = [];
@@ -163,10 +178,18 @@ export async function deploymentEvents({ request, repository, state, since, now,
     if (!status) continue;
     if (status.state === "inactive") { state.deploys[String(d.id)] = now; continue; }
     if (!FINAL.has(status.state)) continue;
-    state.deploys[String(d.id)] = Date.parse(status.created_at);
     const environment = d.environment || "unknown", url = status.log_url && /^https:\/\//.test(status.log_url) ? status.log_url : undefined;
+    let label = status.state;
+    if (status.state !== "success") {
+      // A gate step refusing a stale candidate is by design and needs no action; only a real failure should read "failure".
+      const runId = Number(url?.match(/\/actions\/runs\/(\d+)/)?.[1]);
+      const outcome = Number.isFinite(runId) ? runOutcome(runId) : "failed";
+      if (outcome === null && now - Date.parse(status.created_at) < DEPLOY_WAIT_MS) continue; // the run's jobs are not stored yet: look again next loop
+      if (outcome && outcome !== "failed") label = `refused (${outcome.refused})`;
+    }
+    state.deploys[String(d.id)] = Date.parse(status.created_at);
     events.push({ type: "deploy", key: `deploy:${d.id}:${status.state}`, dedupe: "once", at: Date.parse(status.created_at),
-      render: () => fit(`Deploy ${environment} ${status.state} · ${sha7(d.sha ?? "")} · deployment ${d.id}`, url) });
+      render: () => fit(`Deploy ${environment} ${label} · ${sha7(d.sha ?? "")} · deployment ${d.id}`, url) });
   }
   return events;
 }

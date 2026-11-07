@@ -140,7 +140,9 @@ export function runnerLosses(classified: ClassifiedJob[]): { byPool: Record<stri
 
 export type MassCancel = { since: string; until: string; runners: string[]; runIds: number[]; jobs: ClassifiedJob[] };
 export function detectMassCancel(classified: ClassifiedJob[], { windowMs = 120_000, minRunners = 3 } = {}): MassCancel[] {
-  const hits = classified.filter((c) => ["runner_loss", "collateral_cancel", "timeout"].includes(c.class) && c.job.completedAt)
+  // A merge queue rebuild cancels every in-flight job of the groups behind a change: that is queue invalidation, not lost runners.
+  const hits = classified.filter((c) => ["runner_loss", "collateral_cancel", "timeout"].includes(c.class) && c.job.completedAt
+    && !(c.class === "collateral_cancel" && c.job.event === "merge_group"))
     .sort((a, b) => Date.parse(a.job.completedAt!) - Date.parse(b.job.completedAt!));
   const found: MassCancel[] = [];
   for (let i = 0; i < hits.length;) {

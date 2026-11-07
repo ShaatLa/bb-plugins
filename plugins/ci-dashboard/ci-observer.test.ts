@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { classifyJobs, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
-import { acceptEvents, confirmRemovals, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type Rendered } from "./ci-observer";
+import { acceptEvents, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type Rendered } from "./ci-observer";
 import { at, classify, failed, failure, job, LOSS, REPO } from "./test-support";
+import { parseRef } from "./ci-refs";
 
 const queueJob = (over = {}, minute = 5) => failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-7-abc123", runId: 50, jobId: 500, ...over }, minute);
 const text = (event: ObserverEvent, tests?: string[] | null) => event.render(tests);
@@ -28,16 +29,16 @@ describe("merge queue removal", () => {
     const flake = { ...classify(queueJob({ jobName: "Integration", jobId: 501 }), "flake"), flakeLabel: "FLAKE-1" };
     const [event] = queueRemovalEvents(REPO, [classify(queueJob(), "real"), flake, classify(queueJob({ jobName: "CI summary", jobId: 502 }), "consequence"), classify(queueJob({ jobName: "Lint", jobId: 503 }), "runner_loss")]);
     expect(event).toMatchObject({ type: "queue", key: "queue:50:1", dedupe: "once", at: Date.parse(at(5)), tests: { run: { id: 50, attempt: 1 } } });
-    expect(text(event!, ["a.One", "b.Two"])).toBe(`PR #7 removed from merge queue · run 50 attempt 1 · Unit tests: real, Integration: flake FLAKE-1, CI summary: consequence, Lint: runner_loss (1 on this head) · failed tests: a.One, b.Two ${RUN_URL}`);
+    expect(text(event!, ["a.One", "b.Two"])).toBe(`PR #7 removed from merge queue · Unit tests: real, Integration: flake FLAKE-1, CI summary: consequence, Lint: runner_loss (1 on this head) · failed tests: a.One, b.Two · inspect queue:50:1 ${RUN_URL}`);
     expect(text(event!)).not.toContain("failed tests");
     expect(text(event!, [])).not.toContain("failed tests");
   });
-  it("shows at most five tests then +K, at most four jobs then +K, and keeps the link inside 400 characters", () => {
+  it("shows at most three tests then +K, at most four jobs then +K, and keeps the link inside 400 characters", () => {
     const jobs = Array.from({ length: 6 }, (_, i) => classify(queueJob({ jobName: `Job ${i}`, jobId: 600 + i }), "real"));
     const [event] = queueRemovalEvents(REPO, jobs);
     const line = text(event!, Array.from({ length: 8 }, (_, i) => `test${i}`));
     expect(line).toContain("Job 0: real, Job 1: real, Job 2: real, Job 3: real, +2");
-    expect(line).toContain("failed tests: test0, test1, test2, test3, test4, +3");
+    expect(line).toContain("failed tests: test0, test1, test2, +5");
     const long = text(event!, [`${"x".repeat(300)}`, ...Array.from({ length: 4 }, (_, i) => "y".repeat(100 + i))]);
     expect(long.length).toBeLessThanOrEqual(400);
     expect(long.endsWith(RUN_URL)).toBe(true);
@@ -47,7 +48,7 @@ describe("merge queue removal", () => {
     const events = queueRemovalEvents(REPO, [classify(queueJob(), "real"), classify(queueJob({ attempt: 2, jobId: 510 }), "flake"),
       classify(queueJob({ runId: 51, jobId: 520 }), "superseded"), classify(queueJob({ runId: 54, jobId: 550 }), "manual_cancel"), classify(failed({ runId: 52, jobId: 530 }), "real"), classify(queueJob({ runId: 53, jobId: 540, headBranch: "feature" }), "real")]);
     expect(events.map((event) => event.key)).toEqual(["queue:50:1", "queue:50:2", "queue:53:1"]);
-    expect(text(events[2]!)).toMatch(/^Merge queue run failed · run 53/);
+    expect(text(events[2]!)).toMatch(/^Merge queue run failed · .* · inspect queue:53:1 /);
     // Runner losses carry no test report.
     expect(queueRemovalEvents(REPO, [classify(queueJob(), "runner_loss")])[0]!.tests).toBeUndefined();
   });
@@ -81,7 +82,7 @@ describe("merge queue removal", () => {
     const classified = [classify(queueJob({ jobId: 1 }), "real"),
       classify(queueJob({ runId: 51, jobId: 10, headBranch: "gh-readonly-queue/main/pr-8-def456" }), "collateral_cancel"),
       classify(queueJob({ runId: 51, jobId: 11, jobName: "CI summary", headBranch: "gh-readonly-queue/main/pr-8-def456" }), "consequence")];
-    expect(queueRemovalEvents(REPO, classified, 3).map((event) => text(event))).toEqual([expect.stringMatching(/^PR #7 removed from merge queue · run 50/)]);
+    expect(queueRemovalEvents(REPO, classified, 3).map((event) => text(event))).toEqual([expect.stringMatching(/^PR #7 removed from merge queue · .* · inspect queue:50:1 /)]);
     // Same when the PR behind only failed as consequence, without any cancellation.
     expect(queueRemovalEvents(REPO, [classified[0]!, classify(queueJob({ runId: 51, jobId: 11, headBranch: "gh-readonly-queue/main/pr-8-def456" }), "consequence")], 3).map((event) => event.key)).toEqual(["queue:50:1"]);
   });
@@ -162,7 +163,7 @@ describe("runner loss", () => {
     const classified = [classify(lost({ jobId: 1, ...onMain }), "runner_loss"), classify(lost({ jobId: 2, jobName: "Lint", ...onMain }, 6), "runner_loss"), classify(lost({ jobId: 3, headSha: "f".repeat(40), ...onMain }), "runner_loss")];
     const [first] = runnerLossEvents(REPO, classified, "main", 0);
     expect(first).toMatchObject({ key: "loss:1", dedupe: "once" });
-    expect(text(first!)).toBe(`Runner lost · Unit tests · runner runner-9 · run 1 · 2 losses on head 0123456 https://github.com/${REPO}/actions/runs/1/job/1`);
+    expect(text(first!)).toBe(`Runner lost · Unit tests · runner runner-9 · 2 losses on head 0123456 · inspect job:1 https://github.com/${REPO}/actions/runs/1/job/1`);
     expect(text(runnerLossEvents(REPO, classified, "main", 3)[0]!)).toContain("· 2/3 losses on head 0123456");
     expect(text(runnerLossEvents(REPO, classified, "main", 3)[2]!)).toContain("· 1/3 losses on head fffffff");
   });
@@ -194,7 +195,7 @@ describe("default branch red", () => {
     const real = [classify(onMain({ jobId: 1 }), "real"), classify(onMain({ jobId: 2 }), "consequence"), classify(onMain({ jobId: 3 }), "consequence")];
     const [event] = defaultRedEvents(REPO, real, [alert()]);
     expect(event).toMatchObject({ key: "red:70:1", type: "red", at: Date.parse(at(5)) });
-    expect(text(event!)).toBe(`CI red on main · run 70 · jobs: 1 real, 2 consequence · Code looks broken: yes https://github.com/${REPO}/actions/runs/70`);
+    expect(text(event!)).toBe(`CI red on main · jobs: 1 real, 2 consequence · Code looks broken: yes · inspect run:70:1 https://github.com/${REPO}/actions/runs/70`);
     expect(text(defaultRedEvents(REPO, [classify(onMain({ jobId: 1 }), "flake")], [alert()])[0]!)).toContain("jobs: 1 flake · Code looks broken: no (red on flakes only)");
     expect(text(defaultRedEvents(REPO, [classify(onMain({ jobId: 1 }), "unknown")], [alert()])[0]!)).toContain("Code looks broken: unknown");
   });
@@ -213,14 +214,14 @@ describe("pool stall and mass cancel", () => {
   it("describes a stall from the live pool state", () => {
     const event = stallEvent(signal(), [{ pool: "self-hosted", queued: 12, inProgress: 0, oldestQueuedAt: at(0), lastStartedAt: null, queuedRunIds: [1] }], Date.parse(at(14, 30)));
     expect(event).toMatchObject({ key: "pool_stall:self-hosted", type: "stall", dedupe: "quiet", at: Date.parse(at(14, 30)) });
-    expect(text(event)).toBe("Pool self-hosted stalled · 12 queued, no job start for 14 min");
+    expect(text(event)).toBe("Pool self-hosted stalled · 12 queued, no job start for 14 min · inspect pool:self-hosted");
   });
   it("describes a mass cancel with its pool and runs, or nothing when the group is gone", () => {
     const jobs = [1, 2, 3].map((i) => classify(failed({ jobId: i, runId: 10 + i, runnerName: `runner-${i}`, annotations: [failure(LOSS)] }, 5), "runner_loss"));
     const groups = detectMassCancel(jobs);
     const opened = signal({ id: `mass_cancel:${groups[0]!.since}`, kind: "mass_cancel", where: { pool: "self-hosted" } });
-    expect(text(massCancelEvent(opened, groups)!)).toBe("3 jobs lost/cancelled within 2 min in self-hosted · runs 11, 12, 13");
-    expect(text(massCancelEvent({ ...opened, where: {} }, groups)!)).toBe("3 jobs lost/cancelled within 2 min · runs 11, 12, 13");
+    expect(text(massCancelEvent(opened, groups)!)).toBe("3 jobs lost/cancelled within 2 min in self-hosted · 3 runs · inspect run:13");
+    expect(text(massCancelEvent({ ...opened, where: {} }, groups)!)).toBe("3 jobs lost/cancelled within 2 min · 3 runs · inspect run:13");
     expect(massCancelEvent(opened, [])).toBeNull();
   });
 });
@@ -229,6 +230,21 @@ describe("deployments", () => {
   const now = Date.parse("2026-11-06T12:00:00Z"), since = now - 14 * 86_400_000;
   const api = (deployments: object[], statuses: Record<number, object[]>) => { const paths: string[] = []; return { paths, request: async (path: string) => { paths.push(path); const id = path.match(/deployments\/(\d+)\/statuses/)?.[1]; return { body: id ? statuses[Number(id)] ?? [] : deployments, hasNext: false }; } }; };
   const row = (id: number, created = "2026-11-06T11:00:00Z", environment: string | null = "production") => ({ id, environment, sha: "abcdef0123456789", created_at: created });
+  it("labels a failed deployment whose run only refused on a gate step as refused, waits for unstored runs, and keeps real failures", async () => {
+    const failing = (id: number, run: number) => ({ [id]: [{ state: "failure", created_at: "2026-11-06T11:55:00Z", log_url: `https://github.com/acme/widgets/actions/runs/${run}/job/1` }] });
+    const github = api([row(1), row(2), row(3)], { ...failing(1, 41), ...failing(2, 42), ...failing(3, 43) });
+    const classified = [{ ...classify(job({ runId: 41, jobId: 7, conclusion: "failure", failedSteps: ["Admit gate"] }), "refused"), evidence: "Admit gate" }, classify(job({ runId: 41, jobId: 8, jobName: "Summary", conclusion: "failure" }), "consequence"),
+      classify(job({ runId: 42, jobId: 9, conclusion: "failure", failedSteps: ["Build"] }), "real")];
+    const state = emptyRepoState();
+    const events = await deploymentEvents({ request: github.request, repository: REPO, state, since, now, runOutcome: deployRunOutcome(classified) });
+    expect(events.map((event) => text(event)).sort()).toEqual([
+      "Deploy production failure · abcdef0 · deployment 2 https://github.com/acme/widgets/actions/runs/42/job/1",
+      "Deploy production refused (Admit gate) · abcdef0 · deployment 1 https://github.com/acme/widgets/actions/runs/41/job/1"]);
+    // Run 43 has no stored jobs yet: not sent and not remembered, so it is looked at again; after the wait it goes out as a failure.
+    expect(state.deploys["3"]).toBeUndefined();
+    const later = await deploymentEvents({ request: github.request, repository: REPO, state, since, now: now + 11 * 60_000, runOutcome: deployRunOutcome(classified) });
+    expect(later.map((event) => text(event))).toEqual(["Deploy production failure · abcdef0 · deployment 3 https://github.com/acme/widgets/actions/runs/43/job/1"]);
+  });
   it("reports a deployment once, when its newest status is final", async () => {
     const state = emptyRepoState();
     const github = api([row(1), row(2), row(3), row(4), row(5, "2026-10-01T00:00:00Z")], { 1: [{ state: "success", created_at: "2026-11-06T11:05:00Z", log_url: "https://github.com/acme/widgets/actions/runs/9" }], 2: [{ state: "in_progress", created_at: "2026-11-06T11:05:00Z" }], 3: [{ state: "failure", created_at: "2026-11-06T11:06:00Z" }], 4: [] });
@@ -366,14 +382,14 @@ describe("problem ids in event lines", () => {
   it("candidate ids match the problem ids; the id is appended only when the caller passes it", () => {
     const event = stallEvent(stall, [], Date.parse(at(14)));
     expect(event.problem).toBe("pool_stall:self-hosted");
-    expect(text(event)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min");
-    expect(event.render(null, event.problem)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min · problem pool_stall:self-hosted");
+    expect(text(event)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min · inspect pool:self-hosted");
+    expect(event.render(null, event.problem)).toBe("Pool self-hosted stalled · 0 queued, no job start for 14 min · problem pool_stall:self-hosted · inspect pool:self-hosted");
     const loss = runnerLossEvents(REPO, [classify(failed({ event: "push", headBranch: "main", jobId: 9, annotations: [failure(LOSS)] }), "runner_loss")], "main", 0)[0]!;
     expect(loss.problem).toBe("runner_loss:9");
-    expect(loss.render(null, loss.problem)).toMatch(/ · problem runner_loss:9 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/1\/job\/9$/);
+    expect(loss.render(null, loss.problem)).toMatch(/ · problem runner_loss:9 · inspect job:9 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/1\/job\/9$/);
     const red = defaultRedEvents(REPO, [classify(failed({ event: "push", headBranch: "main", runId: 70 }), "real")], [{ kind: "main", workflowId: 1, name: "CI", branch: "main", runId: 70, createdAt: at(0), consecutive: 1 }])[0]!;
     expect(red.problem).toBe("run:main:70");
-    expect(red.render(null, red.problem)).toMatch(/Code looks broken: yes · problem run:main:70 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/70$/);
+    expect(red.render(null, red.problem)).toMatch(/Code looks broken: yes · problem run:main:70 · inspect run:70:1 https:\/\/github\.com\/acme\/widgets\/actions\/runs\/70$/);
     // Queue removals are never problems.
     expect(queueRemovalEvents(REPO, [classify(failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-7-abc", runId: 50 }), "real")])[0]!.problem).toBeUndefined();
   });
@@ -381,5 +397,24 @@ describe("problem ids in event lines", () => {
     const line = fit("x".repeat(500), "https://example.test/u", " · problem run:main:70");
     expect(line.length).toBe(400);
     expect(line.endsWith(" · problem run:main:70 https://example.test/u")).toBe(true);
+  });
+});
+
+describe("inspect refs in event lines", () => {
+  it("every line ends its body with `inspect <ref>` (a ref ci_dashboard_metrics accepts), keeps one link and stays within 400 characters", () => {
+    const long = "x".repeat(300), tests = [long, long, long, long];
+    const queue = queueRemovalEvents(REPO, [classify(queueJob({ jobName: long }), "real")])[0]!;
+    const loss = runnerLossEvents(REPO, [classify(failed({ event: "push", headBranch: "main", jobId: 9, jobName: long }), "runner_loss")], "main", 3)[0]!;
+    const red = defaultRedEvents(REPO, [classify(failed({ event: "push", headBranch: "main", runId: 70 }), "real")], [{ kind: "main", workflowId: 1, name: long, branch: "main", runId: 70, createdAt: at(0), consecutive: 1 }])[0]!;
+    const stall = stallEvent({ id: `pool_stall:${long}`, kind: "pool_stall", severity: "critical", title: "", what: "", where: { pool: "p" }, since: at(0), until: null, impact: "", actor: "owner_sre", open: true }, [], Date.parse(at(14)));
+    const mass = massCancelEvent({ id: "mass_cancel:t", kind: "mass_cancel", severity: "critical", title: "", what: "", where: { pool: "p" }, since: "t", until: null, impact: "", actor: "owner_sre", open: true },
+      [{ since: "t", until: at(1), runners: ["a"], runIds: [11, 12], jobs: [classify(failed(), "runner_loss")] }])!;
+    for (const [event, ref] of [[queue, "queue:50:1"], [loss, "job:9"], [red, "run:70:1"], [stall, "pool:p"], [mass, "run:12"]] as const) {
+      const line = event.render(tests, event.problem);
+      expect(line, ref).toMatch(new RegExp(` · inspect ${ref}( https://\\S+)?$`));
+      expect(parseRef(ref)).toBeTruthy();
+      expect(line.length).toBeLessThanOrEqual(400);
+      expect(line.match(/https:\/\//g)?.length ?? 0).toBeLessThanOrEqual(1);
+    }
   });
 });
