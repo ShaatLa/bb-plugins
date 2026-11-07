@@ -36,12 +36,14 @@ export const rpcContract = defineRpcContract({
   gate: method("gate"), status: method("status"), transfer: method("transfer"), port: method("port"),
   prioritize: method("prioritize"), revoke: method("revoke"), grant: method("grant"), setCapacity: method("setCapacity"), log: method("log"),
 });
-const request = inputs.request.omit({ wait: true, timeoutMs: true }).extend({ id, createdAt: time, priority, queueWaitAlerted: z.boolean().default(false) });
+const use = z.object({ id, threadId: id, startedAt: time, expiresAt: time });
+const useFields = { uses: z.array(use).default([]), autoRelease: z.boolean().default(false), graceUntil: time.nullable().default(null) };
+const request = inputs.request.omit({ wait: true, timeoutMs: true }).extend({ id, createdAt: time, priority, queueWaitAlerted: z.boolean().default(false), ...useFields });
 const lease = z.object({ id, requestId: id, hostId: id, pool, slotIndex: time, ownerThreadId: id, holderThreadId: id,
-  job: z.string(), estMs: time.positive(), grantedAt: time, lastHeartbeatAt: time, expiresAt: time, warnedAt: time.nullable() });
+  job: z.string(), estMs: time.positive(), grantedAt: time, lastHeartbeatAt: time, expiresAt: time, warnedAt: time.nullable(), ...useFields });
 const readings = z.object({ memFreePct: z.number().min(0).max(100), load1: z.number().nonnegative(), at: time, passed: z.boolean() });
 export const stateSchema: z.ZodType<State> = z.object({ version: z.literal(1), nextId: time.positive(), nextAuditSeq: time.positive(),
   hosts: z.record(id, z.object({ gate: z.object({ latest: readings.nullable(), streak: time, lastCountedAt: time.nullable(), failingSince: time.nullable().default(null), holdAlerted: z.boolean().default(false) }) })),
   requests: z.array(request), leases: z.array(lease), ports: z.array(z.object({ hostId: id, threadId: id, port: time.min(1).max(65535), createdAt: time })),
-  audit: z.array(z.object({ seq: time, at: time, type: z.enum(["request", "grant", "release", "expire", "warn", "revoke", "transfer", "gate", "prioritize", "capacity", "port", "port-release", "queue-wait", "gate-hold", "observer"]), hostId: id.optional(), pool: pool.optional(), threadId: id.optional(), requestId: id.optional(), leaseId: id.optional(), port: time.optional(), readings: readings.omit({ passed: true }).optional(), reason: z.string().optional(), manual: z.boolean().optional() })),
+  audit: z.array(z.object({ seq: time, at: time, type: z.enum(["request", "grant", "release", "expire", "warn", "revoke", "use-expired", "use-dropped", "unclaimed", "transfer", "gate", "prioritize", "capacity", "port", "port-release", "queue-wait", "gate-hold", "observer"]), hostId: id.optional(), pool: pool.optional(), threadId: id.optional(), requestId: id.optional(), leaseId: id.optional(), port: time.optional(), readings: readings.omit({ passed: true }).optional(), reason: z.string().optional(), manual: z.boolean().optional() })),
 });

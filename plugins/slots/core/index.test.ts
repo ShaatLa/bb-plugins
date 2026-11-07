@@ -333,3 +333,32 @@ it("rounds observer durations and gate readings for human messages", () => {
   h.sample(50, 1); h.sample(9.4, 40.1234); h.now += (65 * minute + 6000);
   expect(observerCopies(h.send({ type: "tick" }), "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 1h 5m") });
 });
+
+it("tracks independent uses through grant, renewal, completion and grace", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); const first = h.state.requests[0].uses![0].id;
+  acquire(); const second = h.state.requests[0].uses![1].id;
+  expect(h.send({ type: "done", threadId: "b", useId: first }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(h.send({ type: "detach", threadId: "a", useId: first }).result).toMatchObject({ ok: true, data: { kind: "queued", position: 1 } });
+  h.open(); expect(h.state.leases[0].uses).toHaveLength(1);
+  expect(h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true }).result).toMatchObject({ ok: false, error: { code: "in-use" } });
+  h.now += minute; h.send({ type: "heartbeatUse", threadId: "a", useId: second });
+  expect(h.state.leases[0].expiresAt).toBeGreaterThanOrEqual(h.state.leases[0].uses![0].expiresAt);
+  h.send({ type: "done", threadId: "a", useId: second }); expect(h.state.leases).toHaveLength(0);
+  acquire(); const id = h.state.requests[0].id; const use = h.state.requests[0].uses![0].id;
+  h.send({ type: "detach", threadId: "a", useId: use }); acquire();
+  expect(h.state.requests[0].id).toBe(id);
+  h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id });
+  h.now += h.settings.heartbeatIntervalMs; h.send({ type: "tick" });
+  expect(h.state.requests).toHaveLength(0); expect(h.state.audit.some(e => e.type === "unclaimed")).toBe(true);
+});
+
+it("expires uses independently of thread heartbeat and preserves plain leases", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  const use = h.state.leases[0].uses![0].id;
+  h.now += h.settings.heartbeatIntervalMs; h.send({ type: "heartbeat", threadId: "a" }); h.send({ type: "tick" });
+  expect(h.state.leases).toHaveLength(1); expect(h.state.leases[0].uses).toEqual([]);
+  expect(h.send({ type: "done", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "not-found" } });
+});

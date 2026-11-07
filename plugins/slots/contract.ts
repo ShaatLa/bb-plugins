@@ -34,16 +34,18 @@ export const DEFAULT_SETTINGS: Settings = {
   observerThreadId: null, portRange: { from: 41000, to: 41099 },
   grantMode: "auto", hosts: {},
 };
+export interface Use { id: string; threadId: string; startedAt: number; expiresAt: number }
 export interface SlotRequest {
   id: string; hostId: string; pool: PoolName; threadId: string;
   job: string; estMs: number; priority: Priority; createdAt: number;
-  queueWaitAlerted?: boolean;
+  queueWaitAlerted?: boolean; uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
 }
 export type QueueEntry = SlotRequest;
 export interface Lease {
   id: string; requestId: string; hostId: string; pool: PoolName; slotIndex: number;
   ownerThreadId: string; holderThreadId: string; job: string; estMs: number;
   grantedAt: number; lastHeartbeatAt: number; expiresAt: number; warnedAt: number | null;
+  uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
 }
 export interface GateReadings { memFreePct: number; load1: number; at: number }
 export interface GateState {
@@ -53,7 +55,7 @@ export interface GateState {
 }
 export interface PortLease { hostId: string; threadId: string; port: number; createdAt: number }
 export type AuditType = "request" | "grant" | "release" | "expire" | "warn" | "revoke" |
-  "transfer" | "gate" | "prioritize" | "capacity" | "port" | "port-release" | "queue-wait" | "gate-hold" | "observer";
+  "use-expired" | "use-dropped" | "unclaimed" | "transfer" | "gate" | "prioritize" | "capacity" | "port" | "port-release" | "queue-wait" | "gate-hold" | "observer";
 export interface AuditEvent {
   seq: number; at: number; type: AuditType; hostId?: string; pool?: PoolName;
   threadId?: string; requestId?: string; leaseId?: string; port?: number;
@@ -87,7 +89,7 @@ export interface StatusView extends StatusSnapshot {
   settingsWarnings?: string[];
 }
 export interface SlotsError {
-  code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use";
+  code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use" | "transferred" | "in-use";
   message: string; readings?: GateReadings;
 }
 export type Result<T> = { ok: true; data: T } | { ok: false; error: SlotsError };
@@ -96,6 +98,7 @@ export interface RequestParams {
   /** Waiting is implemented by the server, never by the reducer. */
   wait?: boolean; timeoutMs?: number;
 }
+export type UseOutcome = ({ kind: "queued"; request: SlotRequest; useId: string } | { kind: "leased"; lease: Lease; useId: string });
 export type RequestOutcome = { kind: "queued"; request: SlotRequest } | { kind: "leased"; lease: Lease };
 export interface ReleaseParams { threadId: string; leaseId?: string }
 export interface ReleaseOutcome { released: string[]; returned: string[]; canceled: string[] }
@@ -140,6 +143,8 @@ export type RpcRequest<K extends keyof RpcMethods> = RpcMethods[K]["input"];
 export type RpcResponse<K extends keyof RpcMethods> = RpcMethods[K]["output"];
 export type Input =
   | { type: "request"; hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority }
+  | ({ type: "acquire" } & Omit<RequestParams, "wait" | "timeoutMs">)
+  | { type: "done" | "detach" | "heartbeatUse"; threadId: string; useId: string }
   | ({ type: "release" } & ReleaseParams)
   | ({ type: "heartbeat" } & HeartbeatParams)
   | ({ type: "gate" } & GateParams)
@@ -155,7 +160,7 @@ export type Input =
   | { type: "tick" } | { type: "restored" };
 export type Effect = { type: "notify"; threadId: string; text: string; reason: AuditType } |
   { type: "audit"; event: AuditEvent };
-export type EngineOutput = RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
+export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
   Lease | PortLease | SlotRequest | { capacity: number } | null;
 export interface Context { now: number; settings: Settings }
 export interface Transition { state: State; effects: Effect[]; result: Result<EngineOutput> }
