@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult } from './contract';
 import { Button } from './components/ui/button';
+import { useStoredState } from './lib/stored-state';
 import { ItemCard } from './app';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
@@ -16,9 +17,9 @@ function HistoryPage({ threadId, cursor, index, depth, receive }: { threadId: st
 }
 export function Inbox() {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} });
-  const [draft, setDraft] = useState<Draft | null>(null), [text, setText] = useState(''), [error, setError] = useState(''), [pending, setPending] = useState(false);
+  const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null);
   const [depth, setDepth] = useState(1), [pages, setPages] = useState<ListResult[]>([]);
   const receive = useRef((index: number, data: ListResult) => setPages(old => { const next = [...old]; next[index] = data; if (!data.nextCursor) next.length = index + 1; return next; })).current;

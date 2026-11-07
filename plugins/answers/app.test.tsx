@@ -8,7 +8,7 @@ const item: Item = itemSchema.parse({
   id: 'ans_one', kind: 'mine', threadId: 'thr_one', projectId: 'pr_one', threadTitle: 'A thread', projectName: 'A project', status: 'answered', question: 'What changed?', questionSeq: 10,
   requestId: null, turnId: null, candidate: null, candidateSeq: null, interim: null, interimSeq: null, answer: 'The answer', answerSeq: 20, answerSource: 'turn', resolveTurnId: null, note: null, readAt: null, pinned: false, dismissedAt: null, threadDeleted: false, createdAt: Date.now(), updatedAt: Date.now(),
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const app = await loadPluginApp(() => import('./app'));
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
@@ -20,6 +20,14 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 }
 
 describe('Answers app', () => {
+  it('keeps the selected view after the page is unmounted', async () => {
+    const first = await setup();
+    fireEvent.click(first.slot.getByRole('button', { name: 'Waiting' }));
+    first.slot.unmount();
+    const again = renderSlot(first.app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+    expect(again.getByRole('button', { name: 'Waiting' }).getAttribute('aria-pressed')).toBe('true');
+    again.unmount();
+  });
   it('reopens the page side panel tab the user left open', async () => {
     localStorage.setItem('bb-plugin-answers:page-panel-tab', 'tab-1');
     const app = await loadPluginApp(() => import('./app'));

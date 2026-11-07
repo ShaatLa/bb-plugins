@@ -3,6 +3,7 @@ import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, 
 import { rpcContract, type AnswersRpcContract, type Item, type View } from './contract';
 import { Inbox, Pools } from './inbox';
 import { Button } from './components/ui/button';
+import { useStoredState } from './lib/stored-state';
 
 const views: [View, string][] = [['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -103,9 +104,9 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
   const { projects } = experimental_useSidebarThreads();
-  const [view, setView] = useState<View | 'inbox'>(threadId ? 'all' : 'inbox');
-  const [query, setQuery] = useState('');
-  const [projectId, setProjectId] = useState('');
+  const [view, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'all' : 'inbox');
+  const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
+  const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   const [error, setError] = useState('');
   return <section className="h-full overflow-auto p-4 space-y-4">
     <h1 className="text-lg font-semibold">{threadId ? 'My questions' : 'Answers'}</h1>
