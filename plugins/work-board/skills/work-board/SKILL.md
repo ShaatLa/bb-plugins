@@ -51,24 +51,59 @@ New records merge by ID; conflicting existing values require explicit `--overwri
 Pull and import repository changes before exporting BB changes. Neither command commits or pushes Git changes, runs agents, nor restores full BB chats, external PR contents, global presets or account settings.
 Paths target the invoking thread's machine, otherwise the server; `--machine <id-or-name>` selects another enrolled host. Add `--json` for a bounded machine-readable result.
 
-## Work a task
-
 ## Scheduled tasks
 
-The scheduled CLI uses the same validated RPC handlers as the Scheduled page.
-Use `bb work-board schedule list`, `schedule show`, `schedule create`,
-`schedule preview`, `schedule runs`, and `schedule results`. Create accepts
-recurrence and target as JSON objects matching the API contract; recurrence
-includes an IANA `timezone` and is `daily`, `weekly` (weekday numbers Sunday=0),
-or `once`. Targets are `{ "kind": "thread", "threadId": "thr_…" }` or
-`{ "kind": "preset", "presetId": "…" }`. Page commands accept `--limit`,
-`--cursor`, `--schedule`, `--project`, and `--search`; use `--json` for
-machine-readable output. Use ordinary task commands on the template or result
-task for comments, attachments, questions, dependencies, and evidence.
+A schedule is a **template task** plus a recurrence and an execution target. Every firing creates a
+separate **result task** cloned from the template (title, description, priority, labels, attachments,
+dependencies; not past comments). Template and not-yet-started results are hidden from ordinary
+`list`/board/counts; direct lookup by key always works, `bb work-board list --include-scheduled` shows
+them, and `schedule results` lists them by durable source (also after history cleanup or schedule deletion).
+Use the ordinary task commands (`show`, `comment`, `attachment`, `question`, `dependency`, `evidence`)
+on the template key printed by `schedule show` and on result keys. Do not touch the database.
 
-The CLI exposes the read/create subset while the scheduled runtime RPC and
-remaining lifecycle commands are being integrated. Do not use direct database
-access to change schedules or runs.
+Every `<schedule>` argument accepts the schedule UUID, or the key/ULID of its template or any result task;
+run arguments are run UUIDs from `schedule runs`. `--project` takes a tracker prefix such as `OPS`.
+
+```sh
+bb work-board schedule create --project OPS --title "Morning check" --weekly --days mon,wed,fri \
+  --time 09:00 --timezone Europe/Kyiv --thread thr_abc --dependency OPS-12 --description-file brief.md
+bb work-board schedule create --project OPS --title "Nightly sweep" --daily --time 02:00 --tz UTC --preset Nightly
+bb work-board schedule create --project OPS --title "Release day" --at 2026-12-01 --time 10:00 --timezone Europe/Kyiv --thread current
+bb work-board schedule preview --weekly --days mon --time 09:00 --tz UTC --count 5
+```
+
+- **Recurrence** (exactly one on create): `--daily --time HH:MM`, `--weekly --days mon,wed --time HH:MM`
+  (names or 0-6, Sunday=0), `--at YYYY-MM-DD --time HH:MM` (also `--at YYYY-MM-DDTHH:MM`, or a full ISO instant
+  with offset), always with `--timezone <IANA>`. Daylight-saving gaps are refused, a folded hour picks the
+  earlier instant. `--rule <json>` takes the full contract object instead (advanced).
+- **Target** (exactly one): `--thread thr_ID` (or `current`) queues in that thread while it is busy and waits
+  without timeout; an archived/deleted/unavailable thread is recorded as a failure, never replaced.
+  `--preset NAME` starts a NEW session and reads the preset's CURRENT settings at every attempt; a missing
+  preset/environment is an error, never a silent substitute. `--target <json>` is the raw form. An imported
+  schedule has target `unassigned` and stays paused: choose one with `schedule edit <schedule> --thread|--preset`
+  before `resume`/`enable` (the CLI refuses earlier).
+- **Description**: `--description <md>` or `--description-file path` (`--body-file` alias); the file is read on the
+  invoking machine through the SDK (`--machine` selects another enrolled host), never from a server path.
+  `--dependency OPS-12,OPS-13` (keys or ULIDs) are warnings only, as for ordinary tasks; `--priority`; `--paused`.
+
+Manage (`--json` on everything; mutations return the contract object):
+
+| Goal | Command |
+|---|---|
+| browse / search | `schedule list [--project P] [--search q] [--needs-attention] [--limit 1-100] [--cursor c \| --all]` |
+| inspect | `schedule show <schedule>` (template key, target explanation, next run in its timezone, overlap links, recent runs) |
+| change | `schedule edit <schedule> [--title ..] [--description-file ..] [--priority ..] [--dependency .. \| --clear-dependencies] [recurrence flags] [target flags]`; time/timezone/days alone modify the current recurrence; affects future runs only |
+| recurrence only | `schedule reschedule <schedule> --time 10:30` (use `retry` to redo a missed run) |
+| stop / start | `schedule pause`, `schedule resume` (= `enable`): pause stops future firings only; running work and an accepted queue are untouched; resume picks the next future slot, no replay |
+| remove | `schedule delete <schedule> --yes`: real deletion; pending queued runs are canceled first and a failed cancel is reported; past results and incidents stay |
+| run | `schedule run-now <schedule> [--idempotency-key K]` (overlap is advisory only) |
+| incidents | `schedule needs-attention`, `schedule runs [--schedule S]`, `schedule retry <run> [--idempotency-key K]`, `schedule cancel-queued <run>`, `schedule resolve <run> --note ..`, `schedule dismiss <run> [--note ..]` |
+| results | `schedule results [--schedule S] [--search q]` |
+
+`run-now`/`retry` print the idempotency key (generated when omitted); pass your own key and repeat it after a
+timeout: the same key never sends twice. A `delivery_unknown` run may already have executed; check the
+thread before `retry`. Paging: every list returns `nextCursor`; `--all` follows it (at most 50 pages).
+Run history is trimmed after 30 days (resolved incidents after 7); tasks, comments and attachments never are.
 
 ## Work a task
 

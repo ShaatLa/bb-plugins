@@ -22,6 +22,18 @@ Performance: activity consumers share bounded SDK reads and immutable dispatch a
 
 Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
 
+## Scheduled tasks CLI
+
+`bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
+handlers as the Scheduled page: `list`, `show`, `create`, `edit`, `reschedule`, `enable`/`pause`/`resume`,
+`delete --yes`, `preview`, `run-now`, `retry`, `cancel-queued`, `resolve`, `dismiss`, `runs`, `needs-attention`
+and `results`. Use `--daily|--weekly|--at` with `--time`, `--timezone` and `--days`, and `--thread` or `--preset`
+(`--rule`/`--target` accept the raw JSON). Schedules are addressable by UUID or by the key of their template or
+result task; the template key printed by `schedule show` works with ordinary task commands. Descriptions can be
+read with `--description-file` from the invoking machine. `--json` returns the contract objects with stable
+state enums and bounded pages (`--limit`, `--cursor`, `--all`). Scheduled templates and not-yet-started results
+stay out of the normal `list` unless `--include-scheduled` is passed. See `skills/work-board/SKILL.md` for the full guide.
+
 ## Project settings
 
 Settings → Work Board starts with **New project** and a single project selector. Archiving, idle-thread warnings, task statuses and Git/PR synchronization below it belong to the selected project. **General** contains the shared default screen and navigation badge criteria. The last selected project is still remembered on each device.
