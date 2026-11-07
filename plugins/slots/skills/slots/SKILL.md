@@ -10,13 +10,16 @@ Request one for work that saturates many cores or lots of memory for several min
 Run heavy work through the foreground wrapper:
 
 ```sh
-sh -c "$(bb slots wrapper)" slots-run --est 35m --job "full test suite" -- <command> [args...]
+sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 ```
 
-Use `--pool local-model` for LLM inference. A holder may launch concurrent or
-nested commands on its own lease without another gate check. A timed-out acquire
-exits 75 and keeps its queue position briefly; retry within the use TTL. Manual
-`bb slots request --wait` keeps its queue position on timeout until canceled.
+Use `--pool local-model` for LLM inference. A holder may reuse its lease for
+nested, sequential or concurrent runs without another gate check. Signal the
+process group to cancel. `bb slots request --wait` timeout exits 75 and keeps
+the request queued until canceled or the thread ends; rerun the same command
+to keep waiting. `acquire` / `slots-run` timeout exits 75 and keeps its queue
+position for one heartbeat interval (10 minutes by default); rerun within that
+time.
 For scripts, `bb slots acquire` returns a use ID; renew with `bb slots heartbeat
 --use <id>` and finish with `bb slots done <id>`. Manual request, heartbeat and
 release remain available.
@@ -45,3 +48,5 @@ Configuration: `bb slots config` shows effective values. Use
 the current machine default); every operation supports `--json`. The `slots_config`
 tool accepts `operation` (`show`, `set`, `unset`), plus `key` and `value` as needed.
 Configuration is plugin-owned; `bb plugin config slots` no longer applies.
+The optional load watch warns heuristically at checkout level when processes
+use many cores without a heavy slot; small runs do not need a slot.

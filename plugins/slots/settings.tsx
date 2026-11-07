@@ -21,6 +21,8 @@ const events = [
   ["release", "Slot released", "A thread freed its slot."],
   ["transfer", "Slot transferred", "A lease changed holders."],
   ["capacity", "Capacity changed", "A pool capacity was changed."],
+  ["unleased-load", "Unleased load", "A checkout used many cores without a heavy slot."],
+  ["idle-lease", "Idle heavy lease", "A heavy slot was held while its checkout stayed idle for the configured minutes."],
 ] as const;
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return <Card role="region" aria-label={title} className="space-y-4 p-4"><h3 className="text-sm font-medium">{title}</h3>{children}</Card>;
@@ -89,6 +91,13 @@ export function SlotsSettings() {
         <details className="border-t border-border pt-3"><Summary className="text-sm">Advanced</Summary><div className="mt-3 space-y-3">
           {number("gateSamples", "Checks in a row", 1, 100)}{number("gateIntervalSeconds", "Seconds between checks", 1, 3600)}
         </div></details>
+      </Group>
+      <Group title="Load watch">
+        <label className="flex items-center justify-between gap-3 text-sm">Policy<select aria-label="Load watch policy" className="h-9 rounded-md border border-input bg-background px-2" value={values.watchPolicy} onChange={event => apply("watchPolicy", event.target.value)}><option value="off">Off</option><option value="warn">Warn</option></select></label>
+        <p className="text-xs text-muted-foreground">Warns when processes in a session&apos;s checkout use many cores for a while without a heavy slot. Reads only process ids, start times, CPU time and working directories.</p>
+        {number("watchCores", "Cores threshold", 1, cores, `Default ${Math.min(3, Math.max(1, cores - 1))} · max ${cores} (CPU cores).`, true)}
+        {number("watchWindowSeconds", "Window (seconds)", 60, 900)}
+        {number("idleLeaseMinutes", "Idle lease notice (minutes)", 10, 240)}
       </Group>
       <Group title="Leases">
         <p className="text-xs text-muted-foreground">Leases last the longer of lease time or estimate + 15 minutes; idle holders are warned one heartbeat interval before expiry.</p>
