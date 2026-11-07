@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { navTab } from "../test-fixtures";
 import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({
@@ -269,9 +270,10 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     expect(list.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
     expect((list.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
     list.lifecycle.unmount();
+    // The board lives only in the native right-panel Kanban tab.
     const board = renderSlot(
-      app.navPanels[0]!,
-      { subPath: `${project.id}?view=board` },
+      { component: navTab(app, "kanban").component },
+      { subPath: project.id },
       { rpc },
     );
     await board.findByText(task.title);
