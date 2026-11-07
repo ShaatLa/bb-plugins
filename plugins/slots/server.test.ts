@@ -476,3 +476,12 @@ it("withdraws a lease granted concurrently with a request wait abort", async () 
   expect(invoke).toHaveBeenCalledWith("release", { threadId: "a", leaseId: "lease-2" });
   await host.harness.lifecycle.dispose();
 });
+it("expires a restored use even when its thread remains active", async () => {
+  const h = await setup();
+  await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  await h.invoke("gate", { hostId: "local", threadId: "a" }); h.advance(15000); await h.invoke("gate", { hostId: "local", threadId: "a" });
+  const next = await setup(h.path); next.advance(610000);
+  const service = next.harness.behavior.runService("sampler");
+  await vi.waitFor(async () => expect((await next.view()).pools[0].leases).toHaveLength(0));
+  service.controller.abort(); await service.done;
+});
