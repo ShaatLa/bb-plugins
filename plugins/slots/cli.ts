@@ -1,13 +1,17 @@
 import { cliCommand, defineCli, type BbPluginApi, type PluginCliContext, type PluginCliResult } from "@get-bb/plugin-sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
-import type { Result, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
+import type { Result, ObserverView, RpcMethods, RequestOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
 import { parseSince } from "./runtime.js";
 
 const line = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
 const leaseLine = (lease: Lease) => `${lease.id} ${lease.pool} #${lease.slotIndex} · ${lease.holderThreadId} · ${line(lease.job)} · expires ${new Date(lease.expiresAt).toISOString()}`;
 function humanOutput(method: string, data: unknown): string {
   switch (method) {
+    case "observer": {
+      const view = data as ObserverView;
+      return `Observer ${view.threadId ? `${view.threadId} · ${line(view.title ?? view.threadId)}` : "none"} · events: ${view.events.join(", ") || "none"}`;
+    }
     case "gate": {
       const { passed, gate, thresholds } = data as GateOutcome & { thresholds: Record<string, HostSettings> };
       const settings = Object.values(thresholds ?? {})[0];
@@ -73,6 +77,16 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     },
   });
   bb.cli.register(defineCli({ name: "slots", summary: "Advisory local resource leases and machine gate", commands: {
+    observer: cliCommand({ summary: "Show or change the observer and event filter", options: {
+      json, thread: { type: "string", description: "New observer thread ID" },
+      self: { type: "boolean", description: "Make the calling thread the observer" },
+      clear: { type: "boolean", description: "Clear the observer" },
+      events: { type: "string", description: "Comma-separated observer event names (empty disables)" },
+    }, async run(i, c) {
+      return renderResult("observer", await invoke("observer", { ...(i.options.self ? { self: true, threadId: c.threadId } : {}),
+        ...(i.options.thread !== undefined ? { toThreadId: i.options.thread } : {}), ...(i.options.clear ? { clear: true } : {}),
+        ...(i.options.events !== undefined ? { events: i.options.events } : {}) }), !!i.options.json);
+    } }),
     request: cliCommand({ summary: "Queue heavy work; optionally wait for a grant", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description (max 2000 characters)" },
       est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration (35m)" }, priority,

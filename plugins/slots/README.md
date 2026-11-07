@@ -15,6 +15,7 @@ BB_THREAD_ID; holder commands also accept `--thread <id>`.
 bb slots request --pool heavy --job "full Vitest" --est 35m --priority normal --wait --timeout 30m
 bb slots gate
 bb slots heartbeat
+bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold] [--json]
 bb slots release [lease-or-request]
 bb slots status
 bb slots transfer --to <child-thread> [--lease <id>]
@@ -31,7 +32,7 @@ withdraws the queued request on timeout/disconnect and exits 1. Default timeout
 is 30m; maximum 60m (BB's CLI headers timeout is 65m). Tools return immediately;
 grant messages wake idle threads. Tool names are `slots_request`, `slots_release`,
 `slots_heartbeat`, `slots_gate`, `slots_status`, `slots_transfer`, `slots_port`,
-`slots_prioritize`, `slots_revoke`, `slots_grant`, `slots_setCapacity`, `slots_log`.
+`slots_observer`, `slots_prioritize`, `slots_revoke`, `slots_grant`, `slots_setCapacity`, `slots_log`.
 The native tools are enabled alongside the bundled `slots` skill.
 
 `gate` samples freshly and exits 1 when the reading fails; it prints readings
@@ -65,6 +66,8 @@ remain empty. Human units are converted at the boundary.
 | leaseTtlMinutes | 30 | 2–10080 minutes |
 | heartbeatIntervalMinutes | 10 | 1–10079 minutes, below TTL |
 | observerThreadId | empty | optional thread ID, maximum 200 characters |
+| observerEvents | warn,expire,revoke,queue-wait,gate-hold | comma-separated allowed events; also grant,release,transfer,capacity; empty disables copies |
+| observerQueueWaitMinutes / observerGateHoldMinutes | 20 / 15 | 1–10080 minutes |
 | portFrom / portTo | 41000 / 41099 | 1–65535, first <= last |
 | grantMode | auto | auto / manual |
 
@@ -83,6 +86,22 @@ Memory uses macOS `memory_pressure` (fixed argv, 2s timeout) or Linux MemAvailab
 MemTotal. A probe failure closes the gate and logs an error. Only the local host
 is sampled: every gateIntervalMs with queued work, otherwise every 60s; ticks run
 every 15s. Observer notifications are optional and never fatal on send failure.
+
+`observer` shows the current observer ID, title and filter. `--self`, `--thread`
+and `--clear` persist the selection in plugin settings; `--events` can accompany
+any of them or change only the filter. Unknown names are rejected; whitespace is
+ignored. The `slots_observer` tool accepts `self`, `toThreadId`, `clear`, and
+`events` (comma-separated); self uses the calling thread. Targets must be live
+threads on the local host. Handover notifies the new and previous observer and
+is audited. Startup rechecks the observer; archive/deletion clears it automatically.
+
+The default observer filter copies warnings, expiry and revocation. Grant,
+release (including thread end), transfer/return and capacity copies are opt-in.
+Messages already addressed to the observer are never copied again. Queue-wait
+alerts include requester, job, estimate, elapsed wait, pool position and blockers.
+Gate-hold alerts require queued work and continuous failing samples; a passing
+sample re-arms them. Both alerts are audited and their one-shot flags persist
+across restart, with defaults for state saved by 0.1.0.
 
 ## Persistence and frontend contract
 

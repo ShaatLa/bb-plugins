@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 import { register } from "./server.js";
 import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
+import { stateSchema } from "./schemas.js";
 import { renderResult } from "./cli.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -189,4 +190,69 @@ it("renders short human CLI output while preserving JSON envelopes", async () =>
   expect(log.stdout).toContain("2026-11-07T12:00:15.000Z · grant");
   const json = await h.harness.behavior.runCli(["status", "--json"]);
   expect(JSON.parse(json.stdout!)).toMatchObject({ ok: true, data: { titles: { a: "Title a" } } });
+});
+
+it("validates and parses comma-separated observer settings, including empty and whitespace", async () => {
+  const h = await setup();
+  await h.harness.behavior.setSettings({ observerEvents: " grant, warn,grant ", observerQueueWaitMinutes: 3, observerGateHoldMinutes: 2 });
+  expect((await h.view()).hostSettings.local).toMatchObject({ observerEvents: ["grant", "warn"], observerQueueWaitMs: 180000, observerGateHoldMs: 120000 });
+  await expect(h.harness.behavior.setSettings({ observerEvents: "warn,unknown" })).rejects.toThrow();
+  await expect(h.harness.behavior.setSettings({ observerEvents: "warn," })).rejects.toThrow();
+  await expect(h.harness.behavior.setSettings({ observerGateHoldMinutes: 0 })).rejects.toThrow();
+  await expect(h.harness.behavior.setSettings({ observerQueueWaitMinutes: -1 })).rejects.toThrow();
+  await h.harness.behavior.setSettings({ observerEvents: " " });
+  expect((await h.view()).hostSettings.local.observerEvents).toEqual([]);
+});
+it("loads 0.1.0 state with default alert flags and retains leases, ports and queues", async () => {
+  const h = await setup(); await h.grant(); await h.request("b"); await h.invoke("port", { threadId: "a", hostId: "local" });
+  const saved = JSON.parse(await readFile(join(h.path, "state.json"), "utf8"));
+  for (const request of saved.requests) delete request.queueWaitAlerted;
+  for (const host of Object.values(saved.hosts) as any[]) { delete host.gate.failingSince; delete host.gate.holdAlerted; }
+  const parsed = stateSchema.parse(saved);
+  expect(parsed.requests[0].queueWaitAlerted).toBe(false);
+  expect(parsed.hosts.local.gate).toMatchObject({ failingSince: null, holdAlerted: false });
+  await writeFile(join(h.path, "state.json"), JSON.stringify(saved));
+  const restored = await setup(h.path); const view = await restored.view();
+  expect(view.pools[0].leases).toHaveLength(1); expect(view.pools[0].queue).toHaveLength(1); expect(view.ports).toHaveLength(1);
+});
+it("observer CLI and tool show, self, hand over, filter and clear through settings", async () => {
+  const h = await setup();
+  expect(await h.invoke("observer", {})).toMatchObject({ ok: true, data: { threadId: null, title: null, events: DEFAULT_SETTINGS.observerEvents } });
+  const self = await h.harness.behavior.runCli(["observer", "--self", "--events", " warn,expire ", "--json"], { threadId: "a" });
+  expect(self.exitCode).toBe(0); expect(JSON.parse(self.stdout!)).toMatchObject({ data: { threadId: "a", title: "Title a", events: ["warn", "expire"] } });
+  expect((await h.view()).hostSettings.local.observerThreadId).toBe("a");
+  h.send.mockClear();
+  const handover = await h.harness.behavior.runCli(["observer", "--thread", "b", "--json"]);
+  expect(handover.exitCode).toBe(0);
+  expect(h.send).toHaveBeenCalledTimes(2);
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("You are now the Machine Slots observer; you will receive: warn, expire") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", input: [expect.objectContaining({ text: expect.stringContaining("Observer handed over to Title b") })] }));
+  expect((await h.harness.behavior.runCli(["observer"])).stdout).toContain("b · Title b");
+  expect(JSON.parse(await h.harness.behavior.callAgentTool("slots_observer", { self: true }, { threadId: "a" }) as string)).toMatchObject({ ok: true, data: { threadId: "a" } });
+  expect(await h.invoke("observer", { events: "" })).toMatchObject({ ok: true, data: { events: [] } });
+  expect((await h.harness.behavior.runCli(["observer", "--clear", "--json"])).exitCode).toBe(0);
+  expect((await h.view()).hostSettings.local.observerThreadId).toBeNull();
+  expect(JSON.stringify(await h.invoke("log", {}))).toContain("observer");
+});
+it("observer rejects invalid targets, conflicting operations and unknown events", async () => {
+  const h = await setup();
+  for (const params of [{ toThreadId: "missing" }, { self: true }, { self: true, threadId: "a", clear: true }, { events: "unknown" }])
+    expect((await h.invoke("observer", params)).ok).toBe(false);
+  h.threads.set("b", makeThreadResponse({ id: "b", archivedAt: Date.parse("2026-11-07T12:00:00Z") }));
+  expect((await h.invoke("observer", { toThreadId: "b" })).ok).toBe(false);
+  h.harness.sdk.stub("environments.get", async () => ({ hostId: "remote" }));
+  expect((await h.invoke("observer", { toThreadId: "a" })).ok).toBe(false);
+});
+it.each(["thread.archived", "thread.deleted"] as const)("clears and audits an ended observer: %s", async event => {
+  const h = await setup(); await h.invoke("observer", { toThreadId: "a" }); h.send.mockClear();
+  await h.harness.behavior.emitThreadEvent(event, { thread: h.threads.get("a")! });
+  expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
+  expect(h.send).not.toHaveBeenCalled();
+  expect((await h.view()).audit.at(-1)).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
+});
+it("startup clears a dead configured observer", async () => {
+  const h = await setup();
+  await h.harness.behavior.setSettings({ observerThreadId: "missing" });
+  expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
+  expect((await h.view()).audit).toContainEqual(expect.objectContaining({ type: "observer", reason: expect.stringContaining("missing → none") }));
 });

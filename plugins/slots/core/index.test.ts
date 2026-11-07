@@ -72,15 +72,15 @@ describe("Slots deterministic engine", () => {
   it("warns once per heartbeat window, clears warning and expires with holder/observer notifications", () => {
     const h = harness({ observerThreadId: "manager" }); h.request("a");
     const granted = h.open();
-    expect(granted.effects.filter(e => e.type === "notify").map(e => e.threadId)).toEqual(["a", "manager"]);
+    expect(granted.effects.filter(e => e.type === "notify").map(e => e.threadId)).toEqual(["a"]);
     const firstExpiry = h.state.leases[0].expiresAt;
     h.now = firstExpiry - 10 * minute;
-    expect(h.send({ type: "tick" }).effects.filter(e => e.type === "notify" && e.reason === "warn")).toHaveLength(1);
+    expect(h.send({ type: "tick" }).effects.filter(e => e.type === "notify" && e.reason === "warn")).toHaveLength(2);
     expect(h.send({ type: "tick" }).effects).toEqual([]);
     h.send({ type: "heartbeat", threadId: "a" }); expect(h.state.leases[0].warnedAt).toBeNull();
     expect(h.state.leases[0].expiresAt).toBe(h.now + 30 * minute);
     h.now = h.state.leases[0].expiresAt - 10 * minute;
-    expect(h.send({ type: "tick" }).effects.filter(e => e.type === "notify" && e.reason === "warn")).toHaveLength(1);
+    expect(h.send({ type: "tick" }).effects.filter(e => e.type === "notify" && e.reason === "warn")).toHaveLength(2);
     h.now = h.state.leases[0].expiresAt;
     const expiry = h.send({ type: "tick" });
     expect(h.state.leases).toEqual([]);
@@ -258,4 +258,67 @@ it("warning and grant name exact commands with a UTC expiry", () => {
   const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
   expect(warning).toMatchObject({ text: expect.stringContaining(new Date(h.state.leases[0].expiresAt).toISOString()) });
   expect(warning).toMatchObject({ text: expect.stringContaining("bb slots heartbeat") });
+});
+
+const observerCopies = (change: Transition, reason?: string) => change.effects.filter(e => e.type === "notify" && e.threadId === "manager" && (!reason || e.reason === reason));
+it("filters default revocation copies and avoids duplicate owner/holder messages", () => {
+  for (const observerThreadId of ["manager", "a", "child"]) {
+    const h = harness({ observerThreadId }); h.request("a"); h.open();
+    h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true });
+    const result = h.send({ type: "revoke", leaseId: h.state.leases[0].id, reason: "needed" });
+    expect(result.effects.filter(e => e.type === "notify" && e.threadId === observerThreadId)).toHaveLength(1);
+  }
+});
+it("copies opt-in grants, releases, transfers, returns and capacity", () => {
+  for (const ended of [false, true]) {
+    const h = harness({ observerThreadId: "manager", observerEvents: ["grant", "release", "transfer", "capacity"] });
+    h.request("a"); expect(observerCopies(h.open(), "grant")).toHaveLength(1);
+    expect(observerCopies(h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true }), "transfer")).toHaveLength(1);
+    expect(observerCopies(h.send({ type: "release", threadId: "child" }), "transfer")).toHaveLength(1);
+    expect(observerCopies(ended ? h.send({ type: "threadEnded", threadId: "a", reason: "archived" }) : h.send({ type: "release", threadId: "a" }), "release")).toHaveLength(1);
+    expect(observerCopies(h.send({ type: "setCapacity", hostId: "h", pool: "heavy", capacity: 2 }), "capacity")).toHaveLength(1);
+    h.request("b"); expect(observerCopies(h.send({ type: "release", threadId: "b" }), "release")).toHaveLength(1);
+  }
+});
+it("empty filter preserves holder messages and suppresses every observer event", () => {
+  const h = harness({ observerThreadId: "manager", observerEvents: [] }); h.request("a");
+  expect(observerCopies(h.open())).toEqual([]);
+  h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
+  const warn = h.send({ type: "tick" }); expect(observerCopies(warn)).toEqual([]);
+  expect(warn.effects).toContainEqual(expect.objectContaining({ type: "notify", threadId: "a", reason: "warn" }));
+  h.now = h.state.leases[0].expiresAt; expect(observerCopies(h.send({ type: "tick" }))).toEqual([]);
+  h.request("b"); h.sample(0, 50); h.now += 21 * minute;
+  expect(observerCopies(h.send({ type: "tick" }))).toEqual([]);
+  expect(observerCopies(h.send({ type: "setCapacity", hostId: "h", pool: "heavy", capacity: 0 }))).toEqual([]);
+});
+it.each(["gate", "capacity", "manual"])("queue-wait alerts once at the threshold across restore: %s", blocker => {
+  const h = harness({ observerThreadId: "manager", grantMode: blocker === "manual" ? "manual" : "auto",
+    capacities: { heavy: blocker === "capacity" ? 0 : 4, "local-model": 1 } });
+  h.request("a"); h.request("b", "urgent");
+  if (blocker !== "gate") h.open();
+  h.now = 20 * minute - 1; expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
+  h.now++; const result = h.send({ type: "tick" });
+  const copies = observerCopies(result, "queue-wait"); expect(copies).toHaveLength(2);
+  expect(copies[1]).toMatchObject({ text: expect.stringContaining("position 2") });
+  expect(copies[1]).toMatchObject({ text: expect.stringContaining("a tests; estimate 1m, waiting 20m") });
+  expect(copies[1]).toMatchObject({ text: expect.stringContaining(blocker === "gate" ? "gate not open" : blocker === "capacity" ? "no free slot" : "manual grant mode") });
+  h.send({ type: "restored" }); h.now += minute;
+  expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
+});
+it("gate-hold alerts only while queued, persists per hold, re-arms on any pass and carries latest readings", () => {
+  const h = harness({ observerThreadId: "manager", grantMode: "manual" });
+  h.sample(10, 30); h.now = 15 * minute;
+  expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toEqual([]);
+  h.request("a"); h.now -= 1;
+  expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toEqual([]);
+  h.now++; h.sample(9, 40);
+  const first = h.send({ type: "tick" }); expect(observerCopies(first, "gate-hold")).toHaveLength(1);
+  expect(first.state.audit.at(-1)).toMatchObject({ type: "gate-hold", readings: { memFreePct: 9, load1: 40, at: h.now }, reason: expect.stringContaining("min 20%") });
+  expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("max 18") });
+  h.send({ type: "restored" }); h.now += minute;
+  expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toEqual([]);
+  h.sample(50, 1); expect(h.state.hosts.h.gate.failingSince).toBeNull();
+  h.sample(0, 50); const start = h.now;
+  expect(h.state.hosts.h.gate.failingSince).toBe(start);
+  h.now += 15 * minute; expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toHaveLength(1);
 });

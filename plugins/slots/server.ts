@@ -2,10 +2,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings } from "./contract.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
-import { inputs, rpcContract, stateSchema } from "./schemas.js";
+import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
 import { registerCli } from "./cli.js";
 
 export interface Runtime {
@@ -29,6 +29,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     leaseTtlMinutes: { type: "number", label: "Lease TTL in minutes (2–10080)", default: 30, experimental_schema: z.number().int().min(2).max(10080) },
     heartbeatIntervalMinutes: { type: "number", label: "Heartbeat interval in minutes (1–10079; below TTL)", default: 10, experimental_schema: z.number().int().min(1).max(10079) },
     observerThreadId: { type: "string", label: "Observer thread ID (optional)", default: "", experimental_schema: z.string().max(200) },
+    observerEvents: { type: "string", label: "Observer events (comma-separated; empty disables)", default: DEFAULT_SETTINGS.observerEvents.join(","), experimental_schema: observerEventsSchema },
+    observerQueueWaitMinutes: { type: "number", label: "Observer queue wait in minutes", default: 20, experimental_schema: z.number().int().min(1).max(10080) },
+    observerGateHoldMinutes: { type: "number", label: "Observer gate hold in minutes", default: 15, experimental_schema: z.number().int().min(1).max(10080) },
     portFrom: { type: "number", label: "First dev-server port (1–65535)", default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
     portTo: { type: "number", label: "Last dev-server port (1–65535; at least first port)", default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
     grantMode: { type: "select", label: "Grant mode", options: ["auto", "manual"], default: "auto" },
@@ -40,6 +43,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       memFreeMinPct: values.memFreeMinPct, loadMax: values.loadMax, gateSamples: values.gateSamples,
       gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
+      observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
+      observerGateHoldMs: values.observerGateHoldMinutes * 60000,
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
     const error = validateSettings(settings);
@@ -87,6 +92,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   async function checkThread(threadId: string) {
     const thread = await lookup(threadId);
     if (!thread || thread.deletedAt || thread.archivedAt) {
+      if (settings.observerThreadId === threadId) await changeObserver(null, settings.observerEvents.join(","), true);
       await transition({ type: "threadEnded", threadId, reason: thread?.archivedAt ? "archived" : "deleted" });
       return null;
     }
@@ -100,7 +106,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const saved = await store.load();
     state = saved === undefined ? initialState() : stateSchema.parse(saved);
     await transition({ type: "restored" });
-    const ids = new Set([...state.requests.map(r => r.threadId), ...state.leases.map(l => l.ownerThreadId), ...state.leases.map(l => l.holderThreadId)]);
+    const ids = new Set([...(settings.observerThreadId ? [settings.observerThreadId] : []), ...state.requests.map(r => r.threadId), ...state.leases.map(l => l.ownerThreadId), ...state.leases.map(l => l.holderThreadId)]);
     // Owners first: a dead child must never return a lease to a dead owner.
     for (const id of ids) await checkThread(id);
     initialized = true;
@@ -122,6 +128,16 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (hostId !== localHostId) throw new Error(`Slots v1 only supports the BB server host (${localHostId}); thread ${threadId} is on ${hostId ?? "an unknown host"}`);
     return thread;
   }
+  async function changeObserver(threadId: string | null, events: string, previousEnded = false) {
+    const previousThreadId = settings.observerThreadId;
+    const previousEvents = settings.observerEvents;
+    const nextEvents = parseObserverEvents(events);
+    const target = threadId ? await localThread(threadId) : null;
+    if (previousThreadId === threadId && previousEvents.join(",") === nextEvents.join(",")) return;
+    await handle.experimental_set({ observerThreadId: threadId ?? "", observerEvents: nextEvents.join(",") });
+    settings = await getSettings();
+    await transition({ type: "observer", hostId: localHostId, previousThreadId, previousEvents, previousEnded, title: target?.title ?? threadId });
+  }
   const invoke: Invoke = async (method, raw) => {
     const result = await serial<Result<unknown>>(async () => {
     await initialize(); settings = await getSettings();
@@ -132,6 +148,12 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     try {
       if (p.threadId) await localThread(p.threadId);
       if (p.hostId && p.hostId !== localHostId) return invalid(`Slots v1 only supports the BB server host (${localHostId})`);
+      if (method === "observer") {
+        const target = p.clear ? null : p.self ? p.threadId : p.toThreadId ?? settings.observerThreadId;
+        if (p.clear || p.self || p.toThreadId || p.events !== undefined) await changeObserver(target, p.events ?? settings.observerEvents.join(","));
+        const thread = settings.observerThreadId ? await checkThread(settings.observerThreadId) : null;
+        return { ok: true, data: { threadId: settings.observerThreadId, title: thread?.title ?? null, events: settings.observerEvents } };
+      }
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
@@ -197,7 +219,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (initialized) await transition({ type: "restored" });
   }).catch(error => bb.log.error(String(error))); });
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, ({ thread }) => serial(async () => {
-    await initialize(); await transition({ type: "threadEnded", threadId: thread.id, reason: event === "thread.archived" ? "archived" : "deleted" });
+    await initialize();
+    if (settings.observerThreadId === thread.id) await changeObserver(null, settings.observerEvents.join(","), true);
+    await transition({ type: "threadEnded", threadId: thread.id, reason: event === "thread.archived" ? "archived" : "deleted" });
   }));
   bb.events.on("thread.active", ({ thread }) => serial(async () => {
     await initialize();

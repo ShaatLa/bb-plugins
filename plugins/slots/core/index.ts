@@ -1,7 +1,7 @@
 import {
-  DEFAULT_SETTINGS, POOLS,
+  DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS,
   type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput,
-  type GateState, type HostSettings, type Input, type Lease, type LogParams,
+  type ObserverEvent, type GateState, type HostSettings, type Input, type Lease, type LogParams,
   type Priority, type Result, type Settings, type SlotsError, type State,
   type StatusSnapshot, type Transition,
 } from "../contract.js";
@@ -23,6 +23,9 @@ export function validateSettings(settings: Settings): string | null {
     Number.isSafeInteger(s.heartbeatIntervalMs) && s.heartbeatIntervalMs > 0 &&
     s.heartbeatIntervalMs < s.leaseTtlMs &&
     (s.observerThreadId === null || text(s.observerThreadId)) &&
+    Array.isArray(s.observerEvents) && s.observerEvents.every(e => OBSERVER_EVENTS.includes(e)) &&
+    Number.isSafeInteger(s.observerQueueWaitMs) && s.observerQueueWaitMs > 0 &&
+    Number.isSafeInteger(s.observerGateHoldMs) && s.observerGateHoldMs > 0 &&
     (s.grantMode === "auto" || s.grantMode === "manual") &&
     Number.isSafeInteger(s.portRange.from) && Number.isSafeInteger(s.portRange.to) &&
     s.portRange.from >= 1 && s.portRange.to <= 65535 && s.portRange.from <= s.portRange.to;
@@ -35,7 +38,7 @@ const rank = { urgent: 0, high: 1, normal: 2 };
 const sorted = (state: State) => state.requests.map((request, index) => ({ request, index }))
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
-const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null });
+const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null, failingSince: null, holdAlerted: false });
 export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings): number {
   return settingsFor(settings, hostId).capacities[pool];
 }
@@ -94,9 +97,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     effects.push({ type: "audit", event: structuredClone(event) });
   };
   const notify = (threadId: string, reason: AuditType, message: string) => effects.push({ type: "notify", threadId, reason, text: message });
-  const observer = (hostId: string, reason: AuditType, message: string, holder: string) => {
-    const id = settingsFor(ctx.settings, hostId).observerThreadId;
-    if (id && id !== holder) notify(id, reason, message);
+  const observer = (hostId: string, reason: ObserverEvent, message: string, ...recipients: string[]) => {
+    const { observerThreadId: id, observerEvents } = settingsFor(ctx.settings, hostId);
+    if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message);
   };
   const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
   const refresh = (l: Lease) => {
@@ -119,7 +122,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id}: ${reason}.`;
     notify(l.holderThreadId, type, message);
     if (l.ownerThreadId !== l.holderThreadId) notify(l.ownerThreadId, type, message);
-    if (type === "expire") observer(l.hostId, type, message, l.holderThreadId);
+    observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
     const request = state.requests.find(r => r.id === requestId);
@@ -160,7 +163,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       else if (l.holderThreadId === threadId) {
         l.holderThreadId = l.ownerThreadId; refresh(l);
         audit("transfer", { ...fields(l), reason: "returned-to-owner" });
-        notify(l.ownerThreadId, "transfer", `${l.pool} slot ${l.slotIndex}, lease ${l.id} returned to you: ${l.job}.`);
+        const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id} returned to you: ${l.job}.`;
+        notify(l.ownerThreadId, "transfer", message);
+        observer(l.hostId, "transfer", message, l.ownerThreadId);
         result.returned.push(l.id);
       }
     }
@@ -168,6 +173,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (r.threadId !== threadId || (leaseId !== undefined && r.id !== leaseId)) return true;
       result.canceled.push(r.id);
       audit("release", { hostId: r.hostId, pool: r.pool, threadId, requestId: r.id, reason });
+      observer(r.hostId, "release", `Request ${r.id} (${r.pool}: ${r.job}) by ${threadId}: ${reason}.`);
       return false;
     });
     return result;
@@ -200,6 +206,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const passed = input.memFreePct >= settings.memFreeMinPct && input.load1 < settings.loadMax;
       gate.latest = { ...readings, passed };
       audit("gate", { hostId: input.hostId, readings });
+      if (passed) { gate.failingSince = null; gate.holdAlerted = false; }
+      else gate.failingSince ??= input.at;
       if (!passed) reset(input.hostId);
       else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs) {
         gate.streak = Math.min(gate.streak + 1, settings.gateSamples); gate.lastCountedAt = input.at;
@@ -235,7 +243,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      notify(lease.holderThreadId, "transfer", `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`);
+      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+      notify(lease.holderThreadId, "transfer", message);
+      observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
     }
     case "portLease": {
@@ -274,6 +284,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!Number.isSafeInteger(input.capacity) || input.capacity < 0) return fail("invalid-input", "Capacity must be a nonnegative integer");
       host(input.hostId);
       audit("capacity", { hostId: input.hostId, pool: input.pool, reason: String(input.capacity) });
+      observer(input.hostId, "capacity", `${input.pool} capacity on ${input.hostId} set to ${input.capacity}.`);
       data = { capacity: input.capacity }; break;
     }
     case "tick": {
@@ -281,10 +292,44 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
-          notify(lease.holderThreadId, "warn", `Lease ${lease.id} (${lease.pool}: ${lease.job}) expires at ${new Date(lease.expiresAt).toISOString()}; run bb slots heartbeat to keep it, or bb slots release ${lease.id}.`);
+          const message = `Lease ${lease.id} (${lease.pool}: ${lease.job}) expires at ${new Date(lease.expiresAt).toISOString()}; run bb slots heartbeat to keep it, or bb slots release ${lease.id}.`;
+          notify(lease.holderThreadId, "warn", message);
+          observer(lease.hostId, "warn", message, lease.holderThreadId);
         }
       }
-      schedule(); break;
+      schedule();
+      for (const request of sorted(state)) {
+        const settings = settingsFor(ctx.settings, request.hostId);
+        if (request.queueWaitAlerted || ctx.now - request.createdAt < settings.observerQueueWaitMs) continue;
+        request.queueWaitAlerted = true;
+        const reasons = [];
+        if (state.leases.filter(l => l.hostId === request.hostId && l.pool === request.pool).length >= settings.capacities[request.pool]) reasons.push("no free slot");
+        if (!gateOpen(host(request.hostId).gate, settings)) reasons.push("gate not open");
+        if (settings.grantMode === "manual") reasons.push("manual grant mode");
+        const position = sorted(state).filter(r => r.hostId === request.hostId && r.pool === request.pool).findIndex(r => r.id === request.id) + 1;
+        const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${request.estMs / 60000}m, waiting ${(ctx.now - request.createdAt) / 60000}m, position ${position}: ${reasons.join(" / ")}.`;
+        audit("queue-wait", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id, reason: message });
+        observer(request.hostId, "queue-wait", message);
+      }
+      for (const [hostId, { gate }] of Object.entries(state.hosts)) {
+        const settings = settingsFor(ctx.settings, hostId);
+        if (gate.latest?.passed !== false || gate.failingSince == null || gate.holdAlerted ||
+            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId)) continue;
+        gate.holdAlerted = true;
+        const { memFreePct, load1, at } = gate.latest;
+        const message = `Gate on ${hostId} failing for ${(ctx.now - gate.failingSince) / 60000}m: memory free ${memFreePct}% (min ${settings.memFreeMinPct}%), load ${load1} (max ${settings.loadMax}), sampled ${new Date(at).toISOString()}.`;
+        audit("gate-hold", { hostId, readings: { memFreePct, load1, at }, reason: message });
+        observer(hostId, "gate-hold", message);
+      }
+      break;
+    }
+    case "observer": {
+      const settings = settingsFor(ctx.settings, input.hostId);
+      const next = settings.observerThreadId;
+      audit("observer", { hostId: input.hostId, reason: `${input.previousThreadId ?? "none"} → ${next ?? "none"}; events: ${input.previousEvents.join(",")} → ${settings.observerEvents.join(",")}` });
+      if (next) notify(next, "observer", `You are now the Machine Slots observer; you will receive: ${settings.observerEvents.join(", ") || "no events"}.`);
+      if (!input.previousEnded && input.previousThreadId && input.previousThreadId !== next) notify(input.previousThreadId, "observer", `Observer handed over to ${input.title ?? "none"}.`);
+      break;
     }
     case "restored": for (const id of Object.keys(state.hosts)) reset(id); break;
     default: return fail("invalid-input", "Unknown operation");

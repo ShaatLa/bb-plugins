@@ -22,3 +22,5 @@ Manager commands: `prioritize <req> --priority high|urgent|normal`,
 `revoke <lease> --reason "..."`, `grant <req>` (no force),
 `capacity --pool heavy 4`. Inspect `status` and `log --since 2h --limit 100`.
 Manager commands are unrestricted. V1 supports only the BB server host.
+
+On start, a manager session runs `bb slots observer --self`.
