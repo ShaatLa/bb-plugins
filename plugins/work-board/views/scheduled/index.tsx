@@ -45,6 +45,23 @@ const ALL_PROJECTS = "__all__";
 
 // ---- actions ------------------------------------------------------------------------------
 
+// Retain ambiguous attempts across reloads; never evict an unresolved key to make room.
+async function manualAttempt(id: string, call: (key: string) => Promise<unknown>) {
+  const storageKey = "work-board:scheduled:manual-attempts";
+  const attempts: Record<string, string> = JSON.parse(sessionStorage.getItem(storageKey) ?? "{}");
+  if (!attempts[id]) {
+    if (Object.keys(attempts).length >= 100) throw new Error("Too many unresolved manual attempts in this session.");
+    attempts[id] = newIdempotencyKey();
+    sessionStorage.setItem(storageKey, JSON.stringify(attempts));
+  }
+  const result = await call(attempts[id]);
+  // Re-read because another action may have added an unresolved attempt while this was pending.
+  const current: Record<string, string> = JSON.parse(sessionStorage.getItem(storageKey) ?? "{}");
+  if (current[id] === attempts[id]) delete current[id];
+  sessionStorage.setItem(storageKey, JSON.stringify(current));
+  return result;
+}
+
 /** Runs one management call at a time and keeps failures visible instead of swallowing them. */
 function useActions(refresh: () => void) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -234,7 +251,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
                 </div>
                 {schedule.overlapRunIds.length > 0 ? <OverlapLinks scheduleId={schedule.id} runIds={schedule.overlapRunIds} /> : null}
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <Button type="button" size="sm" variant="outline" className="h-7" disabled={actions.busy !== null || schedule.target.kind === "unassigned"} onClick={() => void actions.perform(`run:${schedule.id}`, () => rpc.call("runSchedule", { scheduleId: schedule.id, idempotencyKey: newIdempotencyKey() }))}>
+                  <Button type="button" size="sm" variant="outline" className="h-7" disabled={actions.busy !== null || schedule.target.kind === "unassigned"} onClick={() => void actions.perform(`run:${schedule.id}`, () => manualAttempt(`run:${schedule.id}`, (idempotencyKey) => rpc.call("runSchedule", { scheduleId: schedule.id, idempotencyKey })))}>
                     <Icon name="Play" className="size-3.5" />
                     Run now
                   </Button>
@@ -392,7 +409,7 @@ function RunsList({ attention, projectId, search, projects, onEdit, refreshRef }
                 {available.retry || available.resolve || available.cancel ? (
                   <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                     {available.retry ? (
-                      <Button type="button" size="sm" variant="outline" className="h-7" disabled={actions.busy !== null} onClick={() => void actions.perform(`retry:${run.id}`, () => rpc.call("retryScheduleRun", { runId: run.id, idempotencyKey: newIdempotencyKey() }))}>
+                      <Button type="button" size="sm" variant="outline" className="h-7" disabled={actions.busy !== null} onClick={() => void actions.perform(`retry:${run.id}`, () => manualAttempt(`retry:${run.id}`, (idempotencyKey) => rpc.call("retryScheduleRun", { runId: run.id, idempotencyKey })))}>
                         <Icon name="RotateCcw" className="size-3.5" />
                         Retry
                       </Button>

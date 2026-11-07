@@ -10,7 +10,7 @@ import { scheduledRpcContract, type ScheduleRun } from "../../shared/scheduled.j
 window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 Element.prototype.scrollIntoView ??= () => {};
 const app = await loadPluginApp(() => import("../../app"));
-beforeEach(() => window.localStorage.clear());
+beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
@@ -224,3 +224,24 @@ it("reports a refused task-link clipboard write", async () => {
   await slot.findByText("Could not copy task link.");
   expect(slot.queryByText("Task link copied. Paste it into the agent chat.")).toBeNull();
 });
+
+for (const [tab, method, label, list] of [
+  ["scheduled", "runSchedule", "Run now", "listSchedules"],
+  ["scheduled?tab=attention", "retryScheduleRun", "Retry", "listScheduleRuns"],
+] as const) {
+  it(`reuses the ${label} key after a lost response and remount`, async () => {
+    let attempts = 0;
+    const { rpc, calls } = scheduledRpc({
+      [list]: () => list === "listSchedules" ? { schedules: [schedule(S1)], nextCursor: null } : { runs: [run()], nextCursor: null },
+      [method]: () => { if (++attempts === 1) throw new Error("response lost"); return { run: run({ state: "starting" }) }; },
+    });
+    let slot = open(tab, rpc);
+    fireEvent.click(await slot.findByRole("button", { name: label }));
+    await slot.findByRole("alert");
+    cleanup();
+    slot = open(tab, rpc);
+    fireEvent.click(await slot.findByRole("button", { name: label }));
+    await waitFor(() => expect(calls.filter(c => c.method === method)).toHaveLength(2));
+    expect(calls.filter(c => c.method === method)[1]!.input.idempotencyKey).toBe(calls.filter(c => c.method === method)[0]!.input.idempotencyKey);
+  });
+}
