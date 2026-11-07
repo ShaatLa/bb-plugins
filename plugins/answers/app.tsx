@@ -4,7 +4,7 @@ import { rpcContract, type AnswersRpcContract, type Item, type View } from './co
 import { Inbox, Pools } from './inbox';
 import { Button } from './components/ui/button';
 
-const views: [View, string][] = [['unread', 'Unread'], ['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
+const views: [View, string][] = [['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function useAnswersBadge() {
@@ -64,10 +64,10 @@ export function ItemCard({ item }: { item: Item }) {
       <time dateTime={new Date(item.createdAt).toISOString()}>{age}</time>
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>
-    <div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div>
+    <div ref={question} className={`rounded-lg p-3 whitespace-pre-wrap break-words ${item.kind === 'for_me' ? 'bg-muted' : 'ml-auto max-w-[90%] border'} ${expanded ? '' : 'line-clamp-2'}`}>{item.kind === 'for_me' ? <><span>Question for you</span><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><Markdown content={item.question} /></div></> : item.question}</div>
     {(clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
-    {item.answer && <div data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
-    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><div data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}
+    {item.answer && <div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.answerSeq ?? undefined}><Markdown content={item.answer} /></div>}
+    {item.interim && <div><h3 className="text-sm font-medium">Interim reply</h3><div className="rounded-lg bg-muted p-3" data-agent-body data-item={item.id} data-seq={item.interimSeq ?? undefined}><Markdown content={item.interim} /></div></div>}
     {item.note && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
     <div className="flex flex-wrap gap-2">
       {!item.threadDeleted && <Button asChild size="sm" variant="outline"><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />Open in chat</UrlLink></Button>}

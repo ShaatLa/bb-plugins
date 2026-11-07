@@ -105,3 +105,121 @@ it('saves selected message text using its message sequence', async () => {
   await app.messageActions[1]!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));
 });
+
+const recipient = { threadId: item.threadId, threadTitle: 'Recipient', projectId: item.projectId, projectName: 'Project', unread: 1, lastAt: Date.now(), preview: 'Preview' };
+async function inboxSetup(overrides: Record<string, (...args: any[]) => any> = {}) {
+  const app = await loadPluginApp(() => import('./app'));
+  const markThreadRead = vi.fn(() => ({ ok: true }));
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: {
+    recipients: () => ({ recipients: [recipient] }), markThreadRead, list: () => ({ items: [item], nextCursor: null }), ...overrides,
+  } });
+  await slot.findAllByRole('option');
+  fireEvent.click(slot.getAllByRole('option')[0]!);
+  await slot.findByText('The answer');
+  return { slot, markThreadRead };
+}
+it('defaults to Inbox, marks the recipient read, retains selection and rebuilds loaded history after refresh', async () => {
+  let updated = false;
+  const older = { ...item, id: 'ans_older', question: 'Old deferred', answer: null, status: 'deferred' };
+  const list = vi.fn((input: { cursor?: string }) => input.cursor ? { items: [{ ...older, answer: updated ? 'Resolved old answer' : null }], nextCursor: null } : { items: updated ? [{ ...item, id: 'ans_new', question: 'New question' }, item] : [item], nextCursor: updated ? '2|ans_one' : '1|ans_one' });
+  const { slot, markThreadRead } = await inboxSetup({ list });
+  expect(markThreadRead).toHaveBeenCalledWith({ threadId: item.threadId });
+  expect(slot.getByRole('option').getAttribute('aria-selected')).toBe('true');
+  fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
+  await slot.findByText('Old deferred');
+  expect(slot.getAllByRole('listitem')[0]!.textContent).toContain('Old deferred');
+  updated = true;
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+  await slot.findByText('Resolved old answer');
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '2|ans_one' }));
+  expect(slot.getAllByText('What changed?')).toHaveLength(1);
+});
+it('snapshots a quote draft through focus and refresh; Add to pool opens the pool tab', async () => {
+  const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
+  const { slot } = await inboxSetup({ poolAdd });
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(range, 'getClientRects', { value: () => [{ left: 20, bottom: 30, width: 50, height: 10 }] });
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, bottom: 30, width: 50, height: 10 }] });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  const text = slot.getByRole('textbox', { name: 'Quote reply text' }) as HTMLTextAreaElement;
+  fireEvent.focus(text); fireEvent.change(text, { target: { value: 'Snapshot note' } });
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+  expect(text.value).toBe('Snapshot note');
+  fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Add to pool' }) });
+  fireEvent.click(slot.getByRole('button', { name: 'Add to pool' }));
+  await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', quoteSeq: 20, note: 'Snapshot note' }));
+  await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
+});
+it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
+  const { slot } = await inboxSetup();
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
+  Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 20, bottom: 30 }) });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  const text = slot.getByRole('textbox', { name: 'Quote reply text' });
+  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Inbox' }) });
+  expect(slot.queryByRole('dialog')).toBeNull();
+});
+it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure => {
+  const app = await loadPluginApp(() => import('./app'));
+  let resolve!: (value: any) => void, reject!: (reason: Error) => void;
+  const poolUpdate = vi.fn(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
+  const poolSend = vi.fn(() => ({ delivery: 'sent', sent: 1, keptEdited: 1 }));
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: '', revision: 0, createdAt: 1, updatedAt: 1 };
+  const { Pools } = await import('./inbox');
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: null, entries: [entry] }] }), poolUpdate, poolSend } });
+  const note = await slot.findByRole('textbox', { name: 'Pool note' });
+  fireEvent.change(note, { target: { value: 'Dirty note' } });
+  fireEvent.click(slot.getByRole('button', { name: 'Send all' }));
+  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Dirty note', revision: 0 }));
+  expect(poolSend).not.toHaveBeenCalled();
+  expect((slot.getByRole('button', { name: 'Sending…' }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => { if (failure) reject(new Error('stale revision')); else resolve({ revision: 1 }); });
+  if (failure) { expect(poolSend).not.toHaveBeenCalled(); expect((note as HTMLTextAreaElement).value).toBe('Dirty note'); }
+  else { await waitFor(() => expect(poolSend).toHaveBeenCalled()); expect(await slot.findByText('Sent — 1 edited entries were not sent')).toBeTruthy(); }
+});
+it('adds selected chat text to the thread pool and opens My questions', async () => {
+  const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
+  const app = await loadPluginApp(() => import('./app'));
+  const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'pool_added' } }) }));
+  vi.stubGlobal('fetch', fetch); const openTab = vi.fn(() => true);
+  await app.messageActions.find(action => action.id === 'pool')!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected', composer: null, experimental_panel: experimental_makePanelController({ openTab }) });
+  expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/poolAdd', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, quote: 'Selected', quoteSeq: 20 }) }));
+  expect(openTab).toHaveBeenCalledWith({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
+});
+it('sends the snapshot to its original recipient after switching recipients', async () => {
+  const quoteReply = vi.fn(() => ({ delivery: 'sent' }));
+  const recipients = vi.fn((input: { selected?: string }) => ({ recipients: [recipient, { ...recipient, threadId: 'thr_two', threadTitle: 'Second recipient' }].filter(r => r.unread || r.threadId === input.selected) }));
+  const { slot } = await inboxSetup({ recipients, quoteReply });
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 10, bottom: 50, width: 30, height: 10 }] });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  fireEvent.change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Immediate note' } });
+  fireEvent.pointerDown(slot.getAllByRole('option')[1]!);
+  fireEvent.click(slot.getAllByRole('option')[1]!);
+  expect(slot.getByRole('dialog')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(quoteReply).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', text: 'Immediate note' }));
+  await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
+});
+it('renders stacked pools and preserves notes on uncertain delivery', async () => {
+  const { Pools } = await import('./inbox');
+  await loadPluginApp(() => import('./app'));
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: 'Saved note', revision: 2, createdAt: 1, updatedAt: 1 };
+  const poolSend = vi.fn(() => { throw new Error('connection lost'); });
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [
+    { threadId: item.threadId, threadTitle: 'First pool', projectId: null, entries: [entry] },
+    { threadId: 'thr_two', threadTitle: 'Second pool', projectId: null, entries: [{ ...entry, id: 'pool_two', threadId: 'thr_two' }] },
+  ] }), poolSend } });
+  await slot.findByText('First pool'); expect(slot.getByText('Second pool')).toBeTruthy();
+  fireEvent.click(slot.getAllByRole('button', { name: 'Send all' })[0]!);
+  await slot.findByText(/Delivery uncertain/);
+  expect((slot.getAllByRole('textbox', { name: 'Pool note' })[0] as HTMLTextAreaElement).value).toBe('Saved note');
+  expect(poolSend).toHaveBeenCalledTimes(1);
+});
