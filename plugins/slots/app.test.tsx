@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { DEFAULT_SETTINGS, type StatusView } from "./contract";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView } from "./contract";
 
 const app = await loadPluginApp(() => import("./app"));
 const at = Date.parse("2026-11-07T12:00:00Z");
@@ -32,38 +32,106 @@ const render = (status: () => unknown = () => ({ ok: true, data: fixture })) =>
   renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { status } });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-test("registers a Slots navigation page and renders gate, leases, queue and audit from status RPC", async () => {
-  expect(app.navPanels[0]).toMatchObject({ id: "slots", title: "Slots", path: "slots", icon: "Layers" });
+test("renders summary, capacity cells, lease progress, queue and SDK thread navigation without host IDs", async () => {
   const slot = render();
-  const gate = await slot.findByRole("region", { name: "Machine gate · laptop" });
-  for (const text of ["42.5%", "Minimum 20%", "8.2", "Below 18", "Streak 1/2", "Sample passed", "Gate waiting"]) expect(within(gate).getByText(text)).toBeTruthy();
-  expect(within(gate).getByText("5s ago").getAttribute("datetime")).toBe(new Date(at - 5000).toISOString());
-  const pool = slot.getByRole("region", { name: "heavy · laptop" });
-  expect(pool.textContent).toContain("Capacity 4 · 1 used · 3 free");
-  for (const text of ["Slot 0", "Run geometry suite", "Port 41001"]) expect(within(pool).getByText(text)).toBeTruthy();
-  expect(pool.textContent).toContain("Granted 1m 0s ago · Estimate 2m 0s · Expires in 1m 0s");
+  const machine = await slot.findByRole("region", { name: "Machine" });
+  expect(machine.textContent).toContain("Checking… (1 of 2 checks)");
+  expect(slot.getByRole("region", { name: "Memory free" }).textContent).toContain("43%needs at least 20%");
+  expect(slot.getByRole("region", { name: "Load (1 min)" }).textContent).toContain("8.2limit 18");
+  expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toContain("1 of 4 in use2 waiting");
+  expect(slot.getByText("Free")).toBeTruthy();
+  const pool = slot.getByRole("region", { name: "Heavy jobs" });
+  const cells = within(pool).getByRole("img");
+  expect(cells.children).toHaveLength(4);
+  expect(cells.querySelectorAll('[data-held="true"]')).toHaveLength(1);
+  expect(within(pool).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("60000");
+  expect(pool.textContent).toContain("1m of 2m · expires in 1m");
   expect(pool.textContent).toContain("Transferred to QA checks from Manager");
+  expect(within(pool).getByText("Port 41001")).toBeTruthy();
   fireEvent.click(within(pool).getByRole("button", { name: "Manager" }));
   expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "owner" }));
-  const queue = slot.getByRole("list", { name: "heavy queue on laptop" });
+  const queue = within(pool).getByRole("list", { name: "Heavy jobs queue" });
   expect(within(queue).getAllByRole("listitem").map(item => item.textContent)).toEqual([
-    expect.stringContaining("urgentBrowser testsBrowser geometryEstimate 3m 0s · Waiting 30s"),
-    expect.stringContaining("normalBuild agentBuild packageEstimate 1m 0s · Waiting 1m 30s"),
+    expect.stringContaining("#1Browser testsurgentBrowser geometryEstimate 3m · waiting 30s"),
+    expect.stringContaining("#2Build agentBuild packageEstimate 1m · waiting 1m"),
   ]);
-  const events = slot.getByRole("region", { name: "Recent events" });
-  expect(within(events).getAllByRole("listitem")[0].textContent).toContain("transfer");
-  expect(events.textContent).toContain("QA handoff");
-  expect(within(events).queryByText("gate")).toBeNull();
-  expect(slot.inspection.rpcCalls[0]).toMatchObject({ method: "status", input: {} });
+  expect(slot.getByText("Next — waiting for the machine check")).toBeTruthy();
+  expect(slot.container.innerHTML).not.toContain("laptop");
   expect(slot.inspection.sdkCalls).toHaveLength(0);
 });
 
-test("uses a short fallback title and navigates without fetching thread details", async () => {
-  const slot = render(() => ({ ok: true, data: { ...fixture, titles: {} } }));
-  const pool = await slot.findByRole("region", { name: "heavy · laptop" });
-  fireEvent.click(within(pool).getAllByRole("button", { name: "thread" })[0]);
+test.each([
+  [42, 8, 2, "Ready for heavy work"],
+  [42, 8, 1, "Checking… (1 of 2 checks)"],
+  [42, 21.3, 0, "Busy — load 21.3 is above 18"],
+  [42, 18, 0, "Busy — load 18.0 is at 18"],
+  [14, 8, 0, "Low memory — 14% free, needs 20%"],
+])("machine state for memory %s, load %s and %s checks", async (memFreePct, load1, streak, text) => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, gates: { laptop: { latest: { at, memFreePct, load1, passed: memFreePct >= 20 && load1 < 18 }, streak, lastCountedAt: at } } } }));
+  expect(await slot.findByText(text)).toBeTruthy();
+});
+
+test.each([
+  [20, 1, "Within limit", "Near limit"],
+  [22, 16, "Near limit", "Near limit"],
+  [19, 18, "Outside limit", "Outside limit"],
+])("meters describe threshold status with text", async (memFreePct, load1, loadState, memoryState) => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, gates: { laptop: { latest: { at, memFreePct, load1, passed: true }, streak: 1, lastCountedAt: at } } } }));
+  expect((await slot.findByRole("meter", { name: "Memory free" })).getAttribute("aria-valuetext")).toContain(memoryState.toLowerCase());
+  expect(slot.getByRole("meter", { name: "Load (1 min)" }).getAttribute("aria-valuetext")).toContain(loadState.toLowerCase());
+});
+
+test.each(["auto", "manual"] as const)("explains %s queue waits", async grantMode => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, hostSettings: { laptop: { ...DEFAULT_SETTINGS, grantMode } }, gates: { laptop: { ...fixture.gates.laptop, streak: 2 } } } }));
+  expect(await slot.findByText(grantMode === "manual" ? "Manual grant mode — waiting for the manager" : "Next — waiting for a free slot")).toBeTruthy();
+});
+
+test("shows display name once, in-use model, expiry warning and fallback thread navigation", async () => {
+  const lease = { ...fixture.pools[0].leases[0], warnedAt: at };
+  const slot = render(() => ({ ok: true, data: { ...fixture, localHostName: "Work machine", titles: {}, pools: [{ ...fixture.pools[0], leases: [lease] }, { ...fixture.pools[1], leases: [{ ...lease, pool: "local-model" }] }] } }));
+  expect(await slot.findByText("Work machine")).toBeTruthy();
+  expect(slot.getAllByText("Work machine")).toHaveLength(1);
+  expect(slot.getByText("In use")).toBeTruthy();
+  expect(slot.getAllByText(/expiry warning sent/)[0].className).toContain("text-amber");
+  fireEvent.click(within(slot.getByRole("region", { name: "Heavy jobs" })).getAllByRole("button", { name: "thread" })[0]);
   expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "holder" }));
-  expect(slot.inspection.sdkCalls).toHaveLength(0);
+});
+
+test("human activity is collapsed by default, newest first and capped at 15", async () => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, audit: Array.from({ length: 20 }, (_, seq) => ({ seq, at: at - (20 - seq) * 1000, type: "capacity", reason: String(seq), hostId: "laptop" })) } }));
+  const summary = await slot.findByText("Recent activity · 15");
+  const details = summary.closest("details")!;
+  expect(details.open).toBe(false);
+  fireEvent.click(summary);
+  expect(details.open).toBe(true);
+  const rows = within(details).getAllByRole("listitem");
+  expect(rows).toHaveLength(15);
+  expect(rows[0].textContent).toBe("Capacity set to 191s ago");
+  expect(rows[14].textContent).toContain("Capacity set to 5");
+  expect(slot.container.innerHTML).not.toContain("laptop");
+});
+
+test("formats event sentences and compact durations", async () => {
+  const { duration, eventSentence } = await import("./app");
+  for (const [ms, text] of [[45000, "45s"], [2100000, "35m"], [4800000, "1h 20m"], [3600000, "1h"], [-1000, "0s"]] as const) expect(duration(ms)).toBe(text);
+  const base = { at, seq: 1, threadId: "holder", hostId: "laptop", pool: "heavy" as const, leaseId: "lease-secret", requestId: "request-2" };
+  for (const [type, reason, text] of [
+    ["grant", undefined, "QA checks got a heavy slot"],
+    ["request", undefined, "QA checks asked for a heavy slot (3m)"],
+    ["release", "archived", "Lease released — thread archived"],
+    ["capacity", "1", "Capacity set to 1"],
+    ["warn", undefined, "Expiry warning sent"],
+    ["port", undefined, "Port 41000 leased"],
+    ["transfer", "from holder-id", "Slot transferred to QA checks"],
+    ["expire", undefined, "Lease expired"],
+    ["revoke", undefined, "Lease revoked"],
+    ["prioritize", "high", "Priority updated for QA checks"],
+    ["port-release", undefined, "Port 41000 released"],
+  ] as const) expect(eventSentence({ ...base, type, reason, port: 41000 }, fixture)).toBe(text);
+  const slot = render();
+  const summary = await slot.findByText("Recent activity · 2");
+  fireEvent.click(summary);
+  expect(slot.getByText("Slot transferred to QA checks").parentElement!.title).toBe("lease-1");
 });
 
 test("shows accessible loading state", () => {
@@ -71,61 +139,67 @@ test("shows accessible loading state", () => {
   expect(slot.getByRole("status", { name: "Loading Slots status…" }).getAttribute("aria-busy")).toBe("true");
 });
 
-test.each(["result", "transport"])("shows %s errors", async kind => {
+test.each(["result", "transport"])("shows %s errors without leaking host details", async kind => {
   const slot = render(() => {
-    if (kind === "transport") throw new Error("Connection unavailable");
-    return { ok: false, error: { code: "not-found", message: "Connection unavailable" } };
+    if (kind === "transport") throw new Error("host_laptop unavailable");
+    return { ok: false, error: { code: "not-found", message: "host_laptop unavailable" } };
   });
-  expect((await slot.findByRole("alert")).textContent).toContain("Connection unavailable");
+  expect((await slot.findByRole("alert")).textContent).toContain("Unable to refresh status.");
   expect(slot.queryByRole("status")).toBeNull();
+  expect(slot.container.innerHTML).not.toContain("host_laptop");
 });
 
-test("renders empty pools, queue, events and missing gate sample", async () => {
+test("renders empty pools, queues, activity and missing machine reading", async () => {
   const slot = render(() => ({ ok: true, data: { ...fixture, gates: {}, pools: fixture.pools.map(pool => ({ ...pool, leases: [], queue: [] })), ports: [], audit: [] } }));
-  await slot.findByText("No sample");
-  expect(slot.getAllByText("No active leases.")).toHaveLength(2);
-  expect(slot.getByText("No requests waiting.")).toBeTruthy();
-  expect(slot.getByText("No recent events.")).toBeTruthy();
-  expect(slot.getByText("Waiting for the first machine reading.")).toBeTruthy();
+  expect(await slot.findByText("Checking… (waiting for the first reading)")).toBeTruthy();
+  expect(slot.getByText("All 4 slots free")).toBeTruthy();
+  expect(slot.getByText("All 1 slots free")).toBeTruthy();
+  expect(slot.getAllByText("Nothing waiting")).toHaveLength(2);
+  fireEvent.click(slot.getByText("Recent activity · 0"));
+  expect(slot.getByText("No recent activity.")).toBeTruthy();
 });
 
-test("caps audit at the latest 15 events and displays failing metrics", async () => {
-  const slot = render(() => ({ ok: true, data: { ...fixture,
-    gates: { laptop: { latest: { at, memFreePct: 10, load1: 20, passed: false }, streak: 0, lastCountedAt: null } },
-    audit: Array.from({ length: 20 }, (_, seq) => ({ seq, at: at - (20 - seq) * 1000, type: "release", reason: `Event ${seq}` })),
-  } }));
-  await slot.findByText("Sample failed");
-  const events = slot.getByRole("region", { name: "Recent events" });
-  const rows = within(events).getAllByRole("listitem");
-  expect(rows).toHaveLength(15);
-  expect(rows[0].textContent).toContain("Event 19");
-  expect(rows[14].textContent).toContain("Event 5");
+test("handles a missing pool snapshot", async () => {
+  const slot = render(() => ({ ok: true, data: { ...fixture, pools: [] } }));
+  expect(await slot.findByText("No pools available.")).toBeTruthy();
 });
 
-test("polls only while visible, preserves stale data on failure, advances server-relative time and cleans up", async () => {
+test("refreshes via realtime and button, polls while visible, preserves stale data and cleans up", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(at + 3_600_000);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
   const slot = render(status);
   await act(async () => {});
-  expect(slot.getByText(/Granted 1m 0s ago/)).toBeTruthy();
-  await act(async () => { vi.advanceTimersByTime(1000); });
-  expect(slot.getByText(/Granted 1m 1s ago/)).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(4000); });
+  expect(slot.getByText("Updated 4s ago")).toBeTruthy();
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(status).toHaveBeenCalledTimes(2);
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Refresh" })); });
+  expect(status).toHaveBeenCalledTimes(3);
   visibility.mockReturnValue("hidden");
   await act(async () => { vi.advanceTimersByTime(30_000); });
-  expect(status).toHaveBeenCalledTimes(1);
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(status).toHaveBeenCalledTimes(3);
   visibility.mockReturnValue("visible");
   status.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(slot.getByRole("alert").textContent).toContain("Showing the last successful status.");
   expect(slot.getByText("Run geometry suite")).toBeTruthy();
-  status.mockImplementation(() => new Promise(() => {}));
   await act(async () => { vi.advanceTimersByTime(10_000); });
-  await act(async () => { vi.advanceTimersByTime(30_000); });
-  expect(status).toHaveBeenCalledTimes(3);
-  expect(slot.getByText(/Expired 11s ago/)).toBeTruthy();
+  expect(status).toHaveBeenCalledTimes(5);
+  expect(slot.queryByRole("alert")).toBeNull();
   slot.lifecycle.unmount();
   await act(async () => { vi.advanceTimersByTime(30_000); document.dispatchEvent(new Event("visibilitychange")); });
-  expect(status).toHaveBeenCalledTimes(3);
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(status).toHaveBeenCalledTimes(5);
+});
+
+test("realtime received during a request fetches a fresh snapshot when it completes", async () => {
+  let resolve!: (value: unknown) => void;
+  const status = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done; })).mockReturnValue({ ok: true, data: fixture });
+  const slot = render(status);
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { resolve({ ok: true, data: fixture }); });
+  expect(status).toHaveBeenCalledTimes(2);
 });
