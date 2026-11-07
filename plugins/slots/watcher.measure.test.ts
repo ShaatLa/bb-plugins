@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse, makeHostResponse } from "@get-bb/plugin-sdk/testing";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,18 +17,21 @@ it.skipIf(!process.env.SLOTS_MEASURE_REPORT)("measures the integrated watcher fo
   const path = process.cwd(), thread = makeThreadResponse({ id: "measurement", environmentId: "env" });
   let childCpuSeconds = 0, childCalls = 0;
   const collector = createCollector({ exec: async (file, args, options) => {
-    const result = await promisify(execFile)("/usr/bin/time", ["-p", file, ...args], options);
     childCalls++;
-    for (const match of result.stderr.matchAll(/^(?:user|sys)\s+([\d.]+)/gm)) childCpuSeconds += Number(match[1]);
+    const countCpu = (stderr: string) => { for (const match of stderr.matchAll(/^(?:user|sys)\s+([\d.]+)/gm)) childCpuSeconds += Number(match[1]); };
+    const result = await promisify(execFile)("/usr/bin/time", ["-p", file, ...args], options).catch(error => { countCpu(error.stderr ?? ""); throw error; });
+    countCpu(result.stderr);
     return { stdout: result.stdout };
   } });
   const host = createFakePluginHost({ pluginId: "slots", agentSkillIds: ["slots"], sdk: {
+    hosts: { get: async () => ({ ...makeHostResponse({ id: "local", name: "Measurement host" }), connectMachineId: null, threadStorageRootPath: null }) },
     system: { config: async () => ({ primaryHostId: "local" }) },
     threads: { list: async () => [thread], get: async () => thread, send: async () => { throw new Error("Measurement must not send messages"); } },
     environments: { get: async () => ({ hostId: "local", path }) },
   } });
   try {
     const { invoke } = await register(host.bb, { store: new DiskStore(dir), watchCollector: collector });
+    expect((await invoke("status", {})).ok).toBe(true);
     const start = Date.now();
     const service = host.harness.behavior.runService("watcher");
     await sleep(300500);
