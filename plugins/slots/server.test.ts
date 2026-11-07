@@ -462,3 +462,17 @@ it("acquire resolves a grant at its deadline and cleans up on abort", async () =
   expect(invoke).toHaveBeenCalledWith("done", { threadId: "a", useId: "use-3" });
   await host.harness.lifecycle.dispose();
 });
+it("withdraws a lease granted concurrently with a request wait abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const invoke = vi.fn(async (method: string, params: unknown) => {
+    if (method === "request") return { ok: true, data: { kind: "queued", request: { id: "req-1" } } };
+    if (method === "status") return { ok: true, data: { pools: [{ leases: [{ id: "lease-2", requestId: "req-1" }], queue: [] }] } };
+    if (method === "release" && (params as { leaseId: string }).leaseId === "req-1") return { ok: false, error: { code: "not-found", message: "gone" } };
+    return { ok: true, data: {} };
+  });
+  registerCli(host.bb, invoke as Invoke);
+  const controller = new AbortController(); controller.abort();
+  await host.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1m"], { threadId: "a", signal: controller.signal });
+  expect(invoke).toHaveBeenCalledWith("release", { threadId: "a", leaseId: "lease-2" });
+  await host.harness.lifecycle.dispose();
+});
