@@ -152,6 +152,10 @@ remain policy choices rather than machine-derived limits.
 | observerQueueWaitMinutes / observerGateHoldMinutes | 20 / 15 | 1–10080 minutes |
 | portFrom / portTo | 41000 / 41099 | 1–65535, first <= last |
 | grantMode | auto | auto / manual |
+| watchPolicy | warn | off / warn |
+| watchCores | min(3, max(1, cores − 1)) | 1–CPU cores |
+| watchWindowSeconds | 120 | 60–900 seconds |
+| idleLeaseMinutes | 30 | 10–240 minutes |
 
 The engine's `validateSettings` checks cross-field combinations before use;
 correct invalid heartbeat/TTL or port bounds before continuing operations.

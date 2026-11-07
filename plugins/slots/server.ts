@@ -3,7 +3,7 @@ import * as os from "node:os";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
@@ -89,6 +89,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const settings = resolveSettings(current);
     settingsWarnings = [
       ...(current.loadMax > cores ? [`Saved load limit ${current.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+      ...(current.watchCores > cores ? [`Saved watch threshold ${current.watchCores} exceeds ${cores} CPU cores; using ${cores}.`] : []),
       ...(current.heavyCapacity > cores ? [`Saved heavy capacity ${current.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
     ];
     return settings;
@@ -119,7 +120,13 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const next = queue.then(() => { if (disposed) throw new Error("Slots unloaded"); return fn(); });
     queue = next.catch(() => {}); return next;
   }
-  async function transition(input: Input, manualSample = false, verified = new Set<string>()) {
+  async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
+    try {
+      await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
+        input: [{ type: "text", text: `[Slots] ${effect.text}`, mentions: [] }] });
+    } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
+  }
+  async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {
     if (input.type === "threadEnded") titles.delete(input.threadId);
     const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
     if (!change.result.ok) return change.result;
@@ -128,11 +135,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const effect of change.effects) {
       if (effect.type === "audit") await store.audit(effect.event);
       else {
-        if (effect.watch && (!verified.has(effect.watch.subject.key) || settings.watchPolicy === "off")) continue;
-        try {
-          await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
-            input: [{ type: "text", text: `[Slots] ${effect.text}`, mentions: [] }] });
-        } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
+        if (effect.watch) {
+          if (verified.has(effect.watch.subject.key) && settings.watchPolicy !== "off") pending.push(effect);
+        } else await sendNotification(effect);
       }
     }
     bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
@@ -307,7 +312,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const watcher = createWatcher({ sdk: bb.sdk, hostId: () => localHostId, enabled: () => initialized && settings.watchPolicy !== "off" && !disposed,
     now: runtime.now, collector: runtime.watchCollector, realpath: runtime.realpath, warn: error => bb.log.warn(`Slots watcher: ${String(error)}`),
     preview: usage => serial(async () => apply(state, usage, { now: runtime.now(), settings }).effects),
-    commit: (usage, verified) => serial(async () => transition(usage, false, verified)),
+    commit: async (usage, verified, signal) => {
+      const pending: Extract<Effect, { type: "notify" }>[] = [];
+      await serial(async () => transition(usage, false, verified, pending));
+      for (const effect of pending) {
+        if (signal.aborted || disposed || settings.watchPolicy === "off") break;
+        await sendNotification(effect);
+      }
+    },
   });
   for (const event of ["thread.created", "thread.archived", "thread.unarchived", "thread.deleted"] as const) bb.events.on(event, () => { watcher.invalidate(); });
   bb.background.service("watcher", { async start(signal) {

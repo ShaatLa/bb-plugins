@@ -57,3 +57,15 @@ it('cwd changes reset old and new group histories and verified alerts receive a 
   h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][0].resetKeys).toEqual(expect.arrayContaining(['/repo','/repo/sub'])); expect(h.commit.mock.calls[1][1].has('/repo')).toBe(true);
   expect(h.get).toHaveBeenCalledTimes(2);
 });
+it('SDK errors and collector failures do not stop later runs',async()=>{
+  const h=setup(); h.list.mockRejectedValueOnce(new Error('SDK unavailable'));
+  await h.watcher.run(); expect(h.commit.mock.calls[0][0].valid).toBe(false);
+  h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][0].valid).toBe(true);
+  h.sample.mockRejectedValueOnce(new Error('collector failed')); h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[2][0].valid).toBe(false);
+  h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[3][0].valid).toBe(true);
+});
+it('notification delivery is deadline-bounded and an aborted run cannot stop the next run',async()=>{
+  vi.useFakeTimers(); const h=setup(); h.commit.mockImplementationOnce(()=>new Promise(()=>{}));
+  const run=h.watcher.run(); await vi.advanceTimersByTimeAsync(20000); await run;
+  expect(h.warn).toHaveBeenCalled(); h.advance(); await h.watcher.run(); expect(h.sample).toHaveBeenCalledTimes(2);
+});

@@ -75,3 +75,23 @@ it("cwd changes reset both groups and transfer cannot count the earlier holding 
   h.send({type:'transfer',threadId:'a',toThreadId:'b',isChild:true},240001);
   h.usage(240000,360000,0,{subjects:[{key:'/repo',threadIds:['a','b'],cores:0}]}); expect(h.state.leases[0].idle?.since).toBeNull();
 });
+it("a grant and release between samples excludes earlier leased CPU and grant resets idle", () => {
+  const h=setup(); h.usage(0,60000,5);
+  h.send({type:'request',hostId:'h',threadId:'a',pool:'heavy',job:'build',estMs:60000},60001);
+  h.send({type:'gateSample',hostId:'h',at:60002,load1:0,memFreePct:90},60002);
+  h.send({type:'gateSample',hostId:'h',at:75002,load1:0,memFreePct:90},75002);
+  expect(h.state.leases[0].idle).toEqual({since:null,alerted:false});
+  h.send({type:'release',threadId:'a'},75003);
+  expect(notices(h.usage(60000,180000,5))).toHaveLength(0);
+  expect(notices(h.usage(180000,300000,5))).toHaveLength(2);
+});
+it("idle notices re-arm after activity and use the load of every sibling", () => {
+  const h=setup(); h.lease('b');
+  const raw=(t:number,cores:number,valid=true)=>h.usage(t,t+120000,cores,{valid,subjects:[{key:'/repo',threadIds:['a','b'],cores}]});
+  raw(0,0); let r;
+  for(let t=120000;t<720000;t+=120000) r=raw(t,0);
+  expect(notices(r!,'idle-lease')).toHaveLength(1);
+  raw(720000,0.5); expect(h.state.leases[0].idle).toEqual({since:null,alerted:false});
+  for(let t=840000;t<1440000;t+=120000) r=raw(t,0);
+  expect(notices(r!,'idle-lease')).toHaveLength(1);
+});

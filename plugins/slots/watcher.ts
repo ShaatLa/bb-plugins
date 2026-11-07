@@ -9,7 +9,7 @@ type Thread = { environmentId: string | null };
 export interface WatcherOptions {
   sdk: BbPluginApi["sdk"]; hostId: () => string; enabled: () => boolean;
   preview: (usage: Usage) => Promise<Effect[]>;
-  commit: (usage: Usage, verified: Set<string>) => Promise<unknown>;
+  commit: (usage: Usage, verified: Set<string>, signal: AbortSignal) => Promise<unknown>;
   now?: () => number; realpath?: typeof realpath; collector?: ReturnType<typeof createCollector>;
   warn: (error: unknown) => void;
 }
@@ -36,7 +36,7 @@ export function createWatcher(options: WatcherOptions) {
     let env = environments.get(thread.environmentId);
     if (fresh || !env || now() - env.at >= 300000) {
       const result = await bounded(options.sdk.environments.get({ environmentId: thread.environmentId }), signal);
-      env = { at: now(), hostId: result.hostId, path: result.path === null ? null : await bounded(canonical(result.path), signal) };
+      env = { at: now(), hostId: result.hostId, path: result.hostId !== options.hostId() || result.path === null ? null : await bounded(canonical(result.path), signal) };
       if (!fresh) environments.set(thread.environmentId, env);
     }
     return env.hostId === options.hostId() ? env.path : null;
@@ -47,7 +47,7 @@ export function createWatcher(options: WatcherOptions) {
       const threads = await bounded(options.sdk.threads.list({ hostId: options.hostId(), archived: false, includeHidden: true, limit: 100, offset, signal }), signal);
       for (const thread of threads) {
         if (thread.archivedAt || thread.deletedAt) continue;
-        // Refresh environment routing with membership, including moves between known paths.
+        // Thread routing refreshes every two minutes; physical environment paths cache for five.
         const path = await pathFor(thread, signal);
         if (path) paths.set(path, [...(paths.get(path) ?? []), thread.id]);
       }
@@ -93,12 +93,12 @@ export function createWatcher(options: WatcherOptions) {
       }
       if (active.signal.aborted) throw active.signal.reason;
       usage.resetKeys = [...resetKeys];
-      if (options.enabled()) await options.commit(usage, verified);
+      if (options.enabled()) await bounded(options.commit(usage, verified, active.signal), active.signal);
       resetKeys.clear();
     } catch (error) {
       options.warn(error);
       usage = { ...usage, endAt: Math.max(usage.endAt, now()), valid: false, subjects: groups.map(g => ({ ...g, cores: 0 })) };
-      if (options.enabled()) await options.commit(usage, new Set()).catch(options.warn);
+      if (options.enabled()) await options.commit(usage, new Set(), active.signal).catch(options.warn);
     } finally {
       lastEndAt = usage.endAt;
       const delta = process.cpuUsage(cpu);
