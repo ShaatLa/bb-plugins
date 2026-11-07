@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { GitHubRequest } from "./metrics";
-import type { JobRecord, JobSignature } from "./ci-jobs-types";
-import { BAD, classifyJobs, type ClassifyOptions } from "./ci-classify";
-import { annotationHit, matchLine, MAX_ARTIFACT_BYTES, type FlakeRule, type SignatureHit } from "./flake-signatures";
-import { failedTestNames, scanZip, zipTextEntries } from "./flake-artifacts";
+import type { ClassifiedJob, Inherited, JobRecord, JobSignature } from "./ci-jobs-types";
+import { BAD, BUILD_REASON, classifyJobs, INHERIT_WAIT_MS, inheritable, PASS_REASON, queuePullRequest, type ClassifyOptions } from "./ci-classify";
+import { annotationHit, buildFailureLine, matchLine, MAX_ARTIFACT_BYTES, type FlakeRule, type SignatureHit } from "./flake-signatures";
+import { failedTestNames, scanZip, zipTextEntries, type ZipEvidence } from "./flake-artifacts";
 
 const level = z.enum(["failure", "warning", "notice"]);
 const annotation = z.object({ level, title: z.string(), message: z.string() });
@@ -35,7 +35,7 @@ function slim(j: JobRecord): string {
   const out: Record<string, unknown> = rest;
   if (labels.length !== (pool === null ? 0 : 1) || labels[0] !== (pool ?? undefined)) out.labels = labels;
   if (out.status === "completed") delete out.status;
-  for (const key of ["workflowName", "headBranch", "runnerName", "runnerGroup", "startedAt", "completedAt", "logExcerpt"]) if (!out[key]) delete out[key];
+  for (const key of ["workflowName", "headBranch", "runnerName", "runnerGroup", "startedAt", "completedAt", "logExcerpt", "buildFailure"]) if (!out[key]) delete out[key];
   for (const key of ["pullRequests", "failedSteps", "annotations"]) if (!(out[key] as unknown[]).length) delete out[key];
   if (!out.carried) delete out.carried;
   return JSON.stringify(out);
@@ -65,6 +65,10 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
       } catch (error) { database.prepare("ROLLBACK").run(); throw error; }
     },
     /** Rewrites one stored job (e.g. after a signature re-scan); the indexed columns never change. */
+    /** Names of the jobs that succeeded at a head commit (merge queue groups: what that group ran and passed). */
+    /** True when a push run is stored for the commit: it is on a branch (the default branch), not a merge queue group commit. */
+    pushedAt(repository: string, sha: string): boolean { return !!database.prepare("SELECT 1 FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' LIMIT 1").get(repository, sha); },
+    passedAtHead(repository: string, sha: string): string[] { return (database.prepare("SELECT DISTINCT json_extract(data, '$.jobName') AS name FROM ci_jobs WHERE repository = ? AND head_sha = ? AND conclusion = 'success'").all(repository, sha) as { name: string }[]).map((row) => row.name); },
     saveJob(j: JobRecord) { database.prepare("UPDATE ci_jobs SET data = ? WHERE repository = ? AND run_id = ? AND attempt = ? AND job_id = ?").run(slim(j), j.repository, j.runId, j.attempt, j.jobId); },
     hasCompletedAttempt(repository: string, runId: number, attempt: number) { return !!database.prepare("SELECT 1 FROM ci_attempts WHERE repository = ? AND run_id = ? AND attempt = ? AND completed = 1").get(repository, runId, attempt); },
     listJobs({ repository, since, until }: { repository: string; since: string; until: string }): JobRecord[] { return (database.prepare(`SELECT ${columns} FROM ci_jobs WHERE repository = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at`).all(repository, since, until) as Columns[]).map(toRecord); },
@@ -91,13 +95,13 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
   };
 }
 type Run = Omit<Context, "repository" | "runId"> & { id: number };
-/** Collects the first rule hit while a log streams past; `hit` is the out-parameter. */
-export type LogScan = { rules: FlakeRule[]; hit: SignatureHit | null };
+/** Collects while a log streams past: the first rule hit and the first build or setup failure line. */
+export type LogScan = { rules: FlakeRule[]; hit: SignatureHit | null; build?: string | null };
 type FetchText = (path: string, scan?: LogScan) => Promise<string>;
 type FetchBinary = (path: string, maxBytes: number) => Promise<Buffer>;
 /** Known-flake scan settings for one repository (the backfill serves one repository per instance). */
 export type FlakeConfig = { repository: string; rules: FlakeRule[]; hash: string; artifacts: RegExp[]; classify: Omit<ClassifyOptions, "flakeRules" | "flakeHash">; /** Start of the job-history window re-scanned after a rules change. */ since: string };
-type FlakeScan = { config: FlakeConfig; fetchArtifact?: FetchBinary; /** Artifact scan result per run attempt and rules version: an archive is downloaded once. */ cache: Map<string, SignatureHit | null> };
+type FlakeScan = { config: FlakeConfig; fetchArtifact?: FetchBinary; /** Artifact scan result per run attempt and rules version: an archive is downloaded once. */ cache: Map<string, ZipEvidence> };
 const sign = (hash: string, hit: SignatureHit | null, source: JobSignature["source"]): JobSignature => ({ rules: hash, label: hit?.label ?? null, match: hit?.match ?? null, source: hit ? source : null });
 const rateLimited = (error: unknown) => /403|429/.test(String(error));
 const artifactListing = z.object({ artifacts: z.array(z.object({ id: z.number(), name: z.string(), size_in_bytes: z.number(), expired: z.boolean().optional(), created_at: z.string().nullable().optional() })) });
@@ -115,22 +119,38 @@ async function attemptArtifacts(request: GitHubRequest, repository: string, run:
     return !(created < from || created > to);
   });
 }
-/** Scans the run's artifacts for a rule hit. Errors propagate and leave the cache untouched. */
-async function artifactHit(request: GitHubRequest, repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], { config, fetchArtifact, cache }: FlakeScan): Promise<SignatureHit | null> {
+/**
+ * Scans the run's artifacts. `report` is true when any is a recognized test report: then `hit` and `build` come from the failed tests of the reports only.
+ * Errors propagate and leave the cache untouched; null without globs or a downloader.
+ */
+async function artifactEvidence(request: GitHubRequest, repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], { config, fetchArtifact, cache }: FlakeScan): Promise<ZipEvidence | null> {
   if (!config.artifacts.length || !fetchArtifact) return null;
   const key = `${repository}#${run.id}#${run.attempt}#${config.hash}`;
   if (cache.has(key)) return cache.get(key)!;
-  let hit: SignatureHit | null = null;
+  let report = false, reportHit: SignatureHit | null = null, textHit: SignatureHit | null = null, build: string | null = null;
   for (const a of await attemptArtifacts(request, repository, run, attemptJobs, config.artifacts)) {
-    hit = scanZip(await fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES), config.rules);
-    if (hit) break;
+    const found = scanZip(await fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES), config.rules);
+    if (found.report) { report = true; reportHit ??= found.hit; build ??= found.build; } else textHit ??= found.hit;
   }
+  const evidence: ZipEvidence = { report, hit: report ? reportHit : textHit, build };
   if (cache.size >= 500) cache.clear();
-  cache.set(key, hit);
-  return hit;
+  cache.set(key, evidence);
+  return evidence;
+}
+/** Failed jobs the scan decides: real, or a flake only by a same-sha pass. Signatures and annotations already decided the rest. */
+const candidates = (classified: ClassifiedJob[]) => classified.filter(c => c.class === "real" || (c.class === "flake" && c.reason.startsWith(PASS_REASON))).map(c => c.job);
+/**
+ * What one failed job's scan found. Recognized test reports of the attempt win over log lines: with one, only its failed tests count
+ * (and only for the lone candidate, since artifacts are run-level); otherwise the log, then any plain artifact text. Null: no evidence (unreadable log), retry later.
+ */
+function scanResult(hash: string, lone: boolean, artifacts: ZipEvidence | null, log: LogScan | null): Pick<JobRecord, "signature" | "buildFailure"> | null {
+  const own = lone ? artifacts : null;
+  if (artifacts?.report) return { signature: sign(hash, own?.hit ?? null, "artifact"), buildFailure: own?.build ? { match: own.build } : null };
+  if (!log) return null;
+  return { signature: sign(hash, log.hit ?? own?.hit ?? null, log.hit ? "log" : "artifact"), buildFailure: log.build ? { match: log.build } : null };
 }
 export async function fetchAttemptJobs(request: GitHubRequest, repository: string, run: Run, fetchText?: FetchText, flake?: FlakeScan): Promise<JobRecord[]> {
-  const jobs: JobRecord[] = [], logged = new Set<JobRecord>();
+  const jobs: JobRecord[] = [], logs = new Map<JobRecord, LogScan>();
   for (let page = 1;; page++) {
     const response = await request(`/repos/${repository}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`);
     const rows = z.object({ jobs: z.array(z.unknown()) }).parse(response.body).jobs;
@@ -143,11 +163,11 @@ export async function fetchAttemptJobs(request: GitHubRequest, repository: strin
       if (flake && j.conclusion === "failure" && j.failedSteps.length) { const hit = annotationHit(flake.config.rules, j.annotations); if (hit) j.signature = sign(flake.config.hash, hit, "annotation"); }
       if (fetchText && j.conclusion === "failure" && j.failedSteps.length && !j.annotations.some(a => a.level === "failure" && /lost communication|shutdown signal|maximum execution time/i.test(`${a.title} ${a.message}`))) {
         // The rest of the log is only streamed for rules when annotations did not already decide.
-        const scan: LogScan | undefined = flake && !j.signature ? { rules: flake.config.rules, hit: null } : undefined;
+        const scan: LogScan | undefined = flake && !j.signature ? { rules: flake.config.rules, hit: null, build: null } : undefined;
         try {
-          const lines = (await fetchText(`/repos/${repository}/actions/jobs/${j.jobId}/logs`, scan)).split(/\r?\n/); const index = lines.findIndex(line => line.includes("##[error]")); if (index >= 0) j.logExcerpt = lines.slice(Math.max(0, index - 29), index + 1).join("\n");
-          logged.add(j);
-          if (scan?.hit) j.signature = sign(flake!.config.hash, scan.hit, "log");
+          j.logExcerpt = logExcerpt(await fetchText(`/repos/${repository}/actions/jobs/${j.jobId}/logs`, scan)) ?? j.logExcerpt;
+          // Held back: a recognized test report of the attempt overrides what the log says.
+          if (scan) logs.set(j, scan);
         } catch { /* Logs are optional. */ }
       }
       jobs.push(j);
@@ -157,14 +177,22 @@ export async function fetchAttemptJobs(request: GitHubRequest, repository: strin
   }
   if (flake) {
     const { config } = flake;
-    const real = classifyJobs(jobs, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }).filter(c => c.class === "real").map(c => c.job);
-    // Only a lone real failure owns the run's artifacts; a job whose log could not be read stays unmarked so the re-scan retries it.
-    for (const j of real) if (logged.has(j)) {
-      try { j.signature = sign(config.hash, real.length === 1 ? await artifactHit(request, repository, run, jobs, flake) : null, "artifact"); }
-      catch (error) { if (rateLimited(error)) throw error; }
-    }
+    const decide = candidates(classifyJobs(jobs, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }));
+    let artifacts: ZipEvidence | null = null;
+    if (decide.length) try { artifacts = await artifactEvidence(request, repository, run, jobs, flake); } catch (error) { if (rateLimited(error)) throw error; }
+    for (const j of decide) { const found = scanResult(config.hash, decide.length === 1, artifacts, logs.get(j) ?? null); if (found) Object.assign(j, found); }
   }
   return jobs;
+}
+/** 30 lines up to the first `##[error]`, plus the error lines right after it (the runner's shutdown notice comes as a second error). */
+/** Bumped when the inheritance walk changes, so stored "not inherited" results are checked again once. */
+const INHERIT_CHECK = 3;
+export function logExcerpt(text: string): string | null {
+  const lines = text.split(/\r?\n/), index = lines.findIndex((line) => line.includes("##[error]"));
+  if (index < 0) return null;
+  let end = index;
+  while (end - index < 5 && lines[end + 1]?.includes("##[error]")) end++;
+  return lines.slice(Math.max(0, index - 29), end + 1).join("\n");
 }
 export function createLogFetcher(token: string, signal: AbortSignal): FetchText {
   return async (path, scan) => {
@@ -172,17 +200,22 @@ export function createLogFetcher(token: string, signal: AbortSignal): FetchText 
     if (!response.ok) throw new Error(`Log fetch ${response.status}`);
     if (!response.body) return "";
     const reader = response.body.getReader(), decoder = new TextDecoder();
-    // The excerpt stops at the first error or after 2 MB; rules keep scanning up to 8 MB.
+    // The excerpt stops at the first error or after 2 MB; rules keep scanning up to 8 MB, or until a build failure decides the job.
     const limit = scan ? 8_000_000 : 2_000_000;
-    let size = 0, before = 0, pending = "", lines: string[] = [], found = false;
+    let size = 0, before = 0, pending = "", lines: string[] = [], found = false, trailing = 0, closed = false;
     // Without rules the 2 MB limit is the loop limit itself; with rules the excerpt freezes once a chunk starts past 2 MB.
-    const settled = () => found || (!!scan && before >= 2_000_000);
+    // The excerpt closes on the first line after the first error that is not itself an error (consecutive error lines are kept, up to 5).
+    const settled = () => closed || (!!scan && before >= 2_000_000);
     const consume = (line: string) => {
-      if (!settled()) { lines.push(line.replace(/\r$/, "")); if (lines.length > 30) lines.shift(); if (line.includes("##[error]")) found = true; }
-      if (scan && !scan.hit) scan.hit = matchLine(scan.rules, line.replace(/\r$/, ""));
+      if (!settled()) {
+        const error = line.includes("##[error]");
+        if (found && (!error || ++trailing > 5)) closed = true;
+        else { lines.push(line.replace(/\r$/, "")); if (!found && lines.length > 30) lines.shift(); if (error) found = true; }
+      }
+      if (scan) { if (!scan.hit) scan.hit = matchLine(scan.rules, line.replace(/\r$/, "")); scan.build ??= buildFailureLine(line); }
     };
     try {
-      while (size < limit && !(settled() && (!scan || scan.hit))) {
+      while (size < limit && !(settled() && (!scan || scan.build))) {
         const { done, value } = await reader.read();
         if (done) { pending += decoder.decode(); break; }
         before = size;
@@ -192,10 +225,10 @@ export function createLogFetcher(token: string, signal: AbortSignal): FetchText 
         while ((end = pending.indexOf("\n")) >= 0) {
           const line = pending.slice(0, end); pending = pending.slice(end + 1);
           consume(line);
-          if (settled() && (!scan || scan.hit)) break;
+          if (settled() && (!scan || scan.build)) break;
         }
       }
-      if (pending && !(settled() && (!scan || scan.hit))) consume(pending);
+      if (pending && !(settled() && (!scan || scan.build))) consume(pending);
     } finally { await reader.cancel(); }
     return lines.join("\n");
   };
@@ -229,14 +262,18 @@ export function createArtifactFetcher(token: string, signal: AbortSignal): Fetch
   };
 }
 const runRow = z.object({ id: z.number(), status: z.string(), conclusion: z.string().nullable(), run_attempt: z.number().optional(), name: z.string().nullable().optional(), event: z.string().optional(), head_branch: z.string().nullable().optional(), head_sha: z.string().optional(), pull_requests: z.array(z.union([z.number(), z.object({ number: z.number() })])).optional(), created_at: z.string() });
+const commitRow = z.object({ parents: z.array(z.object({ sha: z.string() })) });
 type Summary = { id: number; run_attempt: number; status: string; conclusion: string | null; name: string | null; event: string; head_branch: string | null; head_sha: string; pull_requests: (number | { number: number })[]; created_at: string };
 // maxPerStep bounds one step so the caller's loop (live stall detection) never waits on a full hourly burst.
 export function createBackfill({ store, request, fetchText, fetchArtifact, budgetPerHour = 1500, now = Date.now, maxPerStep = Math.ceil(budgetPerHour / 60) }: { store: ReturnType<typeof createJobStore>; request: GitHubRequest; fetchText?: FetchText; fetchArtifact?: FetchBinary; budgetPerHour?: number; now?: () => number; maxPerStep?: number }) {
   const queue: { repository: string; run: Run; createdAt: string; /** Just finished: fetched before the history backlog. */ urgent?: boolean }[] = [], queued = new Set<string>(), failed = new Map<string, string>(), retries = new Map<string, { count: number; at: number }>(); let tokens = budgetPerHour, last = now(), pausedUntil: number | null = null;
   // Re-scan state: the rules version each repository is fully scanned for, jobs that failed to scan (not retried until restart) and the artifact results.
-  const rescanned = new Map<string, string>(), unscannable = new Set<string>(), artifactCache = new Map<string, SignatureHit | null>();
+  const rescanned = new Map<string, string>(), unscannable = new Set<string>(), artifactCache = new Map<string, ZipEvidence>();
   const keyOf = (repository: string, id: number, attempt: number) => `${repository}#${id}#${attempt}`;
   const testCache = new Map<string, string[]>();
+  const testKey = (repository: string, run: { id: number; attempt: number }, globs: RegExp[]) => `${repository}#${run.id}#${run.attempt}#${globs.map(g => g.source).join(",")}`;
+  // First parent of a merge queue head commit (immutable, so cached per sha); null: unknown or unreadable.
+  const parentCache = new Map<string, string | null>();
   const refill = () => {
     const current = now(); tokens = Math.min(budgetPerHour, tokens + Math.max(0, current - last) * budgetPerHour / 3_600_000); last = current;
     if (pausedUntil !== null && current >= pausedUntil) pausedUntil = null;
@@ -285,10 +322,14 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
       }
       return enqueued;
     },
+    /** Failed test names that failedTests already extracted for this attempt; never fetches. */
+    cachedFailedTests(repository: string, run: { id: number; attempt: number }, globs: RegExp[]): string[] | null {
+      return testCache.get(testKey(repository, run, globs)) ?? null;
+    },
     /** Names of the failed tests in the attempt's test-report artifacts (the configured globs, FAILED entries only); null without globs, budget or a readable report. Cached per attempt. */
     async failedTests(repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], globs: RegExp[], signal: AbortSignal): Promise<string[] | null> {
       if (!globs.length || !fetchArtifact) return null;
-      const key = `${repository}#${run.id}#${run.attempt}#${globs.map(g => g.source).join(",")}`;
+      const key = testKey(repository, run, globs);
       if (testCache.has(key)) return testCache.get(key)!;
       try {
         const names: string[] = [];
@@ -300,6 +341,74 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
         testCache.set(key, names);
         return names;
       } catch { return null; }
+    },
+    /**
+     * Marks merge queue failures built on a failed group ahead: the group's base commit (first parent of its head, one cached request per sha on the budget)
+     * is the head of a stored group run that failed the same job the same way. Walks at most 3 groups back and records the earliest origin as `inheritedFrom`
+     * (null: checked, none). Jobs left undefined (budget or rate limit) are retried by the next call; at most one step's share of requests per call.
+     * Returns how many jobs were decided, so the caller can reclassify.
+     */
+    async resolveInherited(repository: string, classified: ClassifiedJob[], signal: AbortSignal, globs: RegExp[] = []): Promise<number> {
+      const when = (c: ClassifiedJob) => c.job.completedAt ?? c.job.createdAt, leaf = (c: ClassifiedJob) => c.job.jobName.split(" / ").pop();
+      // A recent "not inherited" is re-checked from the cached parent (no request): the group ahead may be stored after this one.
+      const recent = (c: ClassifiedJob) => now() - Date.parse(when(c)) < INHERIT_WAIT_MS && parentCache.has(`${repository}#${c.job.headSha}`);
+      const pending = classified.filter(c => c.job.repository === repository && inheritable(c) && (c.job.inheritedFrom === undefined
+        || (c.job.inheritedFrom === null && (recent(c) || c.job.inheritCheck !== INHERIT_CHECK)))).sort((a, b) => when(b).localeCompare(when(a)));
+      if (!pending.length) return 0;
+      const byHead = new Map<string, ClassifiedJob[]>();
+      for (const c of classified) if (c.job.repository === repository && inheritable(c)) byHead.set(c.job.headSha, [...(byHead.get(c.job.headSha) ?? []), c]);
+      const left = { requests: maxPerStep };
+      const parentOf = async (sha: string): Promise<string | null> => {
+        const key = `${repository}#${sha}`;
+        if (parentCache.has(key)) return parentCache.get(key)!;
+        if (left.requests-- <= 0) throw new Error("Budget exhausted");
+        let parent: string | null = null;
+        try { parent = commitRow.parse((await spend(signal, () => request(`/repos/${repository}/git/commits/${sha}`))).body).parents[0]?.sha ?? null; }
+        catch (error) {
+          if (signal.aborted || /Budget exhausted|403|429/.test(String(error))) throw error;
+          // Fails open: an unreadable commit just means no inherited tag, never a held or wrong line.
+        }
+        if (parentCache.size >= 500) parentCache.clear();
+        parentCache.set(key, parent);
+        return parent;
+      };
+      // Same class plus one shared signal: build failure line, known-flake label, or failed test names (only those already extracted).
+      const names = (c: ClassifiedJob) => (testCache.get(testKey(repository, { id: c.job.runId, attempt: c.job.attempt }, globs)) ?? []).slice().sort().join("\0");
+      // When both failures carry a signal, it must match; with no signal on either side, the same job failing the same class is enough.
+      const evidenceOf = (c: ClassifiedJob) => (c.reason.startsWith(BUILD_REASON) && c.evidence) || c.flakeLabel || (globs.length && names(c)) || "";
+      const same = (a: ClassifiedJob, b: ClassifiedJob) => a.class === b.class && (evidenceOf(a) && evidenceOf(b) ? evidenceOf(a) === evidenceOf(b) : !evidenceOf(a) && !evidenceOf(b));
+      const originOf = async (start: ClassifiedJob): Promise<Inherited | null> => {
+        let current = start, origin: Inherited | null = null;
+        for (let hop = 0; hop < 3; hop++) {
+          const parent = await parentOf(current.job.headSha);
+          const ahead = parent ? byHead.get(parent)?.find(p => p.job.runId !== current.job.runId && leaf(p) === leaf(current) && same(p, current)) : undefined;
+          if (!ahead) {
+            // A group in between that did not pass this job (docs-only, cancelled by a rebuild, or not stored) passes the base through.
+            // A pushed commit is the default branch: the queue starts there, so the walk ends.
+            if (!parent || store.pushedAt(repository, parent) || store.passedAtHead(repository, parent).some((name) => name.split(" / ").pop() === leaf(current))) break;
+            current = { ...current, job: { ...current.job, headSha: parent, runId: -1 } };
+            continue;
+          }
+          // A group already traced to its own origin ends the walk there.
+          origin = ahead.job.inheritedFrom ?? { pullRequest: queuePullRequest(ahead.job.headBranch)!, runId: ahead.job.runId };
+          if (ahead.job.inheritedFrom !== undefined) break;
+          current = ahead;
+        }
+        return origin;
+      };
+      let decided = 0;
+      for (const c of pending) {
+        try {
+          const origin = await originOf(c);
+          if (origin === null && c.job.inheritedFrom === null && c.job.inheritCheck === INHERIT_CHECK) continue; // a re-check that changed nothing
+          c.job.inheritedFrom = origin; c.job.inheritCheck = INHERIT_CHECK; store.saveJob(c.job); decided++;
+        }
+        catch (error) {
+          if (signal.aborted) throw error;
+          if (/Budget exhausted|403|429/.test(String(error))) break;
+        }
+      }
+      return decided;
     },
     async step(signal: AbortSignal, flakeConfig?: FlakeConfig) {
       let processed = 0, storedFailures = 0, signaturesUpdated = 0; const current = refill();
@@ -333,24 +442,44 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
       // Stored jobs that classify as real and were not scanned with the current rules, newest first, on the budget the queue left over.
       if (flake && chargedText && !exhausted && !pausedUntil && !signal.aborted && tokens >= 1 && spent < maxPerStep && rescanned.get(flake.config.repository) !== flake.config.hash) {
         const { config } = flake, stored = store.listJobs({ repository: config.repository, since: config.since, until: "9999" });
-        const real = classifyJobs(stored, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }).filter(c => c.class === "real").map(c => c.job);
-        const attemptKey = (j: JobRecord) => `${j.runId}#${j.attempt}`, perAttempt = new Map<string, number>();
-        for (const j of real) perAttempt.set(attemptKey(j), (perAttempt.get(attemptKey(j)) ?? 0) + 1);
+        const real = candidates(classifyJobs(stored, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash }));
+        const attemptKey = (j: JobRecord) => `${j.runId}#${j.attempt}`;
         const when = (j: JobRecord) => j.completedAt ?? j.createdAt;
         const pending = real.filter(j => j.signature?.rules !== config.hash && !unscannable.has(`${j.jobId}#${config.hash}`)).sort((a, b) => when(b).localeCompare(when(a)));
         let finished = true;
-        for (const j of pending) {
-          const scan: LogScan = { rules: config.rules, hit: null };
-          try {
-            await chargedText(`/repos/${j.repository}/actions/jobs/${j.jobId}/logs`, scan);
-            const hit = scan.hit ?? (perAttempt.get(attemptKey(j)) === 1 ? await artifactHit(chargedRequest, j.repository, { id: j.runId, attempt: j.attempt }, stored.filter(x => x.runId === j.runId && x.attempt === j.attempt), flake) : null);
-            j.signature = sign(config.hash, hit, scan.hit ? "log" : "artifact");
-            store.saveJob(j); signaturesUpdated++;
-          } catch (error) {
-            finished = false;
-            if (exhausted || signal.aborted) break;
-            if (/403|429/.test(String(error))) { pausedUntil = now() + 900_000; break; }
-            unscannable.add(`${j.jobId}#${config.hash}`);
+        const fail = (j: JobRecord, error: unknown) => {
+          finished = false;
+          if (exhausted || signal.aborted) return true;
+          if (/403|429/.test(String(error))) { pausedUntil = now() + 900_000; return true; }
+          unscannable.add(`${j.jobId}#${config.hash}`);
+          return false;
+        };
+        // Attempt by attempt, newest first, saving as it goes: a step's budget never ends with fetched logs and nothing stored.
+        const attempts = new Map<string, JobRecord[]>();
+        for (const j of pending) attempts.set(attemptKey(j), [...(attempts.get(attemptKey(j)) ?? []), j]);
+        outer: for (const [key, jobs] of attempts) {
+          // Phase 1: refresh each log excerpt (runner-loss and transient evidence can sit after the first error) and scan the log.
+          const logs = new Map<JobRecord, LogScan>();
+          for (const j of jobs) {
+            try {
+              const log: LogScan = { rules: config.rules, hit: null, build: null };
+              j.logExcerpt = logExcerpt(await chargedText(`/repos/${j.repository}/actions/jobs/${j.jobId}/logs`, log)) ?? j.logExcerpt;
+              logs.set(j, log);
+            } catch (error) { if (fail(j, error)) break outer; }
+          }
+          // Phase 2: a job the fresh excerpt turned into a runner loss is no candidate, so a sibling can become the lone candidate a report is attributed to.
+          const siblings = stored.filter((x) => attemptKey(x) === key);
+          const fresh = new Set(candidates(classifyJobs(siblings, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash })).map((j) => j.jobId));
+          for (const [j, log] of logs) {
+            try {
+              if (!fresh.has(j.jobId)) j.signature = { rules: config.hash, label: null, match: null, source: null };
+              else {
+                // Reports first (cached per attempt): a recognized one makes the log irrelevant.
+                const artifacts = await artifactEvidence(chargedRequest, j.repository, { id: j.runId, attempt: j.attempt }, siblings, flake);
+                Object.assign(j, scanResult(config.hash, fresh.size === 1, artifacts, artifacts?.report ? null : log));
+              }
+              store.saveJob(j); signaturesUpdated++;
+            } catch (error) { if (fail(j, error)) break outer; }
           }
         }
         if (finished) rescanned.set(config.repository, config.hash);

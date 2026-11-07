@@ -1,4 +1,4 @@
-import { annotationHit, type FlakeRule } from "./flake-signatures";
+import { annotationHit, buildFailureLine, type FlakeRule } from "./flake-signatures";
 import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary } from "./ci-jobs-types";
 
 /** Conclusions of a job that did not succeed and was not skipped. */
@@ -16,6 +16,14 @@ const executed = (job: JobRecord) => !job.carried && job.conclusion !== "skipped
 
 export type ClassifyOptions = { aggregatorJobs?: string[]; policyJobs?: string[]; refusalSteps?: string[]; flakeRules?: FlakeRule[]; flakeHash?: string };
 export const SIGNATURE_REASON = "matches a known flaky signature";
+export const BUILD_REASON = "build or setup failed";
+export const PASS_REASON = "same job passed at the same sha";
+/** Own failures a group run can inherit; runner losses, timeouts, transient and refused failures never are. */
+export const INHERITABLE = new Set<FailureClass>(["real", "flake", "unknown"]);
+/** A merge queue failure whose group may have been built on a failed group ahead. */
+export const inheritable = (c: ClassifiedJob) => c.job.event === "merge_group" && c.job.headSha !== "" && INHERITABLE.has(c.class) && queuePullRequest(c.job.headBranch) !== null;
+/** How long a removal line waits for an unfinished inherited-failure check (no budget) before it goes out untagged. */
+export const INHERIT_WAIT_MS = 15 * 60_000;
 export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): ClassifiedJob[] {
   // Same code, same job: a pass in any run or workflow at this sha means the failure was not deterministic.
   // Reusable workflows prefix callee jobs ("Caller / Job"), so the leaf name pairs a push run with its merge-queue run.
@@ -30,7 +38,9 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
     const find = (re: RegExp) => messages.find((m) => re.test(m)) ?? null;
     const make = (cls: FailureClass, reason: string, evidence: string | null = null): Omit<ClassifiedJob, "job"> => ({ class: cls, reason, evidence });
     if ((opts.aggregatorJobs ?? []).includes(job.jobName)) return make("consequence", "aggregator failed because another job did");
-    let hit = find(/lost communication with the server|received a shutdown signal/i);
+    // The runner's shutdown notice can arrive only as a log error line, not as an annotation: it outranks every other label.
+    let hit = find(/lost communication with the server|received a shutdown signal/i)
+      ?? job.logExcerpt?.split("\n").filter((l) => l.includes("##[error]")).map(stripTimestamp).find((l) => /lost communication with the server|received a shutdown signal/i.test(l)) ?? null;
     if (hit) return make("runner_loss", "runner lost or shut down", hit);
     if (job.conclusion === "failure" && !job.failedSteps.length && !messages.length) return make("runner_loss", "no failed step");
     if ((hit = find(/exceeded the maximum execution time/i))) return make("timeout", "job exceeded maximum execution time", hit);
@@ -43,17 +53,23 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
       if (refusal) return make("refused", "intentional refusal by a gate step", refusal);
       const line = job.logExcerpt?.split("\n").find((l) => TRANSIENT.some((re) => re.test(l)));
       if (line) return make("transient", "tool or network failure in log", stripTimestamp(line));
+      // Nothing ran: no signature label and no pass at the same sha makes this a flake.
+      const build = job.buildFailure?.match ?? buildFailureLine(job.annotations.filter((a) => a.level === "failure").map((a) => `${a.title}\n${a.message}`).join("\n"));
+      if (build) return make("real", BUILD_REASON, build);
       const policy = (opts.policyJobs ?? []).includes(job.jobName);
       // Annotations need no network; a stored scan counts only for the rules version it was made with.
       const stored = job.signature && opts.flakeHash && job.signature.rules === opts.flakeHash && job.signature.label ? { label: job.signature.label, match: job.signature.match ?? "" } : null;
       const known = policy ? null : annotationHit(opts.flakeRules ?? [], job.annotations) ?? stored;
       if (known) return { ...make("flake", SIGNATURE_REASON, `${known.label}: ${known.match}`), flakeLabel: known.label };
       const pass = policy ? null : passedElsewhere(job);
-      return pass ? make("flake", "same job passed at the same sha", `${pass.workflowName} run ${pass.runId}`) : make("real", "same job never passed at this sha");
+      return pass ? make("flake", PASS_REASON, `${pass.workflowName} run ${pass.runId}`) : make("real", "same job never passed at this sha");
     }
     return make("unknown", "no recognizable cause");
   };
-  return jobs.filter((job) => job.status === "completed" && !job.carried && BAD.has(job.conclusion ?? "")).map((job) => ({ job, ...verdict(job) }));
+  return jobs.filter((job) => job.status === "completed" && !job.carried && BAD.has(job.conclusion ?? "")).map((job) => {
+    const v = verdict(job);
+    return { job, ...v, ...(job.inheritedFrom && INHERITABLE.has(v.class) ? { reason: `${v.reason}, inherited from #${job.inheritedFrom.pullRequest}` } : {}) };
+  });
 }
 
 const QUEUE_ONLY_CLASSES = new Set<FailureClass>(["real", "flake", "transient", "timeout", "unknown"]);
@@ -140,7 +156,9 @@ export function runnerLosses(classified: ClassifiedJob[]): { byPool: Record<stri
 
 export type MassCancel = { since: string; until: string; runners: string[]; runIds: number[]; jobs: ClassifiedJob[] };
 export function detectMassCancel(classified: ClassifiedJob[], { windowMs = 120_000, minRunners = 3 } = {}): MassCancel[] {
-  const hits = classified.filter((c) => ["runner_loss", "collateral_cancel", "timeout"].includes(c.class) && c.job.completedAt)
+  // A merge queue rebuild cancels every in-flight job of the groups behind a change: that is queue invalidation, not lost runners.
+  const hits = classified.filter((c) => ["runner_loss", "collateral_cancel", "timeout"].includes(c.class) && c.job.completedAt
+    && !(c.class === "collateral_cancel" && c.job.event === "merge_group"))
     .sort((a, b) => Date.parse(a.job.completedAt!) - Date.parse(b.job.completedAt!));
   const found: MassCancel[] = [];
   for (let i = 0; i < hits.length;) {

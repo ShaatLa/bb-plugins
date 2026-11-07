@@ -40,7 +40,20 @@ export type JobRecord = {
   carried: boolean;
   /** Absent until scanned; a stored result only counts while `rules` equals the current rules version. */
   signature?: JobSignature;
+  /** Written by the scan: the package, suite or log line showing a build or setup failure (a deterministic failure, never a flake); null when scanned and none found. */
+  buildFailure?: { match: string } | null;
+  /**
+   * Merge queue group runs build on the group ahead: set when that group failed the same job the same way, so this failure is inherited from its PR.
+   * Absent until checked; null when checked and none.
+   */
+  inheritedFrom?: Inherited | null;
+  /** Version of the inheritance check that stored `inheritedFrom`; an older "not inherited" is checked again once. */
+  inheritCheck?: number;
+  /** In memory only: for a merge queue job, the PR's head commit when its group ran (from the PR's own pull_request runs). */
+  prHead?: string;
 };
+
+export type Inherited = { pullRequest: number; runId: number };
 
 export type FailureClass =
   | "runner_loss" // runner lost communication / shutdown signal / failed with no failed step
