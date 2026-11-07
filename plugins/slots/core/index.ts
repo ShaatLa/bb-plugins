@@ -143,13 +143,14 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (leases.length >= capacity || index >= capacity) return { ok: false, error: { code: "capacity", message: "Pool is at capacity" } };
     const lease: Lease = { id: `lease-${state.nextId++}`, requestId, hostId, pool, slotIndex: index,
       ownerThreadId: request.threadId, holderThreadId: request.threadId, job: request.job, estMs: request.estMs,
-      grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null };
+      grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null,
+      uses: request.uses, autoRelease: request.autoRelease, graceUntil: request.graceUntil };
     refresh(lease);
     state.leases.push(lease);
     state.requests = state.requests.filter(r => r.id !== requestId);
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
-    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Use bb slots wrapper for heavy commands; bb slots heartbeat extends manual leases; bb slots release ${lease.id} promptly.`;
     notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
@@ -165,7 +166,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (leaseId !== undefined && l.id !== leaseId) continue;
       if (l.ownerThreadId === threadId) { free(l, "release", reason); result.released.push(l.id); }
       else if (l.holderThreadId === threadId) {
-        l.holderThreadId = l.ownerThreadId; refresh(l);
+        for (const use of l.uses ?? []) audit("use-dropped", { ...fields(l), reason: use.id });
+        l.uses = []; l.holderThreadId = l.ownerThreadId; refresh(l);
         audit("transfer", { ...fields(l), reason: "returned-to-owner" });
         const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id} returned to you: ${l.job}.`;
         notify(l.ownerThreadId, "transfer", message);
@@ -199,6 +201,49 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       data = { kind: "queued", request }; break;
+    }
+    case "acquire": {
+      if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
+          !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
+          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required");
+      const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
+      if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
+      let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);
+      if (!lease && !request) {
+        request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool, threadId: input.threadId,
+          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true };
+        state.requests.push(request);
+        audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
+      }
+      const target = lease ?? request!;
+      const use = { id: `use-${state.nextId++}`, threadId: input.threadId, startedAt: ctx.now,
+        expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
+      (target.uses ??= []).push(use); target.graceUntil = null;
+      if (lease) { refresh(lease); lease.expiresAt = Math.max(lease.expiresAt, use.expiresAt); data = { kind: "leased", lease, useId: use.id }; }
+      else data = { kind: "queued", request: request!, useId: use.id };
+      break;
+    }
+    case "done": case "detach": case "heartbeatUse": {
+      const target = [...state.leases, ...state.requests].find(item => item.uses?.some(use => use.id === input.useId));
+      if (!target) return fail("not-found", "Use not found");
+      const use = target.uses!.find(use => use.id === input.useId)!;
+      if (use.threadId !== input.threadId) return fail("forbidden", "Use belongs to another thread");
+      const lease = "holderThreadId" in target ? target : undefined;
+      if (input.type === "heartbeatUse") {
+        use.expiresAt = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
+        if (lease) { refresh(lease); lease.expiresAt = Math.max(lease.expiresAt, use.expiresAt); }
+        data = lease ? { kind: "leased", lease, useId: use.id } : { kind: "queued", request: target as import("../contract.js").SlotRequest, useId: use.id };
+      } else if (input.type === "detach" && lease) data = { kind: "leased", lease, useId: use.id };
+      else {
+        target.uses = target.uses!.filter(u => u.id !== use.id);
+        if (target.autoRelease && !target.uses.length) {
+          if (input.type === "detach") target.graceUntil = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
+          else if (lease) free(lease, "release", "last use completed");
+          else release(input.threadId, target.id, "last use completed");
+        }
+        if (input.type === "detach") data = { kind: "queued", position: sorted(state).filter(r => r.hostId === target.hostId && r.pool === target.pool).findIndex(r => r.id === target.id) + 1 };
+      }
+      break;
     }
     case "gateSample": {
       const gate = host(input.hostId).gate;
@@ -242,12 +287,13 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (owned.length !== 1) return fail(owned.length ? "invalid-input" : "forbidden", "Specify exactly one lease owned by the caller");
       if (!input.isChild) return fail("forbidden", "Target must be a child of the holder");
       const lease = owned[0];
+      if (lease.uses?.length || lease.graceUntil != null) return fail("in-use", "Lease has active uses or grace");
       if (state.leases.some(l => l.id !== lease.id && l.hostId === lease.hostId && l.pool === lease.pool &&
           (l.ownerThreadId === input.toThreadId || l.holderThreadId === input.toThreadId)) ||
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Use bb slots wrapper for heavy commands; bb slots heartbeat extends manual leases; bb slots release ${lease.id} promptly.`;
       notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
@@ -292,6 +338,16 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       data = { capacity: input.capacity }; break;
     }
     case "tick": {
+      for (const target of [...state.requests, ...state.leases]) {
+        const expired = (target.uses ?? []).filter(u => ctx.now >= u.expiresAt);
+        for (const use of expired) audit("use-expired", { hostId: target.hostId, pool: target.pool, threadId: use.threadId, reason: use.id });
+        if (expired.length) target.uses = target.uses!.filter(u => ctx.now < u.expiresAt);
+        if (target.autoRelease && !(target.uses?.length) && (expired.length > 0 || (target.graceUntil != null && ctx.now >= target.graceUntil))) {
+          if (!expired.length) audit("unclaimed", { hostId: target.hostId, pool: target.pool, reason: target.id });
+          if ("holderThreadId" in target) free(target, "release", expired.length ? "use expired" : "unclaimed");
+          else release(target.threadId, target.id, expired.length ? "use expired" : "unclaimed");
+        }
+      }
       for (const lease of [...state.leases]) {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
