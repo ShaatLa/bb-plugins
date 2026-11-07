@@ -58,8 +58,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   async function drain(id: string) {
     if (signal.aborted) return;
     const state = db.prepare('SELECT last_seq,last_error FROM threads_state WHERE thread_id=?').get(id) as State | undefined;
-    let projectId: string | null;
-    try { projectId = (await bb.sdk.threads.get({threadId:id,signal})).projectId; }
+    let projectId: string | null, questions: boolean;
+    try { const thread = await bb.sdk.threads.get({threadId:id,signal}); projectId = thread.projectId; questions = !thread.parentThreadId; }
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
     if (!state || (state.last_seq === 0 && state.last_error)) {
       const events: Event[] = [];
@@ -72,7 +72,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
       }
-      db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now()))();
+      db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions))();
       invalidate();
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
@@ -80,7 +80,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       const result = await page(id,cursor,'asc',100);
       if (signal.aborted) return;
       if (result.events.length) {
-        db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now()))(); invalidate();
+        db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions))(); invalidate();
         cursor = Math.max(...result.events.map(e=>e.seq));
       }
       if (result.events.length < result.size) break;

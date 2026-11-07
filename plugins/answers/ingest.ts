@@ -6,7 +6,8 @@ export const cap = (text: string, max: number) => text.length <= max ? text : te
 export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any; createdAt?: number };
 
 /** Apply an ascending page inside the caller's transaction. */
-export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0) {
+/** `trackQuestions` is false for agent-spawned threads, whose "user" turns come from agents and scripts. */
+export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true) {
  db.prepare('INSERT OR IGNORE INTO threads_state(thread_id,last_seq,updated_at) VALUES (?,0,?)').run(threadId,now);
  let state = db.prepare('SELECT last_seq,active_turn_id FROM threads_state WHERE thread_id=?').get(threadId) as {last_seq:number;active_turn_id:string|null};
  let cursor = state.last_seq, active = state.active_turn_id;
@@ -21,7 +22,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    const text = (Array.isArray(d.input) ? d.input : []).filter((x:any) => x.type === 'text' && typeof x.text === 'string').map((x:any) => x.text).join('\n').trim();
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
-   if (d.initiator === 'user' && d.senderThreadId == null && d.originPluginId !== 'answers' && text && !command) {
+   if (trackQuestions && d.initiator === 'user' && d.senderThreadId == null && d.originPluginId == null && text && !command) {
     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),e.seq,d.requestId ?? null,e.createdAt ?? now,now);
    }
   } else if (e.type === 'turn/started' && turn && !d.parentToolCallId) active=turn;
