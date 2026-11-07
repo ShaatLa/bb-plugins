@@ -21,6 +21,12 @@ describe("collector parsers", () => {
 });
 
 describe("collector", () => {
+  it.each(["darwin", "linux"] as const)("limits ps to the configured uid on %s", async platform => {
+    let args: string[] = [];
+    const collector = createCollector({ platform, uid: 1234, exec: async (_file, argv) => { args = argv; return { stdout: "" }; } });
+    await collector.sample(signal());
+    expect(args).toEqual(["-U", "1234", "-o", "pid=,lstart=,time="]);
+  });
   it("caches busy identities, refreshes stale cwd, and reports changes", async () => {
     let clock = at + 1000, cpu = 0, cwd = "/old", calls = 0;
     const collector = createCollector({ platform: "darwin", now: () => clock, exec: async (file) => {

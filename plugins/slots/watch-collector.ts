@@ -40,7 +40,7 @@ export function cpuDeltas(previous: Snapshot, next: Snapshot): (ProcessReading &
 
 type ExecOptions = { timeout: number; maxBuffer: number; signal: AbortSignal; env: NodeJS.ProcessEnv };
 type Exec = (file: string, args: string[], options: ExecOptions) => Promise<{ stdout: string }>;
-type CollectorOptions = { exec?: Exec; readlink?: (path: string) => Promise<string>; now?: () => number; platform?: NodeJS.Platform };
+type CollectorOptions = { exec?: Exec; readlink?: (path: string) => Promise<string>; now?: () => number; platform?: NodeJS.Platform; uid?: number };
 
 // Processes born and gone between snapshots cannot be observed; cwd changes can take five minutes to appear.
 export function createCollector(options: CollectorOptions = {}) {
@@ -48,6 +48,7 @@ export function createCollector(options: CollectorOptions = {}) {
   const readlink = options.readlink ?? readlinkFile;
   const now = options.now ?? Date.now;
   const platform = options.platform ?? process.platform;
+  const uid = options.uid ?? process.getuid!();
   let previous: Snapshot | undefined;
   const cache = new Map<string, { cwd: string; at: number }>();
 
@@ -60,7 +61,7 @@ export function createCollector(options: CollectorOptions = {}) {
     const execOptions: ExecOptions = { timeout: 3000, maxBuffer: 4 * 1024 * 1024, signal, env: { ...process.env, LC_ALL: "C" } };
     try {
       if (platform !== "darwin" && platform !== "linux") throw new Error("Unsupported platform");
-      const ps = await exec("ps", [platform === "darwin" ? "-axo" : "-eo", "pid=,lstart=,time="], execOptions);
+      const ps = await exec("ps", ["-U", String(uid), "-o", "pid=,lstart=,time="], execOptions);
       endAt = now(); psMs = endAt - begin;
       const next = { at: endAt, processes: parsePs(ps.stdout) };
       const busy = previous ? cpuDeltas(previous, next) : [];
