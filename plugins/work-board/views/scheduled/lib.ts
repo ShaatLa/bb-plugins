@@ -116,10 +116,10 @@ export function scheduleStatus(schedule: Schedule): "active" | "paused" | "finis
   return schedule.nextDueAt === null ? "finished" : "active";
 }
 
-export function describeTarget(schedule: Schedule, presetName: (id: string) => string | undefined): string {
+export function describeTarget(schedule: Schedule, presetName: (id: string) => string | undefined, threadName: (id: string) => string | undefined = () => undefined): string {
   if (schedule.target.kind === "unassigned") return "Choose target";
   return schedule.target.kind === "thread"
-    ? `Existing thread ${schedule.target.threadId}`
+    ? `Existing thread · ${threadName(schedule.target.threadId) ?? "Thread unavailable"}`
     : `New session · ${presetName(schedule.target.presetId) ?? "preset not found"}`;
 }
 

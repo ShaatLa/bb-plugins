@@ -11,6 +11,7 @@ import {
 import { errorMessage } from "../../shared/errors.js";
 import { useMentionItems, usePresets, useProjects, useTasksQuery } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
+import { ShareTaskButton } from "../../components/share-task-button";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { StatusIcon } from "../../components/status-icon.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
@@ -22,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
-import { useScheduledQuery, useScheduledRpc, useTasksById } from "./data.js";
+import { useScheduledQuery, useScheduledRpc, useTasksById, useThreadNames } from "./data.js";
 import {
   WEEKDAY_LABELS,
   WEEKDAY_ORDER,
@@ -249,12 +250,13 @@ function ThreadPicker({ value, onChange }: { value: string; onChange: (threadId:
   }, [open, sdk]);
   const titleOf = (thread: Threads[number]) => thread.title ?? thread.titleFallback ?? "Untitled thread";
   const selected = threads.find((thread) => thread.id === value);
+  const names = useThreadNames(value ? [value] : []);
   const typedId = /^thr_[A-Za-z0-9_-]+$/.test(query.trim()) ? query.trim() : null;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button type="button" variant="outline" size="sm" aria-label="Target thread" className="h-8 w-full justify-between gap-1.5 border-input px-2 text-xs font-normal">
-          <span className={cn("truncate", !value && "text-muted-foreground")}>{value ? (selected ? `${titleOf(selected)} · ${value}` : value) : "Choose a thread"}</span>
+          <span className={cn("truncate", !value && "text-muted-foreground")}>{value ? (selected ? titleOf(selected) : names.get(value) ?? "Thread unavailable") : "Choose a thread"}</span>
           <Icon name="ChevronDown" className="size-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
@@ -550,7 +552,7 @@ function TemplateLink({ scheduleId, onOpen }: { scheduleId: string; onOpen: (tas
   const detail = useScheduledQuery((rpc) => rpc.call("getSchedule", { scheduleId }), [scheduleId]);
   const key = detail.data?.task.key;
   return key ? (
-    <button type="button" className="underline hover:text-foreground" onClick={() => onOpen(key)}>Open template task {key}</button>
+    <><button type="button" className="underline hover:text-foreground" onClick={() => onOpen(key)}>Open template task {key}</button> <ShareTaskButton taskKey={key} /></>
   ) : null;
 }
 

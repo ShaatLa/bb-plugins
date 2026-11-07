@@ -5,6 +5,7 @@ import type { Schedule, ScheduleRun } from "../../shared/scheduled.js";
 import { errorMessage } from "../../shared/errors.js";
 import { usePresets, useProjects } from "../../shell/data.js";
 import { SCHEDULED_TABS, useTasksNavigation, type ScheduledTab } from "../../shell/routes.js";
+import { ShareTaskButton } from "../../components/share-task-button";
 import { EmptyState } from "../../components/empty-state.js";
 import { StatusIcon } from "../../components/status-icon.js";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useScheduledQuery, useScheduledRpc, useTasksById } from "./data.js";
+import { useScheduledQuery, useScheduledRpc, useTasksById, useThreadNames } from "./data.js";
 import {
   RUN_STATE_LABELS,
   describePush,
@@ -198,6 +199,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
   const presetName = (id: string) => presets.data?.find((preset) => preset.id === id)?.name;
   const [deleting, setDeleting] = useState<Schedule | null>(null);
   const schedules = query.data?.schedules ?? [];
+  const names = useThreadNames(schedules.flatMap(schedule => schedule.target.kind === "thread" ? [schedule.target.threadId] : []));
   return (
     <>
       {actions.error ? <ErrorBanner message={actions.error} onDismiss={actions.dismissError} /> : null}
@@ -222,7 +224,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   <ProjectChip project={projects.get(schedule.projectId)} />
                   <span>{describeRule(schedule.rule)}</span>
-                  <span>{describeTarget(schedule, presetName)}</span>
+                  <span>{describeTarget(schedule, presetName, id => names.get(id))}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                   <span className="text-muted-foreground">
@@ -244,6 +246,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
                     <Icon name="Edit" className="size-3.5" />
                     Edit
                   </Button>
+                  {template ? <ShareTaskButton taskKey={template.key} /> : null}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button type="button" size="icon" variant="ghost" className="size-7" aria-label={`More actions for ${schedule.title}`}>

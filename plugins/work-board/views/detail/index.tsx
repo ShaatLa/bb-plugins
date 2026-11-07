@@ -1,6 +1,7 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { DependenciesSection } from "./dependencies";
+import { ShareTaskButton } from "../../components/share-task-button";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -531,11 +532,7 @@ function TaskDetail({
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
-            <CopyTaskKey
-              key={task.id}
-              taskKey={task.key}
-              onError={push}
-            />,
+            <><CopyTaskKey key={task.id} taskKey={task.key} onError={push} /><ShareTaskButton taskKey={task.key} /></>,
           )}
           <ScheduledSourceBanner task={task} />
           {task.type === "epic" ||

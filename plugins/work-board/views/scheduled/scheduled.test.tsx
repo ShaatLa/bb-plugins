@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { makeTask } from "../../test-fixtures.js";
 import { parseTasksRoute, tasksRouteToSubPath } from "../../shell/routes.js";
 import { scheduledRpcContract, type ScheduleRun } from "../../shared/scheduled.js";
@@ -36,7 +37,7 @@ function scheduledRpc(handlers: Record<string, (input: any) => unknown>) {
   const calls: Array<{ method: string; input: any }> = [];
   const rpc: Record<string, (input: unknown) => unknown> = {
     listProjects: () => ({ projects: [project] }), listFolders: () => ({ folders: [] }), listPresets: () => ({ presets: [preset] }),
-    sidebarSummary: () => ({ projects: [] }), listTasks: () => ({ tasks: [] }), getTask: () => ({ task: makeTask({ key: "OPS-9", title: "Template" }) }),
+    sidebarSummary: () => ({ projects: [] }), listTasks: () => ({ tasks: [] }), getTask: (input: unknown) => ({ task: makeTask({ id: (input as { taskId: string }).taskId, key: "OPS-9", title: "Template" }) }),
     getTaskByKey: () => ({ task: null }), getBoardPreferences: () => ({}),
     previewSchedule: () => ({ dates: ["2026-11-08T08:00:00.000Z"] }),
   };
@@ -190,4 +191,36 @@ it("shows the scheduled-source banner on a task detail", async () => {
   expect(banner.textContent).toContain("not started yet");
   fireEvent.click(within(banner).getByRole("button", { name: "Open Scheduled" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "scheduled?tab=results" } });
+});
+
+
+it("resolves a saved thread name before opening the picker and batches duplicate targets", async () => {
+  const saved = schedule(S1, { target: { kind: "thread", threadId: "thr_manager" } });
+  const { rpc } = scheduledRpc({ listSchedules: () => ({ schedules: [saved, schedule(S2, { target: saved.target })], nextCursor: null }), getSchedule: () => ({ schedule: saved, task: makeTask({ key: "OPS-9" }), dependencyIds: [] }) });
+  const list = vi.fn().mockResolvedValue([makeThreadResponse({ id: "thr_manager", title: "Manager" })]);
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "scheduled" }, { rpc, sdk: { threads: { list } } });
+  await slot.findAllByText("Existing thread · Manager");
+  expect(list.mock.calls[0]?.[0]).toMatchObject({ threadIds: ["thr_manager"], limit: 1 });
+  fireEvent.click(within((await slot.findByText("Report 11")).closest("li")!).getByRole("button", { name: "Edit" }));
+  const picker = await slot.findByRole("button", { name: "Target thread" });
+  await waitFor(() => expect(picker.textContent).toContain("Manager"));
+  expect(picker.textContent).not.toContain("thr_manager");
+  expect(list.mock.calls.every(([input]) => input.threadIds?.length === 1)).toBe(true);
+});
+
+it("shares a scheduled template link for agent editing without dispatch or mutation", async () => {
+  const { rpc, calls } = scheduledRpc({ listSchedules: () => ({ schedules: [schedule(S1)], nextCursor: null }) });
+  const slot = open("scheduled", rpc);
+  fireEvent.click(await slot.findByRole("button", { name: "Share OPS-9 with agent" }));
+  await slot.findByText("Task link copied. Paste it into the agent chat.");
+  expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: "[OPS-9](/plugins/work-board/work-board/task/OPS-9)" }]);
+  expect(calls.every(call => call.method.startsWith("list") || call.method.startsWith("get"))).toBe(true);
+});
+
+it("reports a refused task-link clipboard write", async () => {
+  const { rpc } = scheduledRpc({ listSchedules: () => ({ schedules: [schedule(S1)], nextCursor: null }) });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "scheduled" }, { rpc, experimental_copyToClipboard: async () => false });
+  fireEvent.click(await slot.findByRole("button", { name: "Share OPS-9 with agent" }));
+  await slot.findByText("Could not copy task link.");
+  expect(slot.queryByText("Task link copied. Paste it into the agent chat.")).toBeNull();
 });

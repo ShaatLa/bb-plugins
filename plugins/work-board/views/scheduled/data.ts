@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useRpc } from "@get-bb/plugin-sdk/app";
+import { useRpc, useSdk } from "@get-bb/plugin-sdk/app";
 import type { Task } from "../../shared/contract.js";
 import type { ScheduledRpcContract } from "../../shared/scheduled.js";
 import { useTasksQuery, type QueryPublish } from "../../shell/data.js";
@@ -41,4 +41,16 @@ export function useTasksById(taskIds: readonly string[]): ReadonlyMap<string, Ta
     { enabled: ids.length > 0, relevantTaskIds: ids },
   );
   return useMemo(() => new Map((query.data ?? []).map((task) => [task.id, task])), [query.data]);
+}
+
+
+/** One bounded SDK batch per visible target set; no per-row reads or polling. */
+export function useThreadNames(threadIds: readonly string[]): ReadonlyMap<string, string> {
+  const sdk = useSdk();
+  const ids = useMemo(() => [...new Set(threadIds)].sort(), [threadIds.join(",")]);
+  const query = useTasksQuery<Array<{ id: string; title: string }>>(
+    async () => (await sdk.threads.list({ threadIds: ids, limit: ids.length })).map(thread => ({ id: thread.id, title: thread.title ?? thread.titleFallback ?? "Untitled thread" })),
+    [], [ids], { enabled: ids.length > 0 },
+  );
+  return useMemo(() => new Map((query.data ?? []).map(thread => [thread.id, thread.title])), [query.data]);
 }

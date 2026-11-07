@@ -393,3 +393,8 @@ Settings → select a project → Archiving and activity → Task status notific
 Assign an existing session without dispatching with `bb work-board attach KEY --thread thr_ID`; remove responsibility with `detach`, inspect with `threads`. In the task UI, **Assign thread** performs the same operation without sending messages or changing workflow status. Multiple collaborators are supported and existing links remain intact. A live idle session is **Assigned**, an executing one is **Working**. Go to thread opens it; new-session dispatch is hidden while assigned. The project default dispatch thread is a preference, not an assignment. Creators/requesters and comment authors are not silently assigned.
 
 Abandoned requires recorded work AND a confirmed lost assignment (archived/deleted/missing or explicitly detached), no remaining session, complete provider diagnostics, and an unfinished agent task. Comments alone never establish that a task was taken. Unknown provider state is not abandonment. Existing legacy cards without an assignment can be assigned explicitly; task comments are preserved.
+
+
+## Sharing task context
+
+The UI Share button copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status. A scheduled task shares its template key; agents can inspect/change it with `schedule show KEY` and `schedule edit KEY`, and use ordinary task commands for attachments/questions/comments. Selected scheduled targets display the thread title; an unavailable thread is not silently replaced.
