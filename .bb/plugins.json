@@ -22,6 +22,10 @@
     {
       "name": "delivery-dashboard",
       "source": "./plugins/ci-dashboard"
+    },
+    {
+      "name": "slots",
+      "source": "./plugins/slots"
     }
   ]
 }
