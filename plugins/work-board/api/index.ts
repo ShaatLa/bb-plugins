@@ -198,6 +198,8 @@ export function publishTasksChanged(
 ): void {
   const payload: TasksChangedEvent = { taskId, projectId };
   bb.realtime.publish("tasks:changed", payload);
+  if (bb.storage.database().prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=?").get(taskId))
+    bb.realtime.publish("schedules:changed", { projectId });
   // A predecessor's status/key changes must refresh its neighbours without board-wide polling.
   const neighbours = bb.storage.database().prepare<[string, string, string], { taskId: string; projectId: string }>(`
     SELECT DISTINCT t.id AS taskId, t.project_id AS projectId FROM task_dependencies d JOIN tasks t

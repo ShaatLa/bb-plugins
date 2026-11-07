@@ -41,6 +41,9 @@ describe("run actions", () => {
   it("offers cancel for queued work only and never dismisses active runs", () => {
     expect(runActions(run({ state: "queued" }))).toEqual({ retry: false, resolve: false, cancel: true });
     expect(runActions(run({ state: "running" }))).toEqual({ retry: false, resolve: false, cancel: false });
+    expect(runActions(run({ state: "delivery_unknown" })).retry).toBe(false);
+    expect(runActions(run({ state: "failed", startedAt: "2026-11-09T08:00:00.000Z" })).retry).toBe(false);
+    expect(runActions(run({ state: "cancel_pending" })).resolve).toBe(false);
     expect(runActions(run({ state: "cancel_pending" })).cancel).toBe(true);
   });
   it("reports push delivery truthfully", () => {

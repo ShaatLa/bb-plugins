@@ -221,7 +221,7 @@ type SpawnEnvironment = Parameters<
   BbPluginApi["sdk"]["threads"]["spawn"]
 >[0]["environment"];
 
-async function presetSpawnEnvironment(
+export async function presetSpawnEnvironment(
   bb: BbPluginApi,
   preset: Preset,
 ): Promise<SpawnEnvironment> {

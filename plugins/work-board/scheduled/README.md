@@ -39,3 +39,11 @@ Capture these three tables in bulk per project; do not call getters per task. Sc
 Focused foundation checks: scheduled/recurrence.test.ts and scheduled/store.test.ts. Root runs full suite/build/install.
 
 Import clarification: scheduleTargetSchema also accepts `{kind:"unassigned"}` as the explicit imported/unresolved target. Imported schedules use it with enabled=false; enabling without choosing a real thread/preset is refused. It is a target-resolution state, not a third execution mode. Frontend must render Choose target for this case.
+
+## Execution integration
+
+`scheduled/index.ts` exports createScheduledHandlers/registerScheduled. `scheduled/service.ts` owns one per-BB service with two dispatch slots and two reconciliation slots (at most four concurrent SDK sampling paths). Runtime subscribes before startup recovery and ticks once per minute; pending IDs rotate in batches of 100. A 256-entry known-thread set rejects unrelated lifecycle traffic without SQL/SDK reads. Accepted request attribution is a small bounded immutable cache; full request bodies are not retained or re-read on unchanged polls.
+
+`runNow` reserves before external calls; no automatic resend for ambiguous outcomes. Cancelled events prove cancellation; an empty queue or idempotent DELETE does not. Records without a task prove the pre-send transaction never occurred and may resume inside 30-minute grace. Pre-start task instances remain hidden. Actual acceptance preserves an already advanced/Done workflow status rather than moving it backwards. Migration 20 includes a status trigger so Done/Reopen synchronize retained run state atomically without polling completed worker sessions.
+
+Import uses unassigned targets, paused schedules and historical run records; ordinary task/source readers continue to resolve saved results independently of history/schedule deletion. Successful history expires after 30 days; resolved errors after seven, with unresolved operational delivery remaining protected. Schedule prompts contain a limited description preview and attachment manifest; full content remains in the task and is available through ordinary CLI tools.

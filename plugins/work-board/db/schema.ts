@@ -382,7 +382,18 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_task_schedule_runs_pending ON task_schedule_runs(state,thread_id);
   CREATE INDEX idx_task_schedule_runs_history ON task_schedule_runs(project_id,schedule_id,id);
-  CREATE INDEX idx_task_schedule_runs_retention ON task_schedule_runs(state,resolved_at,finished_at);`,
+  CREATE INDEX idx_task_schedule_runs_retention ON task_schedule_runs(state,resolved_at,finished_at);
+  CREATE INDEX idx_task_schedule_runs_queue ON task_schedule_runs(json_extract(payload,'$.queueId'));
+  CREATE TRIGGER task_scheduled_status AFTER UPDATE OF status ON tasks
+  WHEN NEW.status<>OLD.status AND EXISTS(SELECT 1 FROM task_scheduled_sources WHERE task_id=NEW.id AND started_at IS NOT NULL)
+  BEGIN
+    UPDATE task_schedule_runs SET
+      state=CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+      finished_at=CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,
+      payload=json_set(payload,'$.state',CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+        '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
+    WHERE id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
+  END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
