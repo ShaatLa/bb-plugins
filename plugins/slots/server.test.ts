@@ -448,7 +448,7 @@ it("acquire resolves a grant at its deadline and cleans up on abort", async () =
   const lease = { id: "lease-2", requestId: "req-1" };
   const invoke = vi.fn(async (method: string) => {
     if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1" }, useId: "use-3" } };
-    if (method === "status") return { ok: true, data: { hostSettings: { local: { heartbeatIntervalMs: 600000 } } } };
+    if (method === "status") return { ok: true, data: { hostSettings: { other: { heartbeatIntervalMs: 120000 }, local: { heartbeatIntervalMs: 600000 } } } };
     if (method === "heartbeatUse") return { ok: true, data: { kind: "queued", useId: "use-3" } };
     if (method === "detach") return { ok: true, data: { kind: "leased", lease, useId: "use-3" } };
     return { ok: true, data: null };
