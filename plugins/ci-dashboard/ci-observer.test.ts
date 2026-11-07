@@ -69,7 +69,7 @@ describe("merge queue removal", () => {
       // An own failure with cancelled siblings ran to its own end: a removal; its loss never stands alone (the group had cancellations).
       const failed = [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 2, jobName: "Lint" }), "runner_loss"), classify(queueJob({ jobId: 3, jobName: "E2E" }), cancel)];
       expect(queueRemovalEvents(REPO, failed, 3).map((event) => event.key), cancel).toEqual(["queue:50:1"]);
-      expect(runnerLossEvents(REPO, failed, "main", 3, () => true), cancel).toEqual([]);
+      expect(runnerLossEvents(REPO, failed, "main", 3), cancel).toEqual([]);
     }
     // Another attempt of the same run is a different group and is not affected.
     expect(queueRemovalEvents(REPO, [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 3, attempt: 2 }), "collateral_cancel")]).map((event) => event.key)).toEqual(["queue:50:1"]);
@@ -78,15 +78,41 @@ describe("merge queue removal", () => {
     const group = [classify(queueJob({ jobId: 1 }), "real"), classify(queueJob({ jobId: 2, jobName: "Lint" }), "runner_loss"), classify(queueJob({ jobId: 3, jobName: "E2E" }), "runner_loss")];
     expect(text(queueRemovalEvents(REPO, group, 3)[0]!)).toContain("Unit tests: real, Lint: runner_loss (2/3 on this head), E2E: runner_loss (2/3 on this head)");
     expect(text(queueRemovalEvents(REPO, group)[0]!)).toContain("Lint: runner_loss (2 on this head)");
-    // The count covers the whole head, not only this attempt.
-    expect(text(queueRemovalEvents(REPO, [...group, classify(queueJob({ runId: 60, jobId: 9 }), "runner_loss")], 3)[0]!)).toContain("Lint: runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+    // The count covers the whole head, not only this attempt, but only groups whose removal was confirmed and sent.
+    const withOther = [...group, classify(queueJob({ runId: 60, jobId: 9 }), "runner_loss")];
+    expect(text(queueRemovalEvents(REPO, withOther, 3, undefined, new Set(["queue:60:1"]))[0]!)).toContain("Lint: runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+    expect(text(queueRemovalEvents(REPO, withOther, 3)[0]!)).toContain("Lint: runner_loss (2/3 on this head)");
   });
   it("counts a PR's losses across its groups (each group has its own merge commit), skipping groups whose removal was never confirmed", () => {
     const loss = (runId: number, head: string) => classify(queueJob({ runId, jobId: runId * 10, headSha: head.repeat(40), headBranch: `gh-readonly-queue/main/pr-7-${head.repeat(40)}` }), "runner_loss");
     const three = [loss(61, "a"), loss(62, "b"), loss(63, "c")];
-    expect(text(queueRemovalEvents(REPO, three, 3).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+    const third = (confirmed: string[]) => text(queueRemovalEvents(REPO, three, 3, undefined, new Set(confirmed)).find((event) => event.key === "queue:63:1")!);
+    expect(third(["queue:61:1", "queue:62:1"])).toContain("runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
     // The middle group's removal was given up on (the PR stayed queued): it does not count.
-    expect(text(queueRemovalEvents(REPO, three, 3, undefined, new Set(["queue:62:1"])).find((event) => event.key === "queue:63:1")!)).toContain("runner_loss (2/3 on this head)");
+    expect(third(["queue:61:1"])).toContain("runner_loss (2/3 on this head)");
+    expect(third([])).toContain("runner_loss (1/3 on this head)");
+  });
+  it("counts only confirmed groups plus the one being rendered: first confirmed, third rendered is 2, not 3", () => {
+    const loss = (runId: number) => classify(queueJob({ runId, jobId: runId * 10 }), "runner_loss");
+    const three = [loss(61), loss(62), loss(63)];
+    const line = text(queueRemovalEvents(REPO, three, 3, undefined, new Set(["queue:61:1"])).find((event) => event.key === "queue:63:1")!);
+    expect(line).toContain("runner_loss (2/3 on this head)");
+    expect(line).not.toContain("suspected");
+  });
+  it("a loss in a mass cancel says so instead of suspecting the PR, whatever the count", () => {
+    const loss = (runId: number) => classify(queueJob({ runId, jobId: runId * 10 }), "runner_loss");
+    const three = [loss(61), loss(62), loss(63)], confirmed = new Set(["queue:61:1", "queue:62:1"]);
+    const render = () => text(queueRemovalEvents(REPO, three, 3, undefined, confirmed).find((event) => event.key === "queue:63:1")!);
+    expect(render()).toContain("runner_loss (3/3 on this head; suspected PR-induced (repeat on same head))");
+    three[2]!.job.massLoss = true;
+    expect(render()).toContain("runner_loss (3/3 on this head; mass runner loss)");
+    expect(render()).not.toContain("suspected");
+    three[2]!.job.massLoss = false;
+    three[0]!.job.massLoss = true; three[1]!.job.massLoss = true; // only the rendered job's own flag matters
+    expect(render()).toContain("suspected PR-induced");
+    // Also with a count of 1.
+    const [single] = queueRemovalEvents(REPO, [{ ...loss(70), job: { ...loss(70).job, massLoss: true } }], 3);
+    expect(text(single!)).toContain("runner_loss (1/3 on this head; mass runner loss)");
   });
   it("restarts the count when the PR gets a new head: retry budgets are per head", () => {
     const loss = (runId: number, minute: number) => classify(queueJob({ runId, jobId: runId * 10, headSha: String(runId).repeat(40).slice(0, 40), createdAt: at(minute), headBranch: `gh-readonly-queue/main/pr-7-${"b".repeat(40)}` }), "runner_loss");
@@ -95,7 +121,7 @@ describe("merge queue removal", () => {
     // Head "a" was pushed before the first two groups, head "f" (the fix) before the third.
     attachPrHeads([prRun("a", 5), prRun("f", 30), ...classified.map((c) => c.job)], classified);
     expect(classified.map((c) => c.job.prHead?.[0])).toEqual(["a", "a", "f"]);
-    const line = (key: string) => text(queueRemovalEvents(REPO, classified, 3).find((event) => event.key === key)!);
+    const line = (key: string) => text(queueRemovalEvents(REPO, classified, 3, undefined, new Set(["queue:61:1", "queue:62:1", "queue:63:1"])).find((event) => event.key === key)!);
     expect(line("queue:62:1")).toContain("runner_loss (2/3 on this head)");
     expect(line("queue:63:1")).toContain("runner_loss (1/3 on this head)");
   });
@@ -194,24 +220,29 @@ describe("runner loss", () => {
     expect(text(runnerLossEvents(REPO, classified, "main", 3)[0]!)).toContain("· 2/3 losses on head \`0123456\`");
     expect(text(runnerLossEvents(REPO, classified, "main", 3)[2]!)).toContain("· 1/3 losses on head \`fffffff\`");
   });
-  it("a standalone merge queue loss counts on its head and is announced exactly once", () => {
-    const classified = [classify(lost({ jobId: 1 }), "runner_loss"), classify(lost({ jobId: 2, jobName: "Lint" }), "runner_loss")];
-    const events = runnerLossEvents(REPO, classified, "main", 3, (runId, attempt) => runId === 1 && attempt === 1);
-    expect(events.map((event) => text(event))).toEqual([expect.stringContaining("· 2/3 losses on head \`0123456\`"), expect.stringContaining("· 2/3 losses on head \`0123456\`")]);
-    const state = emptyRepoState(), global = emptyGlobal(), config = { enabled: enabledEvents({}), quietMs: 0, batchMs: 0, historyMs: 86_400_000, now: Date.parse(at(30)) };
-    syncGlobal(global, ["thr_a"], enabledEvents({}), Date.parse(at(0)));
-    expect(acceptEvents(state, global, events, config)).toHaveLength(2);
-    expect(acceptEvents(state, global, runnerLossEvents(REPO, classified, "main", 3, () => true), config)).toEqual([]);
+  it("ignores merge queue losses entirely: they only ever ride inside a confirmed removal line", () => {
+    const classified = [classify(lost({ jobId: 1 }), "runner_loss"), classify(lost({ jobId: 2, jobName: "Lint", runId: 51 }), "runner_loss")];
+    for (const branch of ["main", null]) expect(runnerLossEvents(REPO, classified, branch, 3)).toEqual([]);
+    // Next to a push loss, only the push run is reported and the merge queue losses add nothing to its head count.
+    const push = classify(lost({ jobId: 3, event: "push", headBranch: "main" }), "runner_loss");
+    const events = runnerLossEvents(REPO, [...classified, push], "main", 3);
+    expect(events.map((event) => event.key)).toEqual(["loss:3"]);
+    expect(text(events[0]!)).toContain("· 1/3 losses on head \`0123456\`");
   });
-  it("covers default-branch push runs, and merge queue runs only when the predicate allows the attempt", () => {
+  it("covers default-branch push runs only", () => {
     const push = (over = {}) => classify(lost({ event: "push", headBranch: "main", ...over }), "runner_loss");
     const events = [push({ jobId: 1 }), push({ jobId: 2, headBranch: "release" }), classify(lost({ event: "pull_request", headBranch: "feature", jobId: 3 }), "runner_loss"), classify(lost({ jobId: 4 }), "runner_loss"),
-      classify(lost({ jobId: 5 }), "real")];
+      classify(lost({ jobId: 5, event: "push", headBranch: "main" }), "real")];
     expect(runnerLossEvents(REPO, events, "main", 0).map((event) => event.key)).toEqual(["loss:1"]);
-    expect(runnerLossEvents(REPO, events, "main", 0, () => true).map((event) => event.key)).toEqual(["loss:1", "loss:4"]);
-    expect(runnerLossEvents(REPO, events, "main", 0, (runId, attempt) => runId === 99 && attempt === 1)).toHaveLength(1);
     expect(runnerLossEvents(REPO, [push({ jobId: 1 })], null, 0)).toEqual([]);
-    expect(text(runnerLossEvents(REPO, [classify(lost({ jobId: 6, runnerName: null }), "runner_loss")], null, 0, () => true)[0]!)).toContain("runner unknown");
+    expect(text(runnerLossEvents(REPO, [push({ jobId: 6, runnerName: null })], "main", 0)[0]!)).toContain("runner unknown");
+  });
+  it("a push loss that is announced goes out exactly once", () => {
+    const classified = [classify(lost({ jobId: 1, event: "push", headBranch: "main" }), "runner_loss"), classify(lost({ jobId: 2, jobName: "Lint", event: "push", headBranch: "main" }), "runner_loss")];
+    const state = emptyRepoState(), global = emptyGlobal(), config = { enabled: enabledEvents({}), quietMs: 0, batchMs: 0, historyMs: 86_400_000, now: Date.parse(at(30)) };
+    syncGlobal(global, ["thr_a"], enabledEvents({}), Date.parse(at(0)));
+    expect(acceptEvents(state, global, runnerLossEvents(REPO, classified, "main", 3), config)).toHaveLength(2);
+    expect(acceptEvents(state, global, runnerLossEvents(REPO, classified, "main", 3), config)).toEqual([]);
   });
 });
 
@@ -392,7 +423,7 @@ describe("safety", () => {
       signature: { rules: "x", label: "FLAKE-1", match: `API_TOKEN=${SECRET}`, source: "log" },
     });
     const classified: ClassifiedJob[] = [{ job: hostile, class: "flake", reason: "matches a known flaky signature", evidence: `FLAKE-1: API_TOKEN=${SECRET}`, flakeLabel: "FLAKE-1" }];
-    const lines = [...queueRemovalEvents(REPO, classified), ...runnerLossEvents(REPO, [{ ...classified[0]!, class: "runner_loss" }], "main", 5, () => true),
+    const lines = [...queueRemovalEvents(REPO, classified), ...runnerLossEvents(REPO, [{ ...classified[0]!, class: "runner_loss", job: { ...hostile, event: "push", headBranch: "main" } }], "main", 5),
       ...defaultRedEvents(REPO, [{ ...classified[0]!, job: { ...hostile, runId: 70, event: "push", headBranch: "main" } }], [{ kind: "main", workflowId: 1, name: "CI", branch: "main", runId: 70, createdAt: at(0), consecutive: 1 }])].map((event) => text(event, ["suite.test"]));
     expect(lines).toHaveLength(3);
     for (const line of lines) { expect(line).not.toContain(SECRET); expect(line).not.toContain("env:"); expect(line).not.toContain("API_TOKEN"); expect(line).not.toContain("##[error]"); expect(line.length).toBeLessThanOrEqual(400); }

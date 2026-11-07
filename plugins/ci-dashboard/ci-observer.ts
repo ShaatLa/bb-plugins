@@ -100,27 +100,26 @@ export function attachPrHeads(jobs: JobRecord[], classified: ClassifiedJob[]): v
     if (found) job.prHead = found;
   }
 }
-// Losses in a group the queue invalidated never count against the head's budget.
-// Nor do losses in a group whose removal GitHub never confirmed (`rejected` queue keys): the PR stayed queued, the group was superseded.
-const headLosses = (classified: ClassifiedJob[], job: JobRecord, rejected: ReadonlySet<string>) => classified.filter((c) => c.class === "runner_loss" && lossKey(c.job) === lossKey(job)
-  && !(c.job.event === "merge_group" && (invalidated(classified, c.job.runId, c.job.attempt)
-    || (rejected.has(`queue:${c.job.runId}:${c.job.attempt}`) && !(c.job.runId === job.runId && c.job.attempt === job.attempt))))).length;
+// A merge queue loss counts against the PR head's budget only in a group that removed the PR: its removal was confirmed and sent
+// (`confirmed` queue keys), or it is the removal being reported now. Rebuilt or never-removing groups do not count.
+const headLosses = (classified: ClassifiedJob[], job: JobRecord, confirmed: ReadonlySet<string>) => classified.filter((c) => c.class === "runner_loss" && lossKey(c.job) === lossKey(job)
+  && (c.job.event !== "merge_group" || confirmed.has(`queue:${c.job.runId}:${c.job.attempt}`) || (c.job.runId === job.runId && c.job.attempt === job.attempt))).length;
 /** Repeated losses on one head are rarely the runners' fault alone: flag them from this count on. */
 const SUSPECT_REPEATS = 3;
-const lossCount = (classified: ClassifiedJob[], job: JobRecord, limit: number, rejected: ReadonlySet<string>) => {
-  const n = headLosses(classified, job, rejected);
+const lossCount = (classified: ClassifiedJob[], job: JobRecord, limit: number, confirmed: ReadonlySet<string>) => {
+  const n = headLosses(classified, job, confirmed);
   return `${n}${limit > 0 ? `/${limit}` : ""}`;
 };
-const suspect = (classified: ClassifiedJob[], job: JobRecord, rejected: ReadonlySet<string>) =>
-  headLosses(classified, job, rejected) >= SUSPECT_REPEATS ? "; suspected PR-induced (repeat on same head)" : "";
-
+// A casualty of a mass runner loss is the runners' fault, whatever the count.
+const suspect = (classified: ClassifiedJob[], job: JobRecord, confirmed: ReadonlySet<string>) =>
+  job.massLoss ? "; mass runner loss" : headLosses(classified, job, confirmed) >= SUSPECT_REPEATS ? "; suspected PR-induced (repeat on same head)" : "";
+/** The head a loss counts against: the PR head for a merge queue job when known, else the commit the job ran on. */
+const headOf = (job: JobRecord) => sha7(job.event === "merge_group" ? job.prHead ?? job.headSha : job.headSha);
 const inheritedFrom = ({ job, class: cls }: ClassifiedJob) => INHERITABLE.has(cls) ? job.inheritedFrom?.pullRequest : undefined;
-const describeJob = (classified: ClassifiedJob[], limit: number, rejected: ReadonlySet<string>) => (c: ClassifiedJob) => { const { job, class: cls, reason, flakeLabel } = c, from = inheritedFrom(c);
-  return `${job.jobName}: ${cls}${reason.startsWith(BUILD_REASON) ? ` (${BUILD_REASON})` : ""}${flakeLabel ? ` ${flakeLabel}` : ""}${from === undefined ? "" : ` inherited from #${from}`}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit, rejected)} on this head${suspect(classified, job, rejected)})` : ""}`; };
+const describeJob = (classified: ClassifiedJob[], limit: number, confirmed: ReadonlySet<string>) => (c: ClassifiedJob) => { const { job, class: cls, reason, flakeLabel } = c, from = inheritedFrom(c);
+  return `${job.jobName}: ${cls}${reason.startsWith(BUILD_REASON) ? ` (${BUILD_REASON})` : ""}${flakeLabel ? ` ${flakeLabel}` : ""}${from === undefined ? "" : ` inherited from #${from}`}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit, confirmed)} on this head${suspect(classified, job, confirmed)})` : ""}`; };
 // The queue invalidated or rebuilt the group: its jobs were cancelled and none failed on its own. A group that ran to its own failure
 // (fail-fast cancels siblings) is not invalidated, even if it was built on a predecessor that later left the queue.
-// Any cancelled job in a group whose PR stayed queued means the queue rebuilt it: its losses never stand alone.
-const superseded = (classified: ClassifiedJob[], runId: number, attempt: number) => classified.some((c) => c.job.runId === runId && c.job.attempt === attempt && NOT_OWN.has(c.class));
 const invalidated = (classified: ClassifiedJob[], runId: number, attempt: number) => {
   const jobs = classified.filter((c) => c.job.runId === runId && c.job.attempt === attempt);
   return jobs.some((c) => NOT_OWN.has(c.class)) && !jobs.some(OWN_FAILURE);
@@ -128,7 +127,7 @@ const invalidated = (classified: ClassifiedJob[], runId: number, attempt: number
 
 /** 1. A merge queue run attempt with a job that failed (or was cancelled with its own failure): the PR leaves the queue. */
 /** With `now`, an attempt waits (up to INHERIT_WAIT_MS) for its inherited-failure check instead of going out charged to its own PR. */
-export function queueRemovalEvents(repository: string, classified: ClassifiedJob[], limit = 0, now?: number, rejected: ReadonlySet<string> = new Set()): ObserverEvent[] {
+export function queueRemovalEvents(repository: string, classified: ClassifiedJob[], limit = 0, now?: number, confirmed: ReadonlySet<string> = new Set()): ObserverEvent[] {
   const attempts = new Map<string, ClassifiedJob[]>();
   for (const c of classified) if (c.job.event === "merge_group" && !NOT_OWN.has(c.class)) attempts.set(`${c.job.runId}:${c.job.attempt}`, [...(attempts.get(`${c.job.runId}:${c.job.attempt}`) ?? []), c]);
   return [...attempts.values()].filter((jobs) => jobs.some(OWN_FAILURE) && !invalidated(classified, jobs[0]!.job.runId, jobs[0]!.job.attempt)
@@ -142,24 +141,20 @@ export function queueRemovalEvents(repository: string, classified: ClassifiedJob
       ...(pr === null ? {} : { removal: { pullRequest: pr, since: Number.isFinite(started) ? started : completedAt(jobs[0]!.job) } }),
       type: "queue", key: `queue:${runId}:${attempt}`, dedupe: "once", at: Math.max(...jobs.map((c) => completedAt(c.job))),
       tests: jobs.some((c) => TEST_CLASSES.has(c.class)) ? { run: { id: runId, attempt }, jobs: jobs.map((c) => c.job) } : undefined,
-      render: (tests) => fit(`${pr === null ? `Merge queue run failed${origin === undefined ? "" : ` (inherited from #${origin})`}` : `PR #${pr} ${verb}`} · ${more(jobs.map(describeJob(classified, limit, rejected)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId), inspectTag(queueRef(runId, attempt))),
+      render: (tests) => fit(`${pr === null ? `Merge queue run failed${origin === undefined ? "" : ` (inherited from #${origin})`}` : `PR #${pr} ${verb}`} · ${more(jobs.map(describeJob(classified, limit, confirmed)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId), inspectTag(queueRef(runId, attempt))),
     };
   });
 }
 
-/**
- * 2. A runner lost on a default-branch push run, with the losses counted on the same head commit.
- * A merge queue loss normally rides inside its removal message; it stands alone only when `standaloneQueueLoss` says the attempt led to no removal,
- * and never for a group the queue invalidated.
- */
-export function runnerLossEvents(repository: string, classified: ClassifiedJob[], defaultBranch: string | null, limit: number,
-  standaloneQueueLoss: (runId: number, attempt: number) => boolean = () => false, rejected: ReadonlySet<string> = new Set()): ObserverEvent[] {
-  return classified.filter((c) => c.class === "runner_loss").filter(({ job }) => job.completedAt && (job.event === "merge_group"
-    ? standaloneQueueLoss(job.runId, job.attempt) && !superseded(classified, job.runId, job.attempt)
-    : job.event === "push" && defaultBranch !== null && job.headBranch === defaultBranch)).map(({ job }): ObserverEvent => ({
-    type: "loss", key: `loss:${job.jobId}`, dedupe: "once", at: completedAt(job),
-    problem: `runner_loss:${job.jobId}`,
-    render: (_tests, problem) => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · ${lossCount(classified, job, limit, rejected)} losses on head ${sha7(job.headSha)}${suspect(classified, job, rejected)}`, jobUrl(repository, job), problemTag(problem) + inspectTag(jobRef(job.jobId))) }));
+/** 2. A runner lost on a default-branch push run, with the losses counted on the same head commit. */
+export function runnerLossEvents(repository: string, classified: ClassifiedJob[], defaultBranch: string | null, limit: number): ObserverEvent[] {
+  // Merge queue losses only ride inside a confirmed removal line: a group that removed nobody was rebuilt, and nothing acts on it.
+  return classified.filter((c) => c.class === "runner_loss" && c.job.completedAt && c.job.event === "push" && defaultBranch !== null && c.job.headBranch === defaultBranch)
+    .map(({ job }): ObserverEvent => ({
+      type: "loss", key: `loss:${job.jobId}`, dedupe: "once", at: completedAt(job),
+      problem: `runner_loss:${job.jobId}`,
+      render: (_tests, problem) => fit(`Runner lost · ${job.jobName} · runner ${job.runnerName ?? "unknown"} · ${lossCount(classified, job, limit, new Set())} losses on head ${headOf(job)}${suspect(classified, job, new Set())}`, jobUrl(repository, job), problemTag(problem) + inspectTag(`job:${job.jobId}`)),
+    }));
 }
 
 export const classCounts = (jobs: ClassifiedJob[]) => CLASS_ORDER.map((cls) => [cls, jobs.filter((c) => c.class === cls).length] as const).filter(([, n]) => n > 0).map(([cls, n]) => `${n} ${cls}`).join(", ") || "none stored";

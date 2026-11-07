@@ -51,6 +51,8 @@ export type JobRecord = {
   inheritCheck?: number;
   /** In memory only: for a merge queue job, the PR's head commit when its group ran (from the PR's own pull_request runs). */
   prHead?: string;
+  /** In memory only: the job died in a mass runner loss (many runners at once), which is never the PR's fault. */
+  massLoss?: boolean;
 };
 
 export type Inherited = { pullRequest: number; runId: number };
