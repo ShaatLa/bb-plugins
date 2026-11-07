@@ -258,7 +258,7 @@ export function syncGlobal(global: ObserverGlobal, threads: string[], enabled: R
 const REMOVAL_GRACE_MS = 15 * 60_000;
 /**
  * Keeps a queue removal only once GitHub shows the PR's RemovedFromMergeQueueEvent at or after the group run started.
- * Unconfirmed removals are retried on later loops and given up after a grace period; a failed lookup falls back to sending.
+ * Unconfirmed removals, and removals whose lookup failed, are retried on later loops and given up after a grace period.
  */
 export async function confirmRemovals(events: ObserverEvent[], state: ObserverRepoState, lastRemoval: (pullRequest: number) => Promise<number | null>, rejected: Set<string>, now: number): Promise<ObserverEvent[]> {
   const lookups = new Map<number, Promise<number | null>>(), out: ObserverEvent[] = [];
@@ -268,7 +268,8 @@ export async function confirmRemovals(events: ObserverEvent[], state: ObserverRe
     if (rejected.has(event.key)) continue;
     if (!lookups.has(removal.pullRequest)) lookups.set(removal.pullRequest, lastRemoval(removal.pullRequest));
     let removedAt: number | null;
-    try { removedAt = await lookups.get(removal.pullRequest)!; } catch { out.push(event); continue; }
+    // No confirmation, no removal: a failed lookup is retried on the next loop and given up after the grace period.
+    try { removedAt = await lookups.get(removal.pullRequest)!; } catch { if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key); continue; }
     // A minute of slack: GitHub may stamp the removal a moment before the run records its start.
     // The removal must follow the group run: after it started and within the grace period after it ended (a later one is another group's).
     if (removedAt !== null && removedAt >= removal.since - 60_000 && removedAt <= event.at + REMOVAL_GRACE_MS) out.push(event);

@@ -159,13 +159,14 @@ describe("confirming queue removals", () => {
     expect(await confirmRemovals([old, removal("queue:2:1", 7)], emptyRepoState(), confirming.fn, rejected, now + 20 * MIN).then(keys)).toEqual(["queue:2:1"]);
     expect(github.asked).toEqual([]);
   });
-  it("falls back to sending when the lookup fails", async () => {
+  it("never sends a removal whose lookup failed: it is retried, then given up after the grace period", async () => {
     const github = lookup({ 7: new Error("No token"), 8: since + MIN });
-    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], emptyRepoState(), github.fn, new Set(), now))).toEqual(["queue:1:1", "queue:2:1"]);
-    const failing = async () => { throw new Error("GraphQL: rate limited"); };
     const rejected = new Set<string>();
-    expect(keys(await confirmRemovals([removal("queue:3:1", 9, now - 60 * MIN)], emptyRepoState(), failing, rejected, now))).toEqual(["queue:3:1"]);
+    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], emptyRepoState(), github.fn, rejected, now))).toEqual(["queue:2:1"]);
     expect([...rejected]).toEqual([]);
+    const failing = async () => { throw new Error("GraphQL: rate limited"); };
+    expect(keys(await confirmRemovals([removal("queue:3:1", 9, now - 60 * MIN)], emptyRepoState(), failing, rejected, now))).toEqual([]);
+    expect([...rejected]).toEqual(["queue:3:1"]);
   });
   it("does not look up keys that were already sent, and passes other events through untouched", async () => {
     const github = lookup({});

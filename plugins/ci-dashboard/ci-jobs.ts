@@ -65,8 +65,10 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
       } catch (error) { database.prepare("ROLLBACK").run(); throw error; }
     },
     /** Rewrites one stored job (e.g. after a signature re-scan); the indexed columns never change. */
-    /** Job names stored for a head commit (merge queue groups: what that group ran). */
-    jobNamesAtHead(repository: string, sha: string): string[] { return (database.prepare("SELECT DISTINCT json_extract(data, '$.jobName') AS name FROM ci_jobs WHERE repository = ? AND head_sha = ?").all(repository, sha) as { name: string }[]).map((row) => row.name); },
+    /** Names of the jobs that succeeded at a head commit (merge queue groups: what that group ran and passed). */
+    /** True when a push run is stored for the commit: it is on a branch (the default branch), not a merge queue group commit. */
+    pushedAt(repository: string, sha: string): boolean { return !!database.prepare("SELECT 1 FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' LIMIT 1").get(repository, sha); },
+    passedAtHead(repository: string, sha: string): string[] { return (database.prepare("SELECT DISTINCT json_extract(data, '$.jobName') AS name FROM ci_jobs WHERE repository = ? AND head_sha = ? AND conclusion = 'success'").all(repository, sha) as { name: string }[]).map((row) => row.name); },
     saveJob(j: JobRecord) { database.prepare("UPDATE ci_jobs SET data = ? WHERE repository = ? AND run_id = ? AND attempt = ? AND job_id = ?").run(slim(j), j.repository, j.runId, j.attempt, j.jobId); },
     hasCompletedAttempt(repository: string, runId: number, attempt: number) { return !!database.prepare("SELECT 1 FROM ci_attempts WHERE repository = ? AND run_id = ? AND attempt = ? AND completed = 1").get(repository, runId, attempt); },
     listJobs({ repository, since, until }: { repository: string; since: string; until: string }): JobRecord[] { return (database.prepare(`SELECT ${columns} FROM ci_jobs WHERE repository = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at`).all(repository, since, until) as Columns[]).map(toRecord); },
@@ -184,7 +186,7 @@ export async function fetchAttemptJobs(request: GitHubRequest, repository: strin
 }
 /** 30 lines up to the first `##[error]`, plus the error lines right after it (the runner's shutdown notice comes as a second error). */
 /** Bumped when the inheritance walk changes, so stored "not inherited" results are checked again once. */
-const INHERIT_CHECK = 2;
+const INHERIT_CHECK = 3;
 export function logExcerpt(text: string): string | null {
   const lines = text.split(/\r?\n/), index = lines.findIndex((line) => line.includes("##[error]"));
   if (index < 0) return null;
@@ -372,18 +374,18 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
       };
       // Same class plus one shared signal: build failure line, known-flake label, or failed test names (only those already extracted).
       const names = (c: ClassifiedJob) => (testCache.get(testKey(repository, { id: c.job.runId, attempt: c.job.attempt }, globs)) ?? []).slice().sort().join("\0");
-      const same = (a: ClassifiedJob, b: ClassifiedJob) => a.class === b.class
-        && ((a.reason.startsWith(BUILD_REASON) && b.reason.startsWith(BUILD_REASON) && !!a.evidence && a.evidence === b.evidence)
-          || (!!a.flakeLabel && a.flakeLabel === b.flakeLabel) || (!!globs.length && !!names(a) && names(a) === names(b)));
+      // When both failures carry a signal, it must match; with no signal on either side, the same job failing the same class is enough.
+      const evidenceOf = (c: ClassifiedJob) => (c.reason.startsWith(BUILD_REASON) && c.evidence) || c.flakeLabel || (globs.length && names(c)) || "";
+      const same = (a: ClassifiedJob, b: ClassifiedJob) => a.class === b.class && (evidenceOf(a) && evidenceOf(b) ? evidenceOf(a) === evidenceOf(b) : !evidenceOf(a) && !evidenceOf(b));
       const originOf = async (start: ClassifiedJob): Promise<Inherited | null> => {
         let current = start, origin: Inherited | null = null;
         for (let hop = 0; hop < 3; hop++) {
           const parent = await parentOf(current.job.headSha);
           const ahead = parent ? byHead.get(parent)?.find(p => p.job.runId !== current.job.runId && leaf(p) === leaf(current) && same(p, current)) : undefined;
           if (!ahead) {
-            // A group in between that never ran this job (e.g. a docs-only change) passes the base through: look one further back.
-            const ran = parent ? store.jobNamesAtHead(repository, parent) : [];
-            if (!parent || !ran.length || ran.some((name) => name.split(" / ").pop() === leaf(current))) break;
+            // A group in between that did not pass this job (docs-only, cancelled by a rebuild, or not stored) passes the base through.
+            // A pushed commit is the default branch: the queue starts there, so the walk ends.
+            if (!parent || store.pushedAt(repository, parent) || store.passedAtHead(repository, parent).some((name) => name.split(" / ").pop() === leaf(current))) break;
             current = { ...current, job: { ...current.job, headSha: parent, runId: -1 } };
             continue;
           }

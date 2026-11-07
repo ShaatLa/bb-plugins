@@ -1936,7 +1936,7 @@ for (const cancelled of [false, true]) test(`observer: a queue runner loss whose
   } finally { finishedJobs[902] = original; await harness.lifecycle.dispose(); }
 });
 
-test("observer: a failed timeline lookup falls back to sending the removal", async () => {
+test("observer: a failed timeline lookup sends no removal", async () => {
   const scenario = ciScenario();
   scenario.lookupFails = true;
   const { bb, harness, send } = observerHost();
@@ -1946,10 +1946,8 @@ test("observer: a failed timeline lookup falls back to sending the removal", asy
     scenario.running = [];
     await signalsPass(harness);
     expect(scenario.lookups.length).toBeGreaterThan(0);
-    expect(sentTo(send).slice(1).sort()).toEqual([
-      `${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect queue:901:1 ${RUNS}/901`,
-      `${PREFIX} PR #8 removed from merge queue · Integration: runner_loss (1 on this head) · inspect queue:902:1 ${RUNS}/902`,
-    ]);
+    // No confirmation, no removal: only the subscription notice went out.
+    expect(sentTo(send).slice(1)).toEqual([]);
   } finally { await harness.lifecycle.dispose(); }
 });
 

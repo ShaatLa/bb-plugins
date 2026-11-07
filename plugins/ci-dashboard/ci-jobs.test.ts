@@ -243,6 +243,8 @@ function inheritance(jobs: JobRecord[], parents: Record<string, string>, options
   for (const sql of jobMigrations) db.prepare(sql).run();
   const store = createJobStore(db), calls: string[] = [];
   for (const j of jobs) store.saveAttempt(REPO, j.runId, j.attempt, [j], true);
+  // The default branch commit the queue starts from has its own push run, which ends the walk.
+  store.saveAttempt(REPO, 1, 1, [job({ runId: 1, jobId: 1, event: "push", headBranch: "main", headSha: sha("1") })], true);
   const request: GitHubRequest = async (path) => { calls.push(path); const parent = parents[path.split("/").pop()!]; return { body: { parents: parent ? [{ sha: parent }] : [] }, hasNext: false }; };
   const backfill = createBackfill({ store, request, ...options });
   const stored = () => classifyJobs(store.listJobs({ repository: REPO, since: "2020", until: "2030" }));
@@ -281,6 +283,11 @@ test("a group in between that did not run the job passes the base through; one t
   await stopped.resolve();
   expect(stopped.of(51).job.inheritedFrom).toBeNull();
 });
+test("a group in between that is not stored at all (cancelled by a rebuild) passes the base through", async () => {
+  const gap = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"))], { [sha("a")]: sha("1"), [sha("x")]: sha("a"), [sha("b")]: sha("x") });
+  await gap.resolve();
+  expect(gap.of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+});
 test("another job or another signature is not inherited", async () => {
   const other = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), { jobName: "Integration" })], { [sha("b")]: sha("a") });
   await other.resolve();
@@ -288,10 +295,14 @@ test("another job or another signature is not inherited", async () => {
   const different = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), { buildFailure: { match: "pkg/other: build failed" } })], { [sha("b")]: sha("a") });
   await different.resolve();
   expect(different.of(51)).toMatchObject({ reason: "build or setup failed", job: { inheritedFrom: null } });
-  // No shared signal at all (plain failures): nothing to compare, so never inherited.
+  // No signal on either side: the same job failing the same class on the failed group's commit is inherited.
   const plain = inheritance([group(7, 50, sha("a"), { buildFailure: null }), group(8, 51, sha("b"), { buildFailure: null })], { [sha("b")]: sha("a") });
   await plain.resolve();
-  expect(plain.of(51).job.inheritedFrom).toBeNull();
+  expect(plain.of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
+  // A signal on one side only is not the same failure.
+  const oneSided = inheritance([group(7, 50, sha("a")), group(8, 51, sha("b"), { buildFailure: null })], { [sha("b")]: sha("a") });
+  await oneSided.resolve();
+  expect(oneSided.of(51).job.inheritedFrom).toBeNull();
 });
 test("a base that is no group head is not inherited; the answer is cached and never asked again", async () => {
   const { resolve, of, calls } = inheritance([group(7, 50, sha("a")), group(7, 50, sha("a"), { attempt: 2, jobId: 501 }, 8)], { [sha("a")]: sha("1") });
