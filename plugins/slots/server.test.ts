@@ -485,3 +485,8 @@ it("expires a restored use even when its thread remains active", async () => {
   await vi.waitFor(async () => expect((await next.view()).pools[0].leases).toHaveLength(0));
   service.controller.abort(); await service.done;
 });
+it("prints the wrapper through the CLI", async () => {
+  const h = await setup();
+  const result = await h.harness.behavior.runCli(["wrapper"], { threadId: "a" });
+  expect(result.exitCode).toBe(0); expect(result.stdout).toContain('bb slots acquire');
+});
