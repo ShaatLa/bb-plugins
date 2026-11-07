@@ -12,13 +12,13 @@ import { renderResult } from "./cli.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function setup(dir?: string) {
+async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024 ** 3 }, savedSettings: Record<string, number> = {}) {
   const path = dir ?? await mkdtemp(join(tmpdir(), "slots-test-"));
   if (!dir) cleanups.push(() => rm(path, { recursive: true, force: true }));
   let now = Date.parse("2026-11-07T12:00:00Z");
   const threads = new Map(["a", "b", "child"].map(id => [id, makeThreadResponse({ id, title: `Title ${id}`, environmentId: "env", ...(id === "child" ? { parentThreadId: "a" } : {}) })]));
   const send = vi.fn(async () => ({ threadId: "a" }));
-  const host = createFakePluginHost({ pluginId: "slots", agentSkillIds: ["slots"], sdk: {
+  const host = createFakePluginHost({ pluginId: "slots", settings: savedSettings, agentSkillIds: ["slots"], sdk: {
     hosts: { get: async () => ({ ...makeHostResponse({ id: "local", name: "Work laptop" }), connectMachineId: null, threadStorageRootPath: null }) },
     system: { config: async () => ({ primaryHostId: "local" }) },
     environments: { get: async () => ({ hostId: "local" }) },
@@ -27,7 +27,7 @@ async function setup(dir?: string) {
     }, send },
   } });
   const metrics = vi.fn(async () => ({ memFreePct: 75, load1: 1 }));
-  const runtime = { store: new DiskStore(path), now: () => now, metrics };
+  const runtime = { cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
   const { invoke } = await register(host.bb, runtime);
   cleanups.push(() => host.harness.lifecycle.dispose());
   async function view() { const result = await invoke("status", {}); if (!result.ok) throw new Error(result.error.message); return result.data as StatusView; }
@@ -38,7 +38,7 @@ async function setup(dir?: string) {
     await request(threadId); await invoke("gate", { threadId, hostId: "local" }); now += 15000; await invoke("gate", { threadId, hostId: "local" });
     return (await view()).pools[0].leases.find(l => l.ownerThreadId === threadId)!;
   }
-  return { ...host, invoke, view, request, grant, threads, send, metrics, path, advance: (ms: number) => { now += ms; } };
+  return { ...host, invoke, view, request, grant, threads, send, metrics, path, runtime, advance: (ms: number) => { now += ms; } };
 }
 it("parses macOS/Linux memory and duration/ISO log bounds", () => {
   expect(parseMemoryPressure("System-wide memory free percentage: 24%\n")).toBe(24);
@@ -270,4 +270,69 @@ it.each([0, 1, 4])("pluralizes CLI capacity and pool status for %s slots", capac
   expect(renderResult("setCapacity", { ok: true, data: { capacity } }, false).stdout).toBe(`Capacity ${capacity} ${noun}`);
   expect(renderResult("status", { ok: true, data: { pools: [{ pool: "heavy", capacity, leases: [], queue: [] }], titles: {} } }, false).stdout)
     .toBe(`heavy · 0/${capacity} ${noun} held · 0 queued`);
+});
+
+it.each([
+  [18, 64, 4], [8, 128, 2], [32, 32, 2], [1, 4, 1], [0, 0, 1],
+])("derives limits from %s cores and %s GiB", async (cores, memoryGiB, capacity) => {
+  const h = await setup(undefined, { cores, totalMemory: memoryGiB * 1024 ** 3 });
+  expect(await h.view()).toMatchObject({ loadMaxAuto: true, heavyCapacityAuto: true,
+    hostSettings: { local: { loadMax: Math.max(1, cores), capacities: { heavy: capacity, "local-model": 1 } } }, settingsWarnings: [] });
+});
+
+it("keeps explicit values, permits disabled pools, and rejects writes above machine limits", async () => {
+  const h = await setup(undefined, { cores: 24, totalMemory: 128 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 2 });
+  expect(await h.view()).toMatchObject({ loadMaxAuto: false, heavyCapacityAuto: false, hostSettings: { local: { loadMax: 18, capacities: { heavy: 2 } } } });
+  await expect(h.harness.behavior.setSettings({ loadMax: 25 })).rejects.toThrow("Load limit cannot exceed 24 CPU cores");
+  await expect(h.harness.behavior.setSettings({ heavyCapacity: 25 })).rejects.toThrow("Heavy capacity cannot exceed 24 CPU cores");
+  expect(await h.invoke("setCapacity", { hostId: "local", pool: "heavy", capacity: 25 })).toMatchObject({ ok: false, error: { message: "Heavy capacity cannot exceed 24 CPU cores" } });
+  const cli = await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "25"]);
+  expect(cli.exitCode).toBe(1);
+  expect(cli.stdout).toContain("Heavy capacity cannot exceed 24 CPU cores");
+  expect((await h.view()).hostSettings.local.capacities.heavy).toBe(2);
+  await h.harness.behavior.setSettings({ loadMax: 12, heavyCapacity: 0 });
+  expect((await h.view()).hostSettings.local).toMatchObject({ loadMax: 12, capacities: { heavy: 0 } });
+  await expect(h.harness.behavior.setSettings({ loadMax: 0 })).rejects.toThrow();
+});
+
+it.each([false, true])("uses current definition defaults after reload; explicit settings: %s", async explicit => {
+  const h = await setup();
+  await h.view();
+  if (explicit) await h.harness.behavior.setSettings({ loadMax: 18, heavyCapacity: 4 });
+  let invoke = h.invoke;
+  const replacement = await h.harness.lifecycle.reload(async bb => {
+    ({ invoke } = await register(bb, { ...h.runtime, cores: () => 24, totalMemory: () => 128 * 1024 ** 3 }));
+  });
+  cleanups.push(() => replacement.harness.lifecycle.dispose());
+  const result = await invoke("status", {});
+  expect(result).toMatchObject({ ok: true, data: { hostSettings: { local: { loadMax: explicit ? 18 : 24, capacities: { heavy: explicit ? 4 : 6 } } } } });
+});
+
+it("clamps legacy saved values on smaller machines and surfaces warnings without rewriting them", async () => {
+  const h = await setup(undefined, { cores: 8, totalMemory: 32 * 1024 ** 3 }, { loadMax: 18, heavyCapacity: 12 });
+  expect(await h.view()).toMatchObject({ loadMaxAuto: false, heavyCapacityAuto: false,
+    hostSettings: { local: { loadMax: 8, capacities: { heavy: 8 } } }, settingsWarnings: [
+      "Saved load limit 18 exceeds 8 CPU cores; using 8.", "Saved heavy capacity 12 exceeds 8 CPU cores; using 8.",
+    ] });
+  expect((await h.harness.behavior.runCli(["status"])).stdout).toContain("Warning: Saved load limit 18 exceeds 8 CPU cores; using 8.");
+  let invoke = h.invoke;
+  const replacement = await h.harness.lifecycle.reload(async bb => {
+    ({ invoke } = await register(bb, { ...h.runtime, cores: () => 24 }));
+  });
+  cleanups.push(() => replacement.harness.lifecycle.dispose());
+  expect(await invoke("status", {})).toMatchObject({ ok: true, data: { settingsWarnings: [], hostSettings: { local: { loadMax: 18, capacities: { heavy: 12 } } } } });
+});
+
+it("uses the resolved limit in gate CLI and observer hold messages", async () => {
+  const h = await setup(undefined, { cores: 6, totalMemory: 64 * 1024 ** 3 });
+  await h.harness.behavior.setSettings({ observerThreadId: "b", observerGateHoldMinutes: 1 });
+  h.metrics.mockResolvedValue({ memFreePct: 75, load1: 25 });
+  await h.request();
+  const gate = await h.harness.behavior.runCli(["gate"], { threadId: "a" });
+  expect(gate.stdout).toContain("(max 6)");
+  h.advance(60000);
+  const service = h.harness.behavior.runService("sampler");
+  try {
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("(max 6.0)") })] })));
+  } finally { service.controller.abort(); await service.done; }
 });

@@ -5,7 +5,10 @@ Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 processes, reads environment values, or guarantees exclusive machine access.
 Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
-## Sidebar (0.2.3)
+## Sidebar (0.2.4)
+
+Version 0.2.4 derives load and heavy-capacity defaults and limits from the machine,
+labels matching defaults “(auto)”, and warns when saved limits need clamping.
 
 Version 0.2.3 makes the skill and examples project-neutral and documents machine tuning.
 
@@ -77,13 +80,24 @@ Binding after a successful probe can still race another application.
 Installed plugin settings expose typed controls with range validation. The SDK
 has no host-scoped settings, so settings are global and engine `hosts` overrides
 remain empty. Human units are converted at the boundary.
-The default load limit (18) and free-memory threshold (20%) are starting points to tune to the machine (e.g. load limit ≈ CPU core count).
+The load limit defaults to the available CPU core count and cannot exceed it.
+Heavy capacity defaults to `max(1, min(floor(cores / 4), floor(totalMemGiB / 16)))`
+and is capped at the CPU core count; 0 still disables the pool. For 18 cores and
+64 GiB this gives load 18 and four heavy slots. Users may lower either value.
+Unset settings follow the current machine on each plugin start. Saved values
+(including an explicit 18) stay saved; values above a smaller machine’s maximum
+are clamped at use time with warnings in status, without rewriting the saved value.
+The UI marks effective values equal to their machine defaults “(auto)”; a saved
+value equal to the default still remains saved. Unset a setting to resume following
+the machine. Memory free (20%), timing, TTLs, ports and local-model capacity (1)
+remain policy choices rather than machine-derived limits.
 
 | Setting | Default | Range |
 | --- | --- | --- |
-| heavyCapacity / localModelCapacity | 4 / 1 | 0–10000 |
+| heavyCapacity | CPU/memory formula above | 0–CPU cores |
+| localModelCapacity | 1 | 0–10000 |
 | memFreeMinPct | 20 | 0–100% |
-| loadMax | 18 | 0.1–1000 |
+| loadMax | CPU cores | >0, at most CPU cores |
 | gateSamples | 2 | 1–100 |
 | gateIntervalSeconds | 15 | 1–3600 seconds |
 | leaseTtlMinutes | 30 | 2–10080 minutes |

@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import * as os from "node:os";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
@@ -10,6 +11,8 @@ import { registerCli } from "./cli.js";
 
 export interface Runtime {
   now: () => number;
+  cores: () => number;
+  totalMemory: () => number;
   metrics: typeof metrics;
   probePort: typeof probePort;
   store?: DiskStore;
@@ -18,12 +21,17 @@ export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Resu
 
 export default function plugin(bb: BbPluginApi) { return register(bb); }
 export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}) {
-  const runtime = { now: Date.now, metrics, probePort, ...overrides };
+  const runtime = { now: Date.now, metrics, probePort,
+    cores: () => os.availableParallelism?.() ?? os.cpus().length,
+    totalMemory: os.totalmem, ...overrides };
+  const cores = Math.max(1, runtime.cores());
+  const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
+  let settingsView = { loadMaxAuto: false, heavyCapacityAuto: false, settingsWarnings: [] as string[] };
   const handle = bb.settings.define({
-    heavyCapacity: { type: "number", label: "Heavy capacity (0–10000)", default: 4, experimental_schema: z.number().int().min(0).max(10000) },
+    heavyCapacity: { type: "number", label: `Heavy capacity (default: ${heavyDefault}, max: ${cores} = CPU cores; 0 disables)`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
     localModelCapacity: { type: "number", label: "Local model capacity (0–10000)", default: 1, experimental_schema: z.number().int().min(0).max(10000) },
     memFreeMinPct: { type: "number", label: "Minimum memory free % (0–100)", default: 20, experimental_schema: z.number().min(0).max(100) },
-    loadMax: { type: "number", label: "Maximum 1-minute load (0.1–1000)", default: 18, experimental_schema: z.number().min(0.1).max(1000) },
+    loadMax: { type: "number", label: `Maximum 1-minute load (default and max: ${cores} = CPU cores)`, default: cores, experimental_schema: z.number().positive().max(cores, `Load limit cannot exceed ${cores} CPU cores`) },
     gateSamples: { type: "number", label: "Consecutive gate samples (1–100)", default: 2, experimental_schema: z.number().int().min(1).max(100) },
     gateIntervalSeconds: { type: "number", label: "Gate interval in seconds (1–3600)", default: 15, experimental_schema: z.number().int().min(1).max(3600) },
     leaseTtlMinutes: { type: "number", label: "Lease TTL in minutes (2–10080)", default: 30, experimental_schema: z.number().int().min(2).max(10080) },
@@ -39,8 +47,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const getSettings = async (): Promise<Settings> => {
     const values = await handle.get();
     const settings: Settings = {
-      capacities: { heavy: values.heavyCapacity, "local-model": values.localModelCapacity },
-      memFreeMinPct: values.memFreeMinPct, loadMax: values.loadMax, gateSamples: values.gateSamples,
+      capacities: { heavy: Math.min(values.heavyCapacity, cores), "local-model": values.localModelCapacity },
+      memFreeMinPct: values.memFreeMinPct, loadMax: Math.min(values.loadMax, cores), gateSamples: values.gateSamples,
       gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
       observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
@@ -49,6 +57,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
+    settingsView = {
+      loadMaxAuto: values.loadMax === cores,
+      heavyCapacityAuto: values.heavyCapacity === heavyDefault,
+      settingsWarnings: [
+        ...(values.loadMax > cores ? [`Saved load limit ${values.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+        ...(values.heavyCapacity > cores ? [`Saved heavy capacity ${values.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+      ],
+    };
     return settings;
   };
   let settings = await getSettings();
@@ -157,7 +173,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
-        return { ok: true, data: { ...snapshot, hostSettings, localHostId } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId, ...settingsView } };
       }
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");
@@ -175,8 +191,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         return invalid("No free ports in the configured range");
       }
       if (method === "setCapacity") {
-        settings = { ...settings, capacities: { ...settings.capacities, [p.pool]: p.capacity } };
+        if (p.pool === "heavy" && p.capacity > cores) return invalid(`Heavy capacity cannot exceed ${cores} CPU cores`);
         await handle.experimental_set(p.pool === "heavy" ? { heavyCapacity: p.capacity } : { localModelCapacity: p.capacity });
+        settings = await getSettings();
       }
       return transition({ ...p, type: method } as Input);
     } catch (error) { return invalid(String(error)); }

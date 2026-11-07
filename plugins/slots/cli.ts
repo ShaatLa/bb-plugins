@@ -26,11 +26,11 @@ function humanOutput(method: string, data: unknown): string {
     }
     case "status": {
       const view = data as StatusView;
-      return view.pools.flatMap(p => [
+      return [...(view.settingsWarnings ?? []).map(message => `Warning: ${message}`), ...view.pools.flatMap(p => [
         `${p.pool} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
         ...p.queue.map(r => `  queued ${r.id} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
-      ]).join("\n");
+      ])].join("\n");
     }
     case "log": {
       const { events } = data as { events: AuditEvent[] };

@@ -84,6 +84,10 @@ export interface StatusView extends StatusSnapshot {
   localHostId: string;
   /** Display name from the SDK; null when unavailable. */
   localHostName?: string | null;
+  /** Effective values equal their machine-derived defaults. */
+  loadMaxAuto?: boolean;
+  heavyCapacityAuto?: boolean;
+  settingsWarnings?: string[];
 }
 export interface SlotsError {
   code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use";
