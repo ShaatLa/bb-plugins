@@ -241,7 +241,7 @@ function SchedulesList({ projectId, search, projects, onEdit, refreshRef }: List
                     {schedule.enabled ? "Pause" : "Resume"}
                   </Button>
                   <Button type="button" size="sm" variant="ghost" className="h-7" onClick={() => onEdit(schedule.id)}>
-                    <Icon name="Pencil" className="size-3.5" />
+                    <Icon name="Edit" className="size-3.5" />
                     Edit
                   </Button>
                   <DropdownMenu>
