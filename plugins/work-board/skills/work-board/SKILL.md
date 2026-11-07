@@ -53,6 +53,25 @@ Paths target the invoking thread's machine, otherwise the server; `--machine <id
 
 ## Work a task
 
+## Scheduled tasks
+
+The scheduled CLI uses the same validated RPC handlers as the Scheduled page.
+Use `bb work-board schedule list`, `schedule show`, `schedule create`,
+`schedule preview`, `schedule runs`, and `schedule results`. Create accepts
+recurrence and target as JSON objects matching the API contract; recurrence
+includes an IANA `timezone` and is `daily`, `weekly` (weekday numbers Sunday=0),
+or `once`. Targets are `{ "kind": "thread", "threadId": "thr_…" }` or
+`{ "kind": "preset", "presetId": "…" }`. Page commands accept `--limit`,
+`--cursor`, `--schedule`, `--project`, and `--search`; use `--json` for
+machine-readable output. Use ordinary task commands on the template or result
+task for comments, attachments, questions, dependencies, and evidence.
+
+The CLI exposes the read/create subset while the scheduled runtime RPC and
+remaining lifecycle commands are being integrated. Do not use direct database
+access to change schedules or runs.
+
+## Work a task
+
 1. Find and read the task before acting:
 
    ```sh
