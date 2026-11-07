@@ -36,7 +36,7 @@ import { OptionPicker } from "./option-picker.js";
 
 type Kind = Recurrence["kind"];
 
-interface Draft {
+export interface Draft {
   projectId: string | null;
   title: string;
   description: string;
@@ -293,11 +293,15 @@ function ScheduleForm({
   scheduleId,
   onClose,
   onSaved,
+  onBack,
+  onDraftChange,
 }: {
   initial: Draft;
   scheduleId: string | null;
   onClose: () => void;
   onSaved: () => void;
+  onBack?: () => void;
+  onDraftChange?: (draft: Draft) => void;
 }) {
   const rpc = useScheduledRpc();
   const navigation = useTasksNavigation();
@@ -310,6 +314,11 @@ function ScheduleForm({
   const [preview, setPreview] = useState<{ dates: string[]; error: string | null } | null>(null);
   const zones = useMemo(() => supportedTimeZones().map((zone) => ({ value: zone, label: zone })), []);
   const set = (change: Partial<Draft>) => setDraft((current) => ({ ...current, ...change }));
+  // Lets an embedding dialog keep the form in memory while it is unmounted (Back).
+  useEffect(() => {
+    onDraftChange?.(draft);
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [draft]);
 
   const projectId = draft.projectId ?? projects.data?.[0]?.id ?? null;
   const rule = buildRule(draft);
@@ -524,6 +533,7 @@ function ScheduleForm({
       <DialogFooter className="mt-2 shrink-0 flex-row items-center border-t border-border-hairline px-4 py-3 sm:justify-between">
         <CheckboxField checked={draft.enabled} onCheckedChange={(enabled) => set({ enabled })} label="Enabled" />
         <div className="flex items-center gap-1.5">
+          {onBack ? <Button type="button" size="sm" variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : null}
           <Button type="button" size="sm" variant="ghost" disabled={submitting} onClick={onClose}>Cancel</Button>
           <Button type="button" size="sm" disabled={!valid || submitting} onClick={() => void submit()}>
             {scheduleId === null ? "Create schedule" : "Save changes"}
@@ -547,11 +557,18 @@ export function ScheduleDialog({
   defaultProjectId,
   onClose,
   onSaved,
+  initialDraft,
+  onBack,
+  onDraftChange,
 }: {
   scheduleId: string | null;
   defaultProjectId: string | null;
   onClose: () => void;
   onSaved: () => void;
+  /** Embedding hooks (New task dialog): restore an in-memory draft, go back, and report edits. */
+  initialDraft?: Draft | null;
+  onBack?: () => void;
+  onDraftChange?: (draft: Draft) => void;
 }) {
   const detail = useScheduledQuery(
     async (rpc) => (scheduleId === null ? null : await rpc.call("getSchedule", { scheduleId })),
@@ -564,10 +581,12 @@ export function ScheduleDialog({
       <DialogContent className="@container flex max-h-[88dvh] min-h-0 max-w-2xl flex-col gap-0 p-0">
         {ready ? (
           <ScheduleForm
-            initial={detail.data ? draftFromDetail(detail.data) : blankDraft(defaultProjectId)}
+            initial={detail.data ? draftFromDetail(detail.data) : (initialDraft ?? blankDraft(defaultProjectId))}
             scheduleId={scheduleId}
             onClose={onClose}
             onSaved={onSaved}
+            onBack={onBack}
+            onDraftChange={onDraftChange}
           />
         ) : (
           <div className="p-6">
