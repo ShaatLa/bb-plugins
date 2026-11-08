@@ -1858,7 +1858,7 @@ test("observer: with removals switched off nothing is sent for a confirmed remov
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("observer: a removal GitHub does not confirm is held, then a queue runner loss stands alone exactly once with N/limit after the grace period", async () => {
+test("observer: a removal GitHub does not confirm is held, then given up with no standalone runner loss line", async () => {
   const scenario = ciScenario();
   scenario.removals[8] = null; // PR #8 never left the queue
   const { bb, harness, send } = observerHost({ runnerLossLimit: 3 });
@@ -1874,15 +1874,14 @@ test("observer: a removal GitHub does not confirm is held, then a queue runner l
     await signalsPass(harness, 301_000);
     expect(scenario.lookups).toEqual([8]);
     expect(sentTo(send)).toHaveLength(2);
-    // After 15 minutes the removal is given up and the loss is announced on its own.
+    // After 15 minutes the removal is given up; a merge queue loss never stands alone.
     await signalsPass(harness, 16 * 60_000);
-    const loss = `${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head \`sha902\` · inspect \`job:9021\` · [job 9021](${RUNS}/902/job/9021)`;
-    expect(sentTo(send).slice(2)).toEqual([loss]);
-    // Neither the loss nor the lookup repeats.
+    expect(sentTo(send)).toHaveLength(2);
+    // The lookup does not repeat.
     scenario.lookups.length = 0;
     await signalsPass(harness, 301_000);
     await signalsPass(harness, 301_000);
-    expect(sentTo(send)).toHaveLength(3);
+    expect(sentTo(send)).toHaveLength(2);
     expect(scenario.lookups).toEqual([]);
   } finally { await harness.lifecycle.dispose(); }
 });
@@ -1915,7 +1914,7 @@ test("observer: a removal confirmed by a removal event from before the group sta
 });
 
 // PR #8 stayed queued: its last removal event predates the group run (the group was rebuilt after the entry ahead left), so the runner loss in run 902 is no removal.
-for (const cancelled of [false, true]) test(`observer: a queue runner loss whose PR was last removed before the group started stays quiet for the grace period, then ${cancelled ? "is dropped because the group was cancelled" : "stands alone"}`, async () => {
+for (const cancelled of [false, true]) test(`observer: a queue runner loss whose PR was last removed before the group started stays quiet, with no standalone loss line ${cancelled ? "(group cancelled)" : "(group not cancelled)"}`, async () => {
   const scenario = ciScenario();
   scenario.removals[8] = "2026-10-20T11:30:00Z"; // the group started at 11:51
   const original = finishedJobs[902]!;
@@ -1927,11 +1926,11 @@ for (const cancelled of [false, true]) test(`observer: a queue runner loss whose
     scenario.running = [];
     await signalsPass(harness);
     await signalsPass(harness, 301_000);
-    // Within the grace period: PR #7 only, neither a removal nor a loss for PR #8.
+    // PR #7 only, neither a removal nor a loss for PR #8, within the grace period and after it.
     expect(sentTo(send).slice(1)).toEqual([`${PREFIX} PR #7 removed from merge queue · Unit tests: real · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`]);
     await signalsPass(harness, 16 * 60_000);
     await signalsPass(harness, 301_000);
-    expect(sentTo(send).slice(2)).toEqual(cancelled ? [] : [`${PREFIX} Runner lost · Integration · runner runner-lost-1 · 1/3 losses on head \`sha902\` · inspect \`job:9021\` · [job 9021](${RUNS}/902/job/9021)`]);
+    expect(sentTo(send).slice(2)).toEqual([]);
     expect(sentTo(send).some((line) => line.includes("PR #8"))).toBe(false);
   } finally { finishedJobs[902] = original; await harness.lifecycle.dispose(); }
 });

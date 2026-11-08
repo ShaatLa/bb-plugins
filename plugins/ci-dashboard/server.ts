@@ -471,7 +471,7 @@ export default function plugin(bb: BbPluginApi) {
     if (rt.analysis) {
       const { classified, massCancels } = rt.analysis;
       // Queue removals are built even with removals off: they decide whether a merge queue runner loss stands alone.
-      if (enabled.queue || enabled.loss) events.push(...queueRemovalEvents(repo, classified, values.runnerLossLimit, token && rt.backfill ? now : undefined, rt.removalRejected));
+      if (enabled.queue || enabled.loss) events.push(...queueRemovalEvents(repo, classified, values.runnerLossLimit, token && rt.backfill ? now : undefined, new Set(Object.keys(state.sent).filter((key) => key.startsWith("queue:")))));
       if (enabled.red) events.push(...defaultRedEvents(repo, classified, withoutBenignAlerts(rt.alerts ?? [], classified), rt.alertStreaks));
       for (const opening of opened) {
         const event = opening.kind === "pool_stall" && enabled.stall ? stallEvent(opening, rt.pools, now) : opening.kind === "mass_cancel" && enabled.mass ? massCancelEvent(opening, massCancels) : null;
@@ -498,7 +498,7 @@ export default function plugin(bb: BbPluginApi) {
       return Date.parse(last.createdAt);
     }, removals, now);
     // A merge queue runner loss stands alone only once its removal was given up on (the PR stayed queued).
-    if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit, (runId, attempt) => removals.has(`queue:${runId}:${attempt}`), removals));
+    if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit));
     const accepted = acceptEvents(state, global, confirmed, config);
     // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_manage.
     const openProblems = new Set((await problemsOf(repo, rt)).map((problem) => problem.id));
@@ -584,6 +584,7 @@ export default function plugin(bb: BbPluginApi) {
         const jobs = jobStore.listJobs({ repository: repo, since: new Date(now - days * 86_400_000).toISOString(), until: nowIso });
         const classified = classifyJobs(jobs, { aggregatorJobs, policyJobs, refusalSteps, flakeRules: flake.rules, flakeHash: flake.hash }), reruns = summarizeReruns(jobs), massCancels = detectMassCancel(classified);
         attachPrHeads(jobs, classified);
+        for (const group of massCancels) for (const c of group.jobs) c.job.massLoss = true;
         const queueOnly = queueOnlyJobs(jobs, classified), samples = timingSamples(jobs);
         rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, queueOnly, samples, summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo, queueOnly, samples }) };
       } catch (error) { fail("analysis", error); }
