@@ -1,6 +1,6 @@
 # Answers 0.3.0 — attention, notifications, faster replies, integrations
 
-Status: draft v4 for review (review-1: 9M/6m; review-2: 6M/2m; review-3: 2M; all addressed).
+Status: draft v5 for review (review-1: 9M/6m; review-2: 6M/2m; review-3: 2M; review-4: 1M; all addressed).
 Base: branch `feat/answers` (0.2.0, SDK 0.6.132). Every feature was accepted by the owner.
 Behaviour is the spec; file/line hints are guidance.
 
@@ -65,6 +65,7 @@ ALTER TABLE items ADD COLUMN read_batch TEXT;                             -- F2
 ALTER TABLE items ADD COLUMN task_key TEXT;                               -- F12
 UPDATE items SET answered_at=CASE WHEN status='answered' THEN updated_at END, attempt_request_id=request_id;
 CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
+CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'held_for' = quiet window end
 ```
 
 `itemSchema` gains `snoozedUntil`, `failedAt`, `likelyInterim: boolean`, `options: string[] | null`,
@@ -148,7 +149,7 @@ equal endpoints rejected; local server time; may wrap midnight). `level(item)` =
    question still waiting then pushes when it is answered in a later (live) drain.
    `shortcut:` a genuinely live event that lands in a thread's very first drain after load does not push.
    At plugin load: `UPDATE items SET notify_state=0 WHERE notify_state=1`; held rows (`=2`) are kept only if
-   KV `notify:heldFor` equals the end of the quiet window that is current now, else `2 → 0` (see 4).
+   `notify_meta` row `held_for` equals the end of the quiet window that is current now, else `2 → 0` (see 4).
 2. **Claim in write order.** `run()` in one transaction selects `notify_state=1` rows and sets them all to 0
    (consumed whatever the level, so `off → all` pushes no backlog). Of the claimed rows, those still attention
    and matching `level` are queued in memory — or, inside quiet hours, set to `notify_state=2` instead.
@@ -158,11 +159,11 @@ equal endpoints rejected; local server time; may wrap midnight). `level(item)` =
    1–80 chars), body = question (`for_me`) / answer (`mine`) / `Turn failed: <question>`, whitespace-collapsed,
    ≤ 180 chars, `threadId` set. Several: title "N new in Answers", body = up to 3 thread titles (≤ 180),
    `threadId` only if shared. Losing an unflushed queue on reload is accepted.
-4. **Quiet hours.** Held rows belong to one concrete window, identified by its end timestamp in KV
-   `notify:heldFor`. Before holding anything, if `heldFor` differs from the current window's end, set all
-   `2 → 0` and write the new end (one transaction with the hold). At the window end (timer computed at startup
+4. **Quiet hours.** Held rows belong to one concrete window, identified by its end timestamp in the
+   `notify_meta` row `held_for` (plugin SQLite, not KV, so it commits atomically with the item rows). Before holding anything, if `held_for` differs from the current window's end, set all
+   `2 → 0` and write the new end (one SQLite transaction with the hold). At the window end (timer computed at startup
    and on `settings.onChange`) count `notify_state=2` rows still attention and matching the current `level`,
-   set all `2 → 0`, clear `heldFor`, and if N > 0 push "While you were away: N new in M threads" (no
+   set all `2 → 0`, clear `held_for`, and if N > 0 push "While you were away: N new in M threads" (no
    threadId). Only items that matched the level while notifications were on are ever held, so items consumed
    while `off` never reappear; a window that ended while the server was down yields no summary (accepted).
 5. `notify` → `off` clears the queue and sets `2 → 0`. Push plugin missing/failing or `channels: []`: one
