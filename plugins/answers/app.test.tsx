@@ -28,9 +28,10 @@ describe('Answers app', () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));
     const { slot } = await setup({ list: () => ({ items: [item, waiting], nextCursor: null }), setDismissed });
-    expect(slot.getAllByRole('button', { name: 'Stop waiting' })).toHaveLength(1);
+    fireEvent.click(slot.getAllByRole('button', { name: 'More' })[1]!);
+    expect(slot.getAllByRole('menuitem', { name: 'Stop waiting' })).toHaveLength(1);
     expect(slot.queryByRole('button', { name: 'Done' })).toBeNull();
-    fireEvent.click(slot.getByRole('button', { name: 'Stop waiting' }));
+    fireEvent.click(slot.getByRole('menuitem', { name: 'Stop waiting' }));
     await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_wait', dismissed: true }));
   });
   it('keeps the selected view after the page is unmounted', async () => {
@@ -278,4 +279,60 @@ it('renders stacked pools and preserves notes on uncertain delivery', async () =
   await slot.findByText(/Delivery uncertain/);
   expect((slot.getAllByRole('textbox', { name: 'Pool note' })[0] as HTMLTextAreaElement).value).toBe('Saved note');
   expect(poolSend).toHaveBeenCalledTimes(1);
+});
+
+it('uses the attention predicate for failed, snoozed and dismissed items', async () => {
+  const { isUnread } = await import('./app');
+  expect(isUnread({ ...item, status: 'waiting', failedAt: 1 })).toBe(true);
+  expect(isUnread({ ...item, snoozedUntil: Date.now() + 1000 })).toBe(false);
+  expect(isUnread({ ...item, dismissedAt: 1 })).toBe(false);
+});
+it('offers quick replies, interim actions and retry', async () => {
+  const reply = vi.fn(() => ({ delivery: 'sent' })), keepWaiting = vi.fn(() => ({ ok: true })), retryTurn = vi.fn(() => ({ ok: true }));
+  const { slot } = await setup({ list: () => ({ items: [{ ...item, id: 'ans_ask', kind: 'for_me', status: 'open', question: 'Choose?', answer: null, options: ['Yes'] }, { ...item, likelyInterim: true }, { ...item, id: 'ans_fail', question: 'Failed question?', status: 'waiting', answer: null, failedAt: 1 }], nextCursor: null }), reply, keepWaiting, retryTurn });
+  fireEvent.click(slot.getByRole('button', { name: 'Yes' }));
+  await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
+  fireEvent.click(slot.getByRole('button', { name: 'Keep waiting' }));
+  await waitFor(() => expect(keepWaiting).toHaveBeenCalledWith({ id: item.id }));
+  fireEvent.click(slot.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(retryTurn).toHaveBeenCalledWith({ id: 'ans_fail' }));
+});
+it('shows undo after bulk read and calls undoRead', async () => {
+  const undoRead = vi.fn(() => ({ ok: true, count: 2 }));
+  const { slot } = await setup({ markRead: () => ({ ok: true, batch: 'batch-one', count: 2 }), undoRead });
+  pickView(slot, 'Inbox'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
+  expect(await slot.findByText(/Marked 2 read/)).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'Undo' }));
+  await waitFor(() => expect(undoRead).toHaveBeenCalledWith({ batch: 'batch-one' }));
+});
+it('marks grouped members read and acts on the last member', async () => {
+  const { ItemCard } = await import('./app');
+  const markRead = vi.fn(() => ({ ok: true })), setPinned = vi.fn(() => ({ ok: true }));
+  const last = { ...item, id: 'ans_last', question: 'And this?' };
+  const slot = renderSlot({ component: () => <ul><ItemCard item={item} members={[item, last]} /></ul> }, {}, { rpc: { markRead, setPinned } });
+  fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));
+  await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: [item.id, last.id] }));
+  fireEvent.click(slot.getByRole('button', { name: 'More' })); fireEvent.click(slot.getByRole('menuitem', { name: 'Save' }));
+  await waitFor(() => expect(setPinned).toHaveBeenCalledWith({ id: last.id, pinned: true }));
+});
+it('opens My questions with a saved notice and detects a dedupe hit', async () => {
+  const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
+  const { app, slot } = await setup();
+  const openTab = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved', created: false } }) })));
+  await app.messageActions.find(action => action.id === 'save')!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: undefined, composer: null, experimental_panel: experimental_makePanelController({ openTab }) });
+  expect(await slot.findByText(/Already in Saved/)).toBeTruthy();
+  expect(openTab).toHaveBeenCalledWith({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
+});
+it('snoozes for the four local menu deadlines', async () => {
+  const { ItemCard } = await import('./app');
+  const snooze = vi.fn((_input: any) => ({ ok: true }));
+  const slot = renderSlot({ component: () => <ul><ItemCard item={item} /></ul> }, {}, { rpc: { snooze } });
+  for (const label of ['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00']) {
+    fireEvent.click(slot.getByRole('button', { name: 'More' }));
+    fireEvent.click(slot.getByRole('menuitem', { name: 'Remind later' }));
+    fireEvent.click(slot.getByRole('menuitem', { name: label }));
+  }
+  await waitFor(() => expect(snooze).toHaveBeenCalledTimes(4));
+  for (const [index, call] of snooze.mock.calls.entries()) expect(call[0].until).toBeGreaterThan(Date.now() + (index === 0 ? 0 : 1000));
 });
