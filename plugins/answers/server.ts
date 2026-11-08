@@ -3,16 +3,16 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
-import { cap, QUESTION_SQL } from './ingest';
+import { cap, QUESTION_SQL, ATTENTION_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask for small non-blocking questions to the user; blocking decisions stay in Work Board.";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask for small non-blocking questions to the user; blocking decisions stay in Work Board. answers_ask accepts 1–6 unique short options for quick replies.";
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
-  ask: z.object({question:z.string().trim().min(1).max(2000)}).strict(),
+  ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(80)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional()}).strict(),
 };
 type Row = Record<string, any>;
 export function buildReplyMessage(entries: readonly {quote:string;note:string}[]): string {
@@ -30,7 +30,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.storage.migrate(db,migrations);
   const invalidate = () => bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
-  const driver = createDriver(bb,db,() => {invalidate(); invalidatePools();});
+  const onAttention = () => {};
+  const driver = createDriver(bb,db,() => {invalidate(); invalidatePools(); onAttention();});
   const sending = new Set<string>();
   // Drafts wait in the thread's queue until the user sends them from the chat, like bb's built-in Drafts plugin.
   bb.experimental_hooks.on('message.dispatch',ctx=>{
@@ -49,17 +50,17 @@ export default function plugin(bb: BbPluginApi) {
   };
   function counts(): Counts {
     return db.prepare(`SELECT
-      count(CASE WHEN kind='mine' AND status='answered' AND read_at IS NULL THEN 1 END) AS unread,
+      count(CASE WHEN kind='mine' AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
-      count(CASE WHEN read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open')) THEN 1 END) AS inbox
+      count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
       FROM items WHERE dismissed_at IS NULL`).get() as Counts;
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
     const views = {
       // Same set as the Inbox: unread answers and open agent questions.
-      unread:"read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",
+      unread:ATTENTION_SQL,
       waiting:"kind='mine' AND status IN ('waiting','deferred')",
       for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"((kind='saved' AND dismissed_at IS NULL) OR pinned=1)", all:'1=1',
     };
@@ -83,15 +84,27 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.created_at}|${last.id}` : null};
   }
+  function markRead(raw: {all:true;threadId?:string}): {ok:true;batch:string|null;count:number};
+  function markRead(raw: z.infer<typeof inputs.markRead>): {ok:true;batch?:string|null;count?:number};
   function markRead(raw: z.infer<typeof inputs.markRead>) {
     const p=inputs.markRead.parse(raw), now=Date.now();
-    if ('ids' in p) return commit(`UPDATE items SET read_at=? WHERE id IN (${p.ids.map(()=>'?').join(',')})`,now,...p.ids);
-    return commit(`UPDATE items SET read_at=? WHERE kind='mine' AND status='answered'${p.threadId ? ' AND thread_id=?' : ''}`,now,...(p.threadId ? [p.threadId] : []));
+    if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`,now,...p.ids);
+    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL}${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
+    invalidate(); return {ok:true as const,batch:count ? batch : null,count};
+  }
+  let wakeTimer: ReturnType<typeof setTimeout>|undefined, disposed=false;
+  function wakeDue() {
+    if (disposed) return;
+    if (wakeTimer) clearTimeout(wakeTimer);
+    const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
+    if (count) {invalidate(); onAttention();}
+    const next=db.prepare('SELECT min(snoozed_until) AS at FROM items').get() as {at:number|null};
+    if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(0,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
     if (sending.has(threadId)) throw new Error('A reply to this thread is already sending');
@@ -123,32 +136,64 @@ export default function plugin(bb: BbPluginApi) {
       db.prepare("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND thread_id=? AND kind='for_me' AND status='open'").run(answer,Date.now(),id,threadId);
     }
   }
-  const unreadWhere = "dismissed_at IS NULL AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))";
   const handlers = {
     list, counts,
+    undoRead(raw:z.infer<typeof inputs.undoRead>) {
+      const p=inputs.undoRead.parse(raw),count=db.prepare('UPDATE items SET read_at=NULL,read_batch=NULL WHERE read_batch=? AND read_at>=?').run(p.batch,Date.now()-600000).changes;
+      invalidate(); return {ok:true as const,count};
+    },
+    keepWaiting(raw:z.infer<typeof inputs.keepWaiting>) {
+      const p=inputs.keepWaiting.parse(raw),item=get(p.id);
+      if (item.kind!=='mine' || item.status!=='answered') throw new Error('item is not an answered question');
+      return commit("UPDATE items SET status='deferred',interim=answer,interim_seq=answer_seq,answer=NULL,answer_seq=NULL,answer_source=NULL,answered_at=NULL,read_at=NULL,likely_interim=0,notify_state=0,updated_at=? WHERE id=?",Date.now(),p.id);
+    },
+    setInterim(raw:z.infer<typeof inputs.setInterim>) {const p=inputs.setInterim.parse(raw); get(p.id); return commit('UPDATE items SET likely_interim=? WHERE id=?',Number(p.value),p.id);},
+    snooze(raw:z.infer<typeof inputs.snooze>) {
+      const p=inputs.snooze.parse(raw),item=get(p.id),now=Date.now();
+      if (item.kind==='saved') throw new Error('saved items cannot be snoozed');
+      if (p.until!==null && (p.until<=now || p.until>now+30*86400000)) throw new Error('Snooze must be within the next 30 days');
+      const result=commit('UPDATE items SET snoozed_until=?,read_at=NULL,notify_state=?,updated_at=? WHERE id=?',p.until,p.until===null ? 1 : 0,now,p.id);
+      if (p.until===null) onAttention(); wakeDue(); return result;
+    },
+    async retryTurn(raw:z.infer<typeof inputs.retryTurn>) {
+      const p=inputs.retryTurn.parse(raw),item=get(p.id);
+      if (item.kind!=='mine' || !['waiting','deferred'].includes(item.status) || item.failed_at===null || !item.attempt_request_id || item.thread_deleted) throw new Error('item has no failed attempt');
+      await bb.sdk.threads.retry({threadId:item.thread_id,turnRequestId:item.attempt_request_id}); invalidate(); return {ok:true as const};
+    },
+    async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
+      inputs.workBoardProjects.parse(raw);
+      const outputSchema=z.object({projects:z.array(z.object({id:z.string(),name:z.string()}))});
+      try {const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'listProjects',input:{},outputSchema})); return {available:true,projects:result.projects};}
+      catch {return {available:false,projects:[]};}
+    },
+    async createTask(raw:z.infer<typeof inputs.createTask>) {
+      const p=inputs.createTask.parse(raw),item=get(p.id);
+      const outputSchema=z.discriminatedUnion('ok',[z.object({ok:z.literal(true),task:z.object({key:z.string().min(1)})}),z.object({ok:z.literal(false),error:z.object({message:z.string()})})]);
+      const path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
+      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:item.question.split('\n')[0].slice(0,120),description:[item.question,item.answer,`[Open thread](${path})`].filter(Boolean).join('\n\n'),requesterThreadId:item.thread_id},outputSchema}));
+      if (!result.ok) throw new Error(result.error.message);
+      commit('UPDATE items SET task_key=? WHERE id=?',result.task.key,p.id); return {key:result.task.key};
+    },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
-      const p=inputs.recipients.parse(raw), where=p.questions ? `${unreadWhere} AND (kind='for_me' OR ${QUESTION_SQL})` : unreadWhere;
-      const rows=db.prepare(`SELECT thread_id,count(*) AS unread,max(updated_at) AS last_at FROM items WHERE ${where} GROUP BY thread_id ORDER BY last_at DESC,thread_id LIMIT 100`).all() as Row[];
-      if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {
-        if (rows.length===100) rows.pop();
-        rows.push({thread_id:p.selected,unread:0,last_at:0});
-        const unread=db.prepare(`SELECT count(*) AS unread,max(updated_at) AS last_at FROM items WHERE thread_id=? AND ${where}`).get(p.selected) as Row;
-        Object.assign(rows.at(-1)!,{unread:unread.unread,last_at:unread.last_at ?? 0});
-      }
+      const p=inputs.recipients.parse(raw);
+      // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
+      const rows=db.prepare(`WITH ranked AS (
+        SELECT *,CASE WHEN ${ATTENTION_SQL} THEN 1 ELSE 0 END AS attention,
+        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY CASE WHEN ${ATTENTION_SQL} THEN 0 ELSE 1 END,updated_at DESC,id DESC) AS rank
+        FROM items WHERE thread_deleted=0 ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
+      ), grouped AS (
+        SELECT thread_id,sum(attention) AS unread,max(updated_at) AS last_at,
+        max(CASE WHEN rank=1 THEN project_id END) AS project_id,
+        max(CASE WHEN rank=1 THEN CASE WHEN attention=1 AND kind='mine' AND status='answered' THEN answer WHEN attention=1 AND kind='mine' THEN 'Turn failed: '||question WHEN attention=1 THEN question ELSE coalesce(answer,question) END END) AS preview
+        FROM ranked GROUP BY thread_id
+      ) SELECT * FROM grouped ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200`).all(p.selected ?? '') as Row[];
+      if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
+      rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
       const projects=rows.length ? await bb.sdk.projects.list() : [];
-      const recipients=rows.map(r=>{
-        const newest=db.prepare(`SELECT * FROM items WHERE thread_id=? AND ${unreadWhere} ORDER BY updated_at DESC,id DESC LIMIT 1`).get(r.thread_id) as Row|undefined;
-        const fallback=newest ?? db.prepare('SELECT * FROM items WHERE thread_id=? ORDER BY updated_at DESC,id DESC LIMIT 1').get(r.thread_id) as Row|undefined;
-        const thread=threads.find(t=>t.id===r.thread_id), projectId=thread?.projectId ?? fallback?.project_id ?? null;
-        return {threadId:r.thread_id,threadTitle:thread?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at || fallback?.updated_at || 0,preview:(newest ? newest.kind==='mine' ? newest.answer : newest.question : '').slice(0,160)};
-      });
-      return {recipients:recipients.sort((a,b)=>b.lastAt-a.lastAt || a.threadId.localeCompare(b.threadId))};
+      return {recipients:rows.map(r=>{const t=threads.find(t=>t.id===r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:(r.preview ?? '').slice(0,160)};})};
     },
-    markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {
-      const p=inputs.markThreadRead.parse(raw), now=Date.now();
-      return commit("UPDATE items SET read_at=? WHERE thread_id=? AND read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",now,p.threadId);
-    },
+    markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw); return markRead({all:true,threadId:p.threadId});},
     async pools(raw:z.infer<typeof inputs.pools>) {
       inputs.pools.parse(raw);
       const rows=db.prepare('SELECT * FROM pool_entries ORDER BY created_at,rowid').all() as Row[];
@@ -223,16 +268,17 @@ export default function plugin(bb: BbPluginApi) {
       const p=inputs.save.parse(raw);
       const key=createHash('sha256').update(`${p.threadId}|${p.seq}|${p.text}`).digest('hex');
       const existing=db.prepare("SELECT id FROM items WHERE kind='saved' AND dedupe_key=?").get(key) as {id:string} | undefined;
-      if (existing) return existing;
+      if (existing) return {...existing,created:false};
       const thread=await bb.sdk.threads.get({threadId:p.threadId});
       const id='ans_'+randomUUID(), now=Date.now();
       commit("INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,answer,read_at,dedupe_key,created_at,updated_at) VALUES (?,'saved',?,?,'saved',?,?,?,?,?,?,?)",id,p.threadId,thread.projectId,cap(p.text,4000),p.seq,p.text,now,key,now,now);
-      return db.prepare('SELECT id FROM items WHERE dedupe_key=?').get(key) as {id:string};
+      const saved=db.prepare('SELECT id FROM items WHERE dedupe_key=?').get(key) as {id:string};
+      return {...saved,created:saved.id===id};
     },
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',ask:'Ask the user a small non-blocking question.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',ask:'Ask the user a small non-blocking question, optionally with 1–6 unique short quick-reply options.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -243,7 +289,8 @@ export default function plugin(bb: BbPluginApi) {
           }
           if (method==='ask') {
             const id='ans_'+randomUUID();
-            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?)",id,ctx.threadId,ctx.projectId ?? null,(p as z.infer<typeof toolInputs.ask>).question,now,now);
+            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,(p as z.infer<typeof toolInputs.ask>).question,JSON.stringify((p as z.infer<typeof toolInputs.ask>).options ?? null),now,now);
+            onAttention();
             return id;
           }
           const params=p as {id?:string;note?:string};
@@ -264,6 +311,10 @@ export default function plugin(bb: BbPluginApi) {
   registerCli(bb,{list,markRead,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
+  bb.events.on('turn.failed',event=>{
+    if (!event.inputAccepted && failRequest(db,event.threadId,event.requestId,Date.now(),true,true)) {invalidate(); onAttention();}
+  });
+  wakeDue();
   const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
-  bb.onDispose(async()=>{await driver.dispose(); await startup;});
+  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup;});
 }

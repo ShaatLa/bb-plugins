@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { itemSchema, type Item } from './contract';
 
-const item: Item = itemSchema.parse({
+const item: Item = itemSchema.parse({snoozedUntil:null,failedAt:null,likelyInterim:false,options:null,taskKey:null,
   id: 'ans_one', kind: 'mine', threadId: 'thr_one', projectId: 'pr_one', threadTitle: 'A thread', projectName: 'A project', status: 'answered', question: 'What changed?', questionSeq: 10,
   requestId: null, turnId: null, candidate: null, candidateSeq: null, interim: null, interimSeq: null, answer: 'The answer', answerSeq: 20, answerSource: 'turn', resolveTurnId: null, note: null, readAt: null, pinned: false, dismissedAt: null, threadDeleted: false, createdAt: Date.now(), updatedAt: Date.now(),
 });
@@ -121,7 +121,7 @@ it('shows the badge sum and clears a zero badge on counts invalidation', async (
 it('saves selected message text using its message sequence', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
   const app = await loadPluginApp(() => import('./app'));
-  const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved' } }) }));
+  const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved', created:true } }) }));
   vi.stubGlobal('fetch', fetch);
   await app.messageActions[1]!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));

@@ -38,3 +38,39 @@ describe('applyEvents', () => {
  it('only hides a stopped message that a reply pool quotes', () => {const db=setup(); applyEvents(db,'t',[req(1),start(),accept()]); const id=row(db).id; db.prepare("INSERT INTO pool_entries(id,thread_id,quote,item_id,created_at,updated_at) VALUES ('pool_a','t','q',?,1,1)").run(id); applyEvents(db,'t',[done(5,'interrupted')]); expect(row(db).dismissed_at).not.toBeNull();});
  it('caps text with the chat suffix', () => {expect(cap('x'.repeat(21000),20000)).toHaveLength(20000); expect(cap('x'.repeat(5000),4000)).toMatch(/… \(truncated, open in chat\)$/);});
 });
+
+describe('0.3 attention lifecycle',()=>{
+ it.each([false,true])('stamps failures and answers using event time, live=%s',live=>{
+  const db=setup();
+  applyEvents(db,'t',[req(1),start(),accept(),{...done(4,'failed'),createdAt:123}],null,900,true,live);
+  expect(row(db)).toMatchObject({failed_at:123,notify_state:Number(live),attempt_request_id:'r'});
+  applyEvents(db,'t',[req(5,'b',{retryOfRequestId:'r'}),ev(6,'client/turn/rejected','x',{requestId:'b'})],null,901,true,live);
+  expect(row(db).attempt_request_id).toBe('b');
+  applyEvents(db,'t',[start(7,'y')],null,902,true,live);
+  expect(applyEvents(db,'t',[accept(8,'b','y')],null,903,true,live)).toBe(true);
+  expect(row(db).failed_at).toBeNull();
+  expect(applyEvents(db,'t',[accept(9,'b','y')],null,903,true,live)).toBe(false);
+  applyEvents(db,'t',[message(10,'Final answer?','y'),{...done(11,'completed','y'),createdAt:456}],null,904,true,live);
+  expect(row(db)).toMatchObject({failed_at:null,answered_at:456,notify_state:Number(live)});
+ });
+ it('rejects original and retry requests before acceptance and keeps live rejection idempotent',()=>{
+  const db=setup();
+  applyEvents(db,'t',[req(1),ev(2,'client/turn/rejected','x',{requestId:'r'})],null,10,true,true);
+  expect(row(db)).toMatchObject({failed_at:10,attempt_request_id:'r'});
+  applyEvents(db,'t',[req(3,'b',{retryOfRequestId:'r'}),ev(4,'client/turn/rejected','x',{requestId:'b'})],null,20,true,true);
+  expect(row(db).attempt_request_id).toBe('b');
+ });
+ it.each(["Делегировал задачу","Отпишусь позже","I'll get back","waiting for the sub-agent"])('flags interim text %s',text=>{
+  const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,text),done()]);
+  expect(row(db).likely_interim).toBe(1);
+ });
+ it('does not flag agent resolutions or fail a resolution turn',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1),start(),accept()]);
+  db.prepare("UPDATE items SET status='deferred',resolve_turn_id='y'").run();
+  applyEvents(db,'t',[start(4,'y'),message(5,'waiting for the child','y'),done(6,'failed','y')]);
+  expect(row(db)).toMatchObject({status:'deferred',failed_at:null,resolve_turn_id:null});
+  db.prepare("UPDATE items SET resolve_turn_id='z'").run();
+  applyEvents(db,'t',[start(7,'z'),message(8,'waiting for the child','z'),done(9,'completed','z')]);
+  expect(row(db)).toMatchObject({answer_source:'agent',likely_interim:0});
+ });
+});

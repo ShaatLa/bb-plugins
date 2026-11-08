@@ -12,6 +12,7 @@ const oversized = (e: unknown) => {
 };
 type State = { last_seq: number; last_error: string | null };
 export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void) {
+  const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
   const scheduled = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   const retries = new Map<string, { delay: number; timer?: ReturnType<typeof setTimeout> }>();
@@ -39,6 +40,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       db.prepare('DELETE FROM threads_state WHERE thread_id=?').run(id);
       db.prepare('UPDATE items SET thread_deleted=1,updated_at=? WHERE thread_id=?').run(Date.now(),id);
     })();
+    live.delete(id);
     const retry = retries.get(id); if (retry?.timer) clearTimeout(retry.timer); retries.delete(id);
     invalidate();
   }
@@ -56,6 +58,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       }
     }
   }
+  // shortcut: live events in the first successful drain do not push; revisit if discovery needs immediate notifications.
   async function drain(id: string) {
     if (signal.aborted) return;
     const state = db.prepare('SELECT last_seq,last_error FROM threads_state WHERE thread_id=?').get(id) as State | undefined;
@@ -73,14 +76,14 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
       }
-      if (db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions))()) invalidate();
+      if (db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions,live.has(id)))()) invalidate();
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
       const result = await page(id,cursor,'asc',100);
       if (signal.aborted) return;
       if (result.events.length) {
-        if (db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions))()) invalidate();
+        if (db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions,live.has(id)))()) invalidate();
         cursor = Math.max(...result.events.map(e=>e.seq));
       }
       if (result.events.length < result.size) break;
@@ -89,6 +92,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   async function attempt(id: string) {
     try {
       await slot(() => drain(id));
+      if (!signal.aborted) live.add(id);
       if (!signal.aborted && db.prepare('UPDATE threads_state SET last_error=NULL,updated_at=? WHERE thread_id=? AND last_error IS NOT NULL').run(Date.now(),id).changes) invalidate();
       const retry = retries.get(id); if (retry?.timer) clearTimeout(retry.timer); retries.delete(id);
     } catch (e) {

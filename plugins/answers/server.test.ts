@@ -89,7 +89,7 @@ describe('server',()=>{
   const {harness,db}=setup(); seed(db,'ans_mine','mine'); seed(db,'ans_open');
   const input={threadId:'t',seq:50,role:'assistant',text:'saved text'};
   const saved=await harness.behavior.callRpc('save',input);
-  expect(await harness.behavior.callRpc('save',input)).toEqual(saved);
+  expect(await harness.behavior.callRpc('save',input)).toEqual({...saved as object,created:false});
   await harness.behavior.callAgentTool('answers_list',{}, {threadId:'t'});
   const result=await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})}); expect(result.errors).toEqual([]);
   expect(db.prepare('SELECT kind,thread_deleted FROM items').all()).toEqual([{kind:'saved',thread_deleted:1}]);
@@ -137,7 +137,7 @@ describe('reply pools and inbox',()=>{
   expect(recipients[1].preview).toHaveLength(160);
   await call('markThreadRead',{threadId:'b'});
   expect((await call('counts')).inbox).toBe(1);
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a']);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a','b']);
   expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
  });
@@ -279,6 +279,29 @@ describe('ingestion driver',()=>{
   cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
   return {...host,db,driver,invalidate};
  }
+
+ it.each(['new','tracked','failed-first'])('suppresses first drain and not later answers: %s',async mode=>{
+  const {harness,db,driver}=driverSetup();
+  if(mode==='tracked') db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',0,0)").run();
+  let fail=mode==='failed-first',phase=0;
+  const events=(offset:number)=>[
+   {seq:offset+1,type:'client/turn/requested',data:{initiator:'user',requestId:'r'+offset,input:[{type:'text',text:'Question?'}]}},
+   {seq:offset+2,type:'turn/started',scope:{turnId:'turn'+offset},data:{}},
+   {seq:offset+3,type:'turn/input/accepted',scope:{turnId:'turn'+offset},data:{clientRequestId:'r'+offset}},
+   {seq:offset+4,type:'item/completed',scope:{turnId:'turn'+offset},data:{item:{type:'agentMessage',text:'Answer'}}},
+   {seq:offset+5,type:'turn/completed',scope:{turnId:'turn'+offset},createdAt:Date.now()-120000,data:{status:'completed'}}
+  ];
+  harness.sdk.stub('threads.events.list',async(args:any)=>{
+   if(fail) throw new Error('temporary');
+   const all=events(phase*10);
+   return args.order==='desc' ? [...all].reverse() : all.filter(e=>e.seq>Number(args.afterSeq ?? 0));
+  });
+  if(fail) {await expect(driver.schedule('t')).rejects.toThrow('temporary'); fail=false;}
+  await driver.schedule('t');
+  expect(db.prepare('SELECT notify_state FROM items').all()).toEqual([{notify_state:0}]);
+  phase=1; await driver.schedule('t');
+  expect(db.prepare('SELECT notify_state FROM items ORDER BY question_seq').all()).toEqual([{notify_state:0},{notify_state:1}]);
+ });
  it('backfills descending pages then drains ascending, halving 413 pages at the same cursor',async()=>{
   const {harness,db,driver,invalidate}=driverSetup();
   const calls:any[]=[];
@@ -290,7 +313,7 @@ describe('ingestion driver',()=>{
   });
   await driver.schedule('t');
   expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','100',undefined],['desc','50',undefined],['asc','100','100']]);
-  expect(calls.every(c=>c.types.length===5)).toBe(true);
+  expect(calls.every(c=>c.types.length===6)).toBe(true);
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
   expect(invalidate).toHaveBeenCalled();
@@ -353,5 +376,86 @@ describe('ingestion driver',()=>{
   harness.sdk.stub('threads.list',async(args:any)=>{pages++; return Array.from({length:200},(_,i)=>makeThreadResponse({id:`t${args.offset+i}`,updatedAt: i===0 ? Date.now() : 0}));});
   await driver.reconcile(); expect(pages).toBe(5);
   expect(db.prepare('SELECT count(*) AS n FROM threads_state').get()).toEqual({n:5});
+ });
+});
+
+describe('0.3 server attention',()=>{
+ it('uses the attention set for counts, list, recipients and bulk undo',async()=>{
+  const {harness,db}=setup(),call=async(name:string,input:object={})=>await harness.behavior.callRpc(name,input) as any;
+  seed(db,'ans_fail','mine','failed'); seed(db,'ans_read','mine','read'); seed(db,'ans_ask','for_me','asked'); seed(db,'ans_sleep','for_me','sleep');
+  db.prepare("UPDATE items SET failed_at=2,attempt_request_id='retry' WHERE id='ans_fail'").run();
+  db.prepare("UPDATE items SET status='answered',read_at=3 WHERE id='ans_read'").run();
+  db.prepare("UPDATE items SET snoozed_until=? WHERE id='ans_sleep'").run(Date.now()+100000);
+  expect((await call('counts')).inbox).toBe(2);
+  expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_ask','ans_fail']);
+  const recipients=(await call('recipients')).recipients;
+  expect(recipients).toHaveLength(4); expect(recipients.slice(0,2).every((r:any)=>r.unread===1)).toBe(true);
+  expect(recipients.find((r:any)=>r.threadId==='failed').preview).toBe('Turn failed: Question');
+  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['asked','sleep']);
+  const batch=await call('markRead',{all:true}); expect(batch.count).toBe(2);
+  expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:2});
+  const threadBatch=await call('markThreadRead',{threadId:'failed'}); expect(threadBatch.count).toBe(1);
+  db.prepare('UPDATE items SET read_at=? WHERE read_batch=?').run(Date.now()-600001,threadBatch.batch);
+  expect((await call('undoRead',{batch:threadBatch.batch})).count).toBe(0);
+ });
+ it('keeps interim answers waiting and clears the flag explicitly',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine');
+  db.prepare("UPDATE items SET status='answered',answer='later',answer_seq=7,likely_interim=1,notify_state=1,answered_at=8").run();
+  await harness.behavior.callRpc('setInterim',{id:'ans_a',value:false});
+  expect((db.prepare('SELECT likely_interim FROM items').get() as any).likely_interim).toBe(0);
+  await harness.behavior.callRpc('keepWaiting',{id:'ans_a'});
+  expect(db.prepare('SELECT status,interim,interim_seq,answer,answered_at,notify_state FROM items').get()).toEqual({status:'deferred',interim:'later',interim_seq:7,answer:null,answered_at:null,notify_state:0});
+  await expect(harness.behavior.callRpc('keepWaiting',{id:'ans_a'})).rejects.toThrow();
+ });
+ it('validates options, stores trimmed options and enters attention',async()=>{
+  const {harness,db}=setup();
+  for(const options of [[],['a',' a '],['x'.repeat(81)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
+  const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','No']},{threadId:'t'});
+  expect(db.prepare('SELECT options,notify_state FROM items WHERE id=?').get(id)).toEqual({options:'["Yes","No"]',notify_state:1});
+ });
+ it('retries the latest attempt and handles live pre-acceptance failures',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine');
+  db.prepare("UPDATE items SET request_id='a',attempt_request_id='b'").run();
+  db.prepare("INSERT INTO request_aliases VALUES ('t','b','ans_a')").run();
+  await harness.behavior.emitThreadEvent('turn.failed',{threadId:'t',requestId:'b',turnId:null,inputAccepted:false,attemptNumber:2,errorInfo:null,rateLimits:null,originPluginId:null});
+  const retry=vi.fn(async()=>({})); harness.sdk.stub('threads.retry',retry as any);
+  await harness.behavior.callRpc('retryTurn',{id:'ans_a'});
+  expect(retry).toHaveBeenCalledWith({threadId:'t',turnRequestId:'b'});
+ });
+ it('consumes snoozes, clamps long timers, re-arms and disposes',async()=>{
+  vi.useFakeTimers(); const {harness,db}=setup(); seed(db,'ans_a'); seed(db,'ans_b');
+  const call=(id:string,until:number|null)=>harness.behavior.callRpc('snooze',{id,until});
+  await expect(call('ans_a',Date.now())).rejects.toThrow();
+  await expect(call('ans_a',Date.now()+30*86400000+1)).rejects.toThrow();
+  await call('ans_a',Date.now()+30*86400000);
+  await vi.advanceTimersByTimeAsync(2147483647);
+  expect((db.prepare("SELECT snoozed_until FROM items WHERE id='ans_a'").get() as any).snoozed_until).not.toBeNull();
+  await call('ans_b',Date.now()+1000);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(db.prepare("SELECT snoozed_until,notify_state FROM items WHERE id='ans_b'").get()).toEqual({snoozed_until:null,notify_state:1});
+  await call('ans_a',null);
+  expect((db.prepare("SELECT notify_state FROM items WHERE id='ans_a'").get() as any).notify_state).toBe(1);
+  await call('ans_a',Date.now()+1000);
+  await harness.lifecycle.dispose(); await vi.advanceTimersByTimeAsync(2000);
+  expect(vi.getTimerCount()).toBe(0);
+ });
+ it('consumes overdue snoozes at startup',async()=>{
+  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list:async()=>[]}}});
+  const db=host.bb.storage.database(); host.bb.storage.migrate(db,migrations); seed(db);
+  db.prepare('UPDATE items SET snoozed_until=1,read_at=2').run();
+  plugin(host.bb); cleanup.push(()=>host.harness.lifecycle.dispose());
+  expect(db.prepare('SELECT snoozed_until,read_at,notify_state FROM items').get()).toEqual({snoozed_until:null,read_at:null,notify_state:1});
+ });
+ it('validates Work Board output and stores task keys',async()=>{
+  const {harness,db}=setup(); seed(db);
+  const rpc=vi.fn(async(args:any)=>args.method==='listProjects' ? {projects:[{id:'p',name:'Project'}]} : {ok:true,task:{key:'TASK-1'}});
+  harness.sdk.stub('plugins.callRpc',rpc as any);
+  expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:true,projects:[{id:'p',name:'Project'}]});
+  expect(await harness.behavior.callRpc('createTask',{id:'ans_one',projectId:'p'})).toEqual({key:'TASK-1'});
+  expect((db.prepare('SELECT task_key FROM items').get() as any).task_key).toBe('TASK-1');
+  rpc.mockImplementation(async()=>({ok:false,error:{message:'Denied'}}) as any);
+  await expect(harness.behavior.callRpc('createTask',{id:'ans_one',projectId:'p'})).rejects.toThrow('Denied');
+  rpc.mockImplementation(async()=>{throw new Error('missing');});
+  expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:false,projects:[]});
  });
 });

@@ -54,4 +54,16 @@ CREATE TABLE threads_state (
   `ALTER TABLE pool_entries ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
   // One-off: apply the short-acknowledgement rule (QUIET_SQL in ingest.ts) to answers already waiting in the Inbox.
   `UPDATE items SET read_at=updated_at WHERE kind='mine' AND status='answered' AND read_at IS NULL AND length(trim(question))<=60 AND instr(question,'?')=0 AND instr(question,'？')=0 AND length(trim(answer))<=160;`,
+  `ALTER TABLE items ADD COLUMN snoozed_until INTEGER;                       -- F8
+ALTER TABLE items ADD COLUMN failed_at INTEGER;                           -- F11
+ALTER TABLE items ADD COLUMN attempt_request_id TEXT;                     -- F11: latest attempt's request id
+ALTER TABLE items ADD COLUMN likely_interim INTEGER NOT NULL DEFAULT 0;   -- F4
+ALTER TABLE items ADD COLUMN options TEXT;                                -- F7: JSON string[] or NULL
+ALTER TABLE items ADD COLUMN notify_state INTEGER NOT NULL DEFAULT 0;    -- F5: 0 none, 1 pending, 2 held for quiet summary
+ALTER TABLE items ADD COLUMN answered_at INTEGER;                         -- F13: when it became answered
+ALTER TABLE items ADD COLUMN read_batch TEXT;                             -- F2
+ALTER TABLE items ADD COLUMN task_key TEXT;                               -- F12
+UPDATE items SET answered_at=CASE WHEN status='answered' THEN updated_at END, attempt_request_id=request_id;
+CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
+CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'held_for' = quiet window end`,
 ];

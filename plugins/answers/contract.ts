@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
 const threadId = z.string().min(1).max(200), time = z.number().int().nonnegative();
-export const itemSchema = z.object({ id: idSchema, kind: z.enum(['mine','for_me','saved']), threadId, projectId: z.string().nullable(), threadTitle: z.string().nullable(), projectName: z.string().nullable(), status: z.enum(['waiting','deferred','answered','open','replied','saved']), question: z.string(), questionSeq: time.nullable(), requestId: z.string().nullable(), turnId: z.string().nullable(), candidate: z.string().nullable(), candidateSeq: time.nullable(), interim: z.string().nullable(), interimSeq: time.nullable(), answer: z.string().nullable(), answerSeq: time.nullable(), answerSource: z.enum(['turn','agent','user']).nullable(), resolveTurnId: z.string().nullable(), note: z.string().nullable(), readAt: time.nullable(), pinned: z.boolean(), dismissedAt: time.nullable(), threadDeleted: z.boolean(), createdAt: time, updatedAt: time });
+export const itemSchema = z.object({ id: idSchema, kind: z.enum(['mine','for_me','saved']), threadId, projectId: z.string().nullable(), threadTitle: z.string().nullable(), projectName: z.string().nullable(), status: z.enum(['waiting','deferred','answered','open','replied','saved']), question: z.string(), questionSeq: time.nullable(), requestId: z.string().nullable(), turnId: z.string().nullable(), candidate: z.string().nullable(), candidateSeq: time.nullable(), interim: z.string().nullable(), interimSeq: time.nullable(), answer: z.string().nullable(), answerSeq: time.nullable(), answerSource: z.enum(['turn','agent','user']).nullable(), resolveTurnId: z.string().nullable(), note: z.string().nullable(), snoozedUntil:time.nullable(),failedAt:time.nullable(),likelyInterim:z.boolean(),options:z.array(z.string()).nullable(),taskKey:z.string().nullable(),readAt: time.nullable(), pinned: z.boolean(), dismissedAt: time.nullable(), threadDeleted: z.boolean(), createdAt: time, updatedAt: time });
 export const viewSchema = z.enum(['unread','waiting','for_me','pinned','saved','all']);
 export const poolIdSchema = z.string().regex(/^pool_[A-Za-z0-9_-]+$/);
 const quote = z.string().min(1).max(20000, 'Quote exceeds 20,000 characters');
@@ -17,7 +17,12 @@ export const sendOptionsSchema = z.object({mode:z.enum(['queue','steer','draft']
 export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote:poolQuote,quoteSeq:time.nullable(),itemId:idSchema.nullable(),note:z.string().max(8000),attachments:z.array(attachmentSchema),revision:time,createdAt:time,updatedAt:time});
 export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
+const bulkRead=z.object({ok:z.literal(true),batch:z.string().nullable(),count:time});
 export const inputs = {
+ undoRead:z.object({batch:z.string().min(1)}).strict(),
+ keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
+ snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
+ workBoardProjects:z.object({}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
  recipients:z.object({selected:threadId.optional(),questions:z.boolean().optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
@@ -29,12 +34,17 @@ export const inputs = {
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({
+ undoRead:{input:inputs.undoRead,output:z.object({ok:z.literal(true),count:time})},
+ keepWaiting:{input:inputs.keepWaiting,output:ok},setInterim:{input:inputs.setInterim,output:ok},
+ snooze:{input:inputs.snooze,output:ok},retryTurn:{input:inputs.retryTurn,output:ok},
+ workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string()}))})},
+ createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
- markThreadRead:{input:inputs.markThreadRead,output:ok}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
+ markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
  poolSend:{input:inputs.poolSend,output:z.object({delivery:z.enum(['sent','queued']),sent:time,keptEdited:time})}, quoteReply:{input:inputs.quoteReply,output:z.object({delivery:z.enum(['sent','queued'])})},
  list:{tags:()=>[ITEMS_TAG],input:inputs.list,output:z.object({items:z.array(itemSchema),nextCursor:z.string().nullable()})}, counts:{tags:()=>[COUNTS_TAG],input:inputs.counts,output:z.object({unread:time,waiting:time,forMe:time,inbox:time})},
- markRead:{input:inputs.markRead,output:ok},setPinned:{input:inputs.setPinned,output:ok},setDismissed:{input:inputs.setDismissed,output:ok}, reply:{input:inputs.reply,output:z.object({delivery:z.enum(['sent','queued'])})},save:{input:inputs.save,output:z.object({id:idSchema})},
+ markRead:{input:inputs.markRead,output:z.union([bulkRead,ok])},setPinned:{input:inputs.setPinned,output:ok},setDismissed:{input:inputs.setDismissed,output:ok}, reply:{input:inputs.reply,output:z.object({delivery:z.enum(['sent','queued'])})},save:{input:inputs.save,output:z.object({id:idSchema,created:z.boolean()})},
 });
 export type Item=z.infer<typeof itemSchema>;
 export type View=z.infer<typeof viewSchema>;
