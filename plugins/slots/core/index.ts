@@ -197,7 +197,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const recipients = alert.reason === "unleased-load" && alert.subject.threadIds.length === 1 ? [...alert.subject.threadIds] : [];
         const config = settingsFor(ctx.settings, input.hostId);
         if (config.observerThreadId && config.observerEvents.includes(alert.reason) && !recipients.includes(config.observerThreadId)) recipients.push(config.observerThreadId);
-        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, text: alert.text, watch: { hostId: input.hostId, subject: alert.subject } });
+        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, text: alert.text, watch: { hostId: input.hostId, subject: alert.subject, holderThreadId: alert.holderThreadId } });
       }
       break;
     }

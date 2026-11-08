@@ -1,4 +1,5 @@
 import { experimental_isHostPathWithin, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import { realpath } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createCollector } from "./watch-collector.js";
@@ -50,19 +51,32 @@ export function createWatcher(options: WatcherOptions) {
   }
   async function refresh(signal: AbortSignal) {
     const paths = new Map<string, string[]>();
+    const parents = new Map<string, string | null>();
     for (let offset = 0;; offset += 100) {
       const threads = await bounded(options.sdk.threads.list({ hostId: options.hostId(), archived: false, includeHidden: true, limit: 100, offset, signal }), signal);
       for (const thread of threads) {
         if (thread.archivedAt || thread.deletedAt) continue;
+        parents.set(thread.id, thread.parentThreadId ?? null);
         // Thread routing refreshes every two minutes; physical environment paths cache for five.
         const path = await pathFor(thread, signal);
         if (path) paths.set(path, [...(paths.get(path) ?? []), thread.id]);
       }
       if (threads.length < 100) break;
     }
-    const next = [...paths].map(([key, threadIds]) => ({ key, threadIds: threadIds.sort(), cores: 0 })).sort((a,b) => b.key.length - a.key.length);
+    const next = [...paths].map(([key, threadIds]) => {
+      const ancestors = new Set<string>();
+      for (const id of threadIds) {
+        const seen = new Set([id]); let current = id;
+        for (let depth = 0; depth < 4; depth++) {
+          const parent = parents.get(current);
+          if (!parent || !parents.has(parent) || seen.has(parent)) break;
+          seen.add(parent); ancestors.add(parent); current = parent;
+        }
+      }
+      return { key, threadIds: threadIds.sort(), ancestorThreadIds: [...ancestors].sort(), cores: 0 };
+    }).sort((a,b) => b.key.length - a.key.length);
     for (const key of new Set([...groups.map(g => g.key), ...next.map(g => g.key)])) {
-      if (JSON.stringify(groups.find(g => g.key === key)?.threadIds) !== JSON.stringify(next.find(g => g.key === key)?.threadIds)) resetKeys.add(key);
+      if (JSON.stringify(groups.find(g => g.key === key)) !== JSON.stringify(next.find(g => g.key === key))) resetKeys.add(key);
     }
     groups = next; refreshedAt = now(); dirty = false;
     for (const [id, env] of environments) if (now() - env.at >= 300000) environments.delete(id);
@@ -82,6 +96,7 @@ export function createWatcher(options: WatcherOptions) {
     parentSignal?.addEventListener("abort", abort, { once: true });
     const deadline = setTimeout(() => active.abort(new Error("Watcher deadline exceeded")), 20000);
     const begin = now(), cpu = process.cpuUsage();
+    let browserWarned = false, browserCalls = 0;
     let stats = { psMs: 0, lsofMs: 0, lsofCalls: 0 };
     let usage: Usage = { type: "usage", hostId: options.hostId(), startAt: lastEndAt, endAt: now(), valid: false, unknownCores: 0, subjects: [] };
     try {
@@ -95,7 +110,21 @@ export function createWatcher(options: WatcherOptions) {
       usage.subjects = subjects; usage.resetKeys = [...resetKeys];
       const effects = await options.preview(usage), verified = new Set<string>();
       for (const effect of effects) if (effect.type === "notify" && effect.watch && !verified.has(effect.watch.subject.key)) {
-        if (await verify(effect.watch.subject, active.signal)) verified.add(effect.watch.subject.key);
+        let ok = await verify(effect.watch.subject, active.signal);
+        const holder = effect.watch.holderThreadId;
+        if (ok && effect.reason === "idle-lease" && holder) {
+          const family = subjects.filter(s => s.threadIds.includes(holder) || (s.ancestorThreadIds ?? []).includes(holder));
+          const ids = [...new Set([holder, ...family.flatMap(s => s.threadIds)])].slice(0, Math.max(0, 32 - browserCalls));
+          for (const threadId of ids) {
+            browserCalls++;
+            try {
+              const signal = AbortSignal.any([active.signal, AbortSignal.timeout(1000)]);
+              const sessions = await bounded(options.sdk.plugins.callRpc({ pluginId: "browser-automation", method: "list", input: { threadId }, outputSchema: z.array(z.object({ id: z.string(), threadId: z.string(), hostId: z.string(), backend: z.enum(["desktop", "local"]), state: z.enum(["ready", "stopped", "closed"]), createdAt: z.number(), expiresAt: z.number() })) }), signal);
+              if (sessions.some(s => s.state === "ready" && s.expiresAt > now() && s.hostId === options.hostId())) { ok = false; break; }
+            } catch (error) { if (!browserWarned) { options.warn(error); browserWarned = true; } }
+          }
+        }
+        if (ok) verified.add(effect.watch.subject.key);
         else { resetKeys.add(effect.watch.subject.key); dirty = true; }
       }
       if (active.signal.aborted) throw active.signal.reason;
