@@ -64,6 +64,7 @@ it("idle uses conservative unknown load, resets on busy/invalid/membership, re-a
   expect(h.state.leases[0].idle?.since).toBeNull();
   let r; for(let t=600000;t<1200000;t+=120000) r=h.usage(t,t+120000,0);
   expect(notices(r!,'idle-lease')).toMatchObject([{threadId:'observer'}]);
+  expect(notices(r!,'idle-lease')[0]).toMatchObject({lines: expect.not.arrayContaining([expect.objectContaining({label:'Threads'})])});
   expect(notices(h.usage(1200000,1320000,0),'idle-lease')).toHaveLength(0);
   h.usage(1320000,1440000,1); expect(h.state.leases[0].idle).toEqual({since:null,alerted:false});
   h.usage(1440000,1560000,0,{valid:false}); expect(h.state.leases[0].idle?.since).toBeNull();
@@ -91,6 +92,7 @@ it("idle notices re-arm after activity and use the load of every sibling", () =>
   raw(0,0); let r;
   for(let t=120000;t<720000;t+=120000) r=raw(t,0);
   expect(notices(r!,'idle-lease')).toHaveLength(1);
+  expect(notices(r!,'idle-lease')[0]).toMatchObject({lines: expect.arrayContaining([{label:'Threads',value:'`a`, `b`'}])});
   raw(720000,0.5); expect(h.state.leases[0].idle).toEqual({since:null,alerted:false});
   for(let t=840000;t<1440000;t+=120000) r=raw(t,0);
   expect(notices(r!,'idle-lease')).toHaveLength(1);

@@ -69,7 +69,7 @@ export function updateWatch(host: HostState, leases: Lease[], input: Extract<Inp
     idle.since ??= input.startAt;
     if (!idle.alerted && input.endAt - idle.since >= settings.idleLeaseMinutes * 60000) {
       idle.alerted = true;
-      alerts.push({ reason: "idle-lease", subject, holderThreadId: l.holderThreadId, message: { title: "Idle heavy slot", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Held", value: `${duration(input.endAt - l.grantedAt)} · idle: ${duration(input.endAt - idle.since)}` }, { label: "Holder", value: `\`${l.holderThreadId}\`` }, { label: "Threads", value: subject.threadIds.map(id => `\`${id}\``).join(", ") }] } });
+      alerts.push({ reason: "idle-lease", subject, holderThreadId: l.holderThreadId, message: { title: "Idle heavy slot", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Held", value: `${duration(input.endAt - l.grantedAt)} · idle: ${duration(input.endAt - idle.since)}` }, { label: "Holder", value: `\`${l.holderThreadId}\`` }, ...(subject.threadIds.length === 1 && subject.threadIds[0] === l.holderThreadId ? [] : [{ label: "Threads", value: subject.threadIds.map(id => `\`${id}\``).join(", ") }])] } });
     }
   }
   for (const [id, at] of Object.entries(w.heavyEndAt)) if (at < input.endAt - window) delete w.heavyEndAt[id];

@@ -125,7 +125,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
-    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: reason }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }] };
+    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Reason", value: reason }] };
     notify(l.holderThreadId, type, message);
     if (l.ownerThreadId !== l.holderThreadId) notify(l.ownerThreadId, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
@@ -152,7 +152,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.requests = state.requests.filter(r => r.id !== requestId);
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
-    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool} slot ${index}` }], hint: `Use \`bb slots wrapper\` for heavy commands; \`bb slots heartbeat\` extends manual leases; release promptly with \`bb slots release ${lease.id}\`.` };
+    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
     notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
@@ -306,7 +306,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool} slot ${lease.slotIndex}` }], hint: `Use \`bb slots wrapper\` for heavy commands; \`bb slots heartbeat\` extends manual leases; release promptly with \`bb slots release ${lease.id}\`.` };
+      const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
       notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
@@ -365,7 +365,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
-          const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool}` }, { label: "Expires", value: new Date(lease.expiresAt).toISOString() }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
+          const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool}` }, { label: "Expires", value: `in ${minutes(lease.expiresAt - ctx.now)}` }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
           notify(lease.holderThreadId, "warn", message);
           observer(lease.hostId, "warn", message, lease.holderThreadId);
         }
@@ -392,7 +392,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const { memFreePct, load1, at } = gate.latest;
         const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;
         audit("gate-hold", { hostId, readings: { memFreePct, load1, at }, reason: message });
-        observer(hostId, "gate-hold", { title: "Machine busy too long", lines: [{ value: `Gate failing for ${minutes(ctx.now - gate.failingSince)}.` }, { label: "Host", value: `\`${hostId}\`` }, { label: "Memory free", value: `${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%)` }, { label: "Load", value: `${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)})` }, { label: "Sampled", value: `${new Date(at).toISOString().slice(11, 16)}Z` }] });
+        observer(hostId, "gate-hold", { title: "Machine busy too long", lines: [{ value: `Gate failing for ${minutes(ctx.now - gate.failingSince)}.` }, { label: "Host", value: `\`${hostId}\`` }, { label: "Memory free", value: `${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%)` }, { label: "Load", value: `${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)})` }] });
       }
       break;
     }

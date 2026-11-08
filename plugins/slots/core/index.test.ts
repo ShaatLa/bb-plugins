@@ -254,12 +254,13 @@ it("release cancels all queued pools or a single owned request", () => {
   expect(h.state.requests).toHaveLength(1);
   h.send({ type: "release", threadId: "a" }); expect(h.state.requests).toHaveLength(0);
 });
-it("warning and grant name exact commands with a UTC expiry", () => {
+it("warning and grant name exact commands with a relative expiry", () => {
   const h = harness(); h.request("a");
-  expect(h.open().effects.some(e => rendered(e).includes("bb slots wrapper"))).toBe(true);
+  expect(h.open().effects.some(e => rendered(e).includes("Run heavy commands through `slots-run` (`bb slots wrapper`); release with `bb slots release"))).toBe(true);
   h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
   const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
-  expect(rendered(warning)).toContain(new Date(h.state.leases[0].expiresAt).toISOString());
+  expect(rendered(warning)).toContain(`- Expires: in ${h.settings.heartbeatIntervalMs / minute}m`);
+  expect(rendered(warning)).not.toContain(new Date(h.state.leases[0].expiresAt).toISOString());
   expect(rendered(warning)).toContain("bb slots heartbeat");
 });
 
@@ -333,7 +334,8 @@ it("rounds observer durations and gate readings for human messages", () => {
   h.sample(9.4, 40.1234); h.now = 20 * minute + 2000;
   const first = h.send({ type: "tick" });
   expect(rendered(observerCopies(first, "queue-wait")[0])).toContain("estimate 1h 5m, waiting 20m");
-  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("Memory free: 9% (min 20%)\n- Load: 40.1 (max 18.0)\n- Sampled: 00:00Z");
+  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("Memory free: 9% (min 20%)\n- Load: 40.1 (max 18.0)");
+  expect(rendered(observerCopies(first, "gate-hold")[0])).not.toContain("Sampled:");
   h.sample(50, 1); h.sample(9.4, 40.1234); h.now += (65 * minute + 6000);
   expect(rendered(observerCopies(h.send({ type: "tick" }), "gate-hold")[0])).toContain("failing for 1h 5m");
 });
@@ -428,4 +430,14 @@ it("preserves the other waiter when one detaches and exposes a shared grant", ()
   h.open();
   for (const use of [second, third]) expect(h.send({ type: "heartbeatUse", threadId: "a", useId: use.id }).result)
     .toMatchObject({ ok: true, data: { kind: "leased", lease: { requestId }, useId: use.id } });
+});
+
+it.each(["release", "revoke", "expire", "archive"])("shows job and reason when a lease ends: %s", kind => {
+  const h = harness(); h.request("a"); h.open();
+  const id = h.state.leases[0].id;
+  if (kind === "expire") h.now = h.state.leases[0].expiresAt;
+  const result = kind === "expire" ? h.send({type:"tick"}) : kind === "revoke" ? h.send({type:"revoke",leaseId:id,reason:"revoked by manager"}) : kind === "archive" ? h.send({type:"threadEnded",threadId:"a",reason:"archived"}) : h.send({type:"release",threadId:"a"});
+  const message = rendered(result.effects.find(e => e.type === "notify"));
+  expect(message).toContain("\na tests\n- Lease:");
+  expect(message).toContain(`- Reason: ${{release:"released", revoke:"revoked by manager", expire:"expired", archive:"archived"}[kind]}`);
 });
