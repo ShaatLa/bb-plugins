@@ -122,7 +122,7 @@ New native tools become available when BB next constructs the provider session; 
 
 ## Observer threads
 
-CI events can be pushed to BB threads so an agent watching CI is told instead of polling. Each message is one short Markdown line starting with **CI Dashboard** (bold); refs, problem ids and shas are inline code, and the GitHub link is a short `[run N]`/`[job N]` link, with ids and a GitHub link, sent with `threads.send` in `auto` mode (an idle agent wakes up). Green runs never produce messages.
+CI events can be pushed to BB threads so an agent watching CI is told instead of polling. Each message is one short Markdown line starting with **CI Dashboard** (bold); refs, problem ids and shas are inline code, and the GitHub link is a short `[run N]`/`[job N]` link, with ids and a GitHub link, sent with `threads.send` in `queue-if-active` mode: a busy agent gets it after its current turn, an idle agent wakes up. Green runs never produce messages.
 
 What is sent (each type has its own on/off setting, all on by default):
 

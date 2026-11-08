@@ -1808,7 +1808,7 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     // Poll N: the three runs are in progress. The thread subscribes and gets its confirmation, no history.
     await signalsPass(harness, 0);
     expect(sentTo(send)).toEqual([expect.stringMatching(/^\*\*CI Dashboard\*\* Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
-    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "auto", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
+    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "queue-if-active", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
     // Poll N+1: they are gone from the live list; the very same loop fetches them, stores their jobs and announces the failures.
     scenario.running = [];
     fetchMock.mockClear();

@@ -437,7 +437,7 @@ export default function plugin(bb: BbPluginApi) {
     logOnce(`CI observer: ${threadId} removed from observer threads (${why})`);
   }
   async function notify(threadId: string, text: string) {
-    try { await bb.sdk.threads.send({ threadId, mode: "auto", originPluginId: bb.pluginId, input: [{ type: "text", text, mentions: [] }] }); }
+    try { await bb.sdk.threads.send({ threadId, mode: "queue-if-active", originPluginId: bb.pluginId, input: [{ type: "text", text, mentions: [] }] }); }
     catch (error) {
       // Logged once per thread; the event is not retried (it is already marked sent), and a thread that no longer exists is dropped.
       logOnce(`CI observer: message to ${threadId} failed: ${describe(error)}`);
