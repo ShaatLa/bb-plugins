@@ -1,6 +1,6 @@
 # Answers 0.3.0 — attention, notifications, faster replies, integrations
 
-Status: draft v3 for review (review-1: 9 majors / 6 minors; review-2: 6 majors / 2 minors; all addressed).
+Status: draft v4 for review (review-1: 9M/6m; review-2: 6M/2m; review-3: 2M; all addressed).
 Base: branch `feat/answers` (0.2.0, SDK 0.6.132). Every feature was accepted by the owner.
 Behaviour is the spec; file/line hints are guidance.
 
@@ -140,12 +140,15 @@ equal endpoints rejected; local server time; may wrap midnight). `level(item)` =
 `notify.ts`, created by `server.ts`; `run()` is called after any write that can make `notify_state=1`
 (driver invalidation, `answers_ask`, snooze wake, settings change). Runs are serialized (one promise chain).
 
-1. **Live vs history (no age heuristics).** The driver passes `live=false` to `applyEvents` for first-sight
-   backfill and for every drain that starts before startup `reconcile()` has finished its tracked-thread pass;
-   `live=true` afterwards. So downtime catch-up and discovery never push, whatever their age; a question
-   still waiting at that time pushes when it is answered later (that later turn is live).
-   `shortcut:` events arriving during the few seconds of startup reconcile do not push.
-   At plugin load: `UPDATE items SET notify_state=0 WHERE notify_state=1`, and also `=2` when not inside quiet hours.
+1. **Live vs history (no age heuristics), per thread.** The driver keeps an in-memory set of threads whose
+   first drain since plugin load *succeeded*. Every drain of a thread not yet in the set — first-sight backfill,
+   startup catch-up of a tracked thread, and any retry of a failed first attempt — passes `live=false`; the
+   thread joins the set only when such a drain completes without error. Later drains pass `live=true`. So
+   downtime catch-up and discovery never push, even if the first fetch failed and is retried after startup; a
+   question still waiting then pushes when it is answered in a later (live) drain.
+   `shortcut:` a genuinely live event that lands in a thread's very first drain after load does not push.
+   At plugin load: `UPDATE items SET notify_state=0 WHERE notify_state=1`; held rows (`=2`) are kept only if
+   KV `notify:heldFor` equals the end of the quiet window that is current now, else `2 → 0` (see 4).
 2. **Claim in write order.** `run()` in one transaction selects `notify_state=1` rows and sets them all to 0
    (consumed whatever the level, so `off → all` pushes no backlog). Of the claimed rows, those still attention
    and matching `level` are queued in memory — or, inside quiet hours, set to `notify_state=2` instead.
@@ -155,10 +158,13 @@ equal endpoints rejected; local server time; may wrap midnight). `level(item)` =
    1–80 chars), body = question (`for_me`) / answer (`mine`) / `Turn failed: <question>`, whitespace-collapsed,
    ≤ 180 chars, `threadId` set. Several: title "N new in Answers", body = up to 3 thread titles (≤ 180),
    `threadId` only if shared. Losing an unflushed queue on reload is accepted.
-4. **Quiet hours.** At the window end (timer computed at startup and on `settings.onChange`) count
-   `notify_state=2` rows still attention and matching the current `level`, set all `2 → 0`, and if N > 0 push
-   "While you were away: N new in M threads" (no threadId). Only items that matched the level while
-   notifications were on are ever held, so items consumed while `off` never reappear.
+4. **Quiet hours.** Held rows belong to one concrete window, identified by its end timestamp in KV
+   `notify:heldFor`. Before holding anything, if `heldFor` differs from the current window's end, set all
+   `2 → 0` and write the new end (one transaction with the hold). At the window end (timer computed at startup
+   and on `settings.onChange`) count `notify_state=2` rows still attention and matching the current `level`,
+   set all `2 → 0`, clear `heldFor`, and if N > 0 push "While you were away: N new in M threads" (no
+   threadId). Only items that matched the level while notifications were on are ever held, so items consumed
+   while `off` never reappear; a window that ended while the server was down yields no summary (accepted).
 5. `notify` → `off` clears the queue and sets `2 → 0`. Push plugin missing/failing or `channels: []`: one
    debug log per hour, no retry. All timers `unref()` and cleared on dispose; dispose waits for a running claim.
 
@@ -282,14 +288,16 @@ All mutations invalidate `ITEMS_TAG` + `COUNTS_TAG`.
   bounds, overdue at startup, 30-day timer clamp, several deadlines, dispose with timer pending (fake timers);
   ask options validation; `retryTurn` passes `attempt_request_id`;
   Work Board RPCs with mocked `callRpc` (available, thrown error, `ok:false`).
-- driver: drains before reconcile's tracked pass and first-sight backfill pass `live=false` (a 2-minute-old
-  downtime answer and a 2-minute-old answer in a newly discovered thread do not push); later drains `live=true`.
+- driver: first-sight backfill and a tracked thread's first drain after load pass `live=false` (a 2-minute-old
+  downtime answer and a 2-minute-old answer in a newly discovered thread do not push); a failed first drain
+  retried after startup still passes `live=false`; a later genuinely live answer pushes.
 - notify: claim consumes every pending row in one transaction; two threads ingested in reverse event order
   both push; equal timestamps in separate transactions both push; overlapping `run()` calls claim once;
   `off → all` no backlog; failed → retry → answered pushes twice; read/replied/snoozed during the 10 s window
   drops it; 20,000-char answer passes a mock that parses the real strict push schema; under `asked` an
   ordinary answer is neither pushed nor summarised; `off → asked` near window end does not revive consumed
-  items; a batch whose flush crosses the quiet start is held; summary once; settings change re-arms; `off`
+  items; a batch whose flush crosses the quiet start is held; summary once; a row held in Monday's window is dropped on a restart inside Tuesday's window and not
+  summarised; settings change re-arms; `off`
   cancels; quiet-hours schema rejects `24:00`, `12:60`, equal endpoints; missing push plugin.
 - app: muted read recipients, "All caught up"; Undo line; quick replies; interim chip; Retry; More menu;
   grouped card marks all members read; search jump loads earlier pages; composer sends via the browser SDK
