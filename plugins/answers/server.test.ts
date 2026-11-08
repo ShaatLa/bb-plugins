@@ -187,11 +187,11 @@ describe('reply pools and inbox',()=>{
   const img={type:'localImage',path:'.bb/attachments/a.png',name:'a.png',mimeType:'image/png',sizeBytes:3};
   const doc={type:'localFile',path:'.bb/attachments/b.txt',name:'b.txt',sizeBytes:5,sourceProjectId:'p'};
   await call('quoteReply',{threadId:'t',quote:'q',text:'see file',attachments:[doc]});
-  expect(send.mock.calls[0][0].input).toEqual([{type:'text',mentions:[],text:'> q\n\nsee file'},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
+  expect((send.mock.calls[0] as any[])[0].input).toEqual([{type:'text',mentions:[],text:'> q\n\nsee file'},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await call('poolAdd',{threadId:'t',quote:'one',attachments:[img]}); await call('poolAdd',{threadId:'t',quote:'two',attachments:[doc]});
   expect((await call('pools',{})).pools[0].entries.map((e:any)=>e.attachments)).toEqual([[img],[doc]]);
   await call('poolSend',{threadId:'t'});
-  expect(send.mock.calls[1][0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
+  expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
  it('keeps failed sends, never retries, and checks total size before sending',async()=>{
