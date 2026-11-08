@@ -64,6 +64,15 @@ describe("classifyJobs", () => {
     const excerpt = "line\n2026-11-07T15:46:42.70Z ##[error]Process completed with exit code 130.\n2026-11-07T15:46:42.71Z ##[error]The runner has received a shutdown signal.";
     expect(one(failed({ logExcerpt: excerpt }))).toMatchObject({ class: "runner_loss", evidence: "##[error]The runner has received a shutdown signal." });
   });
+  it("an interrupted step (exit 130) with no test failure or build error is a runner loss", () => {
+    const interrupted = (over: Partial<JobRecord> = {}) => failed({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }], ...over });
+    expect(one(interrupted())).toMatchObject({ class: "runner_loss", reason: "interrupted (exit 130) without a test failure" });
+    // A test failure line, a build error or another failure annotation keeps it the job's own failure.
+    expect(one(interrupted({ logExcerpt: "--- FAIL: TestThing (0.01s)" }))?.class).toBe("real");
+    expect(one(interrupted({ buildFailure: { match: "build failed" } }))?.class).toBe("real");
+    expect(one(interrupted({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }, { level: "failure", title: "", message: "Error: assertion failed" }] }))?.class).toBe("real");
+    expect(one(failed())?.class).toBe("real");
+  });
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });
     const pass = (over: Partial<JobRecord> = {}) => job({ runId: 11, jobId: 2, event: "pull_request", headBranch: "feature", ...over });

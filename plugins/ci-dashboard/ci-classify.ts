@@ -44,6 +44,9 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
     if (hit) return make("runner_loss", "runner lost or shut down", hit);
     if (job.conclusion === "failure" && !job.failedSteps.length && !messages.length) return make("runner_loss", "no failed step");
     if ((hit = find(/exceeded the maximum execution time/i))) return make("timeout", "job exceeded maximum execution time", hit);
+    // A runner going away can interrupt the step (SIGINT, exit 130) and leave a failure, not a cancel: without a test failure line or a build error it is the runner's.
+    if (job.conclusion === "failure" && messages.length && messages.every((m) => /exit code 130\b/.test(m)) && !job.buildFailure?.match && !/--- FAIL|\bFAIL\b|panic:/.test(job.logExcerpt ?? ""))
+      return make("runner_loss", "interrupted (exit 130) without a test failure", messages[0]!);
     if ((hit = find(/Canceling since a higher priority waiting request/i))) return make("superseded", "cancelled by concurrency group", hit);
     if ((hit = find(/was canceled by @/i))) return make("manual_cancel", "run cancelled by a user", hit);
     // Never-started jobs (no annotations at all) are cancelled by the run, same as a fail-fast sibling.
