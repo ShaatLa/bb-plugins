@@ -51,4 +51,5 @@ CREATE TABLE threads_state (
     revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   );
   CREATE INDEX pool_thread ON pool_entries(thread_id, created_at);`,
+  `ALTER TABLE pool_entries ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
 ];

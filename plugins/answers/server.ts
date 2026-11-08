@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment } from './contract';
 import { migrations } from './schema';
 import { cap } from './ingest';
 import { createDriver } from './driver';
@@ -87,10 +87,12 @@ export default function plugin(bb: BbPluginApi) {
     sending.add(threadId);
     try {return await send();} finally {sending.delete(threadId);}
   }
-  async function deliver(threadId:string,text:string) {
+  async function deliver(threadId:string,text:string,files:Attachment[]=[]) {
     if (text.length>32000) throw new Error('Message exceeds 32,000 characters — split the pool');
+    if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
+    const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
     try {
-      const result=await bb.sdk.threads.send({threadId,mode:'auto',input:[{type:'text',mentions:[],text}]});
+      const result=await bb.sdk.threads.send({threadId,mode:'auto',input:[{type:'text',mentions:[],text},...inputs]});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
     } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
@@ -142,7 +144,7 @@ export default function plugin(bb: BbPluginApi) {
       const threads=ids.length ? await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200}) : [];
       return {pools:ids.map(threadId=>{
         const thread=threads.find(t=>t.id===threadId);
-        return {threadId,threadTitle:thread?.title ?? null,projectId:thread?.projectId ?? null,entries:rows.filter(r=>r.thread_id===threadId).map(r=>({id:r.id,threadId,quote:r.quote,quoteSeq:r.quote_seq,itemId:r.item_id,note:r.note,revision:r.revision,createdAt:r.created_at,updatedAt:r.updated_at}))};
+        return {threadId,threadTitle:thread?.title ?? null,projectId:thread?.projectId ?? null,entries:rows.filter(r=>r.thread_id===threadId).map(r=>({id:r.id,threadId,quote:r.quote,quoteSeq:r.quote_seq,itemId:r.item_id,note:r.note,attachments:JSON.parse(r.attachments as string) as Attachment[],revision:r.revision,createdAt:r.created_at,updatedAt:r.updated_at}))};
       })};
     },
     async poolAdd(raw:z.infer<typeof inputs.poolAdd>) {
@@ -150,7 +152,7 @@ export default function plugin(bb: BbPluginApi) {
       await bb.sdk.threads.get({threadId:p.threadId});
       checkSources(p.threadId,[{item_id:p.itemId}]);
       const id='pool_'+randomUUID(),now=Date.now();
-      db.prepare('INSERT INTO pool_entries(id,thread_id,quote,quote_seq,item_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(id,p.threadId,p.quote,p.quoteSeq ?? null,p.itemId ?? null,p.note ?? '',now,now);
+      db.prepare('INSERT INTO pool_entries(id,thread_id,quote,quote_seq,item_id,note,attachments,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run(id,p.threadId,p.quote,p.quoteSeq ?? null,p.itemId ?? null,p.note ?? '',JSON.stringify(p.attachments ?? []),now,now);
       invalidatePools(); return {id};
     },
     poolUpdate(raw:z.infer<typeof inputs.poolUpdate>) {
@@ -166,7 +168,7 @@ export default function plugin(bb: BbPluginApi) {
       return guarded(p.threadId,async()=>{
         await bb.sdk.threads.get({threadId:p.threadId});
         const entries=[{quote:p.quote,note:p.text,item_id:p.itemId}]; checkSources(p.threadId,entries);
-        const result=await deliver(p.threadId,buildReplyMessage(entries));
+        const result=await deliver(p.threadId,buildReplyMessage(entries),p.attachments);
         db.transaction(()=>applyReplies(p.threadId,entries))(); invalidate(); return result;
       });
     },
@@ -177,7 +179,7 @@ export default function plugin(bb: BbPluginApi) {
         const entries=db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[];
         if (!entries.length) throw new Error('Pool is empty');
         checkSources(p.threadId,entries);
-        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]));
+        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]),entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]));
         let keptEdited=0;
         db.transaction(()=>{
           for (const entry of entries) {
@@ -198,7 +200,7 @@ export default function plugin(bb: BbPluginApi) {
         const item=get(p.id);
         if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
         if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
-        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`);
+        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`,p.attachments);
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
         return result;
       });

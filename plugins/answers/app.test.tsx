@@ -62,7 +62,7 @@ describe('Answers app', () => {
     fireEvent.click(slot.getByRole('button', { name: 'Reply' }));
     fireEvent.change(slot.getByRole('textbox', { name: 'Reply text' }), { target: { value: 'More details please' } });
     fireEvent.click(slot.getByRole('button', { name: 'Send reply' }));
-    await waitFor(() => expect((slot.getByRole('button', { name: 'Sending…' }) as HTMLButtonElement).disabled).toBe(true));
+    await waitFor(() => expect((slot.getByRole('button', { name: 'Send reply' }) as HTMLButtonElement).disabled).toBe(true));
     expect((slot.getByRole('button', { name: 'Reply' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(slot.getByRole('textbox', { name: 'Reply text' }), { key: 'Enter', metaKey: true });
     expect(reply).toHaveBeenCalledTimes(1);
@@ -177,7 +177,7 @@ it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure
   let resolve!: (value: any) => void, reject!: (reason: Error) => void;
   const poolUpdate = vi.fn(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
   const poolSend = vi.fn(() => ({ delivery: 'sent', sent: 1, keptEdited: 1 }));
-  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: '', revision: 0, createdAt: 1, updatedAt: 1 };
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: '', attachments: [], revision: 0, createdAt: 1, updatedAt: 1 };
   const { Pools } = await import('./inbox');
   const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: null, entries: [entry] }] }), poolUpdate, poolSend } });
   const note = await slot.findByRole('textbox', { name: 'Pool note' });
@@ -219,7 +219,7 @@ it('sends the snapshot to its original recipient after switching recipients', as
 it('renders stacked pools and preserves notes on uncertain delivery', async () => {
   const { Pools } = await import('./inbox');
   await loadPluginApp(() => import('./app'));
-  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: 'Saved note', revision: 2, createdAt: 1, updatedAt: 1 };
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: 'Saved note', attachments: [], revision: 2, createdAt: 1, updatedAt: 1 };
   const poolSend = vi.fn(() => { throw new Error('connection lost'); });
   const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [
     { threadId: item.threadId, threadTitle: 'First pool', projectId: null, entries: [entry] },

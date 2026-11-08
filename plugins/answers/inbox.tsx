@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult } from './contract';
+import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment } from './contract';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { ItemCard } from './app';
+import { Composer } from './composer';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
-type Draft = { threadId: string; itemId: string; quote: string; quoteSeq?: number; top: number; above?: number; left: number; width: number };
+type Draft = { threadId: string; projectId?: string | null; itemId: string; quote: string; quoteSeq?: number; top: number; above?: number; left: number; width: number };
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
 function HistoryPage({ threadId, cursor, index, depth, receive }: { threadId: string; cursor?: string; index: number; depth: number; receive: (index: number, data: ListResult) => void }) {
@@ -25,7 +26,7 @@ export function Inbox() {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} });
-  const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [error, setError] = useState(''), [pending, setPending] = useState(false);
+  const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null);
   const [depth, setDepth] = useState(1), [pages, setPages] = useState<ListResult[]>([]);
   const receive = useRef((index: number, data: ListResult) => setPages(old => { const next = [...old]; next[index] = data; if (!data.nextCursor) next.length = index + 1; return next; })).current;
@@ -50,7 +51,7 @@ export function Inbox() {
     const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setDraft(null); };
     const outside = (e: PointerEvent) => { if ((e.target as Element).closest?.('[role=option]')) return; if (popup.current && !popup.current.contains(e.target as Node)) setDraft(null); };
     document.addEventListener('keydown', escape); document.addEventListener('pointerdown', outside);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => setDraft(old => old && ({ ...old, left: Math.max(8, Math.min(old.left, (scroll.current?.clientWidth ?? 336) - 328)) })));
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => setDraft(old => old && ({ ...old, left: Math.max(8, Math.min(old.left, (scroll.current?.clientWidth ?? 396) - (old.width + 8))) })));
     if (scroll.current) observer?.observe(scroll.current);
     return () => { document.removeEventListener('keydown', escape); document.removeEventListener('pointerdown', outside); observer?.disconnect(); };
   }, [!!draft]);
@@ -59,16 +60,16 @@ export function Inbox() {
     if (!body || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) return;
     const range = clipSelection(selection.getRangeAt(0), body); if (!range) return;
     const quote = selectionMarkdown(range, body); if (!quote.trim()) return;
-    setDraft({ threadId: selected, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(320, scroll.current.clientWidth - 16)), width: Math.min(320, scroll.current.clientWidth - 16) });
-    setText(''); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
+    setDraft({ threadId: selected, projectId: result.data?.recipients.find(r => r.threadId === selected)?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(380, scroll.current.clientWidth - 16)), width: Math.min(380, scroll.current.clientWidth - 16) });
+    setText(''); setFiles([]); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
   }
   async function send(pool: boolean) {
     if (!draft || pending || draft.quote.length > 20000) return;
     setPending(true); setError('');
     try {
-      if (pool) { await rpc.call('poolAdd', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, ...(draft.quoteSeq === undefined ? {} : { quoteSeq: draft.quoteSeq }), note: text }); panel.openTab({ tab: poolsTab }); }
-      else await rpc.call('quoteReply', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, text });
-      refresh(); setDraft(null);
+      if (pool) { await rpc.call('poolAdd', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, ...(draft.quoteSeq === undefined ? {} : { quoteSeq: draft.quoteSeq }), note: text, ...(files.length ? { attachments: files } : {}) }); panel.openTab({ tab: poolsTab }); }
+      else await rpc.call('quoteReply', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, text, ...(files.length ? { attachments: files } : {}) });
+      refresh(); setDraft(null); setFiles([]);
     } catch (e) { setError(pool ? errorText(e) : `Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setPending(false); }
   }
@@ -85,9 +86,11 @@ export function Inbox() {
     </div>
     <div ref={scroll} className={`relative overflow-auto min-w-0 ${!selected ? 'max-[639px]:hidden' : ''}`} onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; }}>
       {selected && <><div className="sticky top-0 z-[1] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{(() => { const current = result.data?.recipients.find(r => r.threadId === selected); return <><Avatar id={selected} title={current?.threadTitle ?? null} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{current?.threadTitle ?? 'Untitled thread'}</span><span className="block truncate text-xs text-muted-foreground">{current?.projectName ?? 'No project'}</span></span><Button asChild size="sm" variant="ghost" aria-label="Open thread"><UrlLink href={`${current?.projectId ? `/projects/${current.projectId}` : ''}/threads/${selected}`}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button></>; })()}</div><HistoryPage key={selected} threadId={selected} index={0} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <Button onClick={() => { position.current.prepend = true; setDepth(depth + 1); }}>Load earlier</Button>}<ul className="divide-y divide-border-seam px-4" aria-label="History">{items.map(item => <ItemCard key={item.id} item={item} chat />)}</ul></>}
-      {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10 space-y-2 rounded-xl border border-border-seam bg-background p-3 shadow-lg" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
-        <div className="max-h-32 overflow-auto border-l-2 border-border-seam pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><textarea aria-label="Quote reply text" rows={3} autoFocus className="w-full resize-none rounded-xl border border-border-seam bg-surface-recessed px-3 py-2 text-sm leading-relaxed outline-none focus:border-ring" maxLength={8000} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(false); } }} />
-        <div className="flex items-center justify-end gap-1.5"><Button size="sm" variant="ghost" onClick={() => setDraft(null)}>Close</Button><Button size="sm" variant="outline" disabled={pending || draft.quote.length > 20000} onClick={() => void send(true)}><Icon name="Plus" aria-hidden />Add to pool</Button><Button size="sm" disabled={pending || draft.quote.length > 20000} onClick={() => void send(false)}><Icon name="Sent" aria-hidden />Send</Button></div>{error && <p role="alert">{error}</p>}
+      {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
+        <Composer label="Quote reply text" className="shadow-lg" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={draft.projectId} pending={pending} sendDisabled={draft.quote.length > 20000} onSend={() => void send(false)}
+          header={<div className="flex items-start gap-2 pl-4 pr-2 pt-2"><div className="mt-1 max-h-32 min-w-0 flex-1 overflow-auto border-l-2 border-border-seam pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><Button type="button" size="icon" variant="ghost" className="size-7 shrink-0 text-muted-foreground" aria-label="Close" onClick={() => setDraft(null)}><Icon name="X" aria-hidden /></Button></div>}
+          actions={<Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Add to pool" disabled={pending || draft.quote.length > 20000} onClick={() => void send(true)}><Icon name="ListEnd" aria-hidden /></Button>} />
+        {error && <p role="alert" className="mt-1 rounded-md bg-background px-2 text-xs text-destructive">{error}</p>}
       </div>}
       {!draft && error && <p role="alert">{error}</p>}
     </div>
@@ -116,7 +119,7 @@ function PoolNote({ entry, editors }: { entry: PoolEntry; editors: Map<string, E
   useEffect(() => () => { editors.delete(entry.id); }, [entry.id, editors]);
   useEffect(() => { if (note === local.current.saved) return; const timer = setTimeout(() => { void flush().catch(() => {}); }, 800); return () => clearTimeout(timer); }, [note]);
   return <div className="border rounded p-3 space-y-2"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote.split('\n').map(line => `> ${line}`).join('\n')} /></div>{(clamped || expanded) && <Button onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse' : 'Expand'}</Button>}
-    <textarea aria-label="Pool note" className="w-full border rounded bg-transparent" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} /><p role="status">{status}</p><Button onClick={async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } }}>Remove</Button></div>;
+    <textarea aria-label="Pool note" className="w-full border rounded bg-transparent" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} />{entry.attachments.length > 0 && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5">{entry.attachments.map(file => <li key={file.path} className="flex items-center gap-1 rounded-md border border-border-seam bg-surface-recessed px-1.5 py-0.5 text-xs"><Icon name="Paperclip" aria-hidden /><span className="max-w-[160px] truncate">{file.name}</span></li>)}</ul>}<p role="status">{status}</p><Button onClick={async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } }}>Remove</Button></div>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
