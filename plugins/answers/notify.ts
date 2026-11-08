@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { ATTENTION_SQL, QUESTION_SQL } from './ingest';
+import { ATTENTION_SQL } from './ingest';
 
 type Row={id:string;kind:string;status:string;thread_id:string;question:string;answer:string|null;failed_at:number|null};
 type Level='off'|'asked'|'questions'|'all';
@@ -64,6 +64,6 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if(queue.size && !flushTimer){flushTimer=setTimeout(()=>void serial(flush),10000);flushTimer.unref();}
  });}
  settings.onChange((next)=>{level=next.notify as Level;quiet=next.quietHours;if(level==='off'){queue.clear();if(flushTimer)clearTimeout(flushTimer);flushTimer=undefined;db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();} arm();void run();});
- void settings.get().then(value=>{level=value.notify as Level;quiet=value.quietHours;db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;if(old && old.value!==windowEnd()){db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();}})();arm();void run();}).catch(log);
+ chain=settings.get().then(value=>{level=value.notify as Level;quiet=value.quietHours;db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;if(old && old.value!==windowEnd()){db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();}})();arm();}).catch(log);
  return {run,dispose:async()=>{disposed=true;if(flushTimer)clearTimeout(flushTimer);if(endTimer)clearTimeout(endTimer);await chain;}};
 }

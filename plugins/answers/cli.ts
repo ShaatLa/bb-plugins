@@ -20,11 +20,11 @@ export function registerCli(bb: BbPluginApi, api: Api) {
       if (!i.options.all && i.options.thread) throw new Error('--thread requires --all');
       const result=api.markRead(inputs.markRead.parse(i.options.all ? {all:true,threadId:i.options.thread} : {ids:i.positionals.ids})); return {exitCode:0,stdout:i.options.all ? `Marked ${result.count ?? 0} read.` : 'Marked read.'};
     }}),
-    digest:cliCommand({summary:'Summarize answers and open questions',options:{since:{type:'string',description:'24h, 7d, or ISO timestamp'},json:{type:'boolean',description:'Return JSON'}},async run(i){
+    digest:cliCommand({summary:'Summarize answers and open questions',options:{since:{type:'string',description:'24h, 7d, or ISO date/time'},json:{type:'boolean',description:'Return JSON'}},async run(i){
       const raw=i.options.since ?? '24h', since=raw==='24h' ? Date.now()-86400000 : raw==='7d' ? Date.now()-7*86400000 : Date.parse(raw);
-      if (!Number.isFinite(since) || (raw!=='24h' && raw!=='7d' && !/^\d{4}-\d{2}-\d{2}T/.test(raw))) throw new Error('Use --since 24h, 7d, or an ISO timestamp');
+      if (!Number.isFinite(since) || (raw!=='24h' && raw!=='7d' && !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw))) throw new Error('Use --since 24h, 7d, or an ISO timestamp');
       type DigestRow={thread_id:string;question:string;answer:string|null;created_at:number;answered_at:number|null;failed_at:number|null};
-      const section=(where:string,order:string,params:(number|string)[]=[])=>({total:(api.db.prepare(`SELECT count(*) AS n FROM items WHERE ${where}`).get(...params) as {n:number}).n,items:api.db.prepare(`SELECT thread_id,question,answer,created_at,answered_at,failed_at FROM items WHERE ${where} ORDER BY ${order} LIMIT 20`).all(...params) as DigestRow[]});
+      const section=(where:string,order:string,params:(number|string)[]=[])=>({total:(api.db.prepare(`SELECT count(*) AS n FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${where}`).get(...params) as {n:number}).n,items:api.db.prepare(`SELECT thread_id,question,answer,created_at,answered_at,failed_at FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${where} ORDER BY ${order} LIMIT 20`).all(...params) as DigestRow[]});
       const newAnswers=section("kind='mine' AND status='answered' AND answered_at>=?",'read_at IS NOT NULL,answered_at DESC,id DESC',[since]);
       const waiting=section("kind='mine' AND status IN ('waiting','deferred')",'failed_at IS NULL,created_at DESC,id DESC');
       const askedOfYou=section("kind='for_me' AND status='open'",'created_at DESC,id DESC');
@@ -33,7 +33,7 @@ export function registerCli(bb: BbPluginApi, api: Api) {
       const ids=[...new Set(Object.values(data).flatMap(part=>part.items.map(r=>r.thread_id)))];
       const titles=new Map((ids.length ? await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200}) : []).map(t=>[t.id,t.title ?? t.id]));
       const age=(at:number)=>{const ms=Math.max(0,Date.now()-at);return ms<3600000 ? `${Math.floor(ms/60000)}m` : ms<86400000 ? `${Math.floor(ms/3600000)}h` : `${Math.floor(ms/86400000)}d`;};
-      return {exitCode:0,stdout:Object.entries(data).map(([name,part])=>`${name} (${part.total})\n${part.items.map(r=>`${titles.get(r.thread_id) ?? r.thread_id} — ${((name==='newAnswers' ? r.answer : r.question) ?? '').replace(/\s+/g,' ').slice(0,160)} (${age(name==='newAnswers' ? r.answered_at! : r.created_at)})`).join('\n')}${part.total>20 ? `\n+${part.total-20} more` : ''}`).join('\n\n')};
+      return {exitCode:0,stdout:Object.entries(data).map(([name,part])=>`${{newAnswers:'New answers',waiting:'Still waiting',askedOfYou:'Asked of you'}[name as keyof typeof data]} (${part.total})\n${part.items.map(r=>`${titles.get(r.thread_id) ?? r.thread_id} — ${((name==='newAnswers' ? r.answer : r.question) ?? '').replace(/\s+/g,' ').slice(0,160)} (${age(name==='newAnswers' ? r.answered_at! : r.created_at)})`).join('\n')}${part.total>20 ? `\n+${part.total-20} more` : ''}`).join('\n\n')};
     }}),
     status:cliCommand({summary:'Show counts, tracked threads and ingestion errors',run(){return {exitCode:0,stdout:JSON.stringify(api.status())};}}),
   }}));
