@@ -157,8 +157,20 @@ describe("confirming queue removals", () => {
   it("keeps a removal GitHub shows at or after the group started (a minute of slack), and asks once per PR", async () => {
     const github = lookup({ 7: since + MIN, 8: since - MIN, 9: since - MIN - 1 });
     const out = await confirmRemovals([plain, removal("queue:1:1", 7), removal("queue:1:2", 7), removal("queue:2:1", 8), removal("queue:3:1", 9)], emptyRepoState(), github.fn, new Set(), now);
-    expect(keys(out)).toEqual(["red:1:1", "queue:1:1", "queue:1:2", "queue:2:1"]);
+    // One removal, one line: of two attempts of the same group, the later one owns it.
+    expect(keys(out)).toEqual(["red:1:1", "queue:1:2", "queue:2:1"]);
     expect(github.asked).toEqual([7, 8, 9]);
+  });
+  it("gives one removal event to the latest group that started before it, also across loops", async () => {
+    const group = (key: string, start: number): ObserverEvent => ({ ...removal(key, 7), removal: { pullRequest: 7, since: start } });
+    const github = lookup({ 7: now });
+    const rejected = new Set<string>(), state = emptyRepoState();
+    // Two overlapping groups of PR 7 both fit the window; only the later-started one was removed.
+    expect(keys(await confirmRemovals([group("queue:2:1", since + MIN), group("queue:1:1", since)], state, github.fn, rejected, now))).toEqual(["queue:2:1"]);
+    expect([...rejected]).toEqual(["queue:1:1"]);
+    // A group that shows up in a later loop cannot claim the same removal again.
+    expect(await confirmRemovals([group("queue:3:1", since + 2 * MIN)], state, github.fn, rejected, now + MIN)).toEqual([]);
+    expect(rejected.has("queue:3:1")).toBe(true);
   });
   it("drops an unconfirmed removal (older removal or none) but keeps it for retry within the grace period", async () => {
     const github = lookup({ 7: since - 3 * MIN, 8: null });

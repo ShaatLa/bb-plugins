@@ -265,6 +265,8 @@ const REMOVAL_GRACE_MS = 15 * 60_000;
  */
 export async function confirmRemovals(events: ObserverEvent[], state: ObserverRepoState, lastRemoval: (pullRequest: number) => Promise<number | null>, rejected: Set<string>, now: number): Promise<ObserverEvent[]> {
   const lookups = new Map<number, Promise<number | null>>(), out: ObserverEvent[] = [];
+  // One RemovedFromMergeQueueEvent removes one group: when several groups of the PR fit its window, the latest started one owns it.
+  const claims = new Map<string, ObserverEvent>();
   for (const event of events) {
     const removal = event.removal;
     if (!removal || state.sent[event.key] !== undefined) { out.push(event); continue; }
@@ -275,9 +277,15 @@ export async function confirmRemovals(events: ObserverEvent[], state: ObserverRe
     try { removedAt = await lookups.get(removal.pullRequest)!; } catch { if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key); continue; }
     // A minute of slack: GitHub may stamp the removal a moment before the run records its start.
     // The removal must follow the group run: after it started and within the grace period after it ended (a later one is another group's).
-    if (removedAt !== null && removedAt >= removal.since - 60_000 && removedAt <= event.at + REMOVAL_GRACE_MS) out.push(event);
-    else if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key);
+    if (removedAt !== null && removedAt >= removal.since - 60_000 && removedAt <= event.at + REMOVAL_GRACE_MS) {
+      const claim = `removal:${removal.pullRequest}:${removedAt}`, rival = claims.get(claim);
+      // Already claimed by a group in an earlier loop, or by a later-started group (or a later attempt of the same one) now.
+      if (state.sent[claim] !== undefined || (rival && (rival.removal!.since > removal.since || (rival.removal!.since === removal.since && rival.at > event.at)))) { rejected.add(event.key); continue; }
+      if (rival) rejected.add(rival.key);
+      claims.set(claim, event);
+    } else if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key);
   }
+  for (const [claim, event] of claims) { state.sent[claim] = now; out.push(event); }
   return out;
 }
 
