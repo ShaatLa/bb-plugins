@@ -50,14 +50,14 @@ it('SDK failures and hung reads invalidate intervals and the next run recovers; 
 it('refresh catches a silent move between known checkouts, fresh alert reads reject stale attribution',async()=>{
   const h=setup(); await h.watcher.run();
   const subject={key:'/repo',threadIds:['a','b'],cores:5};
-  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',title:'load',lines:[],watch:{hostId:'local',subject}}]);
   h.threads.set('a',makeThreadResponse({id:'a',environmentId:'nested'}));
   h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][1].size).toBe(0); expect(h.commit.mock.calls[1][0].resetKeys).toContain('/repo');
   h.advance(120000); await h.watcher.run(); expect(h.commit.mock.calls[2][0].subjects.find(s=>s.key==='/repo/sub')?.threadIds).toEqual(['a','nested']);
 });
 it('cwd changes reset old and new group histories and verified alerts receive a fresh environment read',async()=>{
   const h=setup(); await h.watcher.run(); h.sample.mockResolvedValueOnce({...await h.sample(new AbortController().signal),cwdChanged:[{from:'/repo',to:'/repo/sub'}]});
-  const subject={key:'/repo',threadIds:['a','b'],cores:5}; h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  const subject={key:'/repo',threadIds:['a','b'],cores:5}; h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',title:'load',lines:[],watch:{hostId:'local',subject}}]);
   h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][0].resetKeys).toEqual(expect.arrayContaining(['/repo','/repo/sub'])); expect(h.commit.mock.calls[1][1].has('/repo')).toBe(true);
   expect(h.get).toHaveBeenCalledTimes(2);
 });
@@ -89,7 +89,7 @@ it.each(['destroyed','creating','provisioning','error','no-environment','null-pa
 it.each(['destroyed','no-environment','null-path','ENOENT','ENOTDIR'])('rejects alert verification when a thread becomes %s without invalidating healthy sampling',async kind=>{
   const h=setup(); await h.watcher.run();
   const subject={key:'/repo',threadIds:['a','b'],cores:5};
-  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',title:'load',lines:[],watch:{hostId:'local',subject}}]);
   if(kind==='destroyed') h.statuses.a='destroyed';
   else if(kind==='no-environment') h.threads.set('a',makeThreadResponse({id:'a',environmentId:null}));
   else if(kind==='null-path') h.paths.a=null;
@@ -124,7 +124,7 @@ it.each(['ready','stopped','expired','remote','failure'])('checks family browser
   });
   await h.watcher.run();
   const subject={key:'/repo',threadIds:['a','b'],cores:0};
-  h.preview.mockResolvedValue([{type:'notify',reason:'idle-lease',threadId:'observer',text:'idle',watch:{hostId:'local',subject,holderThreadId:'a'}}]);
+  h.preview.mockResolvedValue([{type:'notify',reason:'idle-lease',threadId:'observer',title:'idle',lines:[],watch:{hostId:'local',subject,holderThreadId:'a'}}]);
   h.advance(); await h.watcher.run();
   expect(h.commit.mock.calls[1][1].has('/repo\0a')).toBe(kind!=='ready');
   expect(h.commit.mock.calls[1][0].resetKeys?.includes('/repo')).toBe(kind==='ready');
@@ -143,7 +143,7 @@ it('attributes local thread storage and verifies it before alerts', async()=>{
   expect(usage.subjects.find(s=>s.key==='/data/thread-storage/child')).toMatchObject({threadIds:['child'],ancestorThreadIds:['a'],cores:4});
   expect(usage.subjects.some(s=>s.key==='/data/thread-storage/remote' || s.key==='/data/thread-storage/archived')).toBe(false);
   const subject=usage.subjects.find(s=>s.key==='/data/thread-storage/child')!;
-  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',title:'load',lines:[],watch:{hostId:'local',subject}}]);
   h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][1].has(subject.key)).toBe(true);
   h.threads.set('child',makeThreadResponse({id:'child',environmentId:'b',archivedAt:1})); h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[2][1].has(subject.key)).toBe(false);
 });

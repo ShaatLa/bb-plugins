@@ -10,6 +10,10 @@ import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSc
 import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
+export function formatNotification(message: import("./contract.js").NotificationMessage): string {
+  return [`**Machine Slots · ${message.title}**`, ...message.lines.map(line => line.label ? `- ${line.label}: ${line.value}` : line.value), ...(message.hint ? [message.hint] : [])].join("\n");
+}
+
 export interface Runtime {
   now: () => number;
   cores: () => number;
@@ -123,7 +127,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
     try {
       await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
-        input: [{ type: "text", text: `[Slots] ${effect.text}`, mentions: [] }] });
+        input: [{ type: "text", text: formatNotification(effect), mentions: [] }] });
     } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
   }
   async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {

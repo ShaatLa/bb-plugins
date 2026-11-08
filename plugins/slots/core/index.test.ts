@@ -1,3 +1,6 @@
+import { formatNotification } from "../server.js";
+import type { Effect } from "../contract.js";
+const rendered = (effect: Effect | undefined) => effect?.type === "notify" ? formatNotification(effect) : "";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type Input, type Settings, type Transition } from "../contract.js";
 import { apply, initialState, logSince, portCandidates, statusSnapshot, validateSettings } from "./index.js";
@@ -253,11 +256,11 @@ it("release cancels all queued pools or a single owned request", () => {
 });
 it("warning and grant name exact commands with a UTC expiry", () => {
   const h = harness(); h.request("a");
-  expect(h.open().effects).toContainEqual(expect.objectContaining({ type: "notify", text: expect.stringContaining("bb slots wrapper") }));
+  expect(h.open().effects.some(e => rendered(e).includes("bb slots wrapper"))).toBe(true);
   h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
   const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
-  expect(warning).toMatchObject({ text: expect.stringContaining(new Date(h.state.leases[0].expiresAt).toISOString()) });
-  expect(warning).toMatchObject({ text: expect.stringContaining("bb slots heartbeat") });
+  expect(rendered(warning)).toContain(new Date(h.state.leases[0].expiresAt).toISOString());
+  expect(rendered(warning)).toContain("bb slots heartbeat");
 });
 
 const observerCopies = (change: Transition, reason?: string) => change.effects.filter(e => e.type === "notify" && e.threadId === "manager" && (!reason || e.reason === reason));
@@ -299,9 +302,10 @@ it.each(["gate", "capacity", "manual"])("queue-wait alerts once at the threshold
   h.now = 20 * minute - 1; expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
   h.now++; const result = h.send({ type: "tick" });
   const copies = observerCopies(result, "queue-wait"); expect(copies).toHaveLength(2);
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining("position 2") });
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining("a tests; estimate 1m, waiting 20m") });
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining(blocker === "gate" ? "gate not open" : blocker === "capacity" ? "no free slot" : "manual grant mode") });
+  expect(rendered(copies[1])).toContain("position 2");
+  expect(rendered(copies[1])).toContain("a tests\n");
+  expect(rendered(copies[1])).toContain("estimate 1m, waiting 20m");
+  expect(rendered(copies[1])).toContain(blocker === "gate" ? "gate not open" : blocker === "capacity" ? "no free slot" : "manual grant mode");
   h.send({ type: "restored" }); h.now += minute;
   expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
 });
@@ -314,7 +318,7 @@ it("gate-hold alerts only while queued, persists per hold, re-arms on any pass a
   h.now++; h.sample(9, 40);
   const first = h.send({ type: "tick" }); expect(observerCopies(first, "gate-hold")).toHaveLength(1);
   expect(first.state.audit.at(-1)).toMatchObject({ type: "gate-hold", readings: { memFreePct: 9, load1: 40, at: h.now }, reason: expect.stringContaining("min 20%") });
-  expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("max 18") });
+  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("max 18");
   h.send({ type: "restored" }); h.now += minute;
   expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toEqual([]);
   h.sample(50, 1); expect(h.state.hosts.h.gate.failingSince).toBeNull();
@@ -328,10 +332,10 @@ it("rounds observer durations and gate readings for human messages", () => {
   h.send({ type: "request", hostId: "h", threadId: "a", pool: "heavy", job: "long tests", estMs: (65 * minute + 6000) });
   h.sample(9.4, 40.1234); h.now = 20 * minute + 2000;
   const first = h.send({ type: "tick" });
-  expect(observerCopies(first, "queue-wait")[0]).toMatchObject({ text: expect.stringContaining("estimate 1h 5m, waiting 20m") });
-  expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 20m: memory free 9% (min 20%), load 40.1 (max 18.0), sampled 00:00Z") });
+  expect(rendered(observerCopies(first, "queue-wait")[0])).toContain("estimate 1h 5m, waiting 20m");
+  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("Memory free: 9% (min 20%)\n- Load: 40.1 (max 18.0)\n- Sampled: 00:00Z");
   h.sample(50, 1); h.sample(9.4, 40.1234); h.now += (65 * minute + 6000);
-  expect(observerCopies(h.send({ type: "tick" }), "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 1h 5m") });
+  expect(rendered(observerCopies(h.send({ type: "tick" }), "gate-hold")[0])).toContain("failing for 1h 5m");
 });
 
 it("tracks independent uses through grant, renewal, completion and grace", () => {
