@@ -109,22 +109,22 @@ export function createWatcher(options: WatcherOptions) {
       for (const p of sample.perPid) { const g = match(p.cwd); if (g) subjects.find(s => s.key === g.key)!.cores += p.cores; }
       usage.subjects = subjects; usage.resetKeys = [...resetKeys];
       const effects = await options.preview(usage), verified = new Set<string>();
-      for (const effect of effects) if (effect.type === "notify" && effect.watch && !verified.has(effect.watch.subject.key)) {
+      for (const effect of effects) if (effect.type === "notify" && effect.watch && !verified.has(effect.watch.holderThreadId ? `${effect.watch.subject.key}\0${effect.watch.holderThreadId}` : effect.watch.subject.key)) {
         let ok = await verify(effect.watch.subject, active.signal);
         const holder = effect.watch.holderThreadId;
         if (ok && effect.reason === "idle-lease" && holder) {
           const family = subjects.filter(s => s.threadIds.includes(holder) || (s.ancestorThreadIds ?? []).includes(holder));
           const ids = [...new Set([holder, ...family.flatMap(s => s.threadIds)])].slice(0, Math.max(0, 32 - browserCalls));
-          for (const threadId of ids) {
-            browserCalls++;
+          browserCalls += ids.length;
+          const sessions = await Promise.all(ids.map(async threadId => {
             try {
               const signal = AbortSignal.any([active.signal, AbortSignal.timeout(1000)]);
-              const sessions = await bounded(options.sdk.plugins.callRpc({ pluginId: "browser-automation", method: "list", input: { threadId }, outputSchema: z.array(z.object({ id: z.string(), threadId: z.string(), hostId: z.string(), backend: z.enum(["desktop", "local"]), state: z.enum(["ready", "stopped", "closed"]), createdAt: z.number(), expiresAt: z.number() })) }), signal);
-              if (sessions.some(s => s.state === "ready" && s.expiresAt > now() && s.hostId === options.hostId())) { ok = false; break; }
-            } catch (error) { if (!browserWarned) { options.warn(error); browserWarned = true; } }
-          }
+              return await bounded(options.sdk.plugins.callRpc({ pluginId: "browser-automation", method: "list", input: { threadId }, outputSchema: z.array(z.object({ id: z.string(), threadId: z.string(), hostId: z.string(), backend: z.enum(["desktop", "local"]), state: z.enum(["ready", "stopped", "closed"]), createdAt: z.number(), expiresAt: z.number() })) }), signal);
+            } catch (error) { if (!browserWarned) { options.warn(error); browserWarned = true; } return []; }
+          }));
+          if (sessions.flat().some(s => s.state === "ready" && s.expiresAt > now() && s.hostId === options.hostId())) ok = false;
         }
-        if (ok) verified.add(effect.watch.subject.key);
+        if (ok) verified.add(holder ? `${effect.watch.subject.key}\0${holder}` : effect.watch.subject.key);
         else { resetKeys.add(effect.watch.subject.key); dirty = true; }
       }
       if (active.signal.aborted) throw active.signal.reason;

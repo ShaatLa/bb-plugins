@@ -126,7 +126,7 @@ it.each(['ready','stopped','expired','remote','failure'])('checks family browser
   const subject={key:'/repo',threadIds:['a','b'],cores:0};
   h.preview.mockResolvedValue([{type:'notify',reason:'idle-lease',threadId:'observer',text:'idle',watch:{hostId:'local',subject,holderThreadId:'a'}}]);
   h.advance(); await h.watcher.run();
-  expect(h.commit.mock.calls[1][1].has('/repo')).toBe(kind!=='ready');
+  expect(h.commit.mock.calls[1][1].has('/repo\0a')).toBe(kind!=='ready');
   expect(h.commit.mock.calls[1][0].resetKeys?.includes('/repo')).toBe(kind==='ready');
   expect(rpc).toHaveBeenCalled(); if(kind==='failure') expect(h.warn).toHaveBeenCalledTimes(1);
 });
