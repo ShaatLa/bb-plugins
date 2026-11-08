@@ -92,7 +92,7 @@ export default function plugin(bb: BbPluginApi) {
     if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
     const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
     try {
-      const result=await bb.sdk.threads.send({threadId,mode:'auto',input:[{type:'text',mentions:[],text},...inputs]});
+      const result=await bb.sdk.threads.send({threadId,mode:'queue-if-active',input:[{type:'text',mentions:[],text},...inputs]});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
     } catch {throw new Error('Delivery uncertain — check the thread before retrying');}

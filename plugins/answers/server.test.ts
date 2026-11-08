@@ -71,7 +71,7 @@ describe('server',()=>{
   gate.resolve({ok:true,delivery:'queued'}); expect(await first).toEqual({delivery:'queued'});
   await expect(harness.behavior.callRpc('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('already replied');
   expect(send).toHaveBeenCalledTimes(1);
-  expect(send.mock.calls[0][0]).toMatchObject({threadId:'t',mode:'auto',input:[{type:'text',text:'Re: "Question"\n\nresponse',mentions:[]}]});
+  expect(send.mock.calls[0][0]).toMatchObject({threadId:'t',mode:'queue-if-active',input:[{type:'text',text:'Re: "Question"\n\nresponse',mentions:[]}]});
  });
  it('leaves a failed send open, releases its guard and never retries automatically',async()=>{
   const send=vi.fn(async()=>{throw new Error('network');}); const {harness,db}=setup(send); seed(db);
