@@ -24,8 +24,28 @@ export function useAnswersBadge() {
 }
 
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
+// Seconds a message must stay in view to count as read: about 30 characters a second, 2 to 20 seconds.
+export const readSeconds = (text: string) => Math.min(20, Math.max(2, text.length / 30));
+// Marks a message read once 80% of it (or 80% of the scroll area, for messages taller than it) was in view long enough, summed over visits.
+function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, text: string, onRead: () => void) {
+  const latest = useRef(onRead); latest.current = onRead;
+  useEffect(() => {
+    const node = ref.current; if (!enabled || !node || typeof IntersectionObserver === 'undefined') return;
+    let spent = 0, since: number | null = null, inView = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const need = readSeconds(text) * 1000;
+    const pause = () => { if (since !== null) spent += Date.now() - since; since = null; clearTimeout(timer); };
+    const resume = () => { if (since !== null || !inView || document.visibilityState === 'hidden') return; since = Date.now(); timer = setTimeout(() => latest.current(), need - spent); };
+    const observer = new IntersectionObserver(([entry]) => {
+      inView = !!entry && (entry.intersectionRatio >= 0.8 || (!!entry.rootBounds && entry.intersectionRect.height >= 0.8 * entry.rootBounds.height));
+      if (inView) resume(); else pause();
+    }, { root: node.closest('.overflow-auto'), threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
+    const visibility = () => { if (document.visibilityState === 'hidden') pause(); else resume(); };
+    observer.observe(node); document.addEventListener('visibilitychange', visibility);
+    return () => { pause(); observer.disconnect(); document.removeEventListener('visibilitychange', visibility); };
+  }, [ref, enabled, text]);
+}
 export const isUnread = (item: Item) => item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));
-export function ItemCard({ item, chat = false, markable = !chat }: { item: Item; chat?: boolean; markable?: boolean }) {
+export function ItemCard({ item, chat = false, markable = !chat, autoRead = false }: { item: Item; chat?: boolean; markable?: boolean; autoRead?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -72,7 +92,8 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
-  const unread = isUnread(item);
+  const unread = isUnread(item), card = useRef<HTMLLIElement>(null);
+  useReadOnView(card, autoRead && unread, item.kind === 'mine' ? item.answer ?? '' : item.question, () => void act(() => rpc.call('markRead', { ids: [item.id] })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
@@ -81,7 +102,7 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
   const isQuestion = item.kind === 'mine' && /[?？]/.test(item.question);
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
-  return <li className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
+  return <li ref={card} className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
     {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}

@@ -144,7 +144,7 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   const older = { ...item, id: 'ans_older', question: 'Old deferred', answer: null, status: 'deferred' };
   const list = vi.fn((input: { cursor?: string }) => input.cursor ? { items: [{ ...older, answer: updated ? 'Resolved old answer' : null }], nextCursor: null } : { items: updated ? [{ ...item, id: 'ans_new', question: 'New question' }, item] : [item], nextCursor: updated ? '2|ans_one' : '1|ans_one' });
   const { slot, markThreadRead } = await inboxSetup({ list });
-  await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: item.threadId }));
+  expect(markThreadRead).not.toHaveBeenCalled();
   expect(slot.getByText('New').closest('li')!.nextElementSibling!.textContent).toContain('The answer');
   expect(within(slot.getByRole('listbox', { name: 'Recipients' })).getByRole('option').getAttribute('aria-selected')).toBe('true');
   fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
@@ -155,6 +155,24 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   await slot.findByText('Resolved old answer');
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '2|ans_one' }));
   expect(slot.getAllByText('What changed?')).toHaveLength(1);
+});
+it('marks a conversation message read after it stays in view long enough', async () => {
+  let report: (entries: unknown[]) => void = () => {};
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: typeof report) { report = callback; } observe() {} disconnect() {} });
+  const markRead = vi.fn(() => ({ ok: true }));
+  await inboxSetup({ markRead });
+  vi.useFakeTimers();
+  try {
+    act(() => report([{ intersectionRatio: 1, intersectionRect: { height: 100 }, rootBounds: { height: 500 } }]));
+    act(() => { vi.advanceTimersByTime(1900); });
+    expect(markRead).not.toHaveBeenCalled();
+    act(() => report([{ intersectionRatio: 0.5, intersectionRect: { height: 50 }, rootBounds: { height: 500 } }]));
+    act(() => { vi.advanceTimersByTime(5000); });
+    expect(markRead).not.toHaveBeenCalled();
+    act(() => report([{ intersectionRatio: 0.9, intersectionRect: { height: 90 }, rootBounds: { height: 500 } }]));
+    act(() => { vi.advanceTimersByTime(200); });
+  } finally { vi.useRealTimers(); }
+  await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: [item.id] }));
 });
 it('snapshots a quote draft through focus and refresh; Add to pool opens the pool tab', async () => {
   const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
