@@ -18,8 +18,10 @@ function HistoryPage({ threadId, cursor, index, depth, receive, unread = 0 }: { 
   // Frozen at mount so reading (which lowers the unread count) does not refetch it.
   const [limit] = useState(() => index === 0 ? Math.min(50, Math.max(20, unread + 5)) : 50);
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view: 'all', threadId, limit, ...(cursor ? { cursor } : {}) } });
-  // Skip cached data while a refetch runs, so the open position and New divider see current read state.
-  useEffect(() => { if (result.data && !result.isFetching) receive(index, result.data); }, [result.data, result.isFetching, index, receive]);
+  // The first delivery skips cached data while a refetch runs, so the open position and New divider see current read state;
+  // later ones pass straight through, or back-to-back refetches on a slow link would keep the conversation empty.
+  const delivered = useRef(false);
+  useEffect(() => { if (!result.data || (!delivered.current && result.isFetching)) return; delivered.current = true; receive(index, result.data); }, [result.data, result.isFetching, index, receive]);
   return <>{result.error && <p role="alert">{result.error.message}<Button onClick={() => void result.refetch()}>Retry</Button></p>}{result.data?.nextCursor && index + 1 < depth && <HistoryPage {...{ threadId, depth, receive }} index={index + 1} cursor={result.data.nextCursor} />}</>;
 }
 // Compact relative time, like chat lists: now, 5m, 3h, 2d.
