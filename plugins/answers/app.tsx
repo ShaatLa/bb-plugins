@@ -24,39 +24,23 @@ export function useAnswersBadge() {
 }
 
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
-// Seconds a message must stay in view to count as read: about 30 characters a second, 2 to 20 seconds.
-export const readSeconds = (text: string) => Math.min(20, Math.max(2, text.length / 30));
-// Marks a message read once 80% of its height has been on screen, summed over scrolling and visits, and it stayed in view
-// (80% of it, or 80% of the scroll area when taller) long enough for its length. Long messages count only once read to near the end.
-function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, text: string, onRead: () => void) {
+// Like Telegram's read cursor: a message is read once its end has reached the screen or was scrolled past. No timer.
+function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void) {
   const latest = useRef(onRead); latest.current = onRead;
   useEffect(() => {
     const node = ref.current, root = node?.closest<HTMLElement>('.overflow-auto');
     if (!enabled || !node || !root) return;
-    const need = readSeconds(text) * 1000;
-    let spent = 0, since: number | null = null, timer: ReturnType<typeof setTimeout> | undefined, frame = 0, done = false;
-    let seen: [number, number][] = []; // merged on-screen ranges, in px from the message top
+    let frame = 0, done = false;
     const check = () => {
-      frame = 0; if (done) return;
-      const box = node.getBoundingClientRect(), view = root.getBoundingClientRect();
-      const top = Math.max(box.top, view.top), bottom = Math.min(box.bottom, view.bottom), shown = bottom - top;
-      if (shown > 0) {
-        const merged: [number, number][] = []; let range: [number, number] = [top - box.top, bottom - box.top];
-        for (const r of seen) { if (r[1] < range[0] || r[0] > range[1]) merged.push(r); else range = [Math.min(r[0], range[0]), Math.max(r[1], range[1])]; }
-        seen = [...merged, range];
-      }
-      const inView = document.visibilityState !== 'hidden' && shown > 0 && shown >= 0.8 * Math.min(box.height, view.height);
-      if (since !== null) spent += Date.now() - since;
-      since = inView ? Date.now() : null; clearTimeout(timer);
-      const covered = seen.reduce((sum, r) => sum + r[1] - r[0], 0) >= 0.8 * box.height;
-      if (covered && spent >= need) { done = true; latest.current(); return; }
-      if (inView) timer = setTimeout(check, Math.max(100, need - spent));
+      frame = 0; if (done || document.visibilityState === 'hidden') return;
+      const box = node.getBoundingClientRect();
+      if (box.height > 0 && box.bottom <= root.getBoundingClientRect().bottom) { done = true; latest.current(); }
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(check); };
     root.addEventListener('scroll', schedule, { passive: true }); document.addEventListener('visibilitychange', check);
     check();
-    return () => { done = true; clearTimeout(timer); cancelAnimationFrame(frame); root.removeEventListener('scroll', schedule); document.removeEventListener('visibilitychange', check); };
-  }, [ref, enabled, text]);
+    return () => { done = true; cancelAnimationFrame(frame); root.removeEventListener('scroll', schedule); document.removeEventListener('visibilitychange', check); };
+  }, [ref, enabled]);
 }
 export const isUnread = (item: Item) => item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));
 export function ItemCard({ item, chat = false, markable = !chat, autoRead = false }: { item: Item; chat?: boolean; markable?: boolean; autoRead?: boolean }) {
@@ -107,7 +91,7 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = isUnread(item), card = useRef<HTMLLIElement>(null);
-  useReadOnView(card, autoRead && unread, item.kind === 'mine' ? item.answer ?? '' : item.question, () => void act(() => rpc.call('markRead', { ids: [item.id] })));
+  useReadOnView(card, autoRead && unread, () => void act(() => rpc.call('markRead', { ids: [item.id] })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']

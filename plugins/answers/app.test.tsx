@@ -156,7 +156,7 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '2|ans_one' }));
   expect(slot.getAllByText('What changed?')).toHaveLength(1);
 });
-it('marks a long conversation message read only after 80% of it has been on screen and it stayed long enough', async () => {
+it('marks a conversation message read once its end reaches the screen, with no timer', async () => {
   const markRead = vi.fn(() => ({ ok: true }));
   const { slot } = await inboxSetup({ markRead });
   const card = slot.getByText('The answer').closest('li')!, root = card.closest<HTMLElement>('.overflow-auto')!;
@@ -167,10 +167,12 @@ it('marks a long conversation message read only after 80% of it has been on scre
   vi.useFakeTimers();
   try {
     const scrollTo = (top: number) => act(() => { cardTop = top; fireEvent.scroll(root); vi.advanceTimersByTime(50); });
-    scrollTo(0);
-    act(() => { vi.advanceTimersByTime(5000); }); // long enough, but only the first quarter was seen
-    scrollTo(-500); scrollTo(-1000);
-    expect(markRead).not.toHaveBeenCalled(); // 75% seen
+    scrollTo(-1500);
+    expect(markRead).not.toHaveBeenCalled(); // the open position has not settled yet
+    act(() => { cardTop = 0; fireEvent.pointerDown(root); }); // touching the list settles it
+    scrollTo(0); act(() => { vi.advanceTimersByTime(60000); });
+    scrollTo(-1400);
+    expect(markRead).not.toHaveBeenCalled(); // the end is still below the screen
     scrollTo(-1500);
   } finally { vi.useRealTimers(); }
   await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: [item.id] }));

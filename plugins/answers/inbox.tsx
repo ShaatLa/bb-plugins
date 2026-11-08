@@ -41,6 +41,10 @@ export function Inbox({ questions = false }: { questions?: boolean }) {
   const mark = useRef<string | null>(null);
   // Where the open landed (the New divider, or null for the newest); held while messages above finish rendering and grow.
   const pin = useRef<{ target: HTMLElement | null; until: number } | null>(null);
+  // Reads count only once the open position settled: while messages above grow, the list briefly jumps past unread ones.
+  const [settled, setSettled] = useState(false), settle = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const release = () => { clearTimeout(settle.current); pin.current = null; setSettled(true); };
+  useEffect(() => () => clearTimeout(settle.current), []);
   useLayoutEffect(() => {
     const node = scroll.current; if (!node || !pages.length) return;
     const old = position.current;
@@ -51,22 +55,23 @@ export function Inbox({ questions = false }: { questions?: boolean }) {
       const divider = node.querySelector<HTMLElement>('[data-new]'), header = node.querySelector<HTMLElement>('.sticky')?.offsetHeight ?? 0;
       node.scrollTop = divider ? divider.offsetTop - header : keep ? keep.top : node.scrollHeight; restore.current = null;
       pin.current = divider || !keep ? { target: divider, until: Date.now() + 3000 } : null;
+      clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
     else if (old.bottom) node.scrollTop = node.scrollHeight;
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24, fresh: false, prepend: false };
   }, [pages]);
   useEffect(() => {
     const node = scroll.current, list = node?.querySelector('[aria-label=History]');
-    if (!node || !list || typeof ResizeObserver === 'undefined') return;
+    if (!node || !list) return;
     const hold = () => {
-      const held = pin.current; if (!held || Date.now() > held.until) { pin.current = null; return; }
+      const held = pin.current; if (!held || Date.now() > held.until) { if (held) release(); return; }
       const header = node.querySelector<HTMLElement>('.sticky')?.offsetHeight ?? 0;
       node.scrollTop = held.target ? node.scrollTop + held.target.getBoundingClientRect().top - node.getBoundingClientRect().top - header : node.scrollHeight;
     };
-    const release = () => { pin.current = null; }, events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
-    const observer = new ResizeObserver(hold); observer.observe(list);
+    const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(hold); observer?.observe(list);
     for (const name of events) node.addEventListener(name, release, { passive: true });
-    return () => { observer.disconnect(); for (const name of events) node.removeEventListener(name, release); };
+    return () => { observer?.disconnect(); for (const name of events) node.removeEventListener(name, release); };
   }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {
@@ -109,13 +114,13 @@ export function Inbox({ questions = false }: { questions?: boolean }) {
       {result.error && <p role="alert">{result.error.message}</p>}
       {result.data?.recipients.length === 0 && <EmptyState icon="MailOpen" title={questions ? 'No open questions' : 'All caught up'}>{questions ? 'Answers to your questions will show up here.' : 'New answers from your threads will show up here.'}</EmptyState>}
       {result.data?.recipients.map(recipient => <button key={recipient.threadId} role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
-        if (selected !== recipient.threadId) { setPages([]); setDepth(1); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
+        if (selected !== recipient.threadId) { setPages([]); setDepth(1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
         else try { await rpc.call('markThreadRead', { threadId: recipient.threadId }); refresh(); } catch (e) { setError(errorText(e)); }
       }}><Avatar id={recipient.threadId} title={recipient.threadTitle} /><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><span className="min-w-0 flex-1 truncate font-medium">{recipient.threadTitle ?? 'Untitled thread'}</span><span className="shrink-0 text-[11px] text-muted-foreground">{ago(recipient.lastAt)}</span></span><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{recipient.projectName ?? 'No project'}</span>{recipient.unread > 0 && <span aria-label={`${recipient.unread} unread`} className="shrink-0 rounded-full bg-foreground/85 px-1.5 text-[11px] font-medium leading-[18px] text-background">{recipient.unread}</span>}</span></span></button>)}
     </div>
     <div ref={scroll} className={`relative overflow-auto min-w-0 ${!selected ? 'max-[639px]:hidden' : ''}`} onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; if (selected && !position.current.fresh) try { localStorage.setItem(SCROLL_KEY, JSON.stringify({ threadId: selected, top: node.scrollTop, depth })); } catch { /* storage unavailable */ } }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
-      {selected && <><div className="sticky top-0 z-[1] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2 min-[640px]:hidden"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{(() => { const current = result.data?.recipients.find(r => r.threadId === selected); return <><Avatar id={selected} title={current?.threadTitle ?? null} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{current?.threadTitle ?? 'Untitled thread'}</span><span className="block truncate text-xs text-muted-foreground">{current?.projectName ?? 'No project'}</span></span><Button asChild size="sm" variant="ghost" aria-label="Open thread"><UrlLink href={`${current?.projectId ? `/projects/${current.projectId}` : ''}/threads/${selected}`}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button></>; })()}</div><HistoryPage key={selected} threadId={selected} index={0} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <Button onClick={() => { position.current.prepend = true; setDepth(depth + 1); }}>Load earlier</Button>}<ul className="divide-y divide-border-seam px-4 [&>:has(+[data-new])]:border-b-0" aria-label="History">{items.map(item => <Fragment key={item.id}>{item.id === mark.current && <li data-new className="border-b-0 flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat autoRead /></Fragment>)}</ul></>}
+      {selected && <><div className="sticky top-0 z-[1] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2 min-[640px]:hidden"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{(() => { const current = result.data?.recipients.find(r => r.threadId === selected); return <><Avatar id={selected} title={current?.threadTitle ?? null} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{current?.threadTitle ?? 'Untitled thread'}</span><span className="block truncate text-xs text-muted-foreground">{current?.projectName ?? 'No project'}</span></span><Button asChild size="sm" variant="ghost" aria-label="Open thread"><UrlLink href={`${current?.projectId ? `/projects/${current.projectId}` : ''}/threads/${selected}`}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button></>; })()}</div><HistoryPage key={selected} threadId={selected} index={0} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <Button onClick={() => { position.current.prepend = true; setDepth(depth + 1); }}>Load earlier</Button>}<ul className="divide-y divide-border-seam px-4 [&>:has(+[data-new])]:border-b-0" aria-label="History">{items.map(item => <Fragment key={item.id}>{item.id === mark.current && <li data-new className="border-b-0 flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat autoRead={settled} /></Fragment>)}</ul></>}
       {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
         <Composer label="Quote reply text" className="shadow-lg" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={draft.projectId} pending={pending} sendDisabled={draft.quote.length > 20000} onSend={options => void send(false, options)}
           header={<div className="flex items-start gap-2 pl-4 pr-2 pt-2"><div className="mt-1 max-h-32 min-w-0 flex-1 overflow-auto border-l-2 border-border-seam pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><Button type="button" size="icon" variant="ghost" className="size-7 shrink-0 text-muted-foreground" aria-label="Close" onClick={() => setDraft(null)}><Icon name="X" aria-hidden /></Button></div>}
