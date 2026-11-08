@@ -60,10 +60,10 @@ export default function plugin(bb: BbPluginApi) {
       // Same set as the Inbox: unread answers and open agent questions.
       unread:"read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",
       waiting:"kind='mine' AND status IN ('waiting','deferred')",
-      for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"kind='saved'", all:'1=1',
+      for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"(kind='saved' OR pinned=1)", all:'1=1',
     };
     const where = [views[p.view]], args: (string | number)[] = [];
-    if (!['all','pinned'].includes(p.view)) where.push('dismissed_at IS NULL');
+    if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL');
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
     }

@@ -7,7 +7,6 @@ import { EmptyState, type IconName } from './empty';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 
-const views: [View, string][] = [['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
 const emptyCopy: Record<View, [IconName, string, string]> = {
   unread: ['MailOpen', 'All caught up', 'New answers will show up here.'],
   waiting: ['Clock', 'Nothing waiting', 'Questions still waiting for an answer show up here.'],
@@ -100,7 +99,7 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
     <div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden /></Button>}
-      <Button size="sm" {...iconProps(item.pinned ? 'Unpin' : 'Pin')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden /></Button>
+      {item.kind !== 'saved' && <Button size="sm" {...iconProps(item.pinned ? 'Remove from Saved' : 'Save')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name="Star" aria-hidden className={item.pinned ? 'fill-current' : undefined} /></Button>}
       <Button size="sm" {...iconProps('Done')} disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden /></Button>
       {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
@@ -124,33 +123,57 @@ function Page({ threadId, view, projectId, query, questions, cursor }: { threadI
   </>;
 }
 
+type ViewOption = { value: View | 'inbox'; label: string; hint: string; icon: IconName };
+// The views as tasks: what is new, what I am waiting for, what I owe, what I kept, everything.
+const viewOptions = (thread: boolean): ViewOption[] => [
+  thread ? { value: 'unread', label: 'Unread', hint: 'New answers and questions for you in this thread', icon: 'Mail' } : { value: 'inbox', label: 'Inbox', hint: 'New answers and questions for you, by thread', icon: 'Mail' },
+  { value: 'waiting', label: 'Awaiting answer', hint: 'Your questions agents have not answered yet', icon: 'Clock' },
+  { value: 'for_me', label: 'Asked of you', hint: 'Agent questions you have not replied to', icon: 'MessageQuestion' },
+  { value: 'saved', label: 'Saved', hint: 'Answers you saved or pinned', icon: 'Star' },
+  { value: 'all', label: 'History', hint: 'Every question and answer, searchable', icon: 'LayoutList' },
+];
+
+function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value: View | 'inbox'; onChange: (value: View | 'inbox') => void }) {
+  const [open, setOpen] = useState(false), current = options.find(o => o.value === value) ?? options[0]!;
+  return <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }} onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}>
+    <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2 text-sm font-medium" aria-label={`View: ${current.label}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}><Icon name={current.icon} aria-hidden className="size-4 text-muted-foreground" />{current.label}<Icon name="ChevronDown" aria-hidden className="size-3.5 text-muted-foreground" /></Button>
+    {open && <div role="menu" aria-label="Views" className="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-border bg-background p-1 shadow-lg">
+      {options.map(option => <button key={option.value} type="button" role="menuitemradio" aria-checked={option.value === current.value} className={`flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-state-hover ${option.value === current.value ? 'bg-state-active' : ''}`} onClick={() => { onChange(option.value); setOpen(false); }}>
+        <Icon name={option.icon} aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0"><span className="block text-sm">{option.label}</span><span className="block text-xs text-muted-foreground">{option.hint}</span></span>
+      </button>)}
+    </div>}
+  </div>;
+}
+
 export function AnswersPanel({ threadId }: { threadId?: string }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
   const { projects } = experimental_useSidebarThreads();
-  const [view, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
+  const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
+  const view = stored === 'pinned' ? 'saved' : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', false);
   const [error, setError] = useState('');
-  const options: [View | 'inbox', string][] = threadId ? [['unread', 'Unread'], ...views] : [['inbox', 'Inbox'], ...views];
+  const list = view === 'saved' || view === 'all';
   return <section className="flex h-full flex-col">
     {threadId && <Pools threadId={threadId} />}
-    <div className="flex flex-wrap items-center gap-2 border-b border-border-seam px-4 py-2">
-      <span className="relative inline-flex items-center">
-        <select aria-label="View" className="appearance-none rounded-md bg-transparent py-1 pl-2 pr-7 text-sm font-medium hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" value={view} onChange={event => setView(event.target.value as View | 'inbox')}>{options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-        <Icon name="ChevronDown" aria-hidden className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
-      </span>
-      <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>
-      {view !== 'inbox' && <>
-        <input aria-label="Search answers" type="search" placeholder="Search" maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
-        {!threadId && <select aria-label="Project" className="rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
-        <Button size="sm" variant="ghost" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden />Mark all read</Button>
-      </>}
+    <div className="space-y-2 border-b border-border-seam px-3 py-2">
+      <div className="flex items-center gap-1">
+        <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={setView} />
+        <span className="flex-1" />
+        {view !== 'for_me' && <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>}
+        {(view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
+      </div>
+      {list && <div className="flex gap-2">
+        <input aria-label="Search answers" type="search" placeholder={view === 'saved' ? 'Search saved' : 'Search history'} maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
+        {!threadId && <select aria-label="Project" className="max-w-40 rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
+      </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, query, questions }} projectId={projectId || undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
   </section>;
 }
 

@@ -9,12 +9,16 @@ const item: Item = itemSchema.parse({
   requestId: null, turnId: null, candidate: null, candidateSeq: null, interim: null, interimSeq: null, answer: 'The answer', answerSeq: 20, answerSource: 'turn', resolveTurnId: null, note: null, readAt: null, pinned: false, dismissedAt: null, threadDeleted: false, createdAt: Date.now(), updatedAt: Date.now(),
 });
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+function pickView(slot: { getByRole: (...args: any[]) => HTMLElement }, label: string) {
+  fireEvent.click(slot.getByRole('button', { name: /^View:/ }));
+  fireEvent.click(slot.getByRole('menuitemradio', { name: new RegExp(`^${label}`) }));
+}
 async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const app = await loadPluginApp(() => import('./app'));
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
-  fireEvent.change(slot.getByRole('combobox', { name: 'View' }), { target: { value: 'all' } });
+  pickView(slot, 'History');
   await slot.findByText('What changed?');
   return { app, slot, list, markRead };
 }
@@ -22,10 +26,10 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 describe('Answers app', () => {
   it('keeps the selected view after the page is unmounted', async () => {
     const first = await setup();
-    fireEvent.change(first.slot.getByRole('combobox', { name: 'View' }), { target: { value: 'waiting' } });
+    pickView(first.slot, 'Awaiting answer');
     first.slot.unmount();
     const again = renderSlot(first.app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
-    expect((again.getByRole('combobox', { name: 'View' }) as HTMLSelectElement).value).toBe('waiting');
+    expect(again.getByRole('button', { name: 'View: Awaiting answer' })).toBeTruthy();
     again.unmount();
   });
   it('reopens the page side panel tab the user left open', async () => {
@@ -44,7 +48,7 @@ describe('Answers app', () => {
     expect(app.messageActions[1]).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
-    fireEvent.change(slot.getByRole('combobox', { name: 'View' }), { target: { value: 'waiting' } });
+    pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
   it('marks an item or all items read and links to the answer sequence', async () => {
@@ -52,7 +56,7 @@ describe('Answers app', () => {
     fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));
     await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: ['ans_one'] }));
     expect(slot.getByRole('link', { name: 'Open in chat' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_one?msg=20');
-    fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
+    pickView(slot, 'Inbox'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
     await waitFor(() => expect(markRead).toHaveBeenCalledWith({ all: true }));
   });
   it('disables replies while sending and reports queued delivery', async () => {
@@ -169,7 +173,7 @@ it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
   const text = slot.getByRole('textbox', { name: 'Quote reply text' });
-  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('combobox', { name: 'View' }) });
+  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: /^View:/ }) });
   expect(slot.queryByRole('dialog')).toBeNull();
 });
 it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure => {
