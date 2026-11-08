@@ -1,6 +1,6 @@
 # Answers 0.3.0 — attention, notifications, faster replies, integrations
 
-Status: draft v2 for review (v1 review: `review-1.md`, 9 majors / 6 minors, all addressed below).
+Status: draft v3 for review (review-1: 9 majors / 6 minors; review-2: 6 majors / 2 minors; all addressed).
 Base: branch `feat/answers` (0.2.0, SDK 0.6.132). Every feature was accepted by the owner.
 Behaviour is the spec; file/line hints are guidance.
 
@@ -18,8 +18,12 @@ Behaviour is the spec; file/line hints are guidance.
 - Failures: thread events carry `turn/completed {status:'failed'}` (input accepted) and
   `client/turn/rejected {requestId, reason, message}`; the live hook `bb.events.on('turn.failed')` gives
   `{threadId, requestId, turnId|null, inputAccepted, attemptNumber}`.
-- `bb.sdk.threads.send` from the plugin server stamps `originPluginId`; the send result carries no request id
-  and the `client/turn/requested` event carries no `pluginSubmission`.
+- `bb.sdk.threads.send` from the plugin **server** is wrapped to stamp `originPluginId` (bundled
+  `start-server.js`: `send(args){return sdk.threads.send({...args, originPluginId: pluginId})}`). The
+  **browser** SDK (`useSdk().threads`, `PluginBoundThreadsArea`, SDK:23183) stamps only `spawn`/`fork`, so a
+  send from the plugin page is an ordinary user message (verify once in the browser: its
+  `client/turn/requested` has no `originPluginId`). Grouped queued dispatch carries `inputGroups`; ingest
+  already treats such a request as one question, like chat.
 - Settings: `bb.settings.define({...})` (`string|boolean|number|select`), `onChange` exists;
   example `plugins/ci-dashboard/server.ts`.
 - Work Board (installed 0.27.3, `/Users/shaatla/bb-plugins/releases/work-board-0.27.3/shared/contract.ts`):
@@ -55,23 +59,24 @@ ALTER TABLE items ADD COLUMN failed_at INTEGER;                           -- F11
 ALTER TABLE items ADD COLUMN attempt_request_id TEXT;                     -- F11: latest attempt's request id
 ALTER TABLE items ADD COLUMN likely_interim INTEGER NOT NULL DEFAULT 0;   -- F4
 ALTER TABLE items ADD COLUMN options TEXT;                                -- F7: JSON string[] or NULL
-ALTER TABLE items ADD COLUMN attention_at INTEGER;                        -- F5: when it last became attention
+ALTER TABLE items ADD COLUMN notify_state INTEGER NOT NULL DEFAULT 0;    -- F5: 0 none, 1 pending, 2 held for quiet summary
 ALTER TABLE items ADD COLUMN answered_at INTEGER;                         -- F13: when it became answered
 ALTER TABLE items ADD COLUMN read_batch TEXT;                             -- F2
 ALTER TABLE items ADD COLUMN task_key TEXT;                               -- F12
-UPDATE items SET attention_at=updated_at, answered_at=CASE WHEN status='answered' THEN updated_at END,
-  attempt_request_id=request_id;
-CREATE TABLE own_sends (thread_id TEXT NOT NULL, text_hash TEXT NOT NULL, expires_at INTEGER NOT NULL);
-CREATE INDEX own_sends_key ON own_sends(thread_id, text_hash);
+UPDATE items SET answered_at=CASE WHEN status='answered' THEN updated_at END, attempt_request_id=request_id;
 CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
 ```
 
 `itemSchema` gains `snoozedUntil`, `failedAt`, `likelyInterim: boolean`, `options: string[] | null`,
-`taskKey: string | null`. Internal columns (`attempt_request_id`, `attention_at`, `answered_at`,
+`taskKey: string | null`. Internal columns (`attempt_request_id`, `notify_state`, `answered_at`,
 `read_batch`) stay out of the RPC item. The row mapper parses `options` JSON.
 
-**Event-time rule:** ingest stamps `attention_at` / `answered_at` with the triggering event's `createdAt`
-(fallback `now`), so catch-up of old events is recognisably old (F5).
+**Event time:** ingest stamps `answered_at` and `failed_at` with the triggering event's `createdAt`
+(fallback `now`).
+
+**Entering attention** (used by F5): an item *enters attention* when it becomes answered, gets `failed_at`,
+is created by `answers_ask`, or is woken from a snooze. `applyEvents` takes `live: boolean`; when an item
+enters attention it sets `notify_state = live ? 1 : 0` (the RPC/tool/wake paths always set 1).
 
 ## Features
 
@@ -82,8 +87,8 @@ CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
   rest by `lastAt` desc. `lastAt` = max `updated_at` of the thread's items. Cap 200 rows (`shortcut:` comment).
 - `questions: true` keeps only threads that have a question item (`kind='for_me' OR QUESTION_SQL`); counters
   then count only those items, as today.
-- Preview = newest attention item (answer for `mine`, question for `for_me`), else the newest item's
-  `answer ?? question`, 160 chars.
+- Preview = newest attention item: answer for answered `mine`, question for `for_me`, `Turn failed: <question>`
+  for failed `mine`; else the newest item's `answer ?? question`; 160 chars, never empty-crashing.
 - One SQL with window functions (`ROW_NUMBER() OVER (PARTITION BY thread_id ...)`) instead of today's per-row
   queries; keep the `selected` handling.
 - UI: rows with `unread=0` show no counter and muted title/preview. A thin "All caught up" line tops the list
@@ -122,56 +127,55 @@ CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
 - UI on a flagged answered item: a muted chip "Looks like an interim reply" in its own wrapping row, with
   **Keep waiting** → RPC `keepWaiting({id})` (only from `kind='mine' AND status='answered'`): `status='deferred',
   interim=answer, interim_seq=answer_seq, answer=NULL, answer_seq=NULL, answer_source=NULL, answered_at=NULL,
-  read_at=NULL, likely_interim=0`; and **It's the answer** → RPC `setInterim({id, value:false})`.
+  read_at=NULL, likely_interim=0, notify_state=0`; and **It's the answer** → RPC `setInterim({id, value:false})`.
 - The deferred item is then answered like any deferred one (agent's `answers_resolve`); README notes this.
 
 ### F5. Push notifications
 
 Settings (`bb.settings.define`): `notify` (`select`): `off` | `asked` (default; agent questions to you) |
-`questions` (also answers to your messages with "?" and failed turns of them) | `all` (every attention item);
-`quietHours` (`string`, default empty, schema `^(\d\d:\d\d-\d\d:\d\d)?$`, local server time, may wrap midnight).
+`questions` (also answers to and failures of your messages with "?") | `all` (every attention item);
+`quietHours` (`string`, default empty, schema `^(?:([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d)?$` with
+equal endpoints rejected; local server time; may wrap midnight). `level(item)` = whether an item matches `notify`.
 
-`notify.ts`, created by `server.ts` and run after every write that can create attention (driver
-invalidation, `answers_ask`, snooze wake-ups):
+`notify.ts`, created by `server.ts`; `run()` is called after any write that can make `notify_state=1`
+(driver invalidation, `answers_ask`, snooze wake, settings change). Runs are serialized (one promise chain).
 
-1. **Cursor, not per-item flags.** KV `notify:cursor` (ms). First run ever: cursor = now. Each run selects
-   attention items with `attention_at > cursor`, then sets cursor = max `attention_at` seen — whether or not
-   they are sent. So items excluded by the level (or by `off`) are consumed, and switching `off → all` never
-   pushes a backlog.
-2. **Live only.** Of those, only items with `attention_at >= now - 10 min` are eligible. Catch-up of events
-   that happened while bb or the plugin was down carries old event times (event-time rule) and is skipped;
-   first-sight backfill of a thread is skipped the same way, while a question still waiting at upgrade or at
-   discovery pushes when it is answered later (its `attention_at` is set then).
-3. **New episode → new push.** `attention_at` is (re)set whenever an item enters attention: answered,
-   failed, `for_me` created, snooze woken, `keepWaiting` → later answered. Leaving attention does not reset it.
-4. **Coalescing.** Eligible ids queue for 10 s. At flush, re-read the queue and keep only ids still attention
-   and still matching the current `notify` level; drop an empty batch. One item: title = thread title or
-   "Answers" (trimmed, 1–80 chars), body = question (`for_me`) / answer (`mine`) / "Turn failed: <question>",
-   whitespace-collapsed and cut to 180 chars, `threadId` set. Several: title "N new in Answers", body = up to
-   3 thread titles (180 chars), `threadId` only if shared.
-5. **Quiet hours.** Inside the window nothing is queued (cursor still advances). At the window end one summary
-   push "While you were away: N new in M threads" counts items still attention with `attention_at` inside that
-   window — a query, so nothing is held in memory. The end timer is recomputed at startup and on
-   `settings.onChange`; a window that ended while the server was down gets no summary (accepted). KV
-   `notify:summaryFor` = last window end summarised, to avoid doubles.
-6. `notify` changed to `off` clears the queue and the quiet timer. Push plugin missing/failing or
-   `channels: []`: one debug log per hour, no retry. All timers `unref()` and cleared on dispose.
+1. **Live vs history (no age heuristics).** The driver passes `live=false` to `applyEvents` for first-sight
+   backfill and for every drain that starts before startup `reconcile()` has finished its tracked-thread pass;
+   `live=true` afterwards. So downtime catch-up and discovery never push, whatever their age; a question
+   still waiting at that time pushes when it is answered later (that later turn is live).
+   `shortcut:` events arriving during the few seconds of startup reconcile do not push.
+   At plugin load: `UPDATE items SET notify_state=0 WHERE notify_state=1`, and also `=2` when not inside quiet hours.
+2. **Claim in write order.** `run()` in one transaction selects `notify_state=1` rows and sets them all to 0
+   (consumed whatever the level, so `off → all` pushes no backlog). Of the claimed rows, those still attention
+   and matching `level` are queued in memory — or, inside quiet hours, set to `notify_state=2` instead.
+3. **Coalescing.** The queue flushes 10 s after its first id. At flush it re-reads the ids and keeps those
+   still attention and matching the current `level`; if quiet hours began meanwhile they become
+   `notify_state=2`; an empty batch sends nothing. One item: title = thread title or "Answers" (trimmed,
+   1–80 chars), body = question (`for_me`) / answer (`mine`) / `Turn failed: <question>`, whitespace-collapsed,
+   ≤ 180 chars, `threadId` set. Several: title "N new in Answers", body = up to 3 thread titles (≤ 180),
+   `threadId` only if shared. Losing an unflushed queue on reload is accepted.
+4. **Quiet hours.** At the window end (timer computed at startup and on `settings.onChange`) count
+   `notify_state=2` rows still attention and matching the current `level`, set all `2 → 0`, and if N > 0 push
+   "While you were away: N new in M threads" (no threadId). Only items that matched the level while
+   notifications were on are ever held, so items consumed while `off` never reappear.
+5. `notify` → `off` clears the queue and sets `2 → 0`. Push plugin missing/failing or `channels: []`: one
+   debug log per hour, no retry. All timers `unref()` and cleared on dispose; dispose waits for a running claim.
 
 ### F6. Reply from the Inbox without quoting
 
 - Composer pinned to the bottom of the open conversation (reuse `Composer` + `SendButton` modes +
-  attachments). It is keyed by thread (`key={threadId}`) so upload/error state belongs to one thread.
+  attachments), keyed by thread (`key={threadId}`) so upload/error state belongs to one thread.
+- Sending uses the **browser SDK** `useSdk().threads.send({threadId, mode, input, sendAt?})` (input built the
+  same way as `deliver()` in `server.ts`); Draft mode passes
+  `pluginSubmission: {pluginId: 'answers', data: {kind: 'draft'}}`, which the existing `message.dispatch`
+  hook holds. No new RPC. Because the browser send is not plugin-stamped, the message is ingested as a normal
+  question (first implementation step: confirm this in the browser; if it turns out stamped, stop and report).
 - Drafts: one localStorage map `bb-plugin-answers:page:compose` = `{[threadId]: {text, files}}`, read and
   written through a small helper (not `useStoredState`, which reads only on mount). Every upload and send
-  captures its thread id and updates only that entry. On successful send, remove the entry only if it still
-  equals the sent snapshot (edits made meanwhile survive); failed send keeps it.
-- New RPC `send({threadId, text(1..8000), attachments?, send?})`. Before `deliver()` it inserts
-  `own_sends(thread_id, sha256(text), expires_at = (sendAt ?? now) + 24 h)`; on delivery error it deletes
-  that row. No `Re:` prefix, no item state change.
-- Ingest: a `client/turn/requested` with `originPluginId === <this plugin id>` and `initiator` user is a
-  question **only** if an unexpired `own_sends` row matches `(thread_id, sha256(joined text))`; that one row is
-  deleted in the same transaction. Expired rows are pruned at startup. Quote replies, pools and `reply` record
-  no row, so they stay excluded as today. `applyEvents` gets the plugin id as a parameter.
+  captures its thread id and updates only that entry. On success, remove the entry only if it still equals
+  the sent snapshot; on error keep it and show "Delivery uncertain — check the thread before retrying"
+  (as the quote popup does).
 - The quote popup still works; the bottom composer hides while it is open. After send the conversation
   scrolls to the bottom. Mobile: sticky inside the scroll column, stays above the keyboard.
 
@@ -187,7 +191,7 @@ invalidation, `answers_ask`, snooze wake-ups):
 - RPC `snooze({id, until: number|null})`: `until` in (now, now + 30 days]; `null` unsnoozes (and counts as a
   wake). Allowed for any non-saved item; sets `read_at=NULL`.
 - **Wake = consume.** `wakeDue()` runs at startup and on each timer fire, in one transaction:
-  `UPDATE items SET snoozed_until=NULL, read_at=NULL, attention_at=now WHERE snoozed_until<=now`, then
+  `UPDATE items SET snoozed_until=NULL, read_at=NULL, notify_state=1 WHERE snoozed_until<=now`, then
   invalidate and run the notifier if anything changed, then arm one timer for the nearest future deadline with
   `min(delay, 2^31-1)` (re-evaluated on fire). Re-armed after every `snooze` call; cleared on dispose.
 - Snoozed items are not attention; conversations and History show "Snoozed until <time>" and **Unsnooze**;
@@ -214,16 +218,17 @@ invalidation, `answers_ask`, snooze wake-ups):
 ### F11. Failed turns can be retried
 
 Ingest (persisted events, so restart/replay behaves the same as live):
-- `turn/input/accepted` (existing binding) also sets `attempt_request_id = clientRequestId` and clears
-  `failed_at`. `client/turn/requested` with `retryOfRequestId` that aliases an item sets
+- `turn/input/accepted` (existing binding) also sets `attempt_request_id = clientRequestId`. Clearing a
+  non-null `failed_at` there is a separate UPDATE counted as a **visible** change (the plain binding stays
+  hidden), so the Retry state disappears as soon as the retry is accepted. `client/turn/requested` with `retryOfRequestId` that aliases an item sets
   `attempt_request_id = requestId` (the alias stays as today).
 - `turn/completed {status:'failed'}`: items with `turn_id = turn` still `waiting`/`deferred` get
-  `failed_at = event time, attention_at = event time, read_at = NULL`.
+  `failed_at = event time, read_at = NULL` (enters attention).
 - `client/turn/rejected {requestId}` (add to `RELEVANT`): the item whose `request_id` or alias is
   `requestId` and still `waiting` gets the same, and `attempt_request_id = requestId`.
 - Live hook `turn.failed` with `inputAccepted=false` and no matching persisted event yet: same update by
   `requestId` through the alias table (idempotent with the line above).
-- `failed_at` is cleared when the item becomes `answered` or on a new accepted attempt.
+- `failed_at` is cleared (visible change) when the item becomes `answered` or on a new accepted attempt.
 - Failed **resolution** turns (`resolve_turn_id`) are out of scope: the binding is cleared as today and the
   item stays `deferred` without `failed_at`; the agent resolves again in a later turn. Interrupted turns keep
   today's behaviour.
@@ -260,7 +265,7 @@ labelled). Interim and quick-reply buttons wrap in their own rows. Verified at 3
 
 ## RPC summary (contract.ts; existing inputs unchanged)
 
-New: `undoRead`, `keepWaiting`, `setInterim`, `send`, `snooze`, `retryTurn`, `workBoardProjects`, `createTask`.
+New: `undoRead`, `keepWaiting`, `setInterim`, `snooze`, `retryTurn`, `workBoardProjects`, `createTask`.
 Additive output changes: `markRead`, `markThreadRead` (`batch`, `count`), `save` (`created`).
 All mutations invalidate `ITEMS_TAG` + `COUNTS_TAG`.
 
@@ -269,20 +274,27 @@ All mutations invalidate `ITEMS_TAG` + `COUNTS_TAG`.
 - ingest: failed turn → `failed_at`/attention; A → B(retry) fails → `attempt_request_id` = B; accepted retry
   clears; answered clears; `client/turn/rejected` before acceptance and for a retry; interrupted unchanged;
   failed resolution stays deferred; `INTERIM_RE` RU/EN samples, `answer_source='agent'` ignored;
-  own-send: matching row admits one question and is consumed, a second identical request is ignored, quote/
-  pool sends ignored; event-time stamping of `attention_at`/`answered_at`.
+  acceptance clearing `failed_at` in its own event page returns visible (driver invalidates) while a plain
+  acceptance stays hidden (extend the visible-vs-hidden test); `live=false` sets `notify_state=0`, `live=true`
+  sets 1; event-time stamping of `answered_at`/`failed_at`.
 - server: attention predicate everywhere (counts, list, recipients, markThreadRead); recipients include read
   threads, order, questions filter; markRead all → batch → undoRead, expired; keepWaiting/setInterim; snooze
   bounds, overdue at startup, 30-day timer clamp, several deadlines, dispose with timer pending (fake timers);
-  `send` records/deletes `own_sends`; ask options validation; `retryTurn` passes `attempt_request_id`;
+  ask options validation; `retryTurn` passes `attempt_request_id`;
   Work Board RPCs with mocked `callRpc` (available, thrown error, `ok:false`).
-- notify: first run consumes history; `off → all` no backlog; restart catch-up of old events not pushed;
-  question waiting at upgrade pushes when answered; failed → retry → answered pushes twice; read/replied/
-  snoozed during the 10 s window drops it; 20,000-char answer passes a mock that parses the real strict push
-  schema; quiet window summary once, settings change re-arms, `off` cancels; missing push plugin.
+- driver: drains before reconcile's tracked pass and first-sight backfill pass `live=false` (a 2-minute-old
+  downtime answer and a 2-minute-old answer in a newly discovered thread do not push); later drains `live=true`.
+- notify: claim consumes every pending row in one transaction; two threads ingested in reverse event order
+  both push; equal timestamps in separate transactions both push; overlapping `run()` calls claim once;
+  `off → all` no backlog; failed → retry → answered pushes twice; read/replied/snoozed during the 10 s window
+  drops it; 20,000-char answer passes a mock that parses the real strict push schema; under `asked` an
+  ordinary answer is neither pushed nor summarised; `off → asked` near window end does not revive consumed
+  items; a batch whose flush crosses the quiet start is held; summary once; settings change re-arms; `off`
+  cancels; quiet-hours schema rejects `24:00`, `12:60`, equal endpoints; missing push plugin.
 - app: muted read recipients, "All caught up"; Undo line; quick replies; interim chip; Retry; More menu;
-  grouped card marks all members read; search jump loads earlier pages; composer: switch thread during upload
-  and during send, failed send keeps draft, edit after send survives; snooze menu times (fixed clock);
+  grouped card marks all members read; search jump loads earlier pages; composer sends via the browser SDK
+  (mocked `useSdk`), switch thread during upload and during send, failed send keeps draft, edit after send
+  survives, Draft mode passes the Answers `pluginSubmission`; failed recipient preview; snooze menu times (fixed clock);
   save notice with tab already mounted, fresh mount, dedupe hit.
 - CLI: digest sections, totals beyond 20, old question answered today counts, old answer pinned today does
   not, `--since` parsing.
@@ -295,10 +307,10 @@ every merge, then deploys.
 
 | # | Task | Files it owns | Model (Codex) | Starts after |
 |---|------|---------------|---------------|--------------|
-| A | Migration, `ATTENTION_SQL`, item schema, F11 ingest + `retryTurn` + `turn.failed` hook, F4 ingest + RPCs, F8 server, F2 server, F1 query, F6 `send` + `own_sends` ingest, F7 tool + storage, F3 `save.created`, F12 RPCs, contract for all; server/ingest tests | `ingest.ts`, `driver.ts`, `schema.ts`, `contract.ts`, `server.ts`, `cli.ts` (read count) | `gpt-6.1-sol`, medium | — |
+| A | Migration, `ATTENTION_SQL`, item schema, F11 ingest + `retryTurn` + `turn.failed` hook, F4 ingest + RPCs, F8 server, F2 server, F1 query, `live` flag + `notify_state` writes, F7 tool + storage, F3 `save.created`, F12 RPCs, contract for all; server/ingest tests | `ingest.ts`, `driver.ts`, `schema.ts`, `contract.ts`, `server.ts`, `cli.ts` (read count) | `gpt-6.1-sol`, medium | — |
 | B | F5 `notify.ts` + settings + hooks into driver/ask/wake; F13 digest CLI; notify/CLI tests | `notify.ts`, `cli.ts`, small hook calls in `server.ts` | `gpt-6-sol`, medium | A merged |
 | C | Item UI: `isUnread`, More menu, F2 Undo line, F3 notice, F4 chip, F7 buttons, F8 menu, F11 Retry, F12 picker/chip, `members` prop; app tests | `app.tsx`, `empty.tsx` | `gpt-6-sol`, medium | A merged |
-| D | Conversation UI: F1 list styling, F6 composer + drafts, F9 search jump, F10 grouping (uses C's `members`); app tests | `inbox.tsx`, `composer.tsx` | `gpt-6-luna`, high | A merged |
+| D | Conversation UI: F1 list styling, F6 composer + drafts (browser send), F9 search jump, F10 grouping (uses C's `members`); app tests | `inbox.tsx`, `composer.tsx` | `gpt-6-luna`, high | A merged |
 | E | README, SKILL, `INSTRUCTIONS` wording check, version 0.3.0 | docs, `package.json` | `gpt-6-luna`, low | B, C, D merged |
 
 Merge order: A → B → C → D (rebased on C; it consumes `members`) → E. B, C, D work in parallel on A.
@@ -306,8 +318,7 @@ Merge order: A → B → C → D (rebased on C; it consumes `members`) → E. B,
 ## Risks
 
 - Answer pushes duplicate bb's per-thread notifications → default `notify=asked`.
-- Own-send matching applies only to requests stamped with this plugin's id, by thread + exact text within
-  24 h; quote/pool/`reply` sends record no row. Two identical Inbox sends record two rows and match twice.
+- F6 relies on browser sends not being plugin-stamped; task D verifies this first and stops if not.
 - `INTERIM_RE` false positives only add a chip; negatives are today's behaviour.
 - `threads.retry` can still refuse (thread moved on); the error is shown.
 - Work Board is another plugin's contract; degrade to hidden.
