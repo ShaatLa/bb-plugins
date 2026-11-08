@@ -377,7 +377,7 @@ test("registers only a sidebar page and renders accessible charts from real seri
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
     expect(slot.getByRole("figure", { name: "CI pass rate over time" })).toBeTruthy();
-    expect(slot.getByRole("group", { name: /Deployment throughput:.*Oct 14: 1/ })).toBeTruthy();
+    expect(slot.getByRole("group", { name: /Deployment throughput:.*Oct 13: 1/ })).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
 });
 

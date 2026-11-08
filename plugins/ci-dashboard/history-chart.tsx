@@ -122,9 +122,10 @@ export function HistoryChart({ chart, workflow, options, selectLabel, onChange, 
   const format = (point: TrendPoint) => point.value === null ? "—"
     : parts ? partValues(point)!.map(({ part, value }) => `${value.toLocaleString()} ${part.word}`).join(", ") : formatValue(point.value);
   const shortFormat = (point: TrendPoint) => parts && point.value ?  partValues(point)!.map(({ part, value }) => `${part.sign}${compact.format(value)}`).join(" ") : point.value === null ? "—" : formatValue(point.value);
-  const dateLabel = (date: string, index: number) => calendarDay
+  const dateLabel = (_date: string, index: number) => calendarDay
     ? new Date(Date.parse(range.since) + index * range.bucketMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
-    : new Date(date).toLocaleString(undefined, { month: "short", day: "numeric", ...(range.bucketMs < 86_400_000 ? { hour: "2-digit", minute: "2-digit" } : {}), timeZone: "UTC" });
+    // A bar is labelled with its start (each point's date is its end): a calendar-day bar reads as that day.
+    : new Date(index === 0 ? range.since : series![index - 1]!.date).toLocaleString(undefined, { month: "short", day: "numeric", ...(range.bucketMs < 86_400_000 ? { hour: "2-digit", minute: "2-digit" } : {}), timeZone: "UTC" });
   return <Card className="flex h-full min-w-0 flex-col p-4">
     {/* Bars sit at the bottom so both cards share a baseline whatever their header height. */}
     <figure id={`${headingId}-chart`} aria-label={title} className="flex flex-1 flex-col">
