@@ -194,6 +194,23 @@ describe('reply pools and inbox',()=>{
   expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
+ it('maps send modes, holds drafts in the queue and rejects past times',async()=>{
+  const {harness,send}=setup();
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  const at=Date.now()+3600e3;
+  await call('quoteReply',{threadId:'t',quote:'q',text:'a',send:{mode:'steer'}});
+  await call('quoteReply',{threadId:'t',quote:'q',text:'b',send:{mode:'draft'}});
+  await call('quoteReply',{threadId:'t',quote:'q',text:'c',send:{mode:'queue',sendAt:at}});
+  const args=send.mock.calls.map(c=>c[0] as any);
+  expect(args.map(a=>[a.mode,a.pluginSubmission,a.sendAt])).toEqual([['steer-if-active',undefined,undefined],['queue-if-active',{pluginId:'answers',data:{kind:'draft'}},undefined],['queue-if-active',undefined,at]]);
+  await expect(call('quoteReply',{threadId:'t',quote:'q',text:'d',send:{mode:'queue',sendAt:Date.now()-1}})).rejects.toThrow('passed');
+  const hook=harness.inspection.registrations.hooks['message.dispatch']!;
+  const ctx=(submission:unknown,queued:unknown[]=[])=>({experimental_submission:submission,queuedMessages:queued}) as any;
+  expect(await hook(ctx({pluginId:'answers',data:{kind:'draft'}}))).toEqual({action:'wait',reason:'Draft'});
+  expect(await hook(ctx(null,[{waitingOn:{kind:'plugin',pluginId:'answers'}}]))).toEqual({action:'wait',reason:'Draft'});
+  expect(await hook(ctx({pluginId:'drafts',data:{kind:'draft'}}))).toEqual({action:'proceed'});
+  expect(await hook(ctx(null))).toEqual({action:'proceed'});
+ });
  it('keeps failed sends, never retries, and checks total size before sending',async()=>{
   const {harness,db,send}=setup(vi.fn(async()=>{throw new Error('network');}));
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;

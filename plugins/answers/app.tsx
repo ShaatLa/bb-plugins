@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment } from './contract';
+import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
 import { Composer } from './composer';
 import { Button } from './components/ui/button';
@@ -42,13 +42,13 @@ export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean })
     setError('');
     try { await write(); refresh(); } catch (cause) { setError(message(cause)); }
   }
-  async function reply() {
+  async function reply(options?: SendOptions) {
     if (sending.current || !text.trim()) return;
     sending.current = true;
     setPending(true); setError(''); setFeedback('');
     try {
-      const result = await rpc.call('reply', { id: item.id, text, ...(files.length ? { attachments: files } : {}) });
-      refresh(); setFeedback(result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setFiles([]); setReplying(false);
+      const result = await rpc.call('reply', { id: item.id, text, ...(files.length ? { attachments: files } : {}), ...(options ? { send: options } : {}) });
+      refresh(); setFeedback(options?.mode === 'draft' ? 'Draft saved' : options?.sendAt ? 'Scheduled' : result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setFiles([]); setReplying(false);
     } catch (cause) {
       setError(`Delivery uncertain — check the thread before retrying. ${message(cause)}`);
     } finally { sending.current = false; setPending(false); }
@@ -92,7 +92,7 @@ export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean })
       {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden />{label('Reply')}</Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
     </div>
-    {replying && <Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim()} onSend={() => void reply()} />}
+    {replying && <Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim()} onSend={options => void reply(options)} />}
     {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
 }

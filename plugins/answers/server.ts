@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
 import { cap } from './ingest';
 import { createDriver } from './driver';
@@ -31,6 +31,13 @@ export default function plugin(bb: BbPluginApi) {
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const driver = createDriver(bb,db,() => {invalidate(); invalidatePools();});
   const sending = new Set<string>();
+  // Drafts wait in the thread's queue until the user sends them from the chat, like bb's built-in Drafts plugin.
+  bb.experimental_hooks.on('message.dispatch',ctx=>{
+    const data=ctx.experimental_submission?.pluginId===bb.pluginId ? ctx.experimental_submission.data : null;
+    const draft=!!data && typeof data==='object' && !Array.isArray(data) && data.kind==='draft';
+    const head=ctx.queuedMessages[0], held=head?.waitingOn?.kind==='plugin' && head.waitingOn.pluginId===bb.pluginId;
+    return draft || held ? {action:'wait',reason:'Draft'} : {action:'proceed'};
+  });
   const get = (id: string): Row => {
     const item = db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined;
     if (!item) throw new Error('item not found');
@@ -87,12 +94,13 @@ export default function plugin(bb: BbPluginApi) {
     sending.add(threadId);
     try {return await send();} finally {sending.delete(threadId);}
   }
-  async function deliver(threadId:string,text:string,files:Attachment[]=[]) {
+  async function deliver(threadId:string,text:string,files:Attachment[]=[],opts:SendOptions={mode:'queue'}) {
+    if (opts.sendAt!==undefined && opts.sendAt<=Date.now()) throw new Error('That time has passed — pick another');
     if (text.length>32000) throw new Error('Message exceeds 32,000 characters — split the pool');
     if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
     const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
     try {
-      const result=await bb.sdk.threads.send({threadId,mode:'queue-if-active',input:[{type:'text',mentions:[],text},...inputs]});
+      const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[{type:'text',mentions:[],text},...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
     } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
@@ -168,7 +176,7 @@ export default function plugin(bb: BbPluginApi) {
       return guarded(p.threadId,async()=>{
         await bb.sdk.threads.get({threadId:p.threadId});
         const entries=[{quote:p.quote,note:p.text,item_id:p.itemId}]; checkSources(p.threadId,entries);
-        const result=await deliver(p.threadId,buildReplyMessage(entries),p.attachments);
+        const result=await deliver(p.threadId,buildReplyMessage(entries),p.attachments,p.send);
         db.transaction(()=>applyReplies(p.threadId,entries))(); invalidate(); return result;
       });
     },
@@ -179,7 +187,7 @@ export default function plugin(bb: BbPluginApi) {
         const entries=db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[];
         if (!entries.length) throw new Error('Pool is empty');
         checkSources(p.threadId,entries);
-        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]),entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]));
+        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]),entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]),p.send);
         let keptEdited=0;
         db.transaction(()=>{
           for (const entry of entries) {
@@ -200,7 +208,7 @@ export default function plugin(bb: BbPluginApi) {
         const item=get(p.id);
         if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
         if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
-        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`,p.attachments);
+        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`,p.attachments,p.send);
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
         return result;
       });
