@@ -45,6 +45,10 @@ describe("classifyJobs", () => {
     expect(one(cancelled(MANUAL))?.evidence).toMatch(/canceled by @\S+/);
     const transient = one(failed({ logExcerpt: "setup\n2026-11-05T10:01:00.1234567Z curl: archive_download_http_504" }));
     expect(transient).toMatchObject({ class: "transient", evidence: "curl: archive_download_http_504" });
+    // A download that was unavailable or timed out (the tool never ran) is the same kind of failure; a test timeout is not.
+    expect(one(failed({ logExcerpt: "linter refused: archive_download_unavailable_or_timed_out" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "Download timed out after 60s" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "panic: test timed out after 10m0s" }))?.class).toBe("real");
   });
 
   it("prefers runner loss over timeout and treats a log without a transient line as an ordinary failure", () => {
@@ -72,6 +76,19 @@ describe("classifyJobs", () => {
     expect(one(interrupted({ buildFailure: { match: "build failed" } }))?.class).toBe("real");
     expect(one(interrupted({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }, { level: "failure", title: "", message: "Error: assertion failed" }] }))?.class).toBe("real");
     expect(one(failed())?.class).toBe("real");
+  });
+  it("a job cancelled with exit 130 while every other job of the attempt passed is a runner loss, else collateral", () => {
+    const evicted = cancelled("Process completed with exit code 130.", { jobId: 1 });
+    const sibling = (conclusion: string, over: Partial<JobRecord> = {}) => job({ jobId: 2, jobName: "Other", conclusion, ...over });
+    const opts = { aggregatorJobs: ["CI complete"] };
+    const classOf = (jobs: JobRecord[]) => classifyJobs(jobs, opts).find((c) => c.job.jobId === 1)?.class;
+    // The aggregator failing because of it does not count.
+    expect(classOf([evicted, sibling("success"), failed({ jobId: 3, jobName: "CI complete" })])).toBe("runner_loss");
+    // A failing or cancelled sibling (fail-fast, a cancelled run) makes it collateral, and so does a cancel notice.
+    expect(classOf([evicted, sibling("failure")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("cancelled")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("success", { runId: 99 }), sibling("failure", { runId: 99, jobId: 4 })])).toBe("runner_loss");
+    expect(one(cancelled("The operation was canceled."))?.class).toBe("collateral_cancel");
   });
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });

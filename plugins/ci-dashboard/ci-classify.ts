@@ -4,7 +4,7 @@ import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary } from "./ci-
 /** Conclusions of a job that did not succeed and was not skipped. */
 export const BAD = new Set(["failure", "cancelled", "timed_out", "startup_failure"]);
 const TRANSIENT = [/http_50[234]/i, / 50[234] /, /Bad Gateway/i, /Gateway Time-?out/i, /Service Unavailable/i, /ECONNRESET/, /ETIMEDOUT/, /EAI_AGAIN/,
-  /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i];
+  /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i, /download\w*?[_ -](?:unavailable|timed[_ -]?out)/i];
 const stripTimestamp = (line: string) => line.replace(/^\s*\d{4}-\d\d-\d\dT[\d:.]+Z\s*/, "").trim();
 const ms = (job: JobRecord) => job.startedAt && job.completedAt ? Math.max(0, Date.parse(job.completedAt) - Date.parse(job.startedAt)) : 0;
 /** PR number of a merge queue run: head branch gh-readonly-queue/<base>/pr-<N>-<sha>; <base> may contain slashes. */
@@ -33,6 +33,9 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
   for (const job of jobs) if (job.conclusion === "success" && !job.carried && !passed.has(key(job))) passed.set(key(job), job);
   // An unknown sha must never pair unrelated jobs into a false flake.
   const passedElsewhere = (job: JobRecord) => job.headSha ? passed.get(key(job)) ?? null : null;
+  // Failed or cancelled jobs per run attempt, aggregators aside: a job cancelled alone had nothing to be collateral to.
+  const attemptOf = (job: JobRecord) => `${job.runId}:${job.attempt}`, troubled = new Map<string, number>();
+  for (const job of jobs) if ((job.conclusion === "failure" || job.conclusion === "cancelled") && !(opts.aggregatorJobs ?? []).includes(job.jobName)) troubled.set(attemptOf(job), (troubled.get(attemptOf(job)) ?? 0) + 1);
   const verdict = (job: JobRecord): Omit<ClassifiedJob, "job"> => {
     const messages = job.annotations.filter((a) => a.level === "failure").map((a) => a.message);
     const find = (re: RegExp) => messages.find((m) => re.test(m)) ?? null;
@@ -49,6 +52,9 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
       return make("runner_loss", "interrupted (exit 130) without a test failure", messages[0]!);
     if ((hit = find(/Canceling since a higher priority waiting request/i))) return make("superseded", "cancelled by concurrency group", hit);
     if ((hit = find(/was canceled by @/i))) return make("manual_cancel", "run cancelled by a user", hit);
+    // A step interrupted (exit 130) while every other job of the attempt passed: the runner was evicted, nothing cancelled the run.
+    if (job.conclusion === "cancelled" && messages.length && messages.every((m) => /exit code 130\b/.test(m)) && troubled.get(attemptOf(job)) === 1)
+      return make("runner_loss", "interrupted (exit 130) with every other job passing", messages[0]!);
     // Never-started jobs (no annotations at all) are cancelled by the run, same as a fail-fast sibling.
     if (job.conclusion === "cancelled") return make("collateral_cancel", "cancelled without own failure", messages[0] ?? null);
     if (job.failedSteps.length) {

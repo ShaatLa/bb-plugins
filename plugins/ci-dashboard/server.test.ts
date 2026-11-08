@@ -145,8 +145,8 @@ test("counts paginated deployments inside the seven-day window and calculates al
   expect(result.deployments.value).toBe(15 / 7);
   expect(result.pullRequests.value).toBe(42);
   expect(result.ci.value).toBe(80);
-  expect(result.deployments.series?.map((point) => point.value)).toEqual([0, 0, 0, 0, 0, 0, 15]);
-  expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 80]);
+  expect(result.deployments.series?.map((point) => point.value)).toEqual([0, 0, 0, 0, 0, 0, 15, 0]);
+  expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 80, null]);
   expect(JSON.stringify(result)).not.toContain("private-token");
   expect(fetchMock.mock.calls.some(([url]) => url.includes("page=2"))).toBe(true);
 });
@@ -273,7 +273,7 @@ test("accepts supported GitHub URL formats and rejects other hosts and invalid l
 });
 
 
-test("groups boundary timestamps into seven rolling 24-hour deployment periods", async () => {
+test("groups boundary timestamps into UTC calendar days, the first and last partial", async () => {
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string) => input.includes("/deployments")
     ? Response.json([
@@ -282,8 +282,9 @@ test("groups boundary timestamps into seven rolling 24-hour deployment periods",
       { created_at: "2026-10-13T11:59:59Z" },
     ]) : normal(input));
   const result = await load();
-  expect(result.deployments.series?.map((point) => point.value)).toEqual([1, 1, 0, 0, 0, 1, 1]);
-  expect(result.deployments.series?.[6].date).toBe("2026-10-20T12:00:00.000Z");
+  expect(result.deployments.series?.map((point) => point.value)).toEqual([1, 1, 0, 0, 0, 0, 1, 1]);
+  expect(result.deployments.series?.[0].date).toBe("2026-10-14T00:00:00.000Z");
+  expect(result.deployments.series?.[7].date).toBe("2026-10-20T12:00:00.000Z");
   expect(result.deployments.value).toBe(4 / 7);
 });
 
@@ -301,7 +302,7 @@ test("paginates completed CI history and calculates each day's success percentag
   });
   const result = await load();
   expect(result.ci.value).toBeCloseTo(5100 / 101);
-  expect(result.ci.series?.map((point) => point.value)).toEqual([null, 100, null, null, null, null, 50]);
+  expect(result.ci.series?.map((point) => point.value)).toEqual([null, 100, null, null, null, null, 50, null]);
   expect(result.ci.seriesError).toBeNull();
 });
 
@@ -442,7 +443,7 @@ test("CI summary, chart, and breakdown use the same runs instead of racing a sec
   const result = await load();
   expect(result.ci.value).toBe(25);
   expect(result.ci.detail).toContain("1 of 4 runs passed");
-  expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 25]);
+  expect(result.ci.series?.map((point) => point.value)).toEqual([null, null, null, null, null, null, 25, null]);
   expect(result.ciOutcomes).toEqual({ success: 1, failure: 1, cancelled: 1, skipped: 1, timed_out: 1, unknown: 1 });
   expect(result.ci.seriesError).toBeNull();
 });
@@ -1807,7 +1808,7 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     // Poll N: the three runs are in progress. The thread subscribes and gets its confirmation, no history.
     await signalsPass(harness, 0);
     expect(sentTo(send)).toEqual([expect.stringMatching(/^\*\*CI Dashboard\*\* Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
-    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "auto", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
+    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "queue-if-active", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
     // Poll N+1: they are gone from the live list; the very same loop fetches them, stores their jobs and announces the failures.
     scenario.running = [];
     fetchMock.mockClear();
