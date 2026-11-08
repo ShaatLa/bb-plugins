@@ -16,8 +16,9 @@ const toolInputs = {
 };
 type Row = Record<string, any>;
 export function buildReplyMessage(entries: readonly {quote:string;note:string}[]): string {
-  const message = entries.map(({quote,note}) => {
+  const message = entries.filter(({quote,note}) => quote || note.trim()).map(({quote,note}) => {
     if (quote.length > 20000) throw new Error('Quote exceeds 20,000 characters');
+    if (!quote) return note;
     const quoted = quote.split('\n').map(line=>line ? '> '+line : '>').join('\n');
     return quoted + (note ? '\n\n'+note : '');
   }).join('\n\n');
@@ -190,7 +191,9 @@ export default function plugin(bb: BbPluginApi) {
         const entries=db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[];
         if (!entries.length) throw new Error('Pool is empty');
         checkSources(p.threadId,entries);
-        const result=await deliver(p.threadId,buildReplyMessage(entries as {quote:string;note:string}[]),entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]),p.send);
+        const text=buildReplyMessage(entries as {quote:string;note:string}[]);
+        if (!text) throw new Error('Nothing to send — write a reply first');
+        const result=await deliver(p.threadId,text,entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]),p.send);
         let keptEdited=0;
         db.transaction(()=>{
           for (const entry of entries) {

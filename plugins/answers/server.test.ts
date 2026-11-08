@@ -204,6 +204,13 @@ describe('reply pools and inbox',()=>{
   expect((await call('recipients',{})).recipients).toHaveLength(3);
   expect((await call('list',{view:'all',questions:true})).items.map((i:any)=>i.id).sort()).toEqual(['ans_f','ans_q']);
  });
+ it('sends free pool messages without a quote and refuses an empty pool',async()=>{
+  expect(buildReplyMessage([{quote:'q',note:'reply'},{quote:'',note:'extra'},{quote:'',note:'  '}])).toBe('> q\n\nreply\n\nextra');
+  const {harness,send}=setup();
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  await call('poolAdd',{threadId:'t',quote:'',note:''});
+  await expect(call('poolSend',{threadId:'t'})).rejects.toThrow('Nothing to send'); expect(send).not.toHaveBeenCalled();
+ });
  it('maps send modes, holds drafts in the queue and rejects past times',async()=>{
   const {harness,send}=setup();
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;

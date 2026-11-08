@@ -106,7 +106,7 @@ export function Inbox({ questions = false }: { questions?: boolean }) {
 }
 
 type Editor = { flush: () => Promise<void> };
-function PoolNote({ entry, editors }: { entry: PoolEntry; editors: Map<string, Editor> }) {
+function PoolNote({ entry, editors, autoFocus }: { entry: PoolEntry; editors: Map<string, Editor>; autoFocus?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const [note, setNote] = useState(entry.note), [status, setStatus] = useState('Saved'), [expanded, setExpanded] = useState(false), [clamped, setClamped] = useState(false);
   const quote = useRef<HTMLDivElement>(null);
@@ -129,8 +129,8 @@ function PoolNote({ entry, editors }: { entry: PoolEntry; editors: Map<string, E
   const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } };
   return <li className="group/entry relative space-y-2 rounded-xl border border-border-seam bg-background p-3">
     <Button type="button" size="icon" variant="ghost" className="absolute right-1.5 top-1.5 size-7 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover/entry:opacity-100" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>
-    <div className="border-l-2 border-border-seam pl-3 pr-7 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>
-    <textarea aria-label="Pool note" rows={2} placeholder="Your reply to this quote…" className="field-sizing-content block max-h-48 min-h-[3.25rem] w-full resize-none rounded-lg border border-border-seam bg-surface-recessed px-3 py-2 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground focus:border-ring" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} />
+    {entry.quote && <div className="border-l-2 border-border-seam pl-3 pr-7 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>}
+    <textarea aria-label="Pool note" rows={2} autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} className="field-sizing-content block max-h-48 min-h-[3.25rem] w-full resize-none rounded-lg border border-border-seam bg-surface-recessed px-3 py-2 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground focus:border-ring" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} />
     {(entry.attachments.length > 0 || status !== 'Saved') && <div className="flex flex-wrap items-center gap-1.5">{entry.attachments.map(file => <span key={file.path} className="flex items-center gap-1 rounded-md border border-border-seam bg-surface-recessed px-1.5 py-0.5 text-xs"><Icon name="Paperclip" aria-hidden className="size-3" /><span className="max-w-[160px] truncate">{file.name}</span></span>)}<span className="flex-1" /><p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{status === 'Saved' ? '' : status}</p></div>}
   </li>;
 }
@@ -138,6 +138,10 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const editors = useRef(new Map<string, Editor>()).current;
   const [pending, setPending] = useState(false);
+  const [focusId, setFocusId] = useState<string>();
+  async function addMessage() {
+    try { const { id } = await rpc.call('poolAdd', { threadId: pool.threadId, quote: '', note: '' }); setFocusId(id); refresh(); } catch (e) { setFeedback(`Not added — ${errorText(e)}`); }
+  }
   async function sendAll(options?: SendOptions) {
     setPending(true); setFeedback('');
     try {
@@ -148,12 +152,14 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
     finally { setPending(false); }
   }
   return <section className="space-y-2 border-b border-border-seam px-3 py-3 last:border-b-0">
-    <header className="flex items-center gap-2">
-      <UrlLink className="min-w-0 flex-1 truncate text-sm font-medium hover:underline" href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink>
-      <span className="rounded-full bg-surface-recessed px-1.5 text-[11px] leading-5 text-muted-foreground" aria-label={`${pool.entries.length} quotes`}>{pool.entries.length}</span>
-      <SendButton label={pending ? 'Sending…' : 'Send all'} side="bottom" className="gap-1.5 px-2.5" disabled={pending} onSend={options => void sendAll(options)}><Icon name="Sent" aria-hidden className="size-3.5" />{pending ? 'Sending…' : 'Send all'}</SendButton>
-    </header>
-    <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors }} />)}</ul>
+    <UrlLink className="block truncate text-sm font-medium hover:underline" href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink>
+    <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors }} autoFocus={entry.id === focusId} />)}</ul>
+    {/* Read and write first, then act: the actions sit under the messages. */}
+    <footer className="flex items-center gap-2 pt-1">
+      <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground" disabled={pending} onClick={() => void addMessage()}><Icon name="Plus" aria-hidden className="size-3.5" />Add message</Button>
+      <span className="flex-1" />
+      <SendButton label={pending ? 'Sending…' : 'Send all'} side="top" className="gap-1.5 px-2.5" disabled={pending} onSend={options => void sendAll(options)}><Icon name="Sent" aria-hidden className="size-3.5" />{pending ? 'Sending…' : <>Send all<span className="opacity-60">· {pool.entries.length}</span></>}</SendButton>
+    </footer>
   </section>;
 }
 export function Pools({ threadId }: { threadId?: string }) {

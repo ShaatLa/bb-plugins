@@ -7,17 +7,19 @@ export const itemSchema = z.object({ id: idSchema, kind: z.enum(['mine','for_me'
 export const viewSchema = z.enum(['unread','waiting','for_me','pinned','saved','all']);
 export const poolIdSchema = z.string().regex(/^pool_[A-Za-z0-9_-]+$/);
 const quote = z.string().min(1).max(20000, 'Quote exceeds 20,000 characters');
+// Pool entries may be free messages without a quote.
+const poolQuote = z.string().max(20000, 'Quote exceeds 20,000 characters');
 // Files uploaded through projects.attachments.upload, sent as threads.send localFile/localImage inputs.
 export const attachmentSchema = z.object({type:z.enum(['localFile','localImage']),path:z.string().min(1).max(4096),name:z.string().min(1).max(512),mimeType:z.string().max(255).optional(),sizeBytes:z.number().int().nonnegative().optional(),sourceProjectId:z.string().min(1).max(200).optional()}).strict();
 const attachments = z.array(attachmentSchema).max(10, 'At most 10 attachments');
 // How a reply leaves, mirroring bb's send menu: queue (default), steer the running turn, hold as a draft, or send later.
 export const sendOptionsSchema = z.object({mode:z.enum(['queue','steer','draft']),sendAt:z.number().int().positive().optional()}).strict();
-export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote,quoteSeq:time.nullable(),itemId:idSchema.nullable(),note:z.string().max(8000),attachments:z.array(attachmentSchema),revision:time,createdAt:time,updatedAt:time});
+export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote:poolQuote,quoteSeq:time.nullable(),itemId:idSchema.nullable(),note:z.string().max(8000),attachments:z.array(attachmentSchema),revision:time,createdAt:time,updatedAt:time});
 export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
 export const inputs = {
  recipients:z.object({selected:threadId.optional(),questions:z.boolean().optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
- pools:z.object({}).strict(), poolAdd:z.object({threadId,quote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
+ pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
  poolSend:z.object({threadId,send:sendOptionsSchema.optional()}).strict(), quoteReply:z.object({threadId,quote,text:z.string().max(8000),itemId:idSchema.optional(),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(),
  list: z.object({view: viewSchema, questions: z.boolean().optional(), threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
