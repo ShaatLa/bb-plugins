@@ -117,13 +117,17 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
 function Page({ threadId, view, projectId, query, questions, cursor }: { threadId?: string; view: View; projectId?: string; query: string; questions?: boolean; cursor?: string }) {
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(questions ? { questions } : {}), ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
+  // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
+  const chronological = !!threadId, nextCursor = result.data?.nextCursor;
+  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={nextCursor} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
       {!cursor && !result.data.items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
-      <ul aria-label="Answers" className={threadId ? 'divide-y divide-border-seam' : 'space-y-3'}>{result.data.items.map(item => <ItemCard key={item.id} item={item} chat={!!threadId} markable />)}</ul>
-      {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
+      {chronological && more}
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam' : 'space-y-3'}>{(chronological ? [...result.data.items].reverse() : result.data.items).map(item => <ItemCard key={item.id} item={item} chat={chronological} markable />)}</ul>
+      {!chronological && more}
     </>}
   </>;
 }

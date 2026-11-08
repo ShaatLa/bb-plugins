@@ -203,6 +203,14 @@ it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure
   if (failure) { expect(poolSend).not.toHaveBeenCalled(); expect((note as HTMLTextAreaElement).value).toBe('Dirty note'); }
   else { await waitFor(() => expect(poolSend).toHaveBeenCalled()); expect(await slot.findByText('Sent — 1 edited entries were not sent')).toBeTruthy(); }
 });
+it('reads the thread tab oldest first', async () => {
+  const { AnswersPanel } = await import('./app');
+  const older = { ...item, id: 'ans_old', question: 'Older question', createdAt: 1 }, newer = { ...item, id: 'ans_new', question: 'Newer question', createdAt: 2 };
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [newer, older], nextCursor: null }) } });
+  await slot.findByText('Newer question');
+  const text = slot.getByRole('list', { name: 'Answers' }).textContent!;
+  expect(text.indexOf('Older question')).toBeLessThan(text.indexOf('Newer question'));
+});
 it('adds selected chat text to the thread pool and opens My questions', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
   const app = await loadPluginApp(() => import('./app'));

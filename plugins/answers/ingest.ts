@@ -41,6 +41,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND kind='mine' AND status='answered' AND read_at IS NULL AND ${QUIET_SQL}`).run(now,threadId,turn,turn);
    } else if (d.status === 'failed' || d.status === 'interrupted') {
     db.prepare(`UPDATE items SET interim=candidate,interim_seq=candidate_seq,updated_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND length(trim(candidate))>0`).run(now,threadId,turn,turn);
+    // The user stopped this turn (often to resend a reworded message): no answer is coming, so stop waiting on it.
+    if (d.status === 'interrupted') db.prepare(`UPDATE items SET dismissed_at=?,updated_at=? WHERE thread_id=? AND turn_id=? AND kind='mine' AND status='waiting' AND resolve_turn_id IS NULL AND dismissed_at IS NULL`).run(now,now,threadId,turn);
    }
    db.prepare('UPDATE items SET candidate=NULL,candidate_seq=NULL,resolve_turn_id=CASE WHEN resolve_turn_id=? THEN NULL ELSE resolve_turn_id END WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?)').run(turn,threadId,turn,turn);
    if (active === turn) active=null;
