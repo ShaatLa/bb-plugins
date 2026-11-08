@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, cap, type Event } from './ingest';
+import { applyEvents, cap, failRequest, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -59,6 +59,13 @@ describe('0.3 attention lifecycle',()=>{
   expect(row(db)).toMatchObject({failed_at:10,attempt_request_id:'r'});
   applyEvents(db,'t',[req(3,'b',{retryOfRequestId:'r'}),ev(4,'client/turn/rejected','x',{requestId:'b'})],null,20,true,true);
   expect(row(db).attempt_request_id).toBe('b');
+ });
+ it('records one failed attempt once when the live hook and the persisted rejection both arrive',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1)],null,5,true,true);
+  expect(failRequest(db,'t','r',10,true,true)).toBe(1);
+  db.prepare('UPDATE items SET notify_state=0').run();
+  applyEvents(db,'t',[ev(2,'client/turn/rejected','x',{requestId:'r'})],null,20,true,true);
+  expect(row(db)).toMatchObject({failed_at:10,notify_state:0});
  });
  it.each(["Делегировал задачу","Отпишусь позже","I'll get back","waiting for the sub-agent"])('flags interim text %s',text=>{
   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,text),done()]);
