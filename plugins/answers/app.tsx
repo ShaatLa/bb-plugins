@@ -15,7 +15,8 @@ export function useAnswersBadge() {
   return count ? { count, label: `${count} unread answers and questions for you` } : null;
 }
 
-export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean }) {
+// chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
+export function ItemCard({ item, chat = false, markable = !chat }: { item: Item; chat?: boolean; markable?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -61,15 +62,15 @@ export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean })
   // Same look as bb chat: my message is a recessed bubble on the right, the agent's text has no background.
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
-  const label = (text: string) => chat ? null : text;
-  const iconProps = (text: string) => chat ? { 'aria-label': text, title: text, variant: 'ghost' as const } : { variant: 'outline' as const };
+  const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
-  return <li className={chat ? 'group space-y-3 py-5' : 'rounded-lg border p-4 space-y-3'}>
-    {!chat && <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <h2 className="font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
+  return <li className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
+    {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
+      <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
-      <span className="rounded border px-1.5 py-0.5">{item.status}</span>
+      <span className="flex-1" />
+      {item.status !== 'answered' && <span>{item.status}</span>}
       {time}
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
@@ -84,12 +85,12 @@ export function ItemCard({ item, chat = false }: { item: Item; chat?: boolean })
     {item.answer && agentBody(item.answer, item.answerSeq)}
     {item.interim && <div className="space-y-1"><h3 className="px-2 text-xs font-medium text-muted-foreground">Interim reply</h3>{agentBody(item.interim, item.interimSeq)}</div>}
     {item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
-    <div className={chat ? 'flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100' : 'flex flex-wrap gap-2'}>
-      {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden />{label('Open in chat')}</UrlLink></Button>}
-      {!chat && <Button size="sm" variant="outline" onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden />Mark read</Button>}
-      <Button size="sm" {...iconProps(item.pinned ? 'Unpin' : 'Pin')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden />{label(item.pinned ? 'Unpin' : 'Pin')}</Button>
-      <Button size="sm" {...iconProps('Done')} disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden />{label('Done')}</Button>
-      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden />{label('Reply')}</Button>}
+    <div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
+      {markable && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden /></Button>}
+      <Button size="sm" {...iconProps(item.pinned ? 'Unpin' : 'Pin')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name={item.pinned ? 'PinOff' : 'Pin'} aria-hidden /></Button>
+      <Button size="sm" {...iconProps('Done')} disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden /></Button>
+      {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
     </div>
     {replying && <Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim()} onSend={options => void reply(options)} />}
@@ -105,7 +106,7 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
       {!cursor && !result.data.items.length && <p className="text-muted-foreground">No answers in this view.</p>}
-      <ul aria-label="Answers" className="space-y-3">{result.data.items.map(item => <ItemCard key={item.id} item={item} />)}</ul>
+      <ul aria-label="Answers" className={threadId ? 'divide-y divide-border-seam' : 'space-y-3'}>{result.data.items.map(item => <ItemCard key={item.id} item={item} chat={!!threadId} markable />)}</ul>
       {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
     </>}
   </>;

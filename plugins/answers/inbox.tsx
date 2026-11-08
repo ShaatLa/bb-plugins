@@ -4,7 +4,7 @@ import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEn
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { ItemCard } from './app';
-import { Composer } from './composer';
+import { Composer, SendButton } from './composer';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
@@ -118,26 +118,46 @@ function PoolNote({ entry, editors }: { entry: PoolEntry; editors: Map<string, E
   editors.set(entry.id, { flush });
   useEffect(() => () => { editors.delete(entry.id); }, [entry.id, editors]);
   useEffect(() => { if (note === local.current.saved) return; const timer = setTimeout(() => { void flush().catch(() => {}); }, 800); return () => clearTimeout(timer); }, [note]);
-  return <div className="border rounded p-3 space-y-2"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote.split('\n').map(line => `> ${line}`).join('\n')} /></div>{(clamped || expanded) && <Button onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse' : 'Expand'}</Button>}
-    <textarea aria-label="Pool note" className="w-full border rounded bg-transparent" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} />{entry.attachments.length > 0 && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5">{entry.attachments.map(file => <li key={file.path} className="flex items-center gap-1 rounded-md border border-border-seam bg-surface-recessed px-1.5 py-0.5 text-xs"><Icon name="Paperclip" aria-hidden /><span className="max-w-[160px] truncate">{file.name}</span></li>)}</ul>}<p role="status">{status}</p><Button onClick={async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } }}>Remove</Button></div>;
+  const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } };
+  return <li className="group/entry relative space-y-2 rounded-xl border border-border-seam bg-background p-3">
+    <Button type="button" size="icon" variant="ghost" className="absolute right-1.5 top-1.5 size-7 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover/entry:opacity-100" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>
+    <div className="border-l-2 border-border-seam pl-3 pr-7 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>
+    <textarea aria-label="Pool note" rows={2} placeholder="Your reply to this quote…" className="field-sizing-content block max-h-48 min-h-[3.25rem] w-full resize-none rounded-lg border border-border-seam bg-surface-recessed px-3 py-2 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground focus:border-ring" maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} />
+    {(entry.attachments.length > 0 || status !== 'Saved') && <div className="flex flex-wrap items-center gap-1.5">{entry.attachments.map(file => <span key={file.path} className="flex items-center gap-1 rounded-md border border-border-seam bg-surface-recessed px-1.5 py-0.5 text-xs"><Icon name="Paperclip" aria-hidden className="size-3" /><span className="max-w-[160px] truncate">{file.name}</span></span>)}<span className="flex-1" /><p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{status === 'Saved' ? '' : status}</p></div>}
+  </li>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const editors = useRef(new Map<string, Editor>()).current;
   const [pending, setPending] = useState(false);
-  return <section className="space-y-3 p-3 border-b"><h2><UrlLink href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink> · {pool.entries.length}</h2>{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors }} />)}<Button disabled={pending} onClick={async () => {
+  async function sendAll(options?: SendOptions) {
     setPending(true); setFeedback('');
     try {
       try { await Promise.all([...editors.values()].map(editor => editor.flush())); } catch (e) { setFeedback(`Not sent — ${errorText(e)}`); return; }
-      const result = await rpc.call('poolSend', { threadId: pool.threadId }); refresh(); setFeedback(`${result.delivery === 'sent' ? 'Sent' : 'Queued'}${result.keptEdited ? ` — ${result.keptEdited} edited entries were not sent` : ''}`);
+      const result = await rpc.call('poolSend', { threadId: pool.threadId, ...(options ? { send: options } : {}) }); refresh();
+      setFeedback(`${options?.mode === 'draft' ? 'Draft saved' : options?.sendAt ? 'Scheduled' : result.delivery === 'sent' ? 'Sent' : 'Queued'}${result.keptEdited ? ` — ${result.keptEdited} edited entries were not sent` : ''}`);
     } catch (e) { setFeedback(`Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setPending(false); }
-  }}>{pending ? 'Sending…' : 'Send all'}</Button></section>;
+  }
+  return <section className="space-y-2 border-b border-border-seam px-3 py-3 last:border-b-0">
+    <header className="flex items-center gap-2">
+      <UrlLink className="min-w-0 flex-1 truncate text-sm font-medium hover:underline" href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink>
+      <span className="rounded-full bg-surface-recessed px-1.5 text-[11px] leading-5 text-muted-foreground" aria-label={`${pool.entries.length} quotes`}>{pool.entries.length}</span>
+      <SendButton label={pending ? 'Sending…' : 'Send all'} side="bottom" className="gap-1.5 px-2.5" disabled={pending} onSend={options => void sendAll(options)}><Icon name="Sent" aria-hidden className="size-3.5" />{pending ? 'Sending…' : 'Send all'}</SendButton>
+    </header>
+    <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors }} />)}</ul>
+  </section>;
 }
 export function Pools({ threadId }: { threadId?: string }) {
   const [feedback, setFeedback] = useState('');
   const result = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const pools = result.data?.pools.filter(pool => !threadId || pool.threadId === threadId);
   if (threadId && !pools?.length && !feedback) return null;
-  return <div className="h-full overflow-auto">{feedback && <p role="status">{feedback}</p>}{result.error && <p role="alert">{result.error.message}</p>}{pools?.length === 0 && !threadId && <p>Select text in an answer and choose Add to pool.</p>}{pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}</div>;
+  // In a thread tab the pool sits above the answers list, so it must not take the whole height.
+  return <div className={threadId ? 'max-h-[50%] shrink-0 overflow-auto border-b border-border-seam' : 'h-full overflow-auto'}>
+    {feedback && <p role="status" className="px-3 pt-2 text-xs text-muted-foreground">{feedback}</p>}
+    {result.error && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{result.error.message}</p>}
+    {pools?.length === 0 && !threadId && <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground"><Icon name="Sent" aria-hidden className="size-5" /><p>No reply pools yet.</p><p className="text-xs">Select text in an answer and choose <span className="font-medium text-foreground">Add to pool</span> to collect quotes, then send them together.</p></div>}
+    {pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}
+  </div>;
 }
