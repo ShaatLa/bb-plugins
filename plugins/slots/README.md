@@ -6,6 +6,8 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.4.3 shows system end reasons such as `released` and `expired` in monospace; manager revoke reasons stay plain text.
+
 Version 0.4.2 counts each thread’s storage directory as its work area.
 Idle heavy-lease notices require family load plus unknown load below 0.15 core.
 

@@ -125,7 +125,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
-    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Reason", value: reason }] };
+    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }] };
     notify(l.holderThreadId, type, message);
     if (l.ownerThreadId !== l.holderThreadId) notify(l.ownerThreadId, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
@@ -181,7 +181,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (r.threadId !== threadId || (leaseId !== undefined && r.id !== leaseId)) return true;
       result.canceled.push(r.id);
       audit("release", { hostId: r.hostId, pool: r.pool, threadId, requestId: r.id, reason });
-      observer(r.hostId, "release", { title: "Slot released", lines: [{ value: r.job }, { label: "Request", value: `\`${r.id}\` · ${r.pool}` }, { label: "Thread", value: `\`${threadId}\`` }, { label: "Reason", value: reason }] });
+      observer(r.hostId, "release", { title: "Slot released", lines: [{ value: r.job }, { label: "Request", value: `\`${r.id}\` · ${r.pool}` }, { label: "Thread", value: `\`${threadId}\`` }, { label: "Reason", value: `\`${reason}\`` }] });
       return false;
     });
     return result;

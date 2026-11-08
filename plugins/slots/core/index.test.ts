@@ -439,5 +439,5 @@ it.each(["release", "revoke", "expire", "archive"])("shows job and reason when a
   const result = kind === "expire" ? h.send({type:"tick"}) : kind === "revoke" ? h.send({type:"revoke",leaseId:id,reason:"revoked by manager"}) : kind === "archive" ? h.send({type:"threadEnded",threadId:"a",reason:"archived"}) : h.send({type:"release",threadId:"a"});
   const message = rendered(result.effects.find(e => e.type === "notify"));
   expect(message).toContain("\na tests\n- Lease:");
-  expect(message).toContain(`- Reason: ${{release:"released", revoke:"revoked by manager", expire:"expired", archive:"archived"}[kind]}`);
+  expect(message).toContain(`- Reason: ${{release:"`released`", revoke:"revoked by manager", expire:"`expired`", archive:"`archived`"}[kind]}`);
 });
