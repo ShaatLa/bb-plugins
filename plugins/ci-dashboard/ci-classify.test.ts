@@ -73,6 +73,19 @@ describe("classifyJobs", () => {
     expect(one(interrupted({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }, { level: "failure", title: "", message: "Error: assertion failed" }] }))?.class).toBe("real");
     expect(one(failed())?.class).toBe("real");
   });
+  it("a job cancelled with exit 130 while every other job of the attempt passed is a runner loss, else collateral", () => {
+    const evicted = cancelled("Process completed with exit code 130.", { jobId: 1 });
+    const sibling = (conclusion: string, over: Partial<JobRecord> = {}) => job({ jobId: 2, jobName: "Other", conclusion, ...over });
+    const opts = { aggregatorJobs: ["CI complete"] };
+    const classOf = (jobs: JobRecord[]) => classifyJobs(jobs, opts).find((c) => c.job.jobId === 1)?.class;
+    // The aggregator failing because of it does not count.
+    expect(classOf([evicted, sibling("success"), failed({ jobId: 3, jobName: "CI complete" })])).toBe("runner_loss");
+    // A failing or cancelled sibling (fail-fast, a cancelled run) makes it collateral, and so does a cancel notice.
+    expect(classOf([evicted, sibling("failure")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("cancelled")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("success", { runId: 99 }), sibling("failure", { runId: 99, jobId: 4 })])).toBe("runner_loss");
+    expect(one(cancelled("The operation was canceled."))?.class).toBe("collateral_cancel");
+  });
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });
     const pass = (over: Partial<JobRecord> = {}) => job({ runId: 11, jobId: 2, event: "pull_request", headBranch: "feature", ...over });
