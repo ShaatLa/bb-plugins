@@ -144,7 +144,8 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   const older = { ...item, id: 'ans_older', question: 'Old deferred', answer: null, status: 'deferred' };
   const list = vi.fn((input: { cursor?: string }) => input.cursor ? { items: [{ ...older, answer: updated ? 'Resolved old answer' : null }], nextCursor: null } : { items: updated ? [{ ...item, id: 'ans_new', question: 'New question' }, item] : [item], nextCursor: updated ? '2|ans_one' : '1|ans_one' });
   const { slot, markThreadRead } = await inboxSetup({ list });
-  expect(markThreadRead).toHaveBeenCalledWith({ threadId: item.threadId });
+  await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: item.threadId }));
+  expect(slot.getByText('New').closest('li')!.nextElementSibling!.textContent).toContain('The answer');
   expect(within(slot.getByRole('listbox', { name: 'Recipients' })).getByRole('option').getAttribute('aria-selected')).toBe('true');
   fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
   await slot.findByText('Old deferred');
