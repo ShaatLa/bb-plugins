@@ -48,7 +48,7 @@ function ReadTicks({ at }: { at: number }) {
   return <svg role="img" aria-label={label} viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"><title>{label}</title><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></svg>;
 }
 export const isUnread = (item: Item) => item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));
-export function ItemCard({ item, chat = false, markable = !chat, autoRead = false }: { item: Item; chat?: boolean; markable?: boolean; autoRead?: boolean }) {
+export function ItemCard({ item, chat = false, markable = !chat, autoRead = false, members }: { item: Item; chat?: boolean; markable?: boolean; autoRead?: boolean; members?: Item[] }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
