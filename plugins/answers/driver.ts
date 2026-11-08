@@ -73,15 +73,14 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
       }
-      db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions))();
-      invalidate();
+      if (db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions))()) invalidate();
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
       const result = await page(id,cursor,'asc',100);
       if (signal.aborted) return;
       if (result.events.length) {
-        db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions))(); invalidate();
+        if (db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions))()) invalidate();
         cursor = Math.max(...result.events.map(e=>e.seq));
       }
       if (result.events.length < result.size) break;
