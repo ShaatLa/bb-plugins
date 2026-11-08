@@ -1,6 +1,9 @@
 import type { Context, HostState, Input, Lease, UsageSubject } from "../contract.js";
 import { settingsFor } from "./index.js";
 
+// An agent alone is idle; running work typically exceeds this load.
+const IDLE_CORES = 0.15;
+
 type Alert = { reason: "unleased-load" | "idle-lease"; subject: UsageSubject; text: string; holderThreadId?: string };
 export function updateWatch(host: HostState, leases: Lease[], input: Extract<Input, { type: "usage" }>, ctx: Context): Alert[] {
   const settings = settingsFor(ctx.settings, input.hostId), alerts: Alert[] = [];
@@ -59,7 +62,7 @@ export function updateWatch(host: HostState, leases: Lease[], input: Extract<Inp
     const subject = family.find(s => s.threadIds.includes(l.holderThreadId)) ?? family[0];
     const idle = l.idle ??= { since: null, alerted: false };
     const s = subject && w.subjects[subject.key];
-    if (!accepted || !subject || family.some(s => resets.has(s.key)) || changedFamilies.has(l.holderThreadId) || !s || input.startAt < (l.holdingSince ?? l.grantedAt) || family.reduce((sum, s) => sum + s.cores, input.unknownCores) >= 0.5) {
+    if (!accepted || !subject || family.some(s => resets.has(s.key)) || changedFamilies.has(l.holderThreadId) || !s || input.startAt < (l.holdingSince ?? l.grantedAt) || family.reduce((sum, s) => sum + s.cores, input.unknownCores) >= IDLE_CORES) {
       idle.since = null; idle.alerted = false; continue;
     }
     idle.since ??= input.startAt;

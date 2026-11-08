@@ -4,7 +4,7 @@ import { createWatcher } from "./watcher.js";
 import type { Effect, Input } from "./contract.js";
 const disposals: (() => Promise<unknown>)[] = [];
 afterEach(async()=>{ vi.useRealTimers(); for (const dispose of disposals.splice(0)) await dispose(); });
-function setup() {
+function setup(dataDir?: string) {
   let now=0, enabled=true;
   const threads = new Map(['a','b','nested','null','remote'].map(id=>[id,makeThreadResponse({id,environmentId:id})]));
   const paths: Record<string,string|null> = { a:'/alias',b:'/repo',nested:'/repo/sub',null:null,remote:'/other' };
@@ -20,7 +20,7 @@ function setup() {
   const canonical=vi.fn(async (path: string)=>path==='/alias'?'/repo':path);
   const rpc=vi.fn(async (_args:any):Promise<any>=>[]);
   const sdk=new Proxy(host.bb.sdk, {get(target, key) { return key === 'plugins' ? {callRpc:rpc} : Reflect.get(target, key); }});
-  const watcher=createWatcher({sdk,hostId:()=> 'local',enabled:()=>enabled,now:()=>now,realpath:canonical as any,collector:{sample},preview,commit,warn});
+  const watcher=createWatcher({sdk,hostId:()=> 'local',dataDir:()=>dataDir ?? '',enabled:()=>enabled,now:()=>now,realpath:canonical as any,collector:{sample},preview,commit,warn});
   return {watcher,sdk,rpc,sample,preview,commit,warn,list,get,env,threads,paths,statuses,canonical,advance:(ms=30000)=>now+=ms,off:()=>enabled=false};
 }
 it('merges realpath aliases and duplicate paths, prefers nested groups, ignores null/remote/outside cwd',async()=>{
@@ -129,4 +129,21 @@ it.each(['ready','stopped','expired','remote','failure'])('checks family browser
   expect(h.commit.mock.calls[1][1].has('/repo\0a')).toBe(kind!=='ready');
   expect(h.commit.mock.calls[1][0].resetKeys?.includes('/repo')).toBe(kind==='ready');
   expect(rpc).toHaveBeenCalled(); if(kind==='failure') expect(h.warn).toHaveBeenCalledTimes(1);
+});
+
+it('attributes local thread storage and verifies it before alerts', async()=>{
+  const h=setup('/data');
+  h.threads.set('child',makeThreadResponse({id:'child',environmentId:'b',parentThreadId:'a'}));
+  h.threads.set('archived',makeThreadResponse({id:'archived',environmentId:'b',archivedAt:1}));
+  h.canonical.mockImplementation(async path=>{ if(path.startsWith('/data/') && path !== '/data/thread-storage/child' && path !== '/data/thread-storage/remote' && path !== '/data/thread-storage/archived') throw Object.assign(new Error('missing'),{code:'ENOENT'}); return path==='/alias'?'/repo':path; });
+  h.sample.mockResolvedValueOnce({...await h.sample(new AbortController().signal),perPid:[{cwd:'/data/thread-storage/child/wt/test',cores:4}]});
+  await h.watcher.run();
+  const usage=h.commit.mock.calls[0][0];
+  expect(usage.valid).toBe(true);
+  expect(usage.subjects.find(s=>s.key==='/data/thread-storage/child')).toMatchObject({threadIds:['child'],ancestorThreadIds:['a'],cores:4});
+  expect(usage.subjects.some(s=>s.key==='/data/thread-storage/remote' || s.key==='/data/thread-storage/archived')).toBe(false);
+  const subject=usage.subjects.find(s=>s.key==='/data/thread-storage/child')!;
+  h.preview.mockResolvedValue([{type:'notify',reason:'unleased-load',threadId:'observer',text:'load',watch:{hostId:'local',subject}}]);
+  h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[1][1].has(subject.key)).toBe(true);
+  h.threads.set('child',makeThreadResponse({id:'child',environmentId:'b',archivedAt:1})); h.advance(); await h.watcher.run(); expect(h.commit.mock.calls[2][1].has(subject.key)).toBe(false);
 });

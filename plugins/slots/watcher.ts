@@ -1,5 +1,6 @@
 import { experimental_isHostPathWithin, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createCollector } from "./watch-collector.js";
@@ -8,7 +9,7 @@ import type { Effect, Input, UsageSubject, WatchDiagnostics, WatchRunStats } fro
 type Usage = Extract<Input, { type: "usage" }>;
 type Thread = { environmentId: string | null };
 export interface WatcherOptions {
-  sdk: BbPluginApi["sdk"]; hostId: () => string; enabled: () => boolean;
+  sdk: BbPluginApi["sdk"]; hostId: () => string; dataDir?: () => string; enabled: () => boolean;
   preview: (usage: Usage) => Promise<Effect[]>;
   commit: (usage: Usage, verified: Set<string>, signal: AbortSignal) => Promise<unknown>;
   now?: () => number; realpath?: typeof realpath; collector?: ReturnType<typeof createCollector>;
@@ -45,9 +46,17 @@ export function createWatcher(options: WatcherOptions) {
         }
       }
       env = { at: now(), hostId: result.hostId, path };
-      if (!fresh) environments.set(thread.environmentId, env);
+      environments.set(thread.environmentId, env);
     }
     return env.hostId === options.hostId() ? env.path : null;
+  }
+  async function storagePath(id: string, signal: AbortSignal) {
+    if (!options.dataDir?.() || id === "_shared-cache" || id.includes("/") || id.includes("..")) return null;
+    try { return await bounded(canonical(join(options.dataDir(), "thread-storage", id)), signal); }
+    catch (error) {
+      if (signal.aborted || !["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      return null;
+    }
   }
   async function refresh(signal: AbortSignal) {
     const paths = new Map<string, string[]>();
@@ -56,10 +65,13 @@ export function createWatcher(options: WatcherOptions) {
       const threads = await bounded(options.sdk.threads.list({ hostId: options.hostId(), archived: false, includeHidden: true, limit: 100, offset, signal }), signal);
       for (const thread of threads) {
         if (thread.archivedAt || thread.deletedAt) continue;
-        parents.set(thread.id, thread.parentThreadId ?? null);
         // Thread routing refreshes every two minutes; physical environment paths cache for five.
         const path = await pathFor(thread, signal);
+        if (thread.environmentId && environments.get(thread.environmentId)?.hostId !== options.hostId()) continue;
+        parents.set(thread.id, thread.parentThreadId ?? null);
         if (path) paths.set(path, [...(paths.get(path) ?? []), thread.id]);
+        const storage = await storagePath(thread.id, signal);
+        if (storage) paths.set(storage, [...new Set([...(paths.get(storage) ?? []), thread.id])]);
       }
       if (threads.length < 100) break;
     }
@@ -84,7 +96,19 @@ export function createWatcher(options: WatcherOptions) {
   async function verify(subject: UsageSubject, signal: AbortSignal) {
     for (const threadId of subject.threadIds) {
       const thread = await bounded(options.sdk.threads.get({ threadId }), signal);
-      if (thread.archivedAt || thread.deletedAt || await pathFor(thread, signal, true) !== subject.key) return false;
+      if (thread.archivedAt || thread.deletedAt) return false;
+      const path = await pathFor(thread, signal, true);
+      if (thread.environmentId && environments.get(thread.environmentId)?.hostId !== options.hostId()) return false;
+      if (path !== subject.key) {
+        if (await storagePath(threadId, signal) !== subject.key) return false;
+        let found = false;
+        for (let offset = 0;; offset += 100) {
+          const threads = await bounded(options.sdk.threads.list({ hostId: options.hostId(), archived: false, includeHidden: true, limit: 100, offset, signal }), signal);
+          if (threads.some(t => t.id === threadId && !t.archivedAt && !t.deletedAt)) { found = true; break; }
+          if (threads.length < 100) break;
+        }
+        if (!found) return false;
+      }
     }
     return true;
   }

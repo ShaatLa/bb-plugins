@@ -111,7 +111,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   let settings = await getSettings();
   let state: State = initialState();
-  let localHostId = "";
+  let localHostId = "", dataDir = "";
   let initialized = false;
   let disposed = false;
   const titles = new Map<string, { until: number; value: Promise<string> }>();
@@ -165,6 +165,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const config = await bb.sdk.system.config();
     if (!config.primaryHostId) throw new Error("Cannot resolve BB server host");
     localHostId = config.primaryHostId;
+    dataDir = config.dataDir;
     const saved = await store.load();
     state = saved === undefined ? initialState() : stateSchema.parse(saved);
     await transition({ type: "restored" });
@@ -309,7 +310,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     await initialize();
     if (state.leases.some(l => l.holderThreadId === thread.id)) await transition({ type: "heartbeat", threadId: thread.id });
   }));
-  const watcher = createWatcher({ sdk: bb.sdk, hostId: () => localHostId, enabled: () => initialized && settings.watchPolicy !== "off" && !disposed,
+  const watcher = createWatcher({ sdk: bb.sdk, hostId: () => localHostId, dataDir: () => dataDir, enabled: () => initialized && settings.watchPolicy !== "off" && !disposed,
     now: runtime.now, collector: runtime.watchCollector, realpath: runtime.realpath, warn: error => bb.log.warn(`Slots watcher: ${String(error)}`),
     preview: usage => serial(async () => apply(state, usage, { now: runtime.now(), settings }).effects),
     commit: async (usage, verified, signal) => {

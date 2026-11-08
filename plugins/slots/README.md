@@ -6,6 +6,9 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.4.2 counts each thread’s storage directory as its work area.
+Idle heavy-lease notices require family load plus unknown load below 0.15 core.
+
 Version 0.4.1 adds family coverage and browser activity to the optional load watch; 0.4.0 added the optional load watch, idle heavy-lease notices and observer filters for both events. Configure policy, cores threshold, window and idle notice in Settings.
 
 Version 0.3.1 removes legacy settings migration; missing `config.json` means all defaults.

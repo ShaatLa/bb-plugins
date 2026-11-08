@@ -108,3 +108,16 @@ it('covers child checkouts and counts their activity for the parent lease', () =
   const old=structuredClone(h.state); delete old.hosts.h.watch!.subjects['/child'].ancestorThreadIds;
   expect(stateSchema.parse(old).hosts.h.watch!.subjects['/child'].ancestorThreadIds).toBeUndefined();
 });
+
+it('uses thread storage family activity and the 0.15 core idle threshold', () => {
+  const subjects=(cores:number)=>[{key:'/repo',threadIds:['a'],cores:0},{key:'/data/thread-storage/child',threadIds:['child'],ancestorThreadIds:['a'],cores}];
+  const uncovered=setup(); uncovered.usage(0,120000,4,{subjects:subjects(4)});
+  expect(notices(uncovered.usage(120000,240000,4,{subjects:subjects(4)}))).toHaveLength(2);
+  for (const holder of ['a','child']) {
+    const h=setup(); h.settings.idleLeaseMinutes=30; h.lease(holder);
+    for(let t=0;t<1920000;t+=120000) expect(notices(h.usage(t,t+120000,0.2,{subjects:subjects(0.2)}))).toHaveLength(0);
+    expect(h.state.leases[0].idle?.since).toBeNull();
+    const alerts=[]; for(let t=1920000;t<3960000;t+=120000) alerts.push(...notices(h.usage(t,t+120000,0.1,{subjects:subjects(0.1)}),'idle-lease'));
+    expect(alerts).toHaveLength(1);
+  }
+});
