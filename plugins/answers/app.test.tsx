@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { itemSchema, type Item } from './contract';
 
@@ -14,7 +14,7 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
-  fireEvent.click(slot.getByRole('button', { name: 'All' }));
+  fireEvent.change(slot.getByRole('combobox', { name: 'View' }), { target: { value: 'all' } });
   await slot.findByText('What changed?');
   return { app, slot, list, markRead };
 }
@@ -22,10 +22,10 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 describe('Answers app', () => {
   it('keeps the selected view after the page is unmounted', async () => {
     const first = await setup();
-    fireEvent.click(first.slot.getByRole('button', { name: 'Waiting' }));
+    fireEvent.change(first.slot.getByRole('combobox', { name: 'View' }), { target: { value: 'waiting' } });
     first.slot.unmount();
     const again = renderSlot(first.app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
-    expect(again.getByRole('button', { name: 'Waiting' }).getAttribute('aria-pressed')).toBe('true');
+    expect((again.getByRole('combobox', { name: 'View' }) as HTMLSelectElement).value).toBe('waiting');
     again.unmount();
   });
   it('reopens the page side panel tab the user left open', async () => {
@@ -44,7 +44,7 @@ describe('Answers app', () => {
     expect(app.messageActions[1]).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
-    fireEvent.click(slot.getByRole('button', { name: 'Waiting' }));
+    fireEvent.change(slot.getByRole('combobox', { name: 'View' }), { target: { value: 'waiting' } });
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
   it('marks an item or all items read and links to the answer sequence', async () => {
@@ -121,8 +121,8 @@ async function inboxSetup(overrides: Record<string, (...args: any[]) => any> = {
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: {
     recipients: () => ({ recipients: [recipient] }), markThreadRead, list: () => ({ items: [item], nextCursor: null }), ...overrides,
   } });
-  await slot.findAllByRole('option');
-  fireEvent.click(slot.getAllByRole('option')[0]!);
+  await slot.findByRole('listbox', { name: 'Recipients' }); await within(slot.getByRole('listbox', { name: 'Recipients' })).findAllByRole('option');
+  fireEvent.click(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[0]!);
   await slot.findByText('The answer');
   return { slot, markThreadRead };
 }
@@ -132,7 +132,7 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   const list = vi.fn((input: { cursor?: string }) => input.cursor ? { items: [{ ...older, answer: updated ? 'Resolved old answer' : null }], nextCursor: null } : { items: updated ? [{ ...item, id: 'ans_new', question: 'New question' }, item] : [item], nextCursor: updated ? '2|ans_one' : '1|ans_one' });
   const { slot, markThreadRead } = await inboxSetup({ list });
   expect(markThreadRead).toHaveBeenCalledWith({ threadId: item.threadId });
-  expect(slot.getByRole('option').getAttribute('aria-selected')).toBe('true');
+  expect(within(slot.getByRole('listbox', { name: 'Recipients' })).getByRole('option').getAttribute('aria-selected')).toBe('true');
   fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
   await slot.findByText('Old deferred');
   expect(slot.getAllByRole('listitem')[0]!.textContent).toContain('Old deferred');
@@ -169,7 +169,7 @@ it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
   const text = slot.getByRole('textbox', { name: 'Quote reply text' });
-  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Inbox' }) });
+  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('combobox', { name: 'View' }) });
   expect(slot.queryByRole('dialog')).toBeNull();
 });
 it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure => {
@@ -209,8 +209,8 @@ it('sends the snapshot to its original recipient after switching recipients', as
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
   fireEvent.change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Immediate note' } });
-  fireEvent.pointerDown(slot.getAllByRole('option')[1]!);
-  fireEvent.click(slot.getAllByRole('option')[1]!);
+  fireEvent.pointerDown(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
+  fireEvent.click(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
   expect(slot.getByRole('dialog')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'Send' }));
   await waitFor(() => expect(quoteReply).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', text: 'Immediate note' }));
