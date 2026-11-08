@@ -72,6 +72,11 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));
+  // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
+  const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
+    : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
+    : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
+    : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
   const isQuestion = item.kind === 'mine' && /[?？]/.test(item.question);
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
@@ -100,7 +105,7 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
       {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden /></Button>}
       {item.kind !== 'saved' && <Button size="sm" {...iconProps(item.pinned ? 'Remove from Saved' : 'Save')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name="Star" aria-hidden className={item.pinned ? 'fill-current' : undefined} /></Button>}
-      <Button size="sm" {...iconProps('Done')} disabled={item.dismissedAt !== null} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name="Check" aria-hidden /></Button>
+      {dismiss && <Button size="sm" {...iconProps(dismiss[0])} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name={dismiss[1]} aria-hidden /></Button>}
       {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
     </div>

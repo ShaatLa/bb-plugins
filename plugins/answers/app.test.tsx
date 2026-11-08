@@ -24,6 +24,15 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
 }
 
 describe('Answers app', () => {
+  it('names the dismiss action per item and hides it where it does nothing', async () => {
+    const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
+    const setDismissed = vi.fn(() => ({ ok: true }));
+    const { slot } = await setup({ list: () => ({ items: [item, waiting], nextCursor: null }), setDismissed });
+    expect(slot.getAllByRole('button', { name: 'Stop waiting' })).toHaveLength(1);
+    expect(slot.queryByRole('button', { name: 'Done' })).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name: 'Stop waiting' }));
+    await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_wait', dismissed: true }));
+  });
   it('keeps the selected view after the page is unmounted', async () => {
     const first = await setup();
     pickView(first.slot, 'Awaiting answer');
