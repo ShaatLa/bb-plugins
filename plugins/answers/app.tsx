@@ -97,7 +97,7 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = isUnread(item), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
-  const readMark = unread ? <span className="size-1.5 self-center rounded-full bg-foreground/70" aria-label="Unread" /> : item.readAt !== null && item.kind === 'mine' && item.status === 'answered' ? <ReadTicks at={item.readAt} /> : null;
+  const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : item.readAt !== null && item.kind === 'mine' && item.status === 'answered' ? <ReadTicks at={item.readAt} /> : null;
   useReadOnView(card, autoRead && unread, () => void act(() => rpc.call('markRead', { ids: [item.id] })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
@@ -113,7 +113,6 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
       {item.projectName && <span>{item.projectName}</span>}
       <span className="flex-1" />
       {item.status !== 'answered' && <span>{item.status}</span>}
-      {readMark}
       {time}
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
@@ -121,21 +120,21 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
-      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && readMark}{chat && time}</div>}
+      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
       <div className={userBubble}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}>{item.question}</div></div>
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {item.answer && agentBody(item.answer, item.answerSeq)}
     {item.interim && <div className="space-y-1"><h3 className="px-2 text-xs font-medium text-muted-foreground">Interim reply</h3>{agentBody(item.interim, item.interimSeq)}</div>}
     {item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
-    <div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { void act(() => rpc.call('markRead', { ids: [item.id] })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: [item.id] }))}><Icon name="MailOpen" aria-hidden /></Button>}
       {item.kind !== 'saved' && <Button size="sm" {...iconProps(item.pinned ? 'Remove from Saved' : 'Save')} aria-pressed={item.pinned} onClick={() => void act(() => rpc.call('setPinned', { id: item.id, pinned: !item.pinned }))}><Icon name="Star" aria-hidden className={item.pinned ? 'fill-current' : undefined} /></Button>}
       {dismiss && <Button size="sm" {...iconProps(dismiss[0])} onClick={() => void act(() => rpc.call('setDismissed', { id: item.id, dismissed: true }))}><Icon name={dismiss[1]} aria-hidden /></Button>}
       {item.kind !== 'saved' && !item.threadDeleted && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
-    </div>
+    </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {replying && <Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim()} onSend={options => void reply(options)} />}
     {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
