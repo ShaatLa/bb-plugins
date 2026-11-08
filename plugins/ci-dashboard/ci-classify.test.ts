@@ -45,6 +45,10 @@ describe("classifyJobs", () => {
     expect(one(cancelled(MANUAL))?.evidence).toMatch(/canceled by @\S+/);
     const transient = one(failed({ logExcerpt: "setup\n2026-11-05T10:01:00.1234567Z curl: archive_download_http_504" }));
     expect(transient).toMatchObject({ class: "transient", evidence: "curl: archive_download_http_504" });
+    // A download that was unavailable or timed out (the tool never ran) is the same kind of failure; a test timeout is not.
+    expect(one(failed({ logExcerpt: "linter refused: archive_download_unavailable_or_timed_out" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "Download timed out after 60s" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "panic: test timed out after 10m0s" }))?.class).toBe("real");
   });
 
   it("prefers runner loss over timeout and treats a log without a transient line as an ordinary failure", () => {
