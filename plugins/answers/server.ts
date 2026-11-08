@@ -6,6 +6,7 @@ import { migrations } from './schema';
 import { cap, QUESTION_SQL, ATTENTION_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
+import { createNotifier } from './notify';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask for small non-blocking questions to the user; blocking decisions stay in Work Board. answers_ask accepts 1–6 unique short options for quick replies.";
 const toolInputs = {
@@ -30,7 +31,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.storage.migrate(db,migrations);
   const invalidate = () => bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
-  const onAttention = () => {};
+  const notifier=createNotifier(bb,db);
+  const onAttention = () => {void notifier.run();};
   const driver = createDriver(bb,db,() => {invalidate(); invalidatePools(); onAttention();});
   const sending = new Set<string>();
   // Drafts wait in the thread's queue until the user sends them from the chat, like bb's built-in Drafts plugin.
@@ -308,7 +310,7 @@ export default function plugin(bb: BbPluginApi) {
     });
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
-  registerCli(bb,{list,markRead,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
+  registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
   bb.events.on('turn.failed',event=>{
@@ -316,5 +318,5 @@ export default function plugin(bb: BbPluginApi) {
   });
   wakeDue();
   const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
-  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup;});
+  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose();});
 }
