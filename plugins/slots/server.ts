@@ -11,7 +11,7 @@ import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
 export function formatNotification(message: import("./contract.js").NotificationMessage): string {
-  return [`**Machine Slots · ${message.title}**`, ...message.lines.map(line => line.label ? `- ${line.label}: ${line.value}` : line.value), ...(message.hint ? [message.hint] : [])].join("\n");
+  return [`**Machine Slots** · \`${message.title}\``, ...message.lines.map(line => line.label ? `- ${line.label}: ${line.value}` : line.value), ...(message.hint ? [message.hint] : [])].join("\n");
 }
 
 export interface Runtime {
