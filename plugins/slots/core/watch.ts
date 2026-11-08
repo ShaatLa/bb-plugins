@@ -1,7 +1,11 @@
-import type { Context, HostState, Input, Lease, UsageSubject } from "../contract.js";
+import type { Context, HostState, Input, Lease, UsageSubject, NotificationMessage } from "../contract.js";
 import { settingsFor } from "./index.js";
+import { duration } from "../lib/duration.js";
 
-type Alert = { reason: "unleased-load" | "idle-lease"; subject: UsageSubject; text: string; holderThreadId?: string };
+// An agent alone is idle; running work typically exceeds this load.
+const IDLE_CORES = 0.15;
+
+type Alert = { reason: "unleased-load" | "idle-lease"; subject: UsageSubject; message: NotificationMessage; holderThreadId?: string };
 export function updateWatch(host: HostState, leases: Lease[], input: Extract<Input, { type: "usage" }>, ctx: Context): Alert[] {
   const settings = settingsFor(ctx.settings, input.hostId), alerts: Alert[] = [];
   const w = host.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} };
@@ -40,15 +44,15 @@ export function updateWatch(host: HostState, leases: Lease[], input: Extract<Inp
       if (s.intervals.length) s.intervals[0].startAt = Math.max(cutoff, s.intervals[0].startAt);
       // Short intervals cannot grow history without bound; restart rather than invent unobserved time.
       if (s.intervals.length > Math.ceil(window / 15000) + 2) s.intervals = [];
-      const duration = s.intervals.reduce((sum, i) => sum + i.endAt - i.startAt, 0);
-      if (duration === window) {
-        const average = s.intervals.reduce((sum, i) => sum + (i.endAt - i.startAt) * i.cores, 0) / duration;
+      const measuredDuration = s.intervals.reduce((sum, i) => sum + i.endAt - i.startAt, 0);
+      if (measuredDuration === window) {
+        const average = s.intervals.reduce((sum, i) => sum + (i.endAt - i.startAt) * i.cores, 0) / measuredDuration;
         if (average < settings.watchCores) s.episode = false;
         else if (!s.episode) {
           s.episode = true;
           if (s.lastAlertAt === null || input.endAt - s.lastAlertAt >= 1800000) {
             s.lastAlertAt = input.endAt;
-            alerts.push({ reason: "unleased-load", subject, text: `Processes in this session's checkout used ~${average.toFixed(1)} cores for ${settings.watchWindowSeconds / 60} min without a heavy slot (${subject.threadIds.join(", ")}); a queued request does not cover this load. If that was not this session, ignore.` });
+            alerts.push({ reason: "unleased-load", subject, message: { title: "High load without a slot", lines: [{ value: `Processes in this session’s work area used ~${average.toFixed(1)} cores for ${duration(settings.watchWindowSeconds * 1000)} without a heavy slot.` }, { label: "Threads", value: subject.threadIds.map(id => `\`${id}\``).join(", ") }], hint: "A queued request does not cover this load. If that was not this session, ignore." } });
           }
         }
       }
@@ -59,13 +63,13 @@ export function updateWatch(host: HostState, leases: Lease[], input: Extract<Inp
     const subject = family.find(s => s.threadIds.includes(l.holderThreadId)) ?? family[0];
     const idle = l.idle ??= { since: null, alerted: false };
     const s = subject && w.subjects[subject.key];
-    if (!accepted || !subject || family.some(s => resets.has(s.key)) || changedFamilies.has(l.holderThreadId) || !s || input.startAt < (l.holdingSince ?? l.grantedAt) || family.reduce((sum, s) => sum + s.cores, input.unknownCores) >= 0.5) {
+    if (!accepted || !subject || family.some(s => resets.has(s.key)) || changedFamilies.has(l.holderThreadId) || !s || input.startAt < (l.holdingSince ?? l.grantedAt) || family.reduce((sum, s) => sum + s.cores, input.unknownCores) >= IDLE_CORES) {
       idle.since = null; idle.alerted = false; continue;
     }
     idle.since ??= input.startAt;
     if (!idle.alerted && input.endAt - idle.since >= settings.idleLeaseMinutes * 60000) {
       idle.alerted = true;
-      alerts.push({ reason: "idle-lease", subject, holderThreadId: l.holderThreadId, text: `Heavy lease ${l.id}: holder ${l.holderThreadId}, job ${l.job}; held for ${Math.floor((input.endAt - l.grantedAt) / 60000)} min, checkout idle for ${Math.floor((input.endAt - idle.since) / 60000)} min (${subject.threadIds.join(", ")}).` });
+      alerts.push({ reason: "idle-lease", subject, holderThreadId: l.holderThreadId, message: { title: "Idle heavy slot", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, { label: "Held", value: `${duration(input.endAt - l.grantedAt)} · idle: ${duration(input.endAt - idle.since)}` }, { label: "Holder", value: `\`${l.holderThreadId}\`` }, ...(subject.threadIds.length === 1 && subject.threadIds[0] === l.holderThreadId ? [] : [{ label: "Threads", value: subject.threadIds.map(id => `\`${id}\``).join(", ") }])] } });
     }
   }
   for (const [id, at] of Object.entries(w.heavyEndAt)) if (at < input.endAt - window) delete w.heavyEndAt[id];

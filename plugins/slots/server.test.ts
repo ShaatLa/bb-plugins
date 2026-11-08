@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { register } from "./server.js";
+import { register, formatNotification } from "./server.js";
 import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
 import { stateSchema } from "./schemas.js";
@@ -77,7 +77,7 @@ it("archives release leases, cancel queues, and grant/warning notifications wake
   h.advance(1200000);
   // The service heartbeats active holders only; idle holders get the warning.
   const service = h.harness.behavior.runService("sampler");
-  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat to keep it") })] })));
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat` to keep it") })] })));
   service.controller.abort(); await service.done;
   const event = await h.harness.behavior.emitThreadEvent("thread.archived", { thread: h.threads.get("a")! });
   expect(event.errors).toEqual([]); expect((await h.view()).pools[0].leases).toEqual([]);
@@ -247,7 +247,7 @@ it("observer CLI and tool show, self, hand over, filter and clear through settin
   const handover = await h.harness.behavior.runCli(["observer", "--thread", "b", "--json"]);
   expect(handover.exitCode).toBe(0);
   expect(h.send).toHaveBeenCalledTimes(2);
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("You are now the Machine Slots observer; you will receive: warn, expire") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("Events: warn, expire") })] }));
   expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", input: [expect.objectContaining({ text: expect.stringContaining("Observer handed over to Title b") })] }));
   expect((await h.harness.behavior.runCli(["observer"])).stdout).toContain("b · Title b");
   expect(JSON.parse(await h.harness.behavior.callAgentTool("slots_observer", { self: true }, { threadId: "a" }) as string)).toMatchObject({ ok: true, data: { threadId: "a" } });
@@ -529,4 +529,9 @@ it("watcher initialization errors leave the loop running for recovery", async ()
   await vi.waitFor(()=>expect(h.harness.logEntries.some(e=>e.message.includes("temporary config failure"))).toBe(true));
   expect((await h.invoke("gate",{threadId:"a",hostId:"local"})).ok).toBe(true);
   service.controller.abort(); await service.done;
+});
+
+it("formats structured notifications as short readable Markdown", () => {
+  expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("**Machine Slots · Idle heavy slot**\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
+  expect(formatNotification({ title: "Slot granted", lines: [] })).not.toContain("[Slots]");
 });

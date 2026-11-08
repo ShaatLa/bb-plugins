@@ -10,12 +10,8 @@ import type { AuditEvent, StatusView } from "./contract";
 import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
-export function duration(ms: number) {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
-}
+export { duration } from "./lib/duration";
+import { duration } from "./lib/duration";
 
 function ThreadLink({ id, titles }: { id: string; titles: StatusView["titles"] }) {
   const navigate = useBbNavigate();
