@@ -16,11 +16,13 @@ type Props = {
   projectId: string | null | undefined;
   onSend: (options?: SendOptions) => void; sendDisabled?: boolean; pending?: boolean;
   actions?: ReactNode; autoFocus?: boolean; placeholder?: string;
+  // The Inbox composer keeps edits made during a send; other boxes clear on success, so they lock while sending.
+  editableWhilePending?: boolean;
   sendLabel?: string; header?: ReactNode; className?: string;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift' }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift' }: Props) {
   const sdk = useSdk(), picker = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState('');
   async function attach(files: File[]) {
@@ -49,7 +51,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       </li>)}
       {uploading > 0 && <li role="status" className="flex items-center rounded-lg border border-dashed border-border-seam px-2 py-1 text-xs text-muted-foreground">Uploading {uploading}…</li>}
     </ul>}
-    <textarea aria-label={label} rows={2} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className="block max-h-48 w-full resize-none bg-transparent px-4 pb-1 pt-3 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground" value={value} disabled={pending}
+    <textarea aria-label={label} rows={2} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className="block max-h-48 w-full resize-none bg-transparent px-4 pb-1 pt-3 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground" value={value} disabled={pending && !editableWhilePending}
       onChange={event => onChange(event.target.value)}
       onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!blocked) onSend(); } }} />

@@ -237,7 +237,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
