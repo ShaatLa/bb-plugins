@@ -30,9 +30,10 @@ describe('server',()=>{
   harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'Thread title'})]);
   seed(db,'ans_a','mine'); seed(db,'ans_b','mine'); seed(db,'ans_c');
   db.prepare("UPDATE items SET status='answered',answer='answer' WHERE id IN ('ans_a','ans_b')").run();
-  const first=await harness.behavior.callRpc('list',{view:'unread',limit:1}) as any;
-  expect(first.items[0]).toMatchObject({id:'ans_b',threadTitle:'Thread title'});
-  const next=await harness.behavior.callRpc('list',{view:'unread',limit:1,cursor:first.nextCursor}) as any;
+  // unread mirrors the Inbox: the open agent question ans_c is included.
+  const first=await harness.behavior.callRpc('list',{view:'unread',limit:2}) as any;
+  expect(first.items.map((i:any)=>i.id)).toEqual(['ans_c','ans_b']); expect(first.items[1]).toMatchObject({threadTitle:'Thread title'});
+  const next=await harness.behavior.callRpc('list',{view:'unread',limit:2,cursor:first.nextCursor}) as any;
   expect(next.items[0].id).toBe('ans_a'); expect(next.nextCursor).toBeNull();
   expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:2,waiting:0,forMe:1,inbox:3});
   await harness.behavior.callRpc('setDismissed',{id:'ans_b',dismissed:true});

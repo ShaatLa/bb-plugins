@@ -57,7 +57,8 @@ export default function plugin(bb: BbPluginApi) {
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
     const views = {
-      unread:"kind='mine' AND status='answered' AND read_at IS NULL",
+      // Same set as the Inbox: unread answers and open agent questions.
+      unread:"read_at IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open'))",
       waiting:"kind='mine' AND status IN ('waiting','deferred')",
       for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"kind='saved'", all:'1=1',
     };
