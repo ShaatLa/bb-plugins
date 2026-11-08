@@ -42,6 +42,11 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
     return () => { done = true; cancelAnimationFrame(frame); root.removeEventListener('scroll', schedule); document.removeEventListener('visibilitychange', check); };
   }, [ref, enabled]);
 }
+// bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
+function ReadTicks({ at }: { at: number }) {
+  const label = `Read ${new Date(at).toLocaleString()}`;
+  return <svg role="img" aria-label={label} viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"><title>{label}</title><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></svg>;
+}
 export const isUnread = (item: Item) => item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));
 export function ItemCard({ item, chat = false, markable = !chat, autoRead = false }: { item: Item; chat?: boolean; markable?: boolean; autoRead?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
@@ -91,6 +96,8 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = isUnread(item), card = useRef<HTMLLIElement>(null);
+  // Telegram-style status: a dot while the answer is new, a double check once read.
+  const readMark = unread ? <span className="size-1.5 self-center rounded-full bg-foreground/70" aria-label="Unread" /> : item.readAt !== null && item.kind === 'mine' && item.status === 'answered' ? <ReadTicks at={item.readAt} /> : null;
   useReadOnView(card, autoRead && unread, () => void act(() => rpc.call('markRead', { ids: [item.id] })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
@@ -106,7 +113,7 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
       {item.projectName && <span>{item.projectName}</span>}
       <span className="flex-1" />
       {item.status !== 'answered' && <span>{item.status}</span>}
-      {unread && <span className="size-1.5 self-center rounded-full bg-foreground/70" aria-label="Unread" />}
+      {readMark}
       {time}
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
@@ -114,7 +121,7 @@ export function ItemCard({ item, chat = false, markable = !chat, autoRead = fals
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
-      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && unread && <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" />}{chat && time}</div>}
+      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && readMark}{chat && time}</div>}
       <div className={userBubble}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}>{item.question}</div></div>
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}

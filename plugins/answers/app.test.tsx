@@ -177,6 +177,11 @@ it('marks a conversation message read once its end reaches the screen, with no t
   } finally { vi.useRealTimers(); }
   await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: [item.id] }));
 });
+it('shows a double check on a read answer and a dot on an unread one', async () => {
+  const { slot } = await inboxSetup({ list: () => ({ items: [{ ...item, id: 'ans_read', question: 'Read one', answer: 'Read answer', readAt: Date.now() }, item], nextCursor: null }) });
+  expect(slot.getByRole('img', { name: /^Read / })).toBeTruthy();
+  expect(slot.getAllByLabelText('Unread')).toHaveLength(1);
+});
 it('snapshots a quote draft through focus and refresh; Add to pool opens the pool tab', async () => {
   const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
   const { slot } = await inboxSetup({ poolAdd });
