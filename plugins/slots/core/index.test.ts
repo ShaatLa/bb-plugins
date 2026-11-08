@@ -136,6 +136,15 @@ describe("Slots deterministic engine", () => {
     }
   });
 
+  it("steers a released child but not the releasing owner, and queues grant and observer notices", () => {
+    const h = harness({ observerThreadId: "manager", observerEvents: ["grant", "release"] }); h.request("owner");
+    const granted = h.open().effects.filter(e => e.type === "notify");
+    expect(granted.map(e => [e.threadId, e.queue])).toEqual([["owner", true], ["manager", true]]);
+    h.send({ type: "transfer", threadId: "owner", toThreadId: "child", isChild: true });
+    const freed = h.send({ type: "release", threadId: "owner" }).effects.filter(e => e.type === "notify");
+    expect(freed.map(e => [e.threadId, e.queue])).toEqual([["child", undefined], ["manager", true]]);
+  });
+
   it("preserves live leases on capacity reduction, raises immediately, uses lowest free index", () => {
     const h = harness(); h.request("a"); h.request("b"); h.open(); h.open();
     h.settings.capacities.heavy = 1;
@@ -437,7 +446,11 @@ it.each(["release", "revoke", "expire", "archive"])("shows job and reason when a
   const id = h.state.leases[0].id;
   if (kind === "expire") h.now = h.state.leases[0].expiresAt;
   const result = kind === "expire" ? h.send({type:"tick"}) : kind === "revoke" ? h.send({type:"revoke",leaseId:id,reason:"revoked by manager"}) : kind === "archive" ? h.send({type:"threadEnded",threadId:"a",reason:"archived"}) : h.send({type:"release",threadId:"a"});
-  const message = rendered(result.effects.find(e => e.type === "notify"));
+  const notices = result.effects.filter(e => e.type === "notify");
+  // The owner already saw its own release in the CLI.
+  if (kind === "release") return expect(notices).toEqual([]);
+  expect(notices[0]).not.toHaveProperty("queue");
+  const message = rendered(notices[0]);
   expect(message).toContain("\na tests\n- Lease:");
   const reason = {release:null, revoke:"revoked by manager", expire:null, archive:"`archived`"}[kind];
   if (reason) expect(message).toContain(`- Reason: ${reason}`); else expect(message).not.toContain("- Reason:");

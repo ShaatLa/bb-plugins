@@ -6,6 +6,7 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.4.5 steers only urgent notices (expiry warning, revoke, expiry, release by someone else, load without a slot) into a running turn; grants, transfers and manager notices wait for the turn to end. A thread no longer gets a message about its own release.
 Version 0.4.4 shows the notification state as a monospace chip, such as `Slot released`, and omits end reasons that repeat it.
 
 Version 0.4.2 counts each thread’s storage directory as its work area.

@@ -73,11 +73,11 @@ it("serializes concurrent idempotent requests, persists and restores after a liv
 });
 it("archives release leases, cancel queues, and grant/warning notifications wake threads", async () => {
   const h = await setup(); const lease = await h.grant();
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "auto", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots wrapper") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "queue-if-active", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots wrapper") })] }));
   h.advance(1200000);
   // The service heartbeats active holders only; idle holders get the warning.
   const service = h.harness.behavior.runService("sampler");
-  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat` to keep it") })] })));
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat` to keep it") })], mode: "auto" })));
   service.controller.abort(); await service.done;
   const event = await h.harness.behavior.emitThreadEvent("thread.archived", { thread: h.threads.get("a")! });
   expect(event.errors).toEqual([]); expect((await h.view()).pools[0].leases).toEqual([]);

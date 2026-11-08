@@ -126,7 +126,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
     try {
-      await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
+      await bb.sdk.threads.send({ threadId: effect.threadId, mode: effect.queue ? "queue-if-active" : "auto", originPluginId: bb.pluginId,
         input: [{ type: "text", text: formatNotification(effect), mentions: [] }] });
     } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
   }

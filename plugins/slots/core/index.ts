@@ -40,6 +40,7 @@ export function validateSettings(settings: Settings): string | null {
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const priority = (value: unknown): value is Priority => value === "urgent" || value === "high" || value === "normal";
 const rank = { urgent: 0, high: 1, normal: 2 };
+const URGENT = new Set<AuditType>(["warn", "revoke", "expire", "release", "unleased-load"]);
 const sorted = (state: State) => state.requests.map((request, index) => ({ request, index }))
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
@@ -101,10 +102,11 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.audit = state.audit.slice(-50);
     effects.push({ type: "audit", event: structuredClone(event) });
   };
-  const notify = (threadId: string, reason: AuditType, message: NotificationMessage) => effects.push({ type: "notify", threadId, reason, ...message });
+  // Steer only notices the agent must act on now; the rest wait until it is free.
+  const notify = (threadId: string, reason: AuditType, message: NotificationMessage, queue = !URGENT.has(reason)) => effects.push({ type: "notify", threadId, reason, ...(queue ? { queue: true as const } : {}), ...message });
   const observer = (hostId: string, reason: ObserverEvent, message: NotificationMessage, ...recipients: string[]) => {
     const { observerThreadId: id, observerEvents } = settingsFor(ctx.settings, hostId);
-    if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message);
+    if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message, true);
   };
   const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
   const refresh = (l: Lease) => {
@@ -126,8 +128,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
     const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
-    notify(l.holderThreadId, type, message);
-    if (l.ownerThreadId !== l.holderThreadId) notify(l.ownerThreadId, type, message);
+    const initiator = type === "release" && reason === "released" ? l.ownerThreadId : null; // the CLI already showed the owner its release
+    for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
@@ -194,7 +196,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const recipients = alert.reason === "unleased-load" && alert.subject.threadIds.length === 1 ? [...alert.subject.threadIds] : [];
         const config = settingsFor(ctx.settings, input.hostId);
         if (config.observerThreadId && config.observerEvents.includes(alert.reason) && !recipients.includes(config.observerThreadId)) recipients.push(config.observerThreadId);
-        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, ...alert.message, watch: { hostId: input.hostId, subject: alert.subject, holderThreadId: alert.holderThreadId } });
+        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, ...(alert.subject.threadIds.includes(threadId) ? {} : { queue: true as const }), ...alert.message, watch: { hostId: input.hostId, subject: alert.subject, holderThreadId: alert.holderThreadId } });
       }
       break;
     }

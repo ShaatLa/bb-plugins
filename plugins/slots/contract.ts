@@ -176,7 +176,7 @@ export type Input =
   | { type: "observer" | "unleased-load" | "idle-lease"; hostId: string; previousThreadId: string | null; previousEvents: ObserverEvent[]; previousEnded?: boolean; title: string | null }
   | { type: "tick" } | { type: "restored" };
 export type NotificationMessage = { title: string; lines: { label?: string; value: string }[]; hint?: string };
-export type Effect = ({ type: "notify"; threadId: string; reason: AuditType; watch?: { hostId: string; subject: UsageSubject; holderThreadId?: string } } & NotificationMessage) |
+export type Effect = ({ type: "notify"; threadId: string; reason: AuditType; queue?: true; watch?: { hostId: string; subject: UsageSubject; holderThreadId?: string } } & NotificationMessage) |
   { type: "audit"; event: AuditEvent };
 export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
   Lease | PortLease | SlotRequest | { capacity: number } | null;
