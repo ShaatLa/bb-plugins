@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyJobs, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
-import { acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
+import { acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
 import { at, classify, failed, failure, job, LOSS, REPO } from "./test-support";
 import { parseRef } from "./ci-refs";
 
@@ -158,13 +158,15 @@ describe("confirming queue removals", () => {
   // A number is a removal at that time whose commit GitHub no longer resolves (the time window decides); a list is taken as is.
   const lookup = (answers: Record<number, number | null | Error | QueueRemoval[]>) => { const asked: number[] = []; return { asked, fn: async (pr: number) => { asked.push(pr); const answer = answers[pr]; if (answer instanceof Error) throw answer; return Array.isArray(answer) ? answer : answer == null ? [] : [{ at: answer, sha: null }]; } }; };
 
+  const rejectedIn = (state: ReturnType<typeof emptyRepoState>) => Object.keys(state.sent).filter((key) => key.startsWith(REJECTED)).map((key) => key.slice(REJECTED.length));
+
   it("drops a removal recorded long after the group run ended: it belongs to a later group", async () => {
     const github = lookup({ 7: now - MIN + 16 * MIN });
-    expect(await confirmRemovals([removal("queue:1:1", 7)], emptyRepoState(), github.fn, new Set(), now)).toEqual([]);
+    expect(await confirmRemovals([removal("queue:1:1", 7)], emptyRepoState(), github.fn, now)).toEqual([]);
   });
   it("keeps a removal GitHub shows at or after the group started (a minute of slack), and asks once per PR", async () => {
     const github = lookup({ 7: since + MIN, 8: since - MIN, 9: since - MIN - 1 });
-    const out = await confirmRemovals([plain, removal("queue:1:1", 7), removal("queue:1:2", 7), removal("queue:2:1", 8), removal("queue:3:1", 9)], emptyRepoState(), github.fn, new Set(), now);
+    const out = await confirmRemovals([plain, removal("queue:1:1", 7), removal("queue:1:2", 7), removal("queue:2:1", 8), removal("queue:3:1", 9)], emptyRepoState(), github.fn, now);
     // One removal, one line: of two attempts of the same group, the later one owns it.
     expect(keys(out)).toEqual(["red:1:1", "queue:1:2", "queue:2:1"]);
     expect(github.asked).toEqual([7, 8, 9]);
@@ -172,76 +174,85 @@ describe("confirming queue removals", () => {
   it("gives one removal event to the latest group that started before it, also across loops", async () => {
     const group = (key: string, start: number): ObserverEvent => ({ ...removal(key, 7), removal: { pullRequest: 7, since: start, sha: SHA } });
     const github = lookup({ 7: now });
-    const rejected = new Set<string>(), state = emptyRepoState();
+    const state = emptyRepoState();
     // Two overlapping groups of PR 7 both fit the window; only the later-started one was removed.
-    expect(keys(await confirmRemovals([group("queue:2:1", since + MIN), group("queue:1:1", since)], state, github.fn, rejected, now))).toEqual(["queue:2:1"]);
-    expect([...rejected]).toEqual(["queue:1:1"]);
+    expect(keys(await confirmRemovals([group("queue:2:1", since + MIN), group("queue:1:1", since)], state, github.fn, now))).toEqual(["queue:2:1"]);
+    expect(rejectedIn(state)).toEqual(["queue:1:1"]);
     // A group that shows up in a later loop cannot claim the same removal again.
-    expect(await confirmRemovals([group("queue:3:1", since + 2 * MIN)], state, github.fn, rejected, now + MIN)).toEqual([]);
-    expect(rejected.has("queue:3:1")).toBe(true);
+    expect(await confirmRemovals([group("queue:3:1", since + 2 * MIN)], state, github.fn, now + MIN)).toEqual([]);
+    expect(rejectedIn(state)).toContain("queue:3:1");
   });
   it("matches the removal by the group commit it names, and never confirms a cancel-only group by time alone", async () => {
-    const rejected = new Set<string>();
     // The named commit wins over time: a removal far outside the window still confirms its own group, and a removal naming another commit does not.
     const exact = lookup({ 7: [{ at: now + 30 * MIN, sha: "9".repeat(40) }, { at: now - 5 * MIN, sha: SHA }] });
-    expect(keys(await confirmRemovals([removal("queue:1:1", 7)], emptyRepoState(), exact.fn, rejected, now))).toEqual(["queue:1:1"]);
+    expect(keys(await confirmRemovals([removal("queue:1:1", 7)], emptyRepoState(), exact.fn, now))).toEqual(["queue:1:1"]);
     const other = lookup({ 7: [{ at: since + MIN, sha: "9".repeat(40) }] });
-    expect(await confirmRemovals([removal("queue:2:1", 7)], emptyRepoState(), other.fn, rejected, now)).toEqual([]);
+    expect(await confirmRemovals([removal("queue:2:1", 7)], emptyRepoState(), other.fn, now)).toEqual([]);
     const cancelOnly = (key: string): ObserverEvent => ({ ...removal(key, 7), removal: { pullRequest: 7, since, sha: SHA, exactOnly: true } });
-    expect(await confirmRemovals([cancelOnly("queue:3:1")], emptyRepoState(), lookup({ 7: since + MIN }).fn, rejected, now)).toEqual([]);
-    expect(keys(await confirmRemovals([cancelOnly("queue:3:1")], emptyRepoState(), lookup({ 7: [{ at: since + MIN, sha: SHA }] }).fn, rejected, now))).toEqual(["queue:3:1"]);
+    expect(await confirmRemovals([cancelOnly("queue:3:1")], emptyRepoState(), lookup({ 7: since + MIN }).fn, now)).toEqual([]);
+    expect(keys(await confirmRemovals([cancelOnly("queue:3:1")], emptyRepoState(), lookup({ 7: [{ at: since + MIN, sha: SHA }] }).fn, now))).toEqual(["queue:3:1"]);
   });
   it("records an old confirmed removal for the head's count without announcing it", async () => {
     const state = emptyRepoState();
     const old = lookup({ 7: [{ at: now - 2 * 60 * MIN, sha: SHA }] });
-    expect(await confirmRemovals([removal("queue:1:1", 7, now - 3 * 60 * MIN)], state, old.fn, new Set(), now)).toEqual([]);
+    expect(await confirmRemovals([removal("queue:1:1", 7, now - 3 * 60 * MIN)], state, old.fn, now)).toEqual([]);
     expect(state.sent["queue:1:1"]).toBe(now);
   });
-  it("drops an unconfirmed removal (older removal or none) but keeps it for retry within the grace period", async () => {
+  it("drops an unconfirmed removal (older removal or none) but rechecks it every 3 minutes within the grace period", async () => {
     const github = lookup({ 7: since - 3 * MIN, 8: null });
-    const rejected = new Set<string>();
-    expect(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], emptyRepoState(), github.fn, rejected, now)).toEqual([]);
-    expect([...rejected]).toEqual([]);
-    // The next loop asks again and sends once GitHub shows the removal.
+    const state = emptyRepoState(), checked = new Map<string, number>();
+    expect(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], state, github.fn, now, checked)).toEqual([]);
+    expect(rejectedIn(state)).toEqual([]);
+    // The next loop does not ask again yet.
     github.asked.length = 0;
+    expect(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], state, github.fn, now + MIN, checked)).toEqual([]);
+    expect(github.asked).toEqual([]);
+    // The recheck sends once GitHub shows the removal.
     const later = lookup({ 7: since + 2 * MIN, 8: null });
-    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], emptyRepoState(), later.fn, rejected, now + MIN))).toEqual(["queue:1:1"]);
+    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], state, later.fn, now + 3 * MIN, checked))).toEqual(["queue:1:1"]);
     expect(later.asked).toEqual([7, 8]);
   });
-  it("gives up 15 minutes after the event, remembers it and never asks again", async () => {
+  it("asks at once for a new group of a PR that was checked a moment ago", async () => {
+    const github = lookup({ 7: null }), state = emptyRepoState(), checked = new Map<string, number>();
+    await confirmRemovals([removal("queue:1:1", 7)], state, github.fn, now, checked);
+    expect(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 7)], state, lookup({ 7: since + MIN }).fn, now + MIN, checked).then(keys)).toEqual(["queue:2:1"]);
+  });
+  it("gives up 15 minutes after the event with one last ask, remembers it in the state and never asks again", async () => {
     const github = lookup({ 7: null });
-    const rejected = new Set<string>();
+    const state = emptyRepoState(), checked = new Map<string, number>();
     const old = removal("queue:1:1", 7, now);
-    expect(await confirmRemovals([old], emptyRepoState(), github.fn, rejected, now + 15 * MIN)).toEqual([]);
-    expect([...rejected]).toEqual([]);
-    expect(await confirmRemovals([old], emptyRepoState(), github.fn, rejected, now + 15 * MIN + 1)).toEqual([]);
-    expect([...rejected]).toEqual(["queue:1:1"]);
+    expect(await confirmRemovals([old], state, github.fn, now + 15 * MIN, checked)).toEqual([]);
+    expect(rejectedIn(state)).toEqual([]);
+    expect(await confirmRemovals([old], state, github.fn, now + 15 * MIN + 1, checked)).toEqual([]);
+    expect(github.asked).toEqual([7, 7]);
+    expect(rejectedIn(state)).toEqual(["queue:1:1"]);
     github.asked.length = 0;
-    // Even a removal that would be confirmed now stays dropped once rejected.
+    // Even a removal that would be confirmed now stays dropped once rejected, also after a reload (a fresh `checked`).
     const confirming = lookup({ 7: now + 5 * MIN });
-    expect(await confirmRemovals([old, removal("queue:2:1", 7)], emptyRepoState(), confirming.fn, rejected, now + 20 * MIN).then(keys)).toEqual(["queue:2:1"]);
+    expect(await confirmRemovals([old, removal("queue:2:1", 7)], state, confirming.fn, now + 20 * MIN).then(keys)).toEqual(["queue:2:1"]);
+    expect(await confirmRemovals([old], state, github.fn, now + 21 * MIN)).toEqual([]);
     expect(github.asked).toEqual([]);
   });
   it("never sends a removal whose lookup failed: it is retried, then given up after the grace period", async () => {
     const github = lookup({ 7: new Error("No token"), 8: since + MIN });
-    const rejected = new Set<string>();
-    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], emptyRepoState(), github.fn, rejected, now))).toEqual(["queue:2:1"]);
-    expect([...rejected]).toEqual([]);
+    const state = emptyRepoState();
+    expect(keys(await confirmRemovals([removal("queue:1:1", 7), removal("queue:2:1", 8)], state, github.fn, now))).toEqual(["queue:2:1"]);
+    expect(rejectedIn(state)).toEqual([]);
     const failing = async () => { throw new Error("GraphQL: rate limited"); };
-    expect(keys(await confirmRemovals([removal("queue:3:1", 9, now - 60 * MIN)], emptyRepoState(), failing, rejected, now))).toEqual([]);
-    expect([...rejected]).toEqual(["queue:3:1"]);
+    expect(keys(await confirmRemovals([removal("queue:3:1", 9, now - 60 * MIN)], state, failing, now))).toEqual([]);
+    expect(rejectedIn(state)).toEqual(["queue:3:1"]);
   });
   it("does not look up keys that were already sent, and passes other events through untouched", async () => {
     const github = lookup({});
     const state = emptyRepoState();
     state.sent["queue:1:1"] = now - MIN;
-    expect(keys(await confirmRemovals([removal("queue:1:1", 7), plain], state, github.fn, new Set(["queue:1:1"]), now))).toEqual(["queue:1:1", "red:1:1"]);
+    expect(keys(await confirmRemovals([removal("queue:1:1", 7), plain], state, github.fn, now))).toEqual(["queue:1:1", "red:1:1"]);
     expect(github.asked).toEqual([]);
   });
   it("passes a removal without a PR (no confirmation data) through", async () => {
     const github = lookup({});
     const [event] = queueRemovalEvents(REPO, [classify(queueJob({ headBranch: "feature" }), "real")]);
-    expect(keys(await confirmRemovals([event!], emptyRepoState(), github.fn, new Set(), now))).toEqual(["queue:50:1"]);
+    expect(keys(await confirmRemovals([event!], emptyRepoState(), github.fn, now))).toEqual(["queue:50:1"]);
     expect(github.asked).toEqual([]);
   });
 });

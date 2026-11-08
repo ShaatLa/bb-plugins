@@ -22,7 +22,7 @@ import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-s
 import { handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsOutput } from "./ci-signals-contract";
 import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
 import { alertStreak, type CiInsights } from "./ci-insights";
-import { acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
+import { acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -357,8 +357,8 @@ export default function plugin(bb: BbPluginApi) {
   type View = Omit<RepositorySignals, "signals" | "problems" | "projectId">;
   type Incidents = { open: Signal[]; recent: Signal[] };
   type Runtime = {
-    /** Queue removal keys whose PR never showed a RemovedFromMergeQueueEvent within the grace period. */
-    removalRejected?: Set<string>;
+    /** Last GitHub ask per pending queue removal key, so a PR is rechecked at a slow pace instead of every loop. */
+    removalChecked?: Map<string, number>;
     signal: AbortSignal; etags: Map<string, GitHubResponse>; liveKnown: boolean; pools: PoolQueueState[]; liveJobs?: JobRecord[]; truncated: boolean; polledAt: string | null; stalls: Signal[];
     defaultBranch: string | null; historyReadAt: number; alerts?: CiInsights["alerts"]; handled?: Record<string, Handled>;
     /** Runs of the previous live poll, and those that left it since (fast path: fetched ahead of the history refresh). Run ids of each alert's failure streak, for observer verdicts. */
@@ -486,7 +486,6 @@ export default function plugin(bb: BbPluginApi) {
       catch (error) { signal.throwIfAborted(); if (!/Budget exhausted/.test(describe(error))) logOnce(`CI observer deployments for ${repo}: ${describe(error)}`); }
     }
     // Only group runs whose PR really left the queue are removals; a group cancelled because the one ahead left is not.
-    const removals = rt.removalRejected ??= new Set<string>();
     const confirmed = await confirmRemovals(events, state, async (number) => {
       if (!token || !rt.backfill) throw new Error("No token for the merge queue timeline");
       const [owner, name] = repo.split("/");
@@ -497,8 +496,7 @@ export default function plugin(bb: BbPluginApi) {
       const pr = parsed.data.repository?.pullRequest;
       return (pr?.timelineItems.nodes ?? []).filter((node) => !/merged/i.test(node.reason ?? "") && (node.beforeCommit?.oid || pr?.state !== "MERGED"))
         .map((node) => ({ at: Date.parse(node.createdAt), sha: node.beforeCommit?.oid ?? null }));
-    }, removals, now);
-    // A merge queue runner loss stands alone only once its removal was given up on (the PR stayed queued).
+    }, now, rt.removalChecked ??= new Map());
     if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit));
     const accepted = acceptEvents(state, global, confirmed, config);
     // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_manage.
@@ -869,7 +867,7 @@ export default function plugin(bb: BbPluginApi) {
       coverage: rt.view?.backfill.coveredSince ?? null, analysisAt: rt.analysis?.at ?? null, polledAt: rt.polledAt, now: Date.now(),
       runs: stored?.records.runs, deployments: stored?.records.deployments, liveJobs: rt.liveJobs, windowDays: values.jobHistoryDays, actors: actorNames(values),
       problems: row.problems, signals: row.signals, poolTimings: row.poolTimings,
-      queueStatus: (key) => rt.removalRejected?.has(key) ? "rejected" : observer.success && observer.data.sent[key] !== undefined ? "confirmed" : "pending",
+      queueStatus: (key) => !observer.success ? "pending" : observer.data.sent[REJECTED + key] !== undefined ? "rejected" : observer.data.sent[key] !== undefined ? "confirmed" : "pending",
       cachedTests: (run) => rt.backfill?.run.cachedFailedTests(repo, run, artifacts) ?? null,
     } satisfies InspectInput);
   }

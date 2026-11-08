@@ -125,10 +125,7 @@ const describeJob = (classified: ClassifiedJob[], limit: number, confirmed: Conf
   return `${job.jobName}: ${cls}${reason.startsWith(BUILD_REASON) ? ` (${BUILD_REASON})` : ""}${flakeLabel ? ` ${flakeLabel}` : ""}${from === undefined ? "" : ` inherited from #${from}`}${cls === "runner_loss" ? ` (${lossCount(classified, job, limit, confirmed)} on this head${suspect(classified, job, confirmed)})` : ""}`; };
 // The queue invalidated or rebuilt the group: its jobs were cancelled and none failed on its own. A group that ran to its own failure
 // (fail-fast cancels siblings) is not invalidated, even if it was built on a predecessor that later left the queue.
-const invalidated = (classified: ClassifiedJob[], runId: number, attempt: number) => {
-  const jobs = classified.filter((c) => c.job.runId === runId && c.job.attempt === attempt);
-  return jobs.some((c) => NOT_OWN.has(c.class)) && !jobs.some(OWN_FAILURE);
-};
+const invalidated = (jobs: ClassifiedJob[]) => jobs.some((c) => NOT_OWN.has(c.class)) && !jobs.some(OWN_FAILURE);
 
 /** 1. A merge queue run attempt with a job that failed (or was cancelled with its own failure): the PR leaves the queue. */
 /** With `now`, an attempt waits (up to INHERIT_WAIT_MS) for its inherited-failure check instead of going out charged to its own PR. */
@@ -137,7 +134,7 @@ export function queueRemovalEvents(repository: string, classified: ClassifiedJob
   for (const c of classified) if (c.job.event === "merge_group") attempts.set(`${c.job.runId}:${c.job.attempt}`, [...(attempts.get(`${c.job.runId}:${c.job.attempt}`) ?? []), c]);
   return [...attempts.values()].flatMap((all): ObserverEvent[] => {
     // A cancel-only group was usually rebuilt by the queue, but a runner going away cancels jobs too: only GitHub's exact record makes it a removal.
-    const cancelOnly = invalidated(classified, all[0]!.job.runId, all[0]!.job.attempt), jobs = cancelOnly ? all : all.filter((c) => !NOT_OWN.has(c.class));
+    const cancelOnly = invalidated(all), jobs = cancelOnly ? all : all.filter((c) => !NOT_OWN.has(c.class));
     if (!cancelOnly && !jobs.some(OWN_FAILURE)) return [];
     if (!cancelOnly && now !== undefined && jobs.some((c) => inheritable(c) && c.job.inheritedFrom === undefined && now - Math.max(...jobs.map((j) => completedAt(j.job))) < INHERIT_WAIT_MS)) return [];
     const { runId, attempt, headBranch, headSha } = jobs[0]!.job, pr = queuePullRequest(headBranch);
@@ -266,26 +263,33 @@ export function syncGlobal(global: ObserverGlobal, threads: string[], enabled: R
   return added;
 }
 
-/** Picks the events to announce: type on, not older than the type's start, and not already sent (or, for reopening keys, not within the quiet window). Marks them sent. */
-const REMOVAL_GRACE_MS = 15 * 60_000;
+const REMOVAL_GRACE_MS = 15 * 60_000, RECHECK_MS = 3 * 60_000;
+/** Prefix of the sent-state key that marks a queue removal as given up: kept with the sent keys, so a reload does not ask GitHub again. */
+export const REJECTED = "rejected:";
 /**
  * Keeps a queue removal only once GitHub shows the PR's RemovedFromMergeQueueEvent at or after the group run started.
- * Unconfirmed removals, and removals whose lookup failed, are retried on later loops and given up after a grace period.
+ * Unconfirmed removals, and removals whose lookup failed, are retried every RECHECK_MS (`checked` holds the last ask per key)
+ * and given up after a grace period, with one last ask.
  */
 /** One RemovedFromMergeQueueEvent: when and, if GitHub still resolves it, which group commit it removed. */
 export type QueueRemoval = { at: number; sha: string | null };
-export async function confirmRemovals(events: ObserverEvent[], state: ObserverRepoState, removalsOf: (pullRequest: number) => Promise<QueueRemoval[]>, rejected: Set<string>, now: number): Promise<ObserverEvent[]> {
-  const lookups = new Map<number, Promise<QueueRemoval[]>>(), out: ObserverEvent[] = [];
+export async function confirmRemovals(events: ObserverEvent[], state: ObserverRepoState, removalsOf: (pullRequest: number) => Promise<QueueRemoval[]>, now: number, checked = new Map<string, number>()): Promise<ObserverEvent[]> {
+  const reject = (key: string) => { state.sent[REJECTED + key] = now; checked.delete(key); };
+  for (const [key, at] of checked) if (now - at > 2 * REMOVAL_GRACE_MS) checked.delete(key);
+  const pending = events.filter((event) => event.removal && state.sent[event.key] === undefined && state.sent[REJECTED + event.key] === undefined);
+  // A PR is asked at most once per loop, and only for a new group, a recheck that is due, or the last ask after the grace period.
+  const due = new Set(pending.filter((event) => !checked.has(event.key) || now - checked.get(event.key)! >= RECHECK_MS || now - event.at > REMOVAL_GRACE_MS).map((event) => event.removal!.pullRequest));
+  const lookups = new Map<number, Promise<QueueRemoval[]>>(), out = events.filter((event) => !event.removal || state.sent[event.key] !== undefined);
   // One RemovedFromMergeQueueEvent removes one group: when several groups of the PR fit its window, the latest started one owns it.
   const claims = new Map<string, ObserverEvent>();
-  for (const event of events) {
-    const removal = event.removal;
-    if (!removal || state.sent[event.key] !== undefined) { out.push(event); continue; }
-    if (rejected.has(event.key)) continue;
+  for (const event of pending) {
+    const removal = event.removal!;
+    if (!due.has(removal.pullRequest)) continue;
     if (!lookups.has(removal.pullRequest)) lookups.set(removal.pullRequest, removalsOf(removal.pullRequest));
+    checked.set(event.key, now);
     let found: QueueRemoval[];
-    // No confirmation, no removal: a failed lookup is retried on the next loop and given up after the grace period.
-    try { found = await lookups.get(removal.pullRequest)!; } catch { if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key); continue; }
+    // No confirmation, no removal: a failed lookup is retried and given up after the grace period.
+    try { found = await lookups.get(removal.pullRequest)!; } catch { if (now - event.at > REMOVAL_GRACE_MS) reject(event.key); continue; }
     // The event names the group commit it removed. Without that, the time window decides: after the group started (a minute of slack,
     // GitHub may stamp it a moment early) and within the grace period after it ended (a later one is another group's).
     const hit = found.find((r) => r.sha !== null && r.sha === removal.sha)
@@ -293,13 +297,14 @@ export async function confirmRemovals(events: ObserverEvent[], state: ObserverRe
     if (hit) {
       const claim = `removal:${removal.pullRequest}:${hit.at}`, rival = claims.get(claim);
       // Already claimed by a group in an earlier loop, or by a later-started group (or a later attempt of the same one) now.
-      if (state.sent[claim] !== undefined || (rival && (rival.removal!.since > removal.since || (rival.removal!.since === removal.since && rival.at > event.at)))) { rejected.add(event.key); continue; }
-      if (rival) rejected.add(rival.key);
+      if (state.sent[claim] !== undefined || (rival && (rival.removal!.since > removal.since || (rival.removal!.since === removal.since && rival.at > event.at)))) { reject(event.key); continue; }
+      if (rival) reject(rival.key);
       claims.set(claim, event);
-    } else if (now - event.at > REMOVAL_GRACE_MS) rejected.add(event.key);
+    } else if (now - event.at > REMOVAL_GRACE_MS) reject(event.key);
   }
   for (const [claim, event] of claims) {
     state.sent[claim] = now;
+    checked.delete(event.key);
     // An old removal (the observer was off or found it late) is recorded for the head's count, not announced.
     if (now - Number(claim.split(":").pop()) > REMOVAL_GRACE_MS) state.sent[event.key] = now;
     else out.push(event);
@@ -307,6 +312,7 @@ export async function confirmRemovals(events: ObserverEvent[], state: ObserverRe
   return out;
 }
 
+/** Picks the events to announce: type on, not older than the type's start, and not already sent (or, for reopening keys, not within the quiet window). Marks them sent. */
 export function acceptEvents(state: ObserverRepoState, global: ObserverGlobal, events: ObserverEvent[], { enabled, quietMs, historyMs, now }: ObserverConfig): ObserverEvent[] {
   for (const [key, at] of Object.entries(state.sent)) if (at < now - historyMs) delete state.sent[key];
   const accepted: ObserverEvent[] = [];
