@@ -136,7 +136,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (effect.type === "audit") await store.audit(effect.event);
       else {
         if (effect.watch) {
-          if (verified.has(effect.watch.subject.key) && settings.watchPolicy !== "off") pending.push(effect);
+          if (verified.has(effect.watch.holderThreadId ? `${effect.watch.subject.key}\0${effect.watch.holderThreadId}` : effect.watch.subject.key) && settings.watchPolicy !== "off") pending.push(effect);
         } else await sendNotification(effect);
       }
     }

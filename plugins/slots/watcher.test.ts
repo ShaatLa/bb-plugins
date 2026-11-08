@@ -18,8 +18,10 @@ function setup() {
   const commit=vi.fn(async (_usage: Extract<Input,{type:'usage'}>, _verified:Set<string>)=>{});
   const warn=vi.fn();
   const canonical=vi.fn(async (path: string)=>path==='/alias'?'/repo':path);
-  const watcher=createWatcher({sdk:host.bb.sdk,hostId:()=> 'local',enabled:()=>enabled,now:()=>now,realpath:canonical as any,collector:{sample},preview,commit,warn});
-  return {watcher,sample,preview,commit,warn,list,get,env,threads,paths,statuses,canonical,advance:(ms=30000)=>now+=ms,off:()=>enabled=false};
+  const rpc=vi.fn(async (_args:any):Promise<any>=>[]);
+  const sdk=new Proxy(host.bb.sdk, {get(target, key) { return key === 'plugins' ? {callRpc:rpc} : Reflect.get(target, key); }});
+  const watcher=createWatcher({sdk,hostId:()=> 'local',enabled:()=>enabled,now:()=>now,realpath:canonical as any,collector:{sample},preview,commit,warn});
+  return {watcher,sdk,rpc,sample,preview,commit,warn,list,get,env,threads,paths,statuses,canonical,advance:(ms=30000)=>now+=ms,off:()=>enabled=false};
 }
 it('merges realpath aliases and duplicate paths, prefers nested groups, ignores null/remote/outside cwd',async()=>{
   const h=setup(); await h.watcher.run();
@@ -106,4 +108,25 @@ it('other realpath errors still invalidate the interval',async()=>{
   const h=setup(); h.canonical.mockRejectedValueOnce(Object.assign(new Error('denied'),{code:'EACCES'}));
   await h.watcher.run();
   expect(h.commit.mock.calls[0][0].valid).toBe(false); expect(h.warn).toHaveBeenCalled();
+});
+
+it('limits ancestry and handles cycles in the live thread map',async()=>{
+  const h=setup();
+  for(let i=0;i<6;i++) h.threads.set(`x${i}`,makeThreadResponse({id:`x${i}`,environmentId:i===0?'x0':null,parentThreadId:`x${(i+1)%6}`}));
+  h.paths.x0='/child'; await h.watcher.run();
+  expect(h.commit.mock.calls[0][0].subjects.find(s=>s.key==='/child')?.ancestorThreadIds).toEqual(['x1','x2','x3','x4']);
+});
+it.each(['ready','stopped','expired','remote','failure'])('checks family browser sessions: %s',async kind=>{
+  const h=setup(); h.threads.set('nested',makeThreadResponse({id:'nested',environmentId:'nested',parentThreadId:'a'}));
+  const rpc=h.rpc.mockImplementation(async ({input}:any)=>{
+    if(kind==='failure') throw new Error('missing');
+    return input.threadId==='nested' ? [{id:'s',threadId:'nested',hostId:kind==='remote'?'remote':'local',backend:'local',state:kind==='stopped'?'stopped':'ready',createdAt:0,expiresAt:kind==='expired'?0:999999}] as any : [] as any;
+  });
+  await h.watcher.run();
+  const subject={key:'/repo',threadIds:['a','b'],cores:0};
+  h.preview.mockResolvedValue([{type:'notify',reason:'idle-lease',threadId:'observer',text:'idle',watch:{hostId:'local',subject,holderThreadId:'a'}}]);
+  h.advance(); await h.watcher.run();
+  expect(h.commit.mock.calls[1][1].has('/repo\0a')).toBe(kind!=='ready');
+  expect(h.commit.mock.calls[1][0].resetKeys?.includes('/repo')).toBe(kind==='ready');
+  expect(rpc).toHaveBeenCalled(); if(kind==='failure') expect(h.warn).toHaveBeenCalledTimes(1);
 });

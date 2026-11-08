@@ -64,10 +64,10 @@ export interface AuditEvent {
   threadId?: string; requestId?: string; leaseId?: string; port?: number;
   readings?: GateReadings; reason?: string; manual?: boolean;
 }
-export interface UsageSubject { key: string; threadIds: string[]; cores: number }
+export interface UsageSubject { key: string; threadIds: string[]; ancestorThreadIds?: string[]; cores: number }
 export interface WatchState {
   lastEndAt: number | null; settings: string; heavyEndAt: Record<string, number>;
-  subjects: Record<string, { threadIds: string[]; intervals: { startAt: number; endAt: number; cores: number }[]; episode: boolean; lastAlertAt: number | null; seenAt: number }>;
+  subjects: Record<string, { threadIds: string[]; ancestorThreadIds?: string[]; intervals: { startAt: number; endAt: number; cores: number }[]; episode: boolean; lastAlertAt: number | null; seenAt: number }>;
 }
 export interface WatchRunStats { at: number; durationMs: number; cpuMs: number; psMs: number; lsofMs: number; lsofCalls: number }
 export interface WatchDiagnostics { last: WatchRunStats | null; average10m: Omit<WatchRunStats, "at"> & { runs: number } }
@@ -175,7 +175,7 @@ export type Input =
   | { type: "threadEnded"; threadId: string; reason: "archived" | "deleted" }
   | { type: "observer" | "unleased-load" | "idle-lease"; hostId: string; previousThreadId: string | null; previousEvents: ObserverEvent[]; previousEnded?: boolean; title: string | null }
   | { type: "tick" } | { type: "restored" };
-export type Effect = { type: "notify"; threadId: string; text: string; reason: AuditType; watch?: { hostId: string; subject: UsageSubject } } |
+export type Effect = { type: "notify"; threadId: string; text: string; reason: AuditType; watch?: { hostId: string; subject: UsageSubject; holderThreadId?: string } } |
   { type: "audit"; event: AuditEvent };
 export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
   Lease | PortLease | SlotRequest | { capacity: number } | null;

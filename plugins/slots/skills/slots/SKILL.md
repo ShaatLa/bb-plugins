@@ -50,3 +50,5 @@ tool accepts `operation` (`show`, `set`, `unset`), plus `key` and `value` as nee
 Configuration is plugin-owned; `bb plugin config slots` no longer applies.
 The optional load watch warns heuristically at checkout level when processes
 use many cores without a heavy slot; small runs do not need a slot.
+
+A heavy lease also covers the holder’s child threads; open browser-automation sessions in the family count as activity for idle notices. Transfer is the clean way to assign work.

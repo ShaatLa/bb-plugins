@@ -6,7 +6,7 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
-Version 0.4.0 adds the optional load watch, idle heavy-lease notices and observer filters for both events. Configure policy, cores threshold, window and idle notice in Settings.
+Version 0.4.1 adds family coverage and browser activity to the optional load watch; 0.4.0 added the optional load watch, idle heavy-lease notices and observer filters for both events. Configure policy, cores threshold, window and idle notice in Settings.
 
 Version 0.3.1 removes legacy settings migration; missing `config.json` means all defaults.
 
@@ -219,3 +219,5 @@ npm run build
 Server tests use the SDK fake host, a fake clock and metrics, and temporary
 storage. No plugin installation, live three-thread demo or deployment is part
 of this phase. The sidebar is covered by SDK frontend harness tests.
+
+A heavy lease also covers the holder’s child threads; open browser-automation sessions in the family count as activity for idle notices. Transfer is the clean way to assign work.
