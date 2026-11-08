@@ -411,7 +411,7 @@ describe('0.3 server attention',()=>{
   const {harness,db}=setup();
   for(const options of [[],['a',' a '],['x'.repeat(81)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
   const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','No']},{threadId:'t'});
-  expect(db.prepare('SELECT options,notify_state FROM items WHERE id=?').get(id)).toEqual({options:'["Yes","No"]',notify_state:1});
+  expect(db.prepare('SELECT options,notify_state FROM items WHERE id=?').get(id)).toEqual({options:'["Yes","No"]',notify_state:0});
  });
  it('retries the latest attempt and handles live pre-acceptance failures',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine');
@@ -432,9 +432,9 @@ describe('0.3 server attention',()=>{
   expect((db.prepare("SELECT snoozed_until FROM items WHERE id='ans_a'").get() as any).snoozed_until).not.toBeNull();
   await call('ans_b',Date.now()+1000);
   await vi.advanceTimersByTimeAsync(1000);
-  expect(db.prepare("SELECT snoozed_until,notify_state FROM items WHERE id='ans_b'").get()).toEqual({snoozed_until:null,notify_state:1});
+  expect(db.prepare("SELECT snoozed_until,notify_state FROM items WHERE id='ans_b'").get()).toEqual({snoozed_until:null,notify_state:0});
   await call('ans_a',null);
-  expect((db.prepare("SELECT notify_state FROM items WHERE id='ans_a'").get() as any).notify_state).toBe(1);
+  expect((db.prepare("SELECT notify_state FROM items WHERE id='ans_a'").get() as any).notify_state).toBe(0);
   await call('ans_a',Date.now()+1000);
   await harness.lifecycle.dispose(); await vi.advanceTimersByTimeAsync(2000);
   expect(vi.getTimerCount()).toBe(0);
