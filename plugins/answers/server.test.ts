@@ -194,6 +194,15 @@ describe('reply pools and inbox',()=>{
   expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
+ it('filters recipients and lists to questions, counting agent questions',async()=>{
+  const {harness,db}=setup();
+  const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
+  const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,'a',1,1)");
+  add.run('ans_q','mine','a','answered','Ready?'); add.run('ans_n','mine','b','answered','Do it'); add.run('ans_f','for_me','c','open','Pick one');
+  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','c']);
+  expect((await call('recipients',{})).recipients).toHaveLength(3);
+  expect((await call('list',{view:'all',questions:true})).items.map((i:any)=>i.id).sort()).toEqual(['ans_f','ans_q']);
+ });
  it('maps send modes, holds drafts in the queue and rejects past times',async()=>{
   const {harness,send}=setup();
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;

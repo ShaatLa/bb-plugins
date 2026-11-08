@@ -3,7 +3,7 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
-import { cap } from './ingest';
+import { cap, QUESTION_SQL } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 
@@ -66,6 +66,8 @@ export default function plugin(bb: BbPluginApi) {
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
     }
+    // Agent questions to the user count as questions too.
+    if (p.questions) where.push(`(kind='for_me' OR ${QUESTION_SQL})`);
     if (p.query) {where.push("(instr(lower(question),lower(?))>0 OR instr(lower(coalesce(answer,'')),lower(?))>0)"); args.push(p.query,p.query);}
     if (p.cursor) {const [at,id]=p.cursor.split('|'); where.push('(created_at<? OR (created_at=? AND id<?))'); args.push(Number(at),Number(at),id);}
     const limit = p.limit ?? 50;
@@ -123,12 +125,12 @@ export default function plugin(bb: BbPluginApi) {
   const handlers = {
     list, counts,
     async recipients(raw:z.infer<typeof inputs.recipients>) {
-      const p=inputs.recipients.parse(raw);
-      const rows=db.prepare(`SELECT thread_id,count(*) AS unread,max(updated_at) AS last_at FROM items WHERE ${unreadWhere} GROUP BY thread_id ORDER BY last_at DESC,thread_id LIMIT 100`).all() as Row[];
+      const p=inputs.recipients.parse(raw), where=p.questions ? `${unreadWhere} AND (kind='for_me' OR ${QUESTION_SQL})` : unreadWhere;
+      const rows=db.prepare(`SELECT thread_id,count(*) AS unread,max(updated_at) AS last_at FROM items WHERE ${where} GROUP BY thread_id ORDER BY last_at DESC,thread_id LIMIT 100`).all() as Row[];
       if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {
         if (rows.length===100) rows.pop();
         rows.push({thread_id:p.selected,unread:0,last_at:0});
-        const unread=db.prepare(`SELECT count(*) AS unread,max(updated_at) AS last_at FROM items WHERE thread_id=? AND ${unreadWhere}`).get(p.selected) as Row;
+        const unread=db.prepare(`SELECT count(*) AS unread,max(updated_at) AS last_at FROM items WHERE thread_id=? AND ${where}`).get(p.selected) as Row;
         Object.assign(rows.at(-1)!,{unread:unread.unread,last_at:unread.last_at ?? 0});
       }
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];

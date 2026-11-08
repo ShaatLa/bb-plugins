@@ -52,4 +52,6 @@ CREATE TABLE threads_state (
   );
   CREATE INDEX pool_thread ON pool_entries(thread_id, created_at);`,
   `ALTER TABLE pool_entries ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
+  // One-off: apply the short-acknowledgement rule (QUIET_SQL in ingest.ts) to answers already waiting in the Inbox.
+  `UPDATE items SET read_at=updated_at WHERE kind='mine' AND status='answered' AND read_at IS NULL AND length(trim(question))<=60 AND instr(question,'?')=0 AND instr(question,'？')=0 AND length(trim(answer))<=160;`,
 ];

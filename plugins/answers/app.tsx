@@ -63,6 +63,7 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
+  const isQuestion = item.kind === 'mine' && /[?？]/.test(item.question);
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
   return <li className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
@@ -78,7 +79,7 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
-      {chat && time}
+      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
       <div className={userBubble}><div ref={question} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}>{item.question}</div></div>
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
@@ -98,8 +99,8 @@ export function ItemCard({ item, chat = false, markable = !chat }: { item: Item;
   </li>;
 }
 
-function Page({ threadId, view, projectId, query, cursor }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string }) {
-  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
+function Page({ threadId, view, projectId, query, questions, cursor }: { threadId?: string; view: View; projectId?: string; query: string; questions?: boolean; cursor?: string }) {
+  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(questions ? { questions } : {}), ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
   return <>
     {result.isLoading && <p role="status">Loading answers…</p>}
@@ -107,7 +108,7 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
     {result.data && <>
       {!cursor && !result.data.items.length && <p className="text-muted-foreground">No answers in this view.</p>}
       <ul aria-label="Answers" className={threadId ? 'divide-y divide-border-seam' : 'space-y-3'}>{result.data.items.map(item => <ItemCard key={item.id} item={item} chat={!!threadId} markable />)}</ul>
-      {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
+      {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
     </>}
   </>;
 }
@@ -120,6 +121,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const [view, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'all' : 'inbox');
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
+  const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', false);
   const [error, setError] = useState('');
   const options: [View | 'inbox', string][] = threadId ? views : [['inbox', 'Inbox'], ...views];
   return <section className="flex h-full flex-col">
@@ -129,6 +131,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
         <select aria-label="View" className="appearance-none rounded-md bg-transparent py-1 pl-2 pr-7 text-sm font-medium hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" value={view} onChange={event => setView(event.target.value as View | 'inbox')}>{options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
         <Icon name="ChevronDown" aria-hidden className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
       </span>
+      <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>
       {view !== 'inbox' && <>
         <input aria-label="Search answers" type="search" placeholder="Search" maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
         {!threadId && <select aria-label="Project" className="rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
@@ -136,7 +139,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId])} {...{ threadId, view, query }} projectId={projectId || undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, query, questions }} projectId={projectId || undefined} /></div>}
   </section>;
 }
 

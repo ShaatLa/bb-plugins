@@ -22,10 +22,10 @@ function Avatar({ id, title }: { id: string; title: string | null }) {
   let hue = 0; for (const c of id) hue = (hue * 31 + c.charCodeAt(0)) % 360;
   return <span aria-hidden className="flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white" style={{ background: `hsl(${hue} 35% 38%)` }}>{(title ?? '?').trim().charAt(0).toUpperCase() || '?'}</span>;
 }
-export function Inbox() {
+export function Inbox({ questions = false }: { questions?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
-  const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} });
+  const result = useQuery({ contract: rpcContract, method: 'recipients', input: { ...(selected ? { selected } : {}), ...(questions ? { questions } : {}) } });
   const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null);
   const [depth, setDepth] = useState(1), [pages, setPages] = useState<ListResult[]>([]);

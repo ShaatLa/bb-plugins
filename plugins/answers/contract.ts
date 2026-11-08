@@ -16,11 +16,11 @@ export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote,quoteSeq
 export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
 export const inputs = {
- recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
+ recipients:z.object({selected:threadId.optional(),questions:z.boolean().optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
  poolSend:z.object({threadId,send:sendOptionsSchema.optional()}).strict(), quoteReply:z.object({threadId,quote,text:z.string().max(8000),itemId:idSchema.optional(),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(),
- list: z.object({view: viewSchema, threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
+ list: z.object({view: viewSchema, questions: z.boolean().optional(), threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
  markRead: z.union([z.object({ids: z.array(idSchema).min(1).max(1000)}).strict(), z.object({all:z.literal(true), threadId:threadId.optional()}).strict()]),
  setPinned: z.object({id:idSchema,pinned:z.boolean()}).strict(), setDismissed: z.object({id:idSchema,dismissed:z.boolean()}).strict(),
  reply: z.object({id:idSchema,text:z.string().trim().min(1).max(8000),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(), save: z.object({threadId,seq:time,role:z.string().min(1).max(100),text:z.string().trim().min(1).max(20000)}).strict(),

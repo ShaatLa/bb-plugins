@@ -27,5 +27,12 @@ describe('applyEvents', () => {
  it('clears interrupted and empty explicit resolutions', () => {const db=setup(); applyEvents(db,'t',[req(1),start(),accept()]); db.prepare("UPDATE items SET resolve_turn_id='x',status='deferred'").run(); applyEvents(db,'t',[message(),done(5,'interrupted')]); expect(row(db)).toMatchObject({status:'deferred',resolve_turn_id:null,interim:'answer'}); applyEvents(db,'t',[start(6,'y')]); db.prepare("UPDATE items SET resolve_turn_id='y'").run(); applyEvents(db,'t',[done(7,'completed','y')]); expect(row(db)).toMatchObject({status:'deferred',resolve_turn_id:null});});
  it('ignores a boundary turn whose start precedes the backfill window', () => {const db=setup(); const desc=[done(9),message(8),accept(7),start(6),req(5),done(4,'completed','old'),message(3,'orphan','old'),accept(2,'missing','old')]; applyEvents(db,'t',desc.reverse()); expect(rows(db)).toHaveLength(1); expect(row(db).answer).toBe('answer'); expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:9});});
  it('skips questions in agent-spawned threads', () => {const db=setup(); applyEvents(db,'t',[req(1)],null,0,false); expect(rows(db)).toHaveLength(0); expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:1});});
+ it('auto-reads a short note with a short reply, keeps questions and long reports unread', () => {
+  const q = (text: string) => ({input:[{type:'text',text}]}), db = setup();
+  applyEvents(db,'t',[req(1,'a',q('archive the sessions')),start(2,'x'),accept(3,'a','x'),message(4,'Archived','x'),done(5,'completed','x'),
+   req(6,'b',q('ready?')),start(7,'y'),accept(8,'b','y'),message(9,'Yes','y'),done(10,'completed','y'),
+   req(11,'c',q('go')),start(12,'z'),accept(13,'c','z'),message(14,'x'.repeat(200),'z'),done(15,'completed','z')]);
+  expect(rows(db).map(r => r.read_at === null)).toEqual([false,true,true]);
+ });
  it('caps text with the chat suffix', () => {expect(cap('x'.repeat(21000),20000)).toHaveLength(20000); expect(cap('x'.repeat(5000),4000)).toMatch(/… \(truncated, open in chat\)$/);});
 });
