@@ -35,5 +35,7 @@ export function selectionMarkdown(range: Range, body: HTMLElement) {
 export function selectionPosition(range: Range, container: HTMLElement, width = 320) {
   const rects = Array.from(range.getClientRects()).filter(rect => rect.width && rect.height);
   const rect = rects.at(-1) ?? range.getBoundingClientRect(), bounds = container.getBoundingClientRect();
-  return { top: rect.bottom - bounds.top + container.scrollTop + 6, left: Math.max(8, Math.min(rect.left - bounds.left, container.clientWidth - width - 8)) };
+  const first = rects[0] ?? rect;
+  // above: where the popup's bottom edge goes if it has to flip over the selection.
+  return { top: rect.bottom - bounds.top + container.scrollTop + 6, above: first.top - bounds.top + container.scrollTop - 6, left: Math.max(8, Math.min(rect.left - bounds.left, container.clientWidth - width - 8)) };
 }

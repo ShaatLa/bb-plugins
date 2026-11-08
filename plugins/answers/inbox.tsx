@@ -7,7 +7,7 @@ import { ItemCard } from './app';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
-type Draft = { threadId: string; itemId: string; quote: string; quoteSeq?: number; top: number; left: number; width: number };
+type Draft = { threadId: string; itemId: string; quote: string; quoteSeq?: number; top: number; above?: number; left: number; width: number };
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
 function HistoryPage({ threadId, cursor, index, depth, receive }: { threadId: string; cursor?: string; index: number; depth: number; receive: (index: number, data: ListResult) => void }) {
@@ -36,6 +36,12 @@ export function Inbox() {
     node.scrollTop = old.bottom ? node.scrollHeight : old.top + node.scrollHeight - old.height;
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 };
   }, [pages]);
+  // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
+  useLayoutEffect(() => {
+    const node = popup.current, box = scroll.current; if (!draft || draft.above === undefined || !node || !box) return;
+    const height = node.offsetHeight, top = draft.above - height;
+    if (draft.top + height > box.scrollTop + box.clientHeight && top >= box.scrollTop) setDraft({ ...draft, top, above: undefined });
+  }, [draft]);
   useEffect(() => {
     if (!draft) return;
     const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setDraft(null); };

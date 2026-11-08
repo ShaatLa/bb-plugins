@@ -27,9 +27,9 @@ describe('selection snapshots', () => {
   });
   it('anchors under the final line inside scroll content and clamps horizontally', () => {
     const { body, range } = selected('<b>two lines</b>', 'b');
-    Object.defineProperty(range, 'getClientRects', { value: () => ([{ left: 10, bottom: 25, width: 100, height: 10 }, { left: 450, bottom: 55, width: 20, height: 10 }] as any) });
+    Object.defineProperty(range, 'getClientRects', { value: () => ([{ left: 10, top: 15, bottom: 25, width: 100, height: 10 }, { left: 450, bottom: 55, width: 20, height: 10 }] as any) });
     vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ left: 20, top: 10 } as DOMRect);
     Object.defineProperty(body, 'clientWidth', { value: 500 }); body.scrollTop = 100;
-    expect(selectionPosition(range, body)).toEqual({ top: 151, left: 172 });
+    expect(selectionPosition(range, body)).toEqual({ top: 151, above: 99, left: 172 });
   });
 });
