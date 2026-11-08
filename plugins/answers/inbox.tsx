@@ -5,6 +5,7 @@ import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { ItemCard } from './app';
 import { Composer, SendButton } from './composer';
+import { EmptyState, useTransientText } from './empty';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
@@ -78,13 +79,14 @@ export function Inbox({ questions = false }: { questions?: boolean }) {
   return <div className="grid h-full min-[640px]:grid-cols-[minmax(170px,230px)_1fr]">
     <div role="listbox" aria-label="Recipients" className={`space-y-0.5 overflow-auto p-2 min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}>
       {result.error && <p role="alert">{result.error.message}</p>}
-      {result.data?.recipients.length === 0 && <p className="px-2 py-6 text-center text-sm text-muted-foreground">No unread answers</p>}
+      {result.data?.recipients.length === 0 && <EmptyState icon="MailOpen" title={questions ? 'No open questions' : 'All caught up'}>{questions ? 'Answers to your questions will show up here.' : 'New answers from your threads will show up here.'}</EmptyState>}
       {result.data?.recipients.map(recipient => <button key={recipient.threadId} role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
         if (selected !== recipient.threadId) { setPages([]); setDepth(1); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
         try { await rpc.call('markThreadRead', { threadId: recipient.threadId }); refresh(); } catch (e) { setError(errorText(e)); }
       }}><Avatar id={recipient.threadId} title={recipient.threadTitle} /><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><span className="min-w-0 flex-1 truncate font-medium">{recipient.threadTitle ?? 'Untitled thread'}</span><span className="shrink-0 text-[11px] text-muted-foreground">{ago(recipient.lastAt)}</span></span><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{recipient.projectName ?? 'No project'}</span>{recipient.unread > 0 && <span aria-label={`${recipient.unread} unread`} className="shrink-0 rounded-full bg-foreground/85 px-1.5 text-[11px] font-medium leading-[18px] text-background">{recipient.unread}</span>}</span></span></button>)}
     </div>
     <div ref={scroll} className={`relative overflow-auto min-w-0 ${!selected ? 'max-[639px]:hidden' : ''}`} onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; }}>
+      {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
       {selected && <><div className="sticky top-0 z-[1] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{(() => { const current = result.data?.recipients.find(r => r.threadId === selected); return <><Avatar id={selected} title={current?.threadTitle ?? null} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{current?.threadTitle ?? 'Untitled thread'}</span><span className="block truncate text-xs text-muted-foreground">{current?.projectName ?? 'No project'}</span></span><Button asChild size="sm" variant="ghost" aria-label="Open thread"><UrlLink href={`${current?.projectId ? `/projects/${current.projectId}` : ''}/threads/${selected}`}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button></>; })()}</div><HistoryPage key={selected} threadId={selected} index={0} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <Button onClick={() => { position.current.prepend = true; setDepth(depth + 1); }}>Load earlier</Button>}<ul className="divide-y divide-border-seam px-4" aria-label="History">{items.map(item => <ItemCard key={item.id} item={item} chat />)}</ul></>}
       {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
         <Composer label="Quote reply text" className="shadow-lg" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={draft.projectId} pending={pending} sendDisabled={draft.quote.length > 20000} onSend={options => void send(false, options)}
@@ -149,15 +151,15 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
   </section>;
 }
 export function Pools({ threadId }: { threadId?: string }) {
-  const [feedback, setFeedback] = useState('');
+  const [feedback, setFeedback] = useTransientText();
   const result = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const pools = result.data?.pools.filter(pool => !threadId || pool.threadId === threadId);
   if (threadId && !pools?.length && !feedback) return null;
   // In a thread tab the pool sits above the answers list, so it must not take the whole height.
   return <div className={threadId ? 'max-h-[50%] shrink-0 overflow-auto border-b border-border-seam' : 'h-full overflow-auto'}>
-    {feedback && <p role="status" className="px-3 pt-2 text-xs text-muted-foreground">{feedback}</p>}
+    {feedback && <p role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground"><Icon name={/uncertain|not sent/i.test(feedback) ? 'X' : 'Check'} aria-hidden className="size-3.5" />{feedback}</p>}
     {result.error && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{result.error.message}</p>}
-    {pools?.length === 0 && !threadId && <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground"><Icon name="Sent" aria-hidden className="size-5" /><p>No reply pools yet.</p><p className="text-xs">Select text in an answer and choose <span className="font-medium text-foreground">Add to pool</span> to collect quotes, then send them together.</p></div>}
+    {pools?.length === 0 && !threadId && <EmptyState icon="Sent" title="No reply pools yet">Select text in an answer and choose <span className="font-medium text-foreground">Add to pool</span>. Collect quotes from one thread, then send them together.</EmptyState>}
     {pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}
   </div>;
 }

@@ -3,10 +3,19 @@ import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, 
 import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
 import { Composer } from './composer';
+import { EmptyState, type IconName } from './empty';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 
 const views: [View, string][] = [['waiting', 'Waiting'], ['for_me', 'For me'], ['pinned', 'Pinned'], ['saved', 'Saved'], ['all', 'All']];
+const emptyCopy: Record<View, [IconName, string, string]> = {
+  unread: ['MailOpen', 'All caught up', 'New answers will show up here.'],
+  waiting: ['Clock', 'Nothing waiting', 'Questions still waiting for an answer show up here.'],
+  for_me: ['MessageQuestion', 'No questions for you', 'When an agent asks you something without blocking, it shows up here.'],
+  pinned: ['Pin', 'Nothing pinned', 'Pin an answer to keep it at hand.'],
+  saved: ['Star', 'Nothing saved', 'Use “Save to Answers” on any chat message to keep it here.'],
+  all: ['MessageQuestion', 'No answers yet', 'Your questions and the agents’ answers show up here.'],
+};
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function useAnswersBadge() {
@@ -103,10 +112,10 @@ function Page({ threadId, view, projectId, query, questions, cursor }: { threadI
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(questions ? { questions } : {}), ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
   return <>
-    {result.isLoading && <p role="status">Loading answers…</p>}
+    {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
-      {!cursor && !result.data.items.length && <p className="text-muted-foreground">No answers in this view.</p>}
+      {!cursor && !result.data.items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       <ul aria-label="Answers" className={threadId ? 'divide-y divide-border-seam' : 'space-y-3'}>{result.data.items.map(item => <ItemCard key={item.id} item={item} chat={!!threadId} markable />)}</ul>
       {result.data.nextCursor && (next ? <Page key={result.data.nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={result.data.nextCursor} /> : <Button variant="outline" onClick={() => setNext(true)}>Load more</Button>)}
     </>}
