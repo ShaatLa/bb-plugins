@@ -26,22 +26,36 @@ export function useAnswersBadge() {
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
 // Seconds a message must stay in view to count as read: about 30 characters a second, 2 to 20 seconds.
 export const readSeconds = (text: string) => Math.min(20, Math.max(2, text.length / 30));
-// Marks a message read once 80% of it (or 80% of the scroll area, for messages taller than it) was in view long enough, summed over visits.
+// Marks a message read once 80% of its height has been on screen, summed over scrolling and visits, and it stayed in view
+// (80% of it, or 80% of the scroll area when taller) long enough for its length. Long messages count only once read to near the end.
 function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, text: string, onRead: () => void) {
   const latest = useRef(onRead); latest.current = onRead;
   useEffect(() => {
-    const node = ref.current; if (!enabled || !node || typeof IntersectionObserver === 'undefined') return;
-    let spent = 0, since: number | null = null, inView = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const node = ref.current, root = node?.closest<HTMLElement>('.overflow-auto');
+    if (!enabled || !node || !root) return;
     const need = readSeconds(text) * 1000;
-    const pause = () => { if (since !== null) spent += Date.now() - since; since = null; clearTimeout(timer); };
-    const resume = () => { if (since !== null || !inView || document.visibilityState === 'hidden') return; since = Date.now(); timer = setTimeout(() => latest.current(), need - spent); };
-    const observer = new IntersectionObserver(([entry]) => {
-      inView = !!entry && (entry.intersectionRatio >= 0.8 || (!!entry.rootBounds && entry.intersectionRect.height >= 0.8 * entry.rootBounds.height));
-      if (inView) resume(); else pause();
-    }, { root: node.closest('.overflow-auto'), threshold: Array.from({ length: 101 }, (_, i) => i / 100) });
-    const visibility = () => { if (document.visibilityState === 'hidden') pause(); else resume(); };
-    observer.observe(node); document.addEventListener('visibilitychange', visibility);
-    return () => { pause(); observer.disconnect(); document.removeEventListener('visibilitychange', visibility); };
+    let spent = 0, since: number | null = null, timer: ReturnType<typeof setTimeout> | undefined, frame = 0, done = false;
+    let seen: [number, number][] = []; // merged on-screen ranges, in px from the message top
+    const check = () => {
+      frame = 0; if (done) return;
+      const box = node.getBoundingClientRect(), view = root.getBoundingClientRect();
+      const top = Math.max(box.top, view.top), bottom = Math.min(box.bottom, view.bottom), shown = bottom - top;
+      if (shown > 0) {
+        const merged: [number, number][] = []; let range: [number, number] = [top - box.top, bottom - box.top];
+        for (const r of seen) { if (r[1] < range[0] || r[0] > range[1]) merged.push(r); else range = [Math.min(r[0], range[0]), Math.max(r[1], range[1])]; }
+        seen = [...merged, range];
+      }
+      const inView = document.visibilityState !== 'hidden' && shown > 0 && shown >= 0.8 * Math.min(box.height, view.height);
+      if (since !== null) spent += Date.now() - since;
+      since = inView ? Date.now() : null; clearTimeout(timer);
+      const covered = seen.reduce((sum, r) => sum + r[1] - r[0], 0) >= 0.8 * box.height;
+      if (covered && spent >= need) { done = true; latest.current(); return; }
+      if (inView) timer = setTimeout(check, Math.max(100, need - spent));
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(check); };
+    root.addEventListener('scroll', schedule, { passive: true }); document.addEventListener('visibilitychange', check);
+    check();
+    return () => { done = true; clearTimeout(timer); cancelAnimationFrame(frame); root.removeEventListener('scroll', schedule); document.removeEventListener('visibilitychange', check); };
   }, [ref, enabled, text]);
 }
 export const isUnread = (item: Item) => item.readAt === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open'));

@@ -156,21 +156,22 @@ it('defaults to Inbox, marks the recipient read, retains selection and rebuilds 
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '2|ans_one' }));
   expect(slot.getAllByText('What changed?')).toHaveLength(1);
 });
-it('marks a conversation message read after it stays in view long enough', async () => {
-  let report: (entries: unknown[]) => void = () => {};
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: typeof report) { report = callback; } observe() {} disconnect() {} });
+it('marks a long conversation message read only after 80% of it has been on screen and it stayed long enough', async () => {
   const markRead = vi.fn(() => ({ ok: true }));
-  await inboxSetup({ markRead });
+  const { slot } = await inboxSetup({ markRead });
+  const card = slot.getByText('The answer').closest('li')!, root = card.closest<HTMLElement>('.overflow-auto')!;
+  let cardTop = 0; // the card is 2000px tall, the scroll area 500px
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    return (this === card ? { top: cardTop, bottom: cardTop + 2000, height: 2000 } : { top: 0, bottom: 500, height: 500 }) as DOMRect;
+  });
   vi.useFakeTimers();
   try {
-    act(() => report([{ intersectionRatio: 1, intersectionRect: { height: 100 }, rootBounds: { height: 500 } }]));
-    act(() => { vi.advanceTimersByTime(1900); });
-    expect(markRead).not.toHaveBeenCalled();
-    act(() => report([{ intersectionRatio: 0.5, intersectionRect: { height: 50 }, rootBounds: { height: 500 } }]));
-    act(() => { vi.advanceTimersByTime(5000); });
-    expect(markRead).not.toHaveBeenCalled();
-    act(() => report([{ intersectionRatio: 0.9, intersectionRect: { height: 90 }, rootBounds: { height: 500 } }]));
-    act(() => { vi.advanceTimersByTime(200); });
+    const scrollTo = (top: number) => act(() => { cardTop = top; fireEvent.scroll(root); vi.advanceTimersByTime(50); });
+    scrollTo(0);
+    act(() => { vi.advanceTimersByTime(5000); }); // long enough, but only the first quarter was seen
+    scrollTo(-500); scrollTo(-1000);
+    expect(markRead).not.toHaveBeenCalled(); // 75% seen
+    scrollTo(-1500);
   } finally { vi.useRealTimers(); }
   await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: [item.id] }));
 });
