@@ -32,7 +32,7 @@ and PID reuse is not excluded. If the renewal supervisor is stuck during cleanup
 an in-flight heartbeat may outlive it until that heartbeat returns.
 
 On an expiry warning, run `bb slots heartbeat` if still working. Release promptly
-with `bb slots release [lease-or-request]`; no ID also cancels queued requests.
+with `bb slots release [lease-or-request]`; a granted request ID releases its lease; no ID also cancels queued requests.
 Use `bb slots port` for dev servers. Transfer to a QA child with
 `bb slots transfer --to <thread> [--lease <id>]`; child release returns the lease.
 

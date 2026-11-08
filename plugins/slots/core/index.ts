@@ -287,13 +287,14 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     case "heartbeat": heartbeat(input.threadId); data = { leases: state.leases.filter(l => l.holderThreadId === input.threadId) }; break;
     case "release": {
       if (input.leaseId !== undefined) {
-        const lease = state.leases.find(l => l.id === input.leaseId);
+        // A request id also names the lease it was granted as.
+        const lease = state.leases.find(l => l.id === input.leaseId || l.requestId === input.leaseId);
         const request = state.requests.find(r => r.id === input.leaseId);
         if (!lease && !request) return fail("not-found", "Lease or request not found");
         if (request && request.threadId !== input.threadId) return fail("forbidden", "Only requester may cancel");
         if (lease && lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Only owner or holder may release");
       }
-      data = release(input.threadId, input.leaseId); break;
+      data = release(input.threadId, state.leases.find(l => l.requestId === input.leaseId)?.id ?? input.leaseId); break;
     }
     case "threadEnded": data = release(input.threadId, undefined, input.reason, true); break;
     case "transfer": {
