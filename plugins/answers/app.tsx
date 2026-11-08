@@ -144,11 +144,11 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     {item.snoozedUntil !== null && <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground">Snoozed until {new Date(item.snoozedUntil).toLocaleString()} <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('snooze', { id: last.id, until: null }))}>Unsnooze</Button></div>}
     {item.taskKey && <UrlLink href={`/plugins/work-board/work-board/task/${encodeURIComponent(item.taskKey)}`} className="mx-2 text-xs">{item.taskKey}</UrlLink>}
     {item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
-    <div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
       {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
       <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
-        <Button size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="Ellipsis" aria-hidden /></Button>
+        <Button size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
         {menu && <div role="menu" aria-label="Item actions" className="absolute bottom-full left-0 z-20 mb-1 w-48 rounded-lg border border-border bg-background p-1 shadow-lg">
           {menu === 'main' ? <>
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setPinned', { id: last.id, pinned: !item.pinned })); }}>{item.pinned ? 'Remove from Saved' : 'Save'}</button>}
