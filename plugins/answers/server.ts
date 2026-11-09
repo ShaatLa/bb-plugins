@@ -1,3 +1,4 @@
+import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
@@ -121,8 +122,10 @@ export default function plugin(bb: BbPluginApi) {
     if (text.length>32000) throw new Error('Message exceeds 32,000 characters — split the pool');
     if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
     const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
+    const labels = new Map<string, { label: string; projectId?: string }>();
+    await Promise.all(Array.from(text.matchAll(threadToken), async match => { try { const thread = await bb.sdk.threads.get({ threadId: match[1] }); labels.set(match[1], { label: thread.title ?? match[1], projectId: thread.projectId }); } catch { /* retain the token id */ } }));
     try {
-      const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[...(text.trim() ? [{type:'text' as const,mentions:[],text}] : []),...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
+      const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[...(text.trim() ? [{type:'text' as const,mentions:mentionsForText(text, id => labels.get(id)),text}] : []),...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
     } catch {throw new Error('Delivery uncertain — check the thread before retrying');}

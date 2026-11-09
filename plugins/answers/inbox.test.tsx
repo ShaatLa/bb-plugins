@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
+const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 import { Inbox } from './inbox';
@@ -24,7 +25,7 @@ it('mutes read rows, shows the caught-up line, and previews failures', async () 
 it('sends through browser SDK without originPluginId and passes draft submission', async () => {
   const { slot, recipients, send } = setup(); fireEvent.click(await recipients.findByRole('option'));
   const editor = await slot.findByRole('textbox', { name:'Send message' });
-  fireEvent.change(editor, { target:{ value:'Hello' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
+  change(editor, { target:{ value:'Hello' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   await waitFor(() => expect(send).toHaveBeenCalledOnce());
   expect(send.mock.calls[0]![0]).toMatchObject({ threadId:'thr_one', pluginSubmission:{ pluginId:'answers', data:{ kind:'draft' } } });
   expect(send.mock.calls[0]![0]).not.toHaveProperty('originPluginId');
@@ -32,10 +33,10 @@ it('sends through browser SDK without originPluginId and passes draft submission
 it('keeps a failed draft and edits made during a pending send', async () => {
   let reject!: (error: Error) => void;
   const { slot, recipients, send } = setup({ send: () => new Promise((_, no) => { reject = no; }) }); fireEvent.click(await recipients.findByRole('option'));
-  const editor = await slot.findByRole('textbox', { name:'Send message' }); fireEvent.change(editor, { target:{ value:'First' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'First' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
   await waitFor(() => expect(send).toHaveBeenCalledOnce());
   await act(async () => { reject(new Error('Offline')); });
-  expect((editor as HTMLTextAreaElement).value).toBe('First');
+  expect(editor.textContent).toBe('First');
   expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('First');
   expect(slot.getByRole('alert').textContent).toContain('Delivery uncertain');
 });
@@ -43,7 +44,7 @@ it('loads earlier pages when a search result is selected', async () => {
   const old = { ...base, id:'ans_old', question:'Ancient question', answer:'Ancient answer' };
   const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.cursor ? { items:[old], nextCursor:null } : { items:[base], nextCursor:'1|ans_one' } });
   fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
-  fireEvent.click(slot.getByRole('button', { name:'Search conversation' })); fireEvent.change(slot.getByRole('textbox', { name:'Search conversation' }), { target:{ value:'Ancient' } });
+  fireEvent.click(slot.getByRole('button', { name:'Search conversation' })); change(slot.getByRole('textbox', { name:'Search conversation' }), { target:{ value:'Ancient' } });
   fireEvent.click(await slot.findByRole('option', { name:/Ancient answer/ }));
   await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor:'1|ans_one' })));
   await waitFor(() => expect(document.querySelector('[data-history-ids~="ans_old"]')?.hasAttribute('data-flash')).toBe(true));
@@ -52,18 +53,18 @@ it('loads earlier pages when a search result is selected', async () => {
 it('retains a newer edit after the sent snapshot resolves', async () => {
   let resolve!: (value: object) => void;
   const { slot, recipients } = setup({ send: () => new Promise(done => { resolve = done; }) }); fireEvent.click(await recipients.findByRole('option'));
-  const editor = await slot.findByRole('textbox', { name:'Send message' }); fireEvent.change(editor, { target:{ value:'First' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
-  fireEvent.change(editor, { target:{ value:'Second' } }); await act(async () => { resolve({}); });
-  expect((editor as HTMLTextAreaElement).value).toBe('Second'); expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('Second');
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'First' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  change(editor, { target:{ value:'Second' } }); await act(async () => { resolve({}); });
+  expect(editor.textContent).toBe('Second'); expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('Second');
 });
 it('keeps a send tied to its original thread after switching', async () => {
   let resolve!: (value: object) => void; const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Second preview' };
   const { slot, recipients, send } = setup({ recipients:[one, two], send: () => new Promise(done => { resolve = done; }) });
   fireEvent.click((await recipients.findAllByRole('option'))[0]!); const editor = await slot.findByRole('textbox', { name:'Send message' });
-  fireEvent.change(editor, { target:{ value:'For one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
-  fireEvent.click(recipients.getAllByRole('option')[1]!); fireEvent.change(slot.getByRole('textbox', { name:'Send message' }), { target:{ value:'For two' } });
+  change(editor, { target:{ value:'For one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  fireEvent.click(recipients.getAllByRole('option')[1]!); change(slot.getByRole('textbox', { name:'Send message' }), { target:{ value:'For two' } });
   await act(async () => { resolve({}); }); expect(send.mock.calls[0]![0].threadId).toBe('thr_one');
-  expect((slot.getByRole('textbox', { name:'Send message' }) as HTMLTextAreaElement).value).toBe('For two');
+  expect(slot.getByRole('textbox', { name:'Send message' }).textContent).toBe('For two');
 });
 it('groups consecutive questions with a shared answer', async () => {
   const other = { ...base, id:'ans_two', question:'Question two', questionSeq:3, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
@@ -170,17 +171,17 @@ it('shows a pending bubble until the matching newest item arrives, and skips dra
   let items = [base];
   const { slot, recipients } = setup({ list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   const editor = await slot.findByRole('textbox', { name:'Send message' });
-  fireEvent.change(editor, { target:{ value:'New message' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  change(editor, { target:{ value:'New message' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
   expect(slot.container.textContent).not.toContain('Sending…'); expect(slot.getAllByText('New message').length).toBeGreaterThan(0);
   items = [{ ...base, id:'ans_new', question:'New message' }, base];
   await act(async () => { fireEvent.click(recipients.getByRole('option')); });
   await waitFor(() => expect(slot.queryByText('Sending…')).toBeNull());
-  fireEvent.change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
+  change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   expect(slot.queryByText('Sending…')).toBeNull();
 });
 it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
   const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
-  fireEvent.change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
   await waitFor(() => expect(slot.queryByText('Queued one')).toBeNull());
 });
 it('renders queued messages and sends or deletes them through the SDK', async () => {
@@ -207,7 +208,7 @@ it('edits queued text and attachments through the composer, holding it while edi
   const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
   expect(hold).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' });
   expect(slot.getByText('old.txt')).toBeTruthy();
-  fireEvent.change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
+  change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
   await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
   await waitFor(() => expect(release).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
   fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
@@ -238,7 +239,7 @@ it('shows the scheduled time and changes it through the SDK', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Change when queued message 1 sends' }));
   const at = new Date(Date.now() + 3 * 86400000); at.setSeconds(0, 0);
   const local = new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  fireEvent.change(slot.getByLabelText('Send at'), { target:{ value:local } }); fireEvent.click(slot.getByRole('button', { name:'Schedule' }));
+  change(slot.getByLabelText('Send at'), { target:{ value:local } }); fireEvent.click(slot.getByRole('button', { name:'Schedule' }));
   await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, sendAt:at.getTime() }));
 });
 it('reorders queued messages with keyboard neighbours', async () => {
