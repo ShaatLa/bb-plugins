@@ -121,7 +121,17 @@ describe('reply pools and inbox',()=>{
   expect(db.prepare('SELECT question FROM items').get()).toEqual({question:'Question'});
   expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]); db.close();
  });
- it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-1).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-1)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
+ it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-2).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-2)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
+ it('uses wake and pending notification indexes',()=>{
+  const db=new Database(':memory:'); db.exec(migrations.join('\n'));
+  const insert=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,created_at,updated_at,notify_state,snoozed_until) VALUES (?,'mine','t','waiting','q',1,1,?,?)");
+  db.transaction(()=>{for(let i=0;i<1000;i++) insert.run('ans_'+i,Number(i===500),i===500?100:null);})();
+  db.exec('ANALYZE');
+  const plan=(sql:string)=>db.prepare('EXPLAIN QUERY PLAN '+sql).all().map((r:any)=>r.detail).join(' ');
+  expect(plan('SELECT min(snoozed_until) FROM items WHERE snoozed_until IS NOT NULL')).toContain('items_snoozed_until');
+  expect(plan('SELECT id FROM items WHERE notify_state=1 ORDER BY rowid')).toContain('items_notify_pending');
+  db.close();
+ });
  it('builds exact Markdown, with empty lines and notes, and enforces caps',()=>{
   expect(buildReplyMessage([{quote:'**bold**\n\nlast',note:'note'},{quote:'only',note:''}])).toBe('> **bold**\n>\n> last\n\nnote\n\n> only');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
@@ -141,6 +151,21 @@ describe('reply pools and inbox',()=>{
   expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a','b']);
   expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
+ });
+ it('keeps recipient output across threads and projects',async()=>{
+  const {harness,db}=setup();
+  for(const [id,kind,thread,project] of [['ans_a','mine','a','p1'],['ans_b','for_me','b','p2'],['ans_c','mine','b','p2'],['ans_d','for_me','c','p1']] as const) {
+    seed(db,id,kind,thread); db.prepare('UPDATE items SET project_id=?,updated_at=? WHERE id=?').run(project,{ans_a:10,ans_b:20,ans_c:30,ans_d:5}[id],id);
+  }
+  db.prepare("UPDATE items SET status='answered',answer='A answer' WHERE id='ans_a'").run();
+  db.prepare("UPDATE items SET question='B question?' WHERE id='ans_b'").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,title:id.toUpperCase(),projectId:id==='b'?'p2':'p1'})));
+  harness.sdk.stub('projects.list',async()=>[{id:'p1',name:'One'},{id:'p2',name:'Two'}] as any);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
+    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,lastAt:30,preview:'B question?'},
+    {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
+    {threadId:'c',threadTitle:'C',projectId:'p1',projectName:'One',unread:1,lastAt:5,preview:'Question'},
+  ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
   const {harness}=setup();
@@ -350,6 +375,27 @@ describe('ingestion driver',()=>{
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
   expect(invalidate).toHaveBeenCalled();
+ });
+ it('invalidates once after a multi-page drain',async()=>{
+  const {harness,db,driver,invalidate}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',1,0)").run();
+  const events=Array.from({length:101},(_,i)=>({seq:i+2,type:'client/turn/requested',data:{initiator:'user',requestId:'r'+i,input:[{type:'text',text:'Question '+i}]}}));
+  harness.sdk.stub('threads.events.list',async(args:any)=>events.filter(e=>e.seq>Number(args.afterSeq)).slice(0,100));
+  await driver.schedule('t');
+  expect(db.prepare('SELECT count(*) n FROM items').get()).toEqual({n:101});
+  expect(invalidate).toHaveBeenCalledTimes(1);
+  expect(harness.inspection.sdk.callsTo('threads.events.list')).toHaveLength(2);
+ });
+ it('skips archived and unchanged tracked threads using reconcile metadata',async()=>{
+  const {harness,db,driver}=driverSetup();
+  const eventThreads:string[]=[];
+  for(const id of ['archived','unchanged','changed']) db.prepare('INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES (?,1,0,100)').run(id);
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'archived',updatedAt:200,archivedAt:1}),makeThreadResponse({id:'unchanged',updatedAt:100}),makeThreadResponse({id:'changed',updatedAt:101,projectId:'p'})] : []);
+  harness.sdk.stub('threads.events.list',async(args:any)=>{eventThreads.push(args.threadId);return [];});
+  await driver.reconcile();
+  expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
+  expect(eventThreads).toEqual(['changed']);
+  expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
  });
  it('persists oversized errors without moving the cursor and retries without another event',async()=>{
   vi.useFakeTimers(); const {harness,db,driver}=driverSetup();

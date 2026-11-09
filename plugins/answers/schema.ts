@@ -70,4 +70,7 @@ CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'he
 ALTER TABLE items ADD COLUMN recommend_reason TEXT;`,
   `CREATE TABLE archived_threads (thread_id TEXT PRIMARY KEY);              -- threads archived in bb drop out of the Inbox`,
   `ALTER TABLE items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
+  `ALTER TABLE threads_state ADD COLUMN ingested_thread_updated_at INTEGER;
+CREATE INDEX items_snoozed_until ON items(snoozed_until) WHERE snoozed_until IS NOT NULL;
+CREATE INDEX items_notify_pending ON items(notify_state) WHERE notify_state=1;`,
 ];
