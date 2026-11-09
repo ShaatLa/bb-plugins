@@ -9,7 +9,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
-| **Answers** | User questions and their answers, non-blocking questions for the user, and saved messages. | `answers` | [README](plugins/answers/README.md) |
+| **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
 
 The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
@@ -143,6 +143,24 @@ An optional **Deploy to production** action appears on the production card when 
 
 [Configuration, metric definitions and deployment behavior →](plugins/ci-dashboard/README.md)
 
+### Answers
+
+Open **Answers** in BB's navigation sidebar; its badge counts unread answers and open questions for you. The plugin pairs each message you send in a thread with the final answer of that turn, so answers do not get lost among agent output.
+
+- **Inbox**: conversations on the left, grouped by project (drag to reorder) with a resizable column, running-thread indicators and BB's thread context menu; the selected thread's history on the right opens at the first unread message.
+- A composer like BB's: voice input, attachments, scheduled sends, drafts, steering an active turn, and BB's queue card for queued messages (edit, reschedule, reorder, send now, delete). Project, branch and context usage sit under the composer.
+- **Awaiting answer**, **Asked of you**, **Saved** and **History** views with search, a project filter and **Mark all read** with undo.
+- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Answers**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
+- Agent tools: `answers_defer` and `answers_list`/`answers_resolve` link a delayed answer to its question; `answers_ask` asks you a question, optionally with choices and a recommendation.
+- An optional provider usage summary under the conversation list, and notifications for questions asked of you (needs the Push Notifications plugin) with quiet hours.
+
+```sh
+bb answers list --view waiting
+bb answers digest --since 24h
+```
+
+[Interface, limits and settings →](plugins/answers/README.md)
+
 ## Migrate built-in Tasks data
 
 For built-in Tasks only, do this **before installing Work Board for the first time**. Existing Agent Board or Tasks Plus users must use `--source-plugin agent-board` or `--source-plugin tasks-plus` and the identity migration guide above. Both `tasks` and `work-board` must be disabled, and the destination data directory must not already exist. An existing Work Board installation should keep its current data; this migration is not an update command.
@@ -171,6 +189,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; `codex` and a running local model server for live checks. |
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
+| `plugins/answers` | `npm ci` | None; tests use an in-memory SQLite database. |
 
 From the chosen plugin directory, after installing its dependencies:
 
