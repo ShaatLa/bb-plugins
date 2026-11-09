@@ -4,6 +4,8 @@ import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { PendingInteractions } from './interactions';
 
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: () => () => {}, registerActionHandler: () => () => {} }) }));
+
 afterEach(cleanup);
 const question = (overrides = {}) => ({ id: 'i1', threadId: 'thr_one', status: 'pending', payload: { kind: 'user_question', questions: [{ id: 'q1', prompt: 'Choose?', shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha', description: 'First' }, { value: 'b', label: 'Beta', description: 'Second' }] }] }, ...overrides });
 function setup(rows: any[], pending = true) {
@@ -16,6 +18,24 @@ it('renders provider options with descriptions and resolves the chosen value', a
   expect((await slot.findAllByText('Choose?')).length).toBeGreaterThan(0); expect(slot.getByText('First')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: /Alpha/ })); fireEvent.click(slot.getByRole('button', { name: 'Submit answer' }));
   await waitFor(() => expect(resolve).toHaveBeenCalledWith({ threadId: 'thr_one', interactionId: 'i1', resolution: { kind: 'user_answer', answers: { q1: { selected: ['a'] } } } }));
+});
+it('uses bb option hints, Other label, and action shortcuts', async () => {
+  const { slot } = setup([question()]);
+  await slot.findAllByText('Choose?');
+  const form = slot.container.querySelector('[data-question-form]')!;
+  expect(Array.from(form.querySelectorAll('kbd')).map(node => node.textContent)).toEqual(['1', '2', '3']);
+  expect(Array.from(form.querySelectorAll('button[aria-keyshortcuts]')).map(node => node.getAttribute('aria-keyshortcuts'))).toEqual(['1', '2', '3', 'Meta+.', 'Meta+Enter']);
+  expect(slot.getByRole('button', { name: /Other…/ }).querySelector('.min-w-0.flex-1 .block.text-xs')?.textContent).toBe('Other…');
+  expect(form.querySelectorAll('fieldset > div')).toHaveLength(2);
+  expect(form.closest('[data-pending-question-card]')).toBeTruthy();
+});
+it('renders bb tabs and the question counter', async () => {
+  const row = question(); row.payload.questions.push({ ...row.payload.questions[0]!, id: 'q2', shortLabel: 'Second' });
+  const { slot } = setup([row]); await slot.findAllByText('Choose?');
+  expect(slot.container.querySelector('[data-question-tabs]')?.textContent).toContain('Second');
+  expect(slot.getByText('1 of 2')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'Second' }));
+  expect(slot.getByText('2 of 2')).toBeTruthy();
 });
 it('allows multiple selections and free text', async () => {
   const row = question(); row.payload.questions[0]!.multiSelect = true;
