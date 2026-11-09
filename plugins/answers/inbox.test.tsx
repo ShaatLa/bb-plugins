@@ -186,18 +186,25 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
-it('edits a queued message inline, holding it while it is edited', async () => {
-  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };
+it('edits queued text and attachments through the composer, holding it while edited', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }, { type:'localFile', path:'/old', name:'old.txt' }], model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', updatedAt:7 };
   const hold = vi.fn(() => Promise.resolve({})), update = vi.fn(() => Promise.resolve({})), release = vi.fn(() => Promise.resolve({}));
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit:hold, update, experimental_releaseEditHold:release } }); fireEvent.click(await recipients.findByRole('option'));
   fireEvent.click(await slot.findByRole('button', { name:'Edit queued message 1' }));
   const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
   expect(hold).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' });
-  fireEvent.change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Save' }));
-  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, input:[{ type:'text', text:'Changed text', mentions:[] }] }));
+  expect(slot.getByText('old.txt')).toBeTruthy();
+  fireEvent.change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
   await waitFor(() => expect(release).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
-  fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.click(await slot.findByRole('button', { name:'Cancel' }));
+  fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
   await waitFor(() => expect(release).toHaveBeenCalledTimes(2)); expect(update).toHaveBeenCalledTimes(1);
+});
+it('shows attachment count without a raw queue state', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Attached', mentions:[] }, { type:'localFile', path:'/one', name:'one.txt' }, { type:'localImage', path:'/two' }], state:'waiting', updatedAt:7 };
+  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByLabelText('2 attachments')).toBeTruthy();
+  expect(slot.queryByText('waiting')).toBeNull();
 });
 it('collapses the queue and remembers the choice', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };

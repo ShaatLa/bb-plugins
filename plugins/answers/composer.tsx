@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { experimental_Icon as Icon, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
@@ -19,15 +19,25 @@ type Props = {
   // The Inbox composer keeps edits made during a send; other boxes clear on success, so they lock while sending.
   editableWhilePending?: boolean;
   sendLabel?: string; header?: ReactNode; className?: string;
+  editMode?: boolean; onCancel?: () => void;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift' }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
   const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
+  const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!editMode) return;
+    let active = true; const urls: string[] = [];
+    void Promise.all(attachments.filter(file => file.type === 'localImage' && !previews.has(file.path)).map(async file => {
+      try { const image = await sdk.projects.attachments.read({ projectId: file.sourceProjectId ?? projectId!, path: file.path }); if (!active) return; const url = URL.createObjectURL(new Blob([new Uint8Array(image.bytes)], { type: image.mimeType })); urls.push(url); setSavedPreviews(old => ({ ...old, [file.path]: url })); } catch { /* the file name remains visible */ }
+    }));
+    return () => { active = false; urls.forEach(URL.revokeObjectURL); };
+  }, [editMode, attachments, projectId, sdk]);
   // Like bb: one row (attach, text, send) until the text wraps or there is more to show; it stays open until cleared,
   // so a line that wraps only in the narrow one-row layout does not flip the layout back and forth.
-  const tall = grown || !!header || attachments.length > 0 || uploading > 0 || value.includes('\n');
+  const tall = !!editMode || grown || !!header || attachments.length > 0 || uploading > 0 || value.includes('\n');
   useLayoutEffect(() => {
     const node = editor.current; if (!node) return;
     node.style.height = 'auto';
@@ -58,7 +68,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
-        {previews.has(file.path) ? <img src={previews.get(file.path)} alt="" className="size-6 shrink-0 rounded object-cover" /> : <Icon name={file.type === 'localImage' ? 'FileAttachment' : 'File'} aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
+        {previews.has(file.path) || savedPreviews[file.path] ? <img src={previews.get(file.path) ?? savedPreviews[file.path]} alt="" className="size-6 shrink-0 rounded object-cover" /> : <Icon name={file.type === 'localImage' ? 'FileAttachment' : 'File'} aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
         <span className="truncate" title={file.name}>{file.name}</span>
         <button type="button" aria-label={`Remove ${file.name}`} className="absolute right-1 rounded p-0.5 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => onAttachments(old => old.filter(f => f.path !== file.path))}><Icon name="X" aria-hidden className="size-3" /></button>
       </li>)}
@@ -72,10 +82,10 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       <VoiceInputTextarea ref={editor} aria-label={label} rows={1} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className={`block w-full resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground ${tall ? '' : 'pr-10'}`} value={value} disabled={pending && !editableWhilePending}
         onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive}
         onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
-        onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
+        onKeyDown={event => { if (event.key === 'Escape' && editMode) { event.preventDefault(); onCancel?.(); } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
-        <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>}
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}
