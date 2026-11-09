@@ -4,7 +4,9 @@ import type Database from 'better-sqlite3';
 // "Archive the sessions" → "Archived": a short note without a question that got a short reply needs no Inbox slot.
 export const QUIET_SQL = "length(trim(question))<=60 AND instr(question,'?')=0 AND instr(question,'？')=0 AND length(trim(answer))<=160";
 export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)";
-export const ATTENTION_SQL = "dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
+// Archived threads leave the Inbox, counts and pushes; their items come back if the thread is unarchived.
+export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
+export const ATTENTION_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind='mine' AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 export const INTERIM_RE = /делегир|доложу|сообщу, когда|отпишусь|вернусь с (ответом|результат)|как (только )?(будет|закончит)|жду (результат|ответ|завершени)|delegat|will report back|i'll (get back|report|follow up)|once (it|they|the \w+) (finish|complete)|waiting (for|on) (the )?(child|sub-?agent|thread|result)/i;
 // One failed attempt can arrive twice (live turn.failed hook, then the persisted rejection); record it once.
 export function failRequest(db: Database.Database, threadId:string, requestId:string, at:number, live:boolean, onlyNew=false) {

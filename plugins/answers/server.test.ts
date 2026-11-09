@@ -141,6 +141,19 @@ describe('reply pools and inbox',()=>{
   expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
  });
+ it('hides archived threads from the Inbox, counts and views until unarchived',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b');
+  db.prepare("UPDATE items SET status='answered',answer='x' WHERE id='ans_a'").run();
+  const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','b']);
+  expect((await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})})).errors).toEqual([]);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['b']);
+  expect(await call('counts')).toMatchObject({unread:0,inbox:1});
+  expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id)).toEqual(['ans_b']);
+  expect((await call('list',{view:'all'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_a','ans_b']);
+  await harness.behavior.emitThreadEvent('thread.unarchived',{thread:makeThreadResponse({id:'a'})});
+  expect(await call('counts')).toMatchObject({unread:1,inbox:2});
+ });
  it('shows thread titles and link text in recipient previews',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a');
   db.prepare("UPDATE items SET status='answered',answer=? WHERE id='ans_a'").run('Sent **@thread:thr_mgr#msg=3** see [ANV-5](/plugins/work-board/work-board/task/ANV-5) and `x`');

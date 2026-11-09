@@ -38,6 +38,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM request_aliases WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM threads_state WHERE thread_id=?').run(id);
+      db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(id);
       db.prepare('UPDATE items SET thread_deleted=1,updated_at=? WHERE thread_id=?').run(Date.now(),id);
     })();
     live.delete(id);
@@ -122,6 +123,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       try {
         const found = await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200,signal});
         const known = new Set(found.map(t=>t.id));
+        for (const t of found) db.prepare(t.archivedAt ? 'INSERT OR IGNORE INTO archived_threads VALUES (?)' : 'DELETE FROM archived_threads WHERE thread_id=?').run(t.id);
         await Promise.all(ids.map(async id => {
           if (!known.has(id)) {
             try {await bb.sdk.threads.get({threadId:id,signal});}

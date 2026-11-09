@@ -3,7 +3,7 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
-import { cap, QUESTION_SQL, ATTENTION_SQL, failRequest } from './ingest';
+import { cap, QUESTION_SQL, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
@@ -58,7 +58,7 @@ export default function plugin(bb: BbPluginApi) {
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
-      FROM items WHERE dismissed_at IS NULL`).get() as Counts;
+      FROM items WHERE dismissed_at IS NULL AND ${ACTIVE_THREAD_SQL}`).get() as Counts;
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
@@ -69,7 +69,7 @@ export default function plugin(bb: BbPluginApi) {
       for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"((kind='saved' AND dismissed_at IS NULL) OR pinned=1)", all:'1=1',
     };
     const where = [views[p.view]], args: (string | number)[] = [];
-    if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL');
+    if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL',ACTIVE_THREAD_SQL);
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
     }
@@ -184,7 +184,7 @@ export default function plugin(bb: BbPluginApi) {
       const rows=db.prepare(`WITH ranked AS (
         SELECT *,CASE WHEN ${ATTENTION_SQL} THEN 1 ELSE 0 END AS attention,
         ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY CASE WHEN ${ATTENTION_SQL} THEN 0 ELSE 1 END,updated_at DESC,id DESC) AS rank
-        FROM items WHERE thread_deleted=0 ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
+        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
       ), grouped AS (
         SELECT thread_id,sum(attention) AS unread,max(updated_at) AS last_at,
         max(CASE WHEN rank=1 THEN project_id END) AS project_id,
@@ -320,6 +320,8 @@ export default function plugin(bb: BbPluginApi) {
   registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
+  bb.events.on('thread.archived',({thread})=>{db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(thread.id); invalidate();});
+  bb.events.on('thread.unarchived',({thread})=>{db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(thread.id); invalidate();});
   bb.events.on('turn.failed',event=>{
     if (!event.inputAccepted && failRequest(db,event.threadId,event.requestId,Date.now(),true,true)) {invalidate(); onAttention();}
   });
