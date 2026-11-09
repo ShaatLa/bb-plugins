@@ -1,5 +1,5 @@
-import { useRef, useState, type ReactNode } from 'react';
-import { experimental_Icon as Icon, useSdk } from '@get-bb/plugin-sdk/app';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { experimental_Icon as Icon, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
 
@@ -23,8 +23,9 @@ type Props = {
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift' }: Props) {
-  const sdk = useSdk(), picker = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(0), [error, setError] = useState('');
+  const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null);
+  const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
+  useLayoutEffect(() => { const node = editor.current; if (node) { node.style.height = 'auto'; node.style.height = `${Math.min(node.scrollHeight, Math.max(96, window.innerHeight * .4))}px`; } }, [value]);
   async function attach(files: File[]) {
     if (!files.length) return;
     if (!projectId) { setError('Attachments need a thread in a project'); return; }
@@ -40,7 +41,8 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       finally { setUploading(n => n - 1); }
     }
   }
-  const blocked = sendDisabled || pending || uploading > 0;
+  const blocked = sendDisabled || pending || uploading > 0 || voiceActive;
+  const submit = (options?: SendOptions) => { if (!blocked) onSend(options); };
   return <div className={`rounded-xl border border-border bg-background ${className}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3 pt-3">
@@ -51,17 +53,17 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       </li>)}
       {uploading > 0 && <li role="status" className="flex items-center rounded-lg border border-dashed border-border-seam px-2 py-1 text-xs text-muted-foreground">Uploading {uploading}…</li>}
     </ul>}
-    <textarea aria-label={label} rows={2} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className="block max-h-48 w-full resize-none bg-transparent px-4 pb-1 pt-3 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground" value={value} disabled={pending && !editableWhilePending}
-      onChange={event => onChange(event.target.value)}
+    <VoiceInputTextarea ref={editor} aria-label={label} rows={2} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className="block min-h-[3.5rem] w-full resize-none overflow-y-auto bg-transparent px-4 pb-1 pt-3 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground" value={value} disabled={pending && !editableWhilePending}
+      onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive}
       onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!blocked) onSend(); } }} />
+      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
     {error && <p role="alert" className="px-4 text-xs text-destructive">{error}</p>}
     <div className="flex items-center gap-1 px-2 pb-2">
       <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
       <Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
       <span className="flex-1" />
       {actions}
-      <SendButton label={sendLabel} disabled={blocked} onSend={onSend}><Icon name="ArrowUp" aria-hidden /></SendButton>
+      <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>
     </div>
   </div>;
 }
