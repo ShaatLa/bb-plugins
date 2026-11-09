@@ -1,5 +1,6 @@
 import { classifyDraft } from "./draft-deferrals";
 import { expect, test, vi } from "vitest";
+import { metricsSchema } from "./metrics";
 import { ciInsightsSchema, ciRunSchema, defaultWorkflow, summarizeCi, summarizeTrends } from "./ci-insights";
 
 function run(id: number, overrides: Partial<ReturnType<typeof ciRunSchema.parse>> = {}) {
@@ -133,4 +134,56 @@ test("trends are also kept per workflow and the longest-running workflow is the 
   expect(defaultWorkflow([])).toBeUndefined();
   // Ties on successful time fall back to the busier workflow, then the lower id.
   expect(defaultWorkflow([{ id: 2, total: 1, successMs: 0 }, { id: 5, total: 4, successMs: 0 }, { id: 4, total: 4, successMs: 0 }])!.id).toBe(4);
+});
+
+test("one workflow is split per event: trends and timings are kept apart, the busiest event leads and points carry their sample size", () => {
+  const start = Date.parse("2026-10-20T00:00:00Z");
+  const empty = () => [0, 1].map((i) => ({ date: new Date(start + (i + 1) * 86_400_000).toISOString(), value: 0 }));
+  const bucket = (timestamp: string) => { const t = Date.parse(timestamp) - start; return t < 0 || t >= 2 * 86_400_000 ? -1 : Math.floor(t / 86_400_000); };
+  const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
+  const timed = (id: number, event: string | undefined, created: number, minutes: number, overrides = {}) =>
+    run(id, { event, name: "CI", created_at: at(created), run_started_at: at(created), updated_at: at(created + minutes), conclusion: "success", ...overrides });
+  const runs = [
+    // pull_request: light runs; merge_group: fewer full runs, the slowest per run, so it leads.
+    ...[1, 2, 3, 4].map((id) => timed(id, "pull_request", id, 7)), timed(5, "pull_request", 10, 7, { conclusion: "failure" }),
+    timed(6, "merge_group", 20, 30), timed(7, "merge_group", 30, 32), timed(8, "merge_group", 1500, 28),
+    timed(9, "push", 40, 2), timed(10, undefined, 50, 99),
+  ];
+  const trends = summarizeTrends(runs, null, bucket, empty);
+  const [workflow] = trends.workflows!;
+  expect(workflow!.events.map(({ event, total, successMs }) => [event, total, successMs / 60_000])).toEqual([["merge_group", 3, 90], ["pull_request", 5, 28], ["push", 1, 2]]);
+  const [queue, preflight] = workflow!.events;
+  expect(queue!.durationMedian.map((point) => [point.value, point.count])).toEqual([[31 * 60_000, 2], [28 * 60_000, 1]]);
+  expect(preflight!.durationMedian.map((point) => [point.value, point.count])).toEqual([[7 * 60_000, 4], [null, undefined]]);
+  expect(preflight!.runs.map((point) => point.value)).toEqual([5, 0]);
+  expect(preflight!.failedRuns.map((point) => point.value)).toEqual([1, 0]);
+  // The workflow series pools the events, runs without an event included; counts follow the sample.
+  expect(workflow!.durationMedian[0]).toMatchObject({ value: 7 * 60_000, count: 8 });
+  expect(workflow!.durationP90[0]!.count).toBe(8);
+  expect(workflow!.startDelay[0]).toMatchObject({ value: 0, count: 9 });
+  expect(workflow!.runs[0]!.count).toBeUndefined();
+  // Many light pull_request runs outweigh the queue in total time, yet the full check still leads;
+  // a rare long schedule run (under a tenth of the timed runs) never does. Equal means: the event name.
+  const mix = [...Array.from({ length: 30 }, (_, i) => timed(100 + i, "pull_request", i, 7)), ...[200, 201, 202, 203, 204].map((id) => timed(id, "merge_group", id - 160, 30)),
+    timed(205, "schedule", 46, 120), timed(206, "a", 47, 7)];
+  expect(summarizeTrends(mix, null, bucket, empty).workflows![0]!.events.map((entry) => entry.event)).toEqual(["merge_group", "pull_request", "schedule", "a"]);
+  expect(summarizeCi(mix, "trunk").workflows[0]!.events!.map((entry) => entry.event)).toEqual(["merge_group", "pull_request", "schedule", "a"]);
+
+  const insights = ciInsightsSchema.parse(summarizeCi(runs, "trunk"));
+  expect(insights.workflows[0]!.events!.map(({ event, total, passed, timing }) => [event, total, passed, timing.count, timing.medianMs! / 60_000])).toEqual([
+    ["merge_group", 3, 3, 3, 30], ["pull_request", 5, 4, 4, 7], ["push", 1, 1, 1, 2]]);
+  expect(insights.workflows[0]!.timing.count).toBe(8); // a run without an event is not identified, so it is not summarized
+});
+
+test("snapshots stored before per-event series and sample counts still parse", () => {
+  const point = { date: "2026-10-21T00:00:00.000Z", value: 60_000 };
+  const series = [point, { ...point, value: null }];
+  const trends = metricsSchema.shape.trends.parse({ durationMedian: series, workflows: [{ id: 1, name: "CI", total: 2, successMs: 60_000, durationMedian: series, durationP90: series, runs: series, failedRuns: series, startDelay: series }] });
+  expect(trends!.workflows![0]!.events).toBeUndefined();
+  expect(trends!.durationMedian![0]).not.toHaveProperty("count");
+  expect(metricsSchema.shape.trends.parse({ durationMedian: [{ ...point, count: 3 }] })!.durationMedian![0]!.count).toBe(3);
+  const timing = { basis: "success", count: 1, totalMs: 1, averageMs: 1, medianMs: 1, p95Ms: 1 };
+  const counts = { total: 1, passed: 1, failed: 0, eligible: 1 };
+  const legacy = { total: 1, identified: 1, defaultBranch: null, main: null, pullRequests: counts, alerts: [], timing, slowRuns: [], workflows: [{ ...counts, id: 1, name: "CI", timing, failureId: null }] };
+  expect(ciInsightsSchema.parse(legacy).workflows[0]!.events).toBeUndefined();
 });

@@ -10,7 +10,7 @@ export const repositorySchema = z.string().max(200).regex(
 );
 const seriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable() }));
 /** A history chart series; `parts` splits `value` into components charted side by side (e.g. additions and deletions). */
-const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional() }));
+const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional(), count: z.number().int().nonnegative().optional() }));
 const metricSchema = z.object({
   value: z.number().nonnegative().nullable(),
   detail: z.string(),
@@ -44,6 +44,11 @@ export const metricsSchema = z.object({
     workflows: z.array(z.object({
       id: z.number().int().positive(), name: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
       durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      /** The same series per event (main event first); optional so stored snapshots still parse. */
+      events: z.array(z.object({
+        event: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
+        durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      })).optional(),
     })),
   }).partial().optional(),
   ciOutcomes: z.record(z.string(), z.number().int().nonnegative()).nullable(),

@@ -153,7 +153,7 @@ export default function plugin(bb: BbPluginApi) {
     } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
   }
   function currentTimings(result: DashboardData) {
-    return result.repositories.every((repo) => !repo.ciInsights || (repo.trends?.workflows && repo.ciInsights.timing.basis === "success" && repo.ciInsights.draftPolicy === "job-evidence-v1"));
+    return result.repositories.every((repo) => !repo.ciInsights || (repo.trends?.workflows?.every((workflow) => workflow.events) && repo.ciInsights.workflows.every((workflow) => workflow.events) && repo.ciInsights.timing.basis === "success" && repo.ciInsights.draftPolicy === "job-evidence-v1"));
   }
   function touchSnapshot(result: DashboardData, selection: string, config: string) {
     database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ? AND configuration = ?").run(Date.now(), selection, config);
