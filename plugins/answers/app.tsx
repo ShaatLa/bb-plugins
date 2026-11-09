@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
@@ -59,7 +59,7 @@ export function useReadUndo() {
   const line = undo && <p role="status" className="px-4 py-2 text-xs">{expired ? 'Undo expired' : `Marked ${undo.count} read`} · <Button variant="ghost" size="sm" onClick={async () => { const result = await rpc.call('undoRead', { batch: undo.batch }); if (result.count) setUndo(null); else setExpired(true); refresh(); }}>Undo</Button></p>;
   return { record, line };
 }
-export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean }) {
+export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, replyable = true }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; replyable?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -168,7 +168,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
         </div>}
       </div>
-      {item.kind !== 'saved' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
+      {replyable && item.kind !== 'saved' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 inline-flex items-center text-xs">{status}</span>}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
@@ -181,8 +181,11 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
 function Page({ threadId, view, projectId, query, questions, cursor }: { threadId?: string; view: View; projectId?: string; query: string; questions?: boolean; cursor?: string }) {
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(questions ? { questions } : {}), ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
+  const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
   const chronological = !!threadId, nextCursor = result.data?.nextCursor;
+  const items = result.data ? (chronological ? [...result.data.items].reverse() : result.data.items) : [];
+  if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
   const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={nextCursor} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
@@ -190,7 +193,7 @@ function Page({ threadId, view, projectId, query, questions, cursor }: { threadI
     {result.data && <>
       {!cursor && !result.data.items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam' : 'space-y-3'}>{(chronological ? [...result.data.items].reverse() : result.data.items).map(item => <ItemCard key={item.id} item={item} chat={chronological} markable />)}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{items.map(item => <Fragment key={item.id}>{chronological && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat={chronological} markable autoRead={chronological && view === 'all'} replyable={!threadId} /></Fragment>)}</ul>
       {!chronological && more}
     </>}
   </>;
@@ -253,9 +256,9 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
   useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Answers' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);
   const list = view === 'saved' || view === 'all';
-  return <section className="flex h-full flex-col">
+  return <section className="flex h-full flex-col bg-background">
     {threadId && <Pools threadId={threadId} />}
-    <div className="space-y-2 border-b border-border-seam px-3 py-2">
+    <div className="space-y-2 border-b border-border-seam bg-background px-3 py-2">
       <div className="flex items-center gap-1">
         <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={setView} />
         <span className="flex-1" />
@@ -268,7 +271,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
