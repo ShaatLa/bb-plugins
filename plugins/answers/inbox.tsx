@@ -276,34 +276,32 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
 }
 
 type Editor = { flush: () => Promise<void> };
-function PoolNote({ entry, editors, autoFocus, onSend }: { entry: PoolEntry; editors: Map<string, Editor>; autoFocus?: boolean; onSend: (id: string) => void }) {
+function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { entry: PoolEntry; projectId: string | null; editors: Map<string, Editor>; autoFocus?: boolean; pending: boolean; onSend: (id: string, options?: SendOptions) => void }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
-  const [note, setNote] = useState(entry.note), [status, setStatus] = useState('Saved'), [expanded, setExpanded] = useState(false), [clamped, setClamped] = useState(false);
+  const [note, setNote] = useState(entry.note), [files, setFiles] = useState(entry.attachments), [status, setStatus] = useState('Saved'), [expanded, setExpanded] = useState(false), [clamped, setClamped] = useState(false);
   const quote = useRef<HTMLDivElement>(null);
-  const local = useRef({ note: entry.note, saved: entry.note, revision: entry.revision, flight: null as Promise<void> | null });
+  const local = useRef({ note: entry.note, files: entry.attachments, saved: entry.note, savedFiles: entry.attachments, revision: entry.revision, flight: null as Promise<void> | null });
   useEffect(() => { const node = quote.current; if (node) setClamped(node.scrollHeight > node.clientHeight + 1); }, [entry.quote]);
-  useEffect(() => { if (entry.revision > local.current.revision) { const clean = local.current.note === local.current.saved; local.current.revision = entry.revision; local.current.saved = entry.note; if (clean) { local.current.note = entry.note; setNote(entry.note); } } }, [entry.revision, entry.note]);
+  useEffect(() => { if (entry.revision > local.current.revision) { const clean = local.current.note === local.current.saved && JSON.stringify(local.current.files) === JSON.stringify(local.current.savedFiles); local.current.revision = entry.revision; local.current.saved = entry.note; local.current.savedFiles = entry.attachments; if (clean) { local.current.note = entry.note; local.current.files = entry.attachments; setNote(entry.note); setFiles(entry.attachments); } } }, [entry.revision, entry.note, entry.attachments]);
   async function flush(): Promise<void> {
     const state = local.current;
     if (state.flight) await state.flight;
-    if (state.note === state.saved) return;
-    const saving = state.note;
+    if (state.note === state.saved && JSON.stringify(state.files) === JSON.stringify(state.savedFiles)) return;
+    const saving = state.note, savingFiles = state.files;
     setStatus('Saving…');
-    state.flight = rpc.call('poolUpdate', { id: entry.id, note: saving, revision: state.revision }).then(result => { state.revision = result.revision; state.saved = saving; setStatus('Saved'); refresh(); }).catch(e => { setStatus(`Not saved: ${errorText(e)}`); refresh(); throw e; }).finally(() => { state.flight = null; });
+    state.flight = rpc.call('poolUpdate', { id: entry.id, note: saving, attachments: savingFiles, revision: state.revision }).then(result => { state.revision = result.revision; state.saved = saving; state.savedFiles = savingFiles; setStatus('Saved'); refresh(); }).catch(e => { setStatus(`Not saved: ${errorText(e)}`); refresh(); throw e; }).finally(() => { state.flight = null; });
     await state.flight;
-    if (state.note !== state.saved) await flush();
+    if (state.note !== state.saved || JSON.stringify(state.files) !== JSON.stringify(state.savedFiles)) await flush();
   }
   editors.set(entry.id, { flush });
   useEffect(() => () => { editors.delete(entry.id); }, [entry.id, editors]);
-  useEffect(() => { if (note === local.current.saved) return; const timer = setTimeout(() => { void flush().catch(() => {}); }, 800); return () => clearTimeout(timer); }, [note]);
+  useEffect(() => { if (note === local.current.saved && JSON.stringify(files) === JSON.stringify(local.current.savedFiles)) return; const timer = setTimeout(() => { void flush().catch(() => {}); }, 800); return () => clearTimeout(timer); }, [note, files]);
   // Autosave is silent: pending and in-flight states would add a line and make the card jump; only failures show.
   const problem = !['Saved', 'Saving…', 'Not saved'].includes(status);
   const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } };
-  return <li className="group/entry relative space-y-2 rounded-xl border border-border-seam bg-background p-3">
-    <Button type="button" size="icon" variant="ghost" className={`absolute ${entry.quote ? 'right-1.5 top-1.5' : 'right-4 top-4'} size-7 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover/entry:opacity-100`} aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>
-    {entry.quote && <div className="border-l-2 border-border-seam pl-3 pr-7 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>}
-    <textarea aria-label="Pool note" rows={2} autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} className={`w-full ${entry.quote ? '' : 'pr-10'} field-sizing-content block max-h-48 min-h-[3.25rem] resize-none rounded-lg border border-border-seam bg-surface-recessed px-3 py-2 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground focus:border-ring`} maxLength={8000} value={note} onChange={e => { local.current.note = e.target.value; setNote(e.target.value); setStatus('Not saved'); }} onBlur={() => void flush().catch(() => {})} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); onSend(entry.id); } }} />
-    {(entry.attachments.length > 0 || problem) && <div className="flex flex-wrap items-center gap-1.5">{entry.attachments.map(file => <span key={file.path} className="flex items-center gap-1 rounded-md border border-border-seam bg-surface-recessed px-1.5 py-0.5 text-xs"><Icon name="Paperclip" aria-hidden className="size-3" /><span className="max-w-[160px] truncate">{file.name}</span></span>)}<span className="flex-1" /><p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{problem ? status : ''}</p></div>}
+  return <li className="space-y-2">
+    <Composer label="Pool note" sendLabel="Send entry" autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} value={note} onChange={value => { local.current.note = value; setNote(value); setStatus('Not saved'); }} attachments={files} onAttachments={update => { const next = update(local.current.files); local.current.files = next; setFiles(next); setStatus('Not saved'); }} projectId={projectId} pending={pending} onBlur={() => void flush().catch(() => {})} onSend={options => onSend(entry.id, options)} actions={<Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>} header={entry.quote && <div className="border-l-2 border-border-seam pl-3 pr-3 pt-3 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>} />
+    {problem && <p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{status}</p>}
   </li>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
@@ -325,7 +323,7 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
   }
   return <section className="space-y-2 border-b border-border-seam px-3 py-3 last:border-b-0">
     <UrlLink className="block truncate text-sm font-medium hover:underline" href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink>
-    <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors }} onSend={id => { if (!pending) void sendAll(undefined, id); }} autoFocus={entry.id === focusId} />)}</ul>
+    <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors, pending }} projectId={pool.projectId} onSend={(id, options) => { if (!pending) void sendAll(options, id); }} autoFocus={entry.id === focusId} />)}</ul>
     {/* Read and write first, then act: the actions sit under the messages. */}
     <footer className="flex items-center gap-2 pt-1">
       <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground" disabled={pending} onClick={() => void addMessage()}><Icon name="Plus" aria-hidden className="size-3.5" />Add message</Button>
