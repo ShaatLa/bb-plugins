@@ -3,7 +3,6 @@ import { useBbContext } from "@get-bb/plugin-sdk/app";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
-  TASK_TYPES,
   type TaskType,
   type Task,
   type TaskPriority,
@@ -49,11 +48,10 @@ import { CheckboxField, DEFAULT_COLOR } from "./shared.js";
 import {
   clearNewTaskDraft,
   hasDraftContent,
-  loadNewTaskDraft,
-  storeNewTaskDraft,
   type NewTaskDraft,
 } from "./new-task-draft.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
+import { ScheduleDialog, type Draft as ScheduleDraft } from "../scheduled/schedule-dialog.js";
 
 const CHIP_TRIGGER =
   "h-7 w-auto gap-1.5 rounded-md px-2 text-xs text-muted-foreground";
@@ -131,6 +129,34 @@ function TaskFieldPicker<Value extends string>({
   );
 }
 
+type Step = "choose" | "form" | "schedule";
+
+const KIND_CHOICES: ReadonlyArray<{
+  kind: TaskType | "scheduled";
+  label: string;
+  icon: string;
+  description: string;
+}> = [
+  {
+    kind: "task",
+    label: "Task",
+    icon: "ListTodo",
+    description: "A single piece of work, done once.",
+  },
+  {
+    kind: "epic",
+    label: "Epic",
+    icon: "Zap",
+    description: "A larger initiative that groups tasks.",
+  },
+  {
+    kind: "scheduled",
+    label: "Scheduled task",
+    icon: "Clock",
+    description: "Runs automatically, once or on a repeating schedule.",
+  },
+];
+
 function blankDraft(
   projectId: string | null,
   defaultStatus: TaskStatus | undefined,
@@ -177,6 +203,10 @@ export function NewTaskDialog({
   const [creatingLabel, setCreatingLabel] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<StagedAttachment[]>([]);
   const [createdTask, setCreatedTask] = useState<Task | null>(null);
+  // The kind is chosen before editing; Back returns here without touching draft or files.
+  const [step, setStep] = useState<Step>("choose");
+  // In-memory only: the whole draft (task form, files, schedule form) lives and dies with one open dialog.
+  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -195,19 +225,26 @@ export function NewTaskDialog({
             )
           : current.labelIds,
       };
-      const next = { ...resolved, ...change(resolved) };
-      storeNewTaskDraft(next);
-      return next;
+      return { ...resolved, ...change(resolved) };
     });
 
   useEffect(() => {
-    if (!open) return;
-    const restored = loadNewTaskDraft();
-    setDraft(restored ?? blankDraft(projectId, defaultStatus));
+    // Purges any draft an older version left in localStorage, on open and on close.
+    clearNewTaskDraft();
+    setScheduleDraft(null);
+    if (!open) {
+      // Release the draft and staged files on close; uploaded attachments are untouched.
+      setDraft(blankDraft(projectId, defaultStatus));
+      setPendingFiles([]);
+      setCreatedTask(null);
+      return;
+    }
+    setDraft(blankDraft(projectId, defaultStatus));
     setLabelQuery("");
     setPendingFiles([]);
     setCreatedTask(null);
     setError(null);
+    setStep("choose");
     // oxlint-disable-next-line react/exhaustive-deps
   }, [open]);
 
@@ -224,12 +261,11 @@ export function NewTaskDialog({
   useEffect(() => {
     if (!open || draft.projectId !== null || effectiveProjectId === null)
       return;
-    setDraft((current) => {
-      if (current.projectId !== null) return current;
-      const next = { ...current, projectId: effectiveProjectId };
-      storeNewTaskDraft(next);
-      return next;
-    });
+    setDraft((current) =>
+      current.projectId !== null
+        ? current
+        : { ...current, projectId: effectiveProjectId },
+    );
   }, [open, draft.projectId, effectiveProjectId]);
 
   const labelsQuery = useTasksQuery(
@@ -265,7 +301,6 @@ export function NewTaskDialog({
     }));
 
   const discardDraft = () => {
-    clearNewTaskDraft();
     setDraft(blankDraft(projectId, defaultStatus));
     setPendingFiles([]);
     setError(null);
@@ -294,8 +329,24 @@ export function NewTaskDialog({
     }
   };
 
+  const chooseKind = (kind: TaskType | "scheduled") => {
+    if (kind === "scheduled") {
+      setStep("schedule");
+      return;
+    }
+    // epicId stays in the draft so Task -> Epic -> Task does not lose the parent; submit ignores it for epics.
+    if (kind !== draft.type) updateDraft(() => ({ type: kind }));
+    setStep("form");
+  };
+
   const stageMore = (files: File[]) => {
-    if (files.length === 0 || submitting || createdTask !== null) return;
+    if (
+      files.length === 0 ||
+      submitting ||
+      createdTask !== null ||
+      step !== "form"
+    )
+      return;
     setPendingFiles((current) => [...current, ...stageFiles(files)]);
   };
 
@@ -311,6 +362,10 @@ export function NewTaskDialog({
     navigation.go({ kind: "task", taskKey: task.key });
   };
 
+  useEffect(() => {
+    if (step === "form") titleRef.current?.focus();
+  }, [step]);
+
   const requestClose = (next: boolean) => {
     if (!next && createdTask !== null && pendingFiles.length > 0) return;
     onOpenChange(next);
@@ -325,6 +380,7 @@ export function NewTaskDialog({
     (entry) => entry.status === "oversized",
   );
   const canSubmit =
+    step === "form" &&
     effectiveProjectId !== null &&
     title.trim().length > 0 &&
     !submitting &&
@@ -362,7 +418,6 @@ export function NewTaskDialog({
         setError(result.error.message);
         return;
       }
-      clearNewTaskDraft();
       const staged = pendingFiles.filter((entry) => entry.status === "staged");
       const failed = await uploadStagedAttachments(staged, {
         taskId: result.task.id,
@@ -400,8 +455,11 @@ export function NewTaskDialog({
     (entry) => entry.status === "failed",
   ).length;
 
+  const choosing = step === "choose";
+
   return (
-    <Dialog open={open} onOpenChange={requestClose}>
+    <>
+    <Dialog open={open && step !== "schedule"} onOpenChange={requestClose}>
       <DialogContent
         className="flex max-h-[85dvh] min-h-0 max-w-xl flex-col gap-0 p-0"
         onKeyDown={(event) => {
@@ -411,7 +469,12 @@ export function NewTaskDialog({
           }
         }}
         onPaste={(event) => {
-          if (event.defaultPrevented || submitting || createdTask !== null)
+          if (
+            event.defaultPrevented ||
+            submitting ||
+            createdTask !== null ||
+            step !== "form"
+          )
             return;
           const files = [...(event.clipboardData?.files ?? [])];
           if (files.length === 0) return;
@@ -427,12 +490,46 @@ export function NewTaskDialog({
               style={{ backgroundColor: project.color }}
             />
           ) : null}
-          {type === "epic" ? "New epic" : "New task"}
+          {choosing ? "Create new" : type === "epic" ? "New epic" : "New task"}
           {project ? ` · ${project.name}` : ""}
         </DialogTitle>
         <DialogDescription className="sr-only">
-          Create a task with a title, description, attributes, and attachments.
+          {choosing
+            ? "Choose whether to create a task, an epic, or a scheduled task."
+            : "Create a task with a title, description, attributes, and attachments."}
         </DialogDescription>
+        {choosing ? (
+          <div
+            role="group"
+            aria-label="What to create"
+            className="flex flex-col gap-2 px-4 pb-1 pt-3"
+          >
+            {KIND_CHOICES.map((choice) => (
+              <button
+                key={choice.kind}
+                type="button"
+                aria-label={choice.label}
+                aria-describedby={`new-task-kind-${choice.kind}`}
+                onClick={() => chooseKind(choice.kind)}
+                className="flex items-start gap-3 rounded-md border border-input p-3 text-left hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <Icon
+                  name={choice.icon}
+                  className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                />
+                <span className="flex flex-col">
+                  <span className="text-sm font-medium">{choice.label}</span>
+                  <span
+                    id={`new-task-kind-${choice.kind}`}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {choice.description}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {createdTask ? (
           <div className="min-h-0 flex-auto overflow-y-auto px-4 pt-2">
             <p role="alert" className="text-sm">
@@ -460,6 +557,8 @@ export function NewTaskDialog({
             </div>
           </div>
         ) : null}
+        {!choosing ? (
+        <>
         <div
           className={cn(
             "flex min-h-0 flex-auto flex-col px-4 pt-2",
@@ -530,18 +629,6 @@ export function NewTaskDialog({
                 keywords: [entry.prefix],
               }))}
               onValueChange={changeProject}
-            />
-            <TaskFieldPicker<TaskType>
-              dialogOpen={open}
-              label="Type"
-              value={type}
-              options={TASK_TYPES.map((value) => ({
-                value,
-                label: value === "epic" ? "Epic" : "Task",
-              }))}
-              onValueChange={(type) =>
-                updateDraft(() => ({ type, epicId: null }))
-              }
             />
           </div>
           <div className="flex flex-wrap items-center gap-1.5 pt-2">
@@ -678,6 +765,8 @@ export function NewTaskDialog({
             />
           </div>
         </div>
+        </>
+        ) : null}
         {error || labels.error ? (
           <p
             role="alert"
@@ -687,7 +776,19 @@ export function NewTaskDialog({
           </p>
         ) : null}
         <DialogFooter className="mt-4 shrink-0 flex-row items-center border-t border-border-hairline px-4 py-3 sm:justify-between">
-          {createdTask ? (
+          {choosing ? (
+            <>
+              <span />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground"
+                onClick={() => onOpenChange(false)}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : createdTask ? (
             <>
               <span />
               <Button size="sm" onClick={() => finish(createdTask)}>
@@ -696,11 +797,23 @@ export function NewTaskDialog({
             </>
           ) : (
             <>
-              <CheckboxField
-                checked={createMore}
-                onCheckedChange={setCreateMore}
-                label="Create more"
-              />
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={submitting}
+                  className="text-muted-foreground"
+                  onClick={() => setStep("choose")}
+                >
+                  <Icon name="ArrowLeft" className="size-3.5" />
+                  Back
+                </Button>
+                <CheckboxField
+                  checked={createMore}
+                  onCheckedChange={setCreateMore}
+                  label="Create more"
+                />
+              </div>
               <div className="flex items-center gap-1.5">
                 {hasDraftContent(draft) ? (
                   <Button
@@ -748,5 +861,20 @@ export function NewTaskDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {open && step === "schedule" ? (
+      <ScheduleDialog
+        scheduleId={null}
+        defaultProjectId={effectiveProjectId}
+        initialDraft={scheduleDraft}
+        onDraftChange={setScheduleDraft}
+        onBack={() => setStep("choose")}
+        onClose={() => onOpenChange(false)}
+        onSaved={() => {
+          onOpenChange(false);
+          navigation.go({ kind: "scheduled", tab: "all" });
+        }}
+      />
+    ) : null}
+    </>
   );
 }

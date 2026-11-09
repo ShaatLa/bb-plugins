@@ -85,6 +85,8 @@ CI health lists *problems*: open critical or warning job-level signals and run-l
 
 The timing summary has a workflow selector: it defaults to the workflow named CI (case-insensitive), or All workflows if absent. Changing it recalculates nothing remotely: it uses the cached per-workflow aggregates. Median, average, P95, total and coverage all follow this selector; the workflow breakdown and longest-run list remain repository-wide. All workflows is a pooled run distribution, not a typical CI duration: frequent short automation can dominate its median. CI run timings prioritizes median, mean and nearest-rank P95 as the three large statistics, with total estimated elapsed time in a secondary text line. The P95 label explains on hover that approximately 95% of measured successful runs finish at or below this duration. The card also shows expandable timing statistics per workflow, and the five longest successful runs with GitHub links. Estimates use run_started_at through updated_at for the current completed run record. Missing or invalid intervals are omitted and measured/total coverage is displayed. Only successful completed runs contribute to all timing statistics and the longest-run list. Cancelled, skipped, failed, timed-out, neutral and unknown conclusions are excluded; counts show measured versus successful runs plus the number excluded. Summed elapsed durations include overlapping workflows; they are not wall-clock delivery time, job compute time or billed runner minutes. Reruns or later record updates may inflate estimates; individual attempt history is not fetched.
 
+Runs of one workflow are never silently mixed across events: a workflow may run a light preflight on `pull_request`, the full check on `merge_group` and something short on `push`, and pooling them would make a daily median move with the day's event mix. When the selected workflow has two or more events, the timing summary gets an Event selector (default: the main event, the slowest per successful run among events with at least a tenth of the workflow's successful runs, i.e. the full check; or All events), and the workflow breakdown lists each event's median and sample size. The Median CI run duration and CI run duration p90 charts get the same Event selector and default to the main event, with the shown event in the note under the title; run-count charts default to All events. Each bar of a sample-based chart shows `n <samples>` under its value, and its tooltip says what the value is a median or p90 of (failed, cancelled and skipped runs are excluded). The agent summary carries the same split as `ciInsights.workflows[].events` (`event`, `total`, `passed`, `timing`).
+
 Diagnostics use metadata already returned by workflow-list requests and derive locally from the same retained raw history on date changes. No per-run or per-job timing requests are added. Existing cached histories remain readable; a refresh acquires missing metadata, with versioned HTTP cache keys preventing legacy slim responses from being retained by a 304. Partial CI histories never produce diagnostics or timing totals.
 
 
@@ -98,6 +100,8 @@ Expanded timing lists use compact inset rows with aligned duration values. Workf
 
 
 ## Agent access
+
+Use `view=lanes` for seven UTC days of successful full-attempt wall and per-lane p50/p90 timings and sample counts; optional `event` selects a pipeline. Data comes from the local job store.
 
 Use the native **ci_dashboard_metrics** tool to read CI data. For example:
 

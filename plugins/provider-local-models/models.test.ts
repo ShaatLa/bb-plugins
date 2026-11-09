@@ -15,9 +15,22 @@ test('lists installed models with readable names and an unlimited usage window e
     assert.equal(usage.status,'ok');
     assert.deepEqual(usage.status==='ok'&&usage.windows,[{label:'gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]);
   } finally {await server.close();}
+  const twoModels=usageFor([{displayName:'Flint (Q4_K_M)'},{displayName:'Qwen3.6-35B-A3B (Q4_K_M)'}]);
+  assert.deepEqual(twoModels.windows,[{label:'Flint, Qwen3.6-35B-A3B\u2063',usedPercent:0,resetsAt:null}]);
   const two={data:[{id:'a/Qwen-GGUF:Q4'},{id:'b/gpt-oss-GGUF:MXFP4'}]};
   assert.deepEqual(parseModels(two,'b/gpt-oss-GGUF:MXFP4').map(m=>m.isDefault),[false,true]);
   assert.deepEqual(parseModels(two,'missing').map(m=>m.isDefault),[true,false]);
   assert.throws(()=>parseModels({data:[]}),/no models/);
   await assert.rejects(()=>readModels(server.baseUrl));
+});
+
+test('reads per-model reasoning from the caps file',async()=>{
+  const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+  const dir=await mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(),'local-caps-'));const server=await startModelsServer();
+  try{
+    await writeFile(dir+'/model-caps.json',JSON.stringify({'ggml-org/gpt-oss-20b-GGUF:MXFP4':{knob:'reasoning_effort',none:true,levels:['low','medium','xhigh'],checkedAt:1}}));
+    const models=await readModels(server.baseUrl,'',dir);
+    assert.deepEqual(models[0].supportedReasoningEfforts?.map(e=>e.reasoningEffort),['none','low','medium','xhigh']);
+    assert.equal(models[0].defaultReasoningEffort,'medium');
+  }finally{await server.close();await rm(dir,{recursive:true,force:true});}
 });

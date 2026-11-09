@@ -256,3 +256,54 @@ it.each(["rail", "inline"])("opens the selected epic independently of its picker
   fireEvent.click(slot.getByRole("button", { name: "Epic" }));
   expect(await slot.findByRole("option", { name: "No epic" })).toBeTruthy();
 });
+
+const ongoingLabel = { id: "01HZZZZZZZZZZZZZZZZZZZZZL1", projectId: PROJECT_ID, name: "ongoing", color: "purple" };
+
+it.each(["rail", "inline"].flatMap(layout => ["ongoing", "Ongoing"].map(name => ({ layout, name }))))("changes an $name epic to no deadline or a date in $layout properties", async ({ layout, name }) => {
+  const updates: unknown[] = [];
+  const props = { ...railProps(null), task: { ...task, type: "epic" as const, labelIds: ["other", ongoingLabel.id] }, labels: [{ ...ongoingLabel, name }], onUpdate: (update: unknown) => updates.push(update) };
+  function Harness() { return <TasksRefreshProvider>{layout === "rail" ? <PropertiesRail {...props} /> : <InlineProperties {...props} />}</TasksRefreshProvider>; }
+  const slot = renderSlot({ component: Harness }, {}, { rpc: { listBbProjects: () => ({ bbProjects: [] }) } });
+  expect(slot.getByRole("button", { name: "Timeframe" }).textContent).toContain("Ongoing");
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Ongoing" }));
+  expect(updates).toEqual([{ dueDate: null, labelIds: ["other", ongoingLabel.id] }]);
+  updates.length = 0;
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "No deadline" }));
+  expect(updates).toEqual([{ dueDate: null, labelIds: ["other"] }]);
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Due date…" }));
+  fireEvent.change(slot.getByLabelText("Due date"), { target: { value: "2027-01-12" } });
+  expect(updates[1]).toEqual({ dueDate: "2027-01-12", labelIds: ["other"] });
+});
+
+it.each([false, true])("creates the ongoing label safely (creation fails: %s)", async fails => {
+  const updates: unknown[] = [];
+  const creates: unknown[] = [];
+  const slot = renderSlot({ component: RailHarness }, {
+    ...railProps(null), task: { ...task, type: "epic", dueDate: "2027-01-12", labelIds: ["other"] },
+    onUpdate: update => updates.push(update),
+  }, { rpc: {
+    listBbProjects: () => ({ bbProjects: [] }),
+    createLabel: raw => { creates.push(rpcInput(raw)); if (fails) throw new Error("Cannot create label"); return { label: ongoingLabel }; },
+  } });
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Ongoing" }));
+  if (fails) {
+    expect(await slot.findByRole("alert")).toBeTruthy();
+    expect(updates).toEqual([]);
+  } else {
+    await waitFor(() => expect(updates).toEqual([{ dueDate: null, labelIds: ["other", ongoingLabel.id] }]));
+  }
+  expect(creates).toEqual([{ projectId: PROJECT_ID, name: "ongoing", color: "slateblue" }]);
+});
+
+it("keeps the ordinary task date picker", async () => {
+  const updates: unknown[] = [];
+  const slot = renderSlot({ component: RailHarness }, { ...railProps(null), onUpdate: update => updates.push(update) }, { rpc: { listBbProjects: () => ({ bbProjects: [] }) } });
+  fireEvent.click(slot.getByRole("button", { name: "Set due date" }));
+  expect(slot.queryByRole("button", { name: "Ongoing" })).toBeNull();
+  fireEvent.change(slot.getByLabelText("Due date"), { target: { value: "2027-01-12" } });
+  expect(updates).toEqual([{ dueDate: "2027-01-12" }]);
+});

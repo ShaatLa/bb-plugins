@@ -105,6 +105,44 @@ export type TimingSample = { event: string; pool: string; completedAt: string; q
 const stat = (values: number[]) => ({ p50: percentile(values, 50), p90: percentile(values, 90) });
 /** Nearest-rank percentile of an ascending-sorted list (empty list: 0). */
 export const percentile = (sorted: number[], p: number) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p / 100 * sorted.length) - 1))]! : 0;
+type LaneStat = { p50: number; p90: number; n: number; days: { date: string; p50: number; p90: number; n: number }[] };
+export type LaneTimings = { pipelines: { workflow: string; event: string; runs: number; wall: LaneStat; lanes: ({ name: string } & LaneStat)[] }[] };
+export function laneTimings(jobs: JobRecord[], now: number): LaneTimings {
+  type Sample = { date: string; value: number };
+  type Group = { workflow: string; event: string; attempts: Map<string, { valid: boolean; start: number; end: number }>; lanes: Map<string, Sample[]> };
+  const groups = new Map<string, Group>(), startDay = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate()) - 6 * 86400000;
+  for (const j of jobs) {
+    const key = JSON.stringify([j.workflowName, j.event]);
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { workflow: j.workflowName, event: j.event, attempts: new Map(), lanes: new Map() });
+    const id = JSON.stringify([j.runId, j.attempt]);
+    let a = g.attempts.get(id);
+    if (!a) g.attempts.set(id, a = { valid: true, start: Infinity, end: -Infinity });
+    if (j.carried) { a.valid = false; continue; }
+    if (j.conclusion === "skipped") continue;
+    const start = Date.parse(j.startedAt ?? ""), end = Date.parse(j.completedAt ?? "");
+    if (j.conclusion !== "success" || !Number.isFinite(start) || !Number.isFinite(end) || end < start) { a.valid = false; continue; }
+    a.start = Math.min(a.start, start); a.end = Math.max(a.end, end);
+    if (end >= startDay && end <= now) {
+      let lane = g.lanes.get(j.jobName);
+      if (!lane) g.lanes.set(j.jobName, lane = []);
+      lane.push({ date: new Date(end).toISOString().slice(0, 10), value: end - start });
+    }
+  }
+  const stats = (samples: Sample[]): LaneStat => {
+    const values = samples.map((s) => s.value).sort((a, b) => a - b), days = new Map<string, number[]>();
+    for (const s of samples) { let day = days.get(s.date); if (!day) days.set(s.date, day = []); day.push(s.value); }
+    return { ...stat(values), n: values.length, days: [...days].sort(([a], [b]) => a.localeCompare(b)).map(([date, values]) => ({ date, ...stat(values.sort((a, b) => a - b)), n: values.length })) };
+  };
+  const pipelines = [...groups.values()].map((g) => {
+    const walls: Sample[] = [];
+    for (const a of g.attempts.values()) if (a.valid && a.end >= startDay && a.end <= now && Number.isFinite(a.start)) walls.push({ date: new Date(a.end).toISOString().slice(0, 10), value: a.end - a.start });
+    return { workflow: g.workflow, event: g.event, runs: walls.length, wall: stats(walls), lanes: [...g.lanes].map(([name, samples]) => ({ name, ...stats(samples) })).sort((a, b) => b.p90 - a.p90 || a.name.localeCompare(b.name)) };
+  }).filter((p) => p.runs || p.lanes.length);
+  const total = pipelines.reduce((n, p) => n + p.runs, 0);
+  pipelines.sort((a, b) => Number(b.runs >= total / 10 && b.runs > 0) - Number(a.runs >= total / 10 && a.runs > 0) || b.wall.p50 - a.wall.p50 || a.workflow.localeCompare(b.workflow) || a.event.localeCompare(b.event));
+  return { pipelines };
+}
 export function timingSamples(jobs: JobRecord[]): TimingSample[] {
   const out: TimingSample[] = [];
   for (const job of jobs) {

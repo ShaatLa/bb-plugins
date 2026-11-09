@@ -1,13 +1,10 @@
 import type { PluginProviderFallbackModel } from "@get-bb/plugin-sdk";
 import type { ProviderUsage } from "@get-bb/plugin-sdk/provider-bridge";
-import { access } from "node:fs/promises";
-import { constants } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { z } from "zod";
 
 export const DEFAULT_BASE_URL = "http://127.0.0.1:9931/v1";
-export const REASONING_EFFORTS = ["low", "medium", "high"];
+export const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"];
+import { readCaps, type Caps } from "./reasoning.ts";
 
 const modelListSchema = z.object({ data: z.array(z.object({ id: z.string().min(1) }).passthrough()) });
 
@@ -18,49 +15,41 @@ export function displayName(id: string) {
 }
 
 // The configured default wins when the server lists it; otherwise the server's first model.
-export function parseModels(body: unknown, defaultModel = ""): (PluginProviderFallbackModel & { model: string })[] {
+export function parseModels(body: unknown, defaultModel = "", caps: Record<string, Caps> = {}): (PluginProviderFallbackModel & { model: string })[] {
   const entries = modelListSchema.parse(body).data;
   const fallback = entries.some(entry => entry.id === defaultModel) ? defaultModel : entries[0]?.id;
-  const models = entries.map(entry => ({
+  const models = entries.map(entry => {
+    const known = caps[entry.id];
+    const levels = known ? [...(known.none ? ["none"] : []), ...known.levels] : ["low","medium","high"];
+    return ({
     id: entry.id, model: entry.id, displayName: displayName(entry.id), description: `Local · ${entry.id}`,
-    isDefault: entry.id === fallback, defaultReasoningEffort: "medium",
-    supportedReasoningEfforts: REASONING_EFFORTS.map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })),
-  }));
+    isDefault: entry.id === fallback, defaultReasoningEffort: levels.includes("medium") ? "medium" : levels[0],
+    supportedReasoningEfforts: levels.map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })),
+  }); });
   if (!models.length) throw new Error("The local server lists no models.");
   return models;
 }
 
-export async function readModels(baseUrl: string, defaultModel = "") {
+export async function readModels(baseUrl: string, defaultModel = "", dataDir = "") {
   const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`Local server answered ${response.status}.`);
-  return parseModels(await response.json(), defaultModel);
+  return parseModels(await response.json(), defaultModel, readCaps(dataDir));
 }
 
-// Local models have no quota: one "∞" window per installed model.
-// The label is the short model name followed by an invisible separator (U+2063)
-// so CSS can target only these rows.
+// Local models have no quota: one usage row listing all installed models.
+// The label ends with an invisible separator (U+2063) so CSS can target this row.
 export function usageFor(models: { displayName: string }[]): ProviderUsage {
   const shortName = (name: string) => name.split(" ")[0];
+  const names = models.map(m => shortName(m.displayName)).filter(Boolean);
+  const label = names.join(", ")+"\u2063";
   return {
     status: "ok",
     accountEmail: null,
     planLabel: "Local",
-    windows: models.map(model => ({
-      label: shortName(model.displayName) + "\u2063",
+    windows: [{
+      label,
       usedPercent: 0,
       resetsAt: null,
-    })),
+    }],
   };
-}
-
-export async function resolveCodex(command = ""): Promise<string | null> {
-  const name = process.platform === "win32" ? "codex.exe" : "codex";
-  const candidates = command ? [command] : [
-    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, name)),
-    "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path.join(os.homedir(), ".local", "bin", name),
-  ];
-  for (const candidate of candidates) {
-    try { await access(candidate, constants.X_OK); return candidate; } catch { /* Try the next installation. */ }
-  }
-  return null;
 }

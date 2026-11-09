@@ -177,3 +177,19 @@ describe("summarizeAnalysis and sortSignals", () => {
       .toEqual(["c", "w-new", "w-old", "i", "r"]);
   });
 });
+
+describe("lane view", () => {
+  it("selects pipelines, bounds lanes, and accepts old rows", () => {
+    const stat = { p50: 1, p90: 2, n: 1, days: [] };
+    const pipeline = (event: string) => ({ workflow: "CI", event, runs: 1, wall: stat, lanes: Array.from({ length: 200 }, (_, i) => ({ name: `Unit tests ${i}`, ...stat })) });
+    const base = { repository: REPO, updatedAt: null, error: null, window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null } };
+    const output = (laneTimings?: object) => ({ repositories: [{ ...base, laneTimings }], actors: {} }) as never;
+    const row = (data: never, event?: string) => ciSliceReport(data, "lanes", event).repositories[0] as Record<string, unknown>;
+    const data = output({ pipelines: [pipeline("merge_group"), pipeline("pull_request")] });
+    expect(row(data).pipeline).toMatchObject({ event: "merge_group" });
+    expect(row(data, "pull_request").pipeline).toMatchObject({ event: "pull_request" });
+    expect(row(data).moreLanes).toBeGreaterThan(0);
+    expect(JSON.stringify(row(data)).length).toBeLessThan(7600);
+    expect(row(output()).pipeline).toBeNull();
+  });
+});

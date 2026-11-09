@@ -250,3 +250,20 @@ describe("inherited failures", () => {
     expect(one(group(), { refusalSteps: ["Run tests"] })).toMatchObject({ class: "refused", reason: "intentional refusal by a gate step" });
   });
 });
+
+describe("laneTimings", () => {
+  it("groups complete attempts and successful lanes by UTC day and ranks representative pipelines", async () => {
+    const { laneTimings } = await import("./ci-classify");
+    const now = Date.parse("2026-11-08T12:00:00Z");
+    const make = (runId: number, event: string, duration: number, extra: Partial<JobRecord> = {}) => job({ runId, workflowName: "CI", jobName: "Unit tests", event, startedAt: "2026-11-08T00:00:00Z", completedAt: new Date(Date.parse("2026-11-08T00:00:00Z") + duration).toISOString(), ...extra });
+    const jobs = [make(1, "merge_group", 1000), make(1, "merge_group", 2000, { jobName: "Build image", startedAt: "2026-11-07T23:59:59Z", completedAt: "2026-11-08T00:00:01Z" }),
+      ...Array.from({ length: 10 }, (_, i) => make(i + 2, "pull_request", 100)), make(12, "push", 10000), make(17, "merge_group", 2000),
+      make(13, "merge_group", 1000), make(13, "merge_group", 1000, { conclusion: "failure" }),
+      make(14, "merge_group", 1000), make(14, "merge_group", 1000, { carried: true }),
+      make(15, "merge_group", 1000, { startedAt: null }), make(16, "merge_group", 1000, { startedAt: "2026-11-01T00:00:00Z", completedAt: "2026-11-01T00:00:01Z" })];
+    const result = laneTimings(jobs, now).pipelines;
+    expect(result[0]).toMatchObject({ event: "merge_group", runs: 2, wall: { p50: 2000, n: 2, days: [{ date: "2026-11-08", n: 2 }] } });
+    expect(result[0]!.lanes.find((lane) => lane.name === "Unit tests")).toMatchObject({ n: 4, p90: 2000 });
+    expect(result.at(-1)?.event).toBe("push");
+  });
+});

@@ -1,6 +1,7 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { DependenciesSection } from "./dependencies";
+import { ShareTaskButton } from "../../components/share-task-button";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -55,6 +56,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ScheduledSourceBanner } from "../scheduled/source-banner.js";
 
 interface DetailViewProps {
   taskKey: string;
@@ -518,9 +520,9 @@ function TaskDetail({
       ? draft.markdown
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
-  const activityStatus = <>
+  const activityStatus = task.scheduledRole === "template" ? null : <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    {task.executionTarget !== "owner" && !task.archivedAt ? <div className="mb-4">
+    {task.executionTarget !== "owner" && !task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}
   </>;
@@ -530,12 +532,9 @@ function TaskDetail({
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
-            <CopyTaskKey
-              key={task.id}
-              taskKey={task.key}
-              onError={push}
-            />,
+            <><CopyTaskKey key={task.id} taskKey={task.key} onError={push} /><ShareTaskButton taskKey={task.key} /></>,
           )}
+          <ScheduledSourceBanner task={task} />
           {task.type === "epic" ||
           epic.data ||
           parentTask ||

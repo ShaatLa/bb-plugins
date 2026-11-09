@@ -29,7 +29,7 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
-import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
+import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
@@ -403,6 +403,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
   const save = async (changes: {
     autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
+    statusNotifications?: z.infer<typeof statusNotificationsSchema>;
   }) => {
     setBusy(true);
     setError(null);
@@ -447,6 +448,19 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Display an amber marker for idle attached threads in this project. No messages are sent to the thread.</p>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Task status notifications
+        <Select value={project.statusNotifications ?? "off"} disabled={busy}
+          onValueChange={(value) => void save({ statusNotifications: value as z.infer<typeof statusNotificationsSchema> })}>
+          <SelectTrigger aria-label="Task status notifications" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="all">All status changes</SelectItem>
+            <SelectItem value="done">Done only</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
@@ -469,7 +483,7 @@ function GeneralSettings() {
             onValueChange={(defaultScreen) => {
               setBusy(true);
               setError(null);
-              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ defaultScreen }))
+              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ ...preferences.data, defaultScreen }))
                 .then(() => preferences.refresh())
                 .catch((error) => setError(errorMessage(error)))
                 .finally(() => setBusy(false));

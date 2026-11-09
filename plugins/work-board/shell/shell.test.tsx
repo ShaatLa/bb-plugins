@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import type { ExperimentalPanelTabs } from "@get-bb/plugin-sdk/app";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeTask, navTab } from "../test-fixtures.js";
 import type { Task } from "../shared/contract.js";
@@ -24,6 +26,36 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+const ownTab = (id: "navigation" | "kanban") => ({
+  key: `tab-${id}`,
+  title: id,
+  status: null,
+  closable: false,
+  detail: {
+    kind: "plugin" as const,
+    pluginId: "test-plugin",
+    tab: { id, context: { kind: "nav-panel" as const, panelId: "work-board" }, availability: "fixed" as const },
+    params: null,
+  },
+});
+const browserTab = { key: "tab-browser", title: "Docs", status: null, closable: true, detail: { kind: "browser" as const, url: "https://example.com" } };
+const KANBAN_OPEN_CALL = { method: "openTab", options: { tab: { id: "kanban", context: { kind: "nav-panel", panelId: "work-board" }, availability: "fixed" } } };
+/** A mutable native panel: mutate it and rerender to simulate host-side tab changes. */
+function nativePanel(selectedKey: string | null, open = true, withNavigation = true) {
+  const state = {
+    open,
+    selectedKey,
+    tabs: [...(withNavigation ? [ownTab("navigation")] : []), ownTab("kanban"), browserTab],
+  };
+  return state as ExperimentalPanelTabs & { open: boolean; selectedKey: string | null };
+}
+const panelOptions = (panel: ExperimentalPanelTabs, overrides: Record<string, unknown> = {}) => ({
+  experimental_panelTabs: panel,
+  experimental_panel: { openTab: () => true, selectTab: () => true, close: () => true, ...overrides },
+});
+const pressed = async (slot: { findByRole: (role: "button", options: { name: string }) => Promise<HTMLElement> }, name: "List" | "Board") =>
+  (await slot.findByRole("button", { name })).getAttribute("aria-pressed");
 
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const OTHER_PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP2";
@@ -96,32 +128,32 @@ describe("tasks route grammar", () => {
 });
 
 describe("project view preference", () => {
-  const openProject = (subPath: string) =>
+  const openProject = (subPath: string, options: Record<string, unknown> = {}) =>
     renderSlot(
       app.navPanels[0]!,
       { subPath },
-      { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }), ...options },
     );
 
-  it("restores the remembered view when the URL names none", async () => {
-    const listed = openProject(`${PROJECT_ID}?view=list`);
+  it("restores the remembered view when the URL names none and opens the native board for it", async () => {
+    const listed = openProject(`${PROJECT_ID}?view=list`, panelOptions(nativePanel("tab-navigation")));
     expect(listed.getByRole("link", { name: "Work Board settings" }).getAttribute("href")).toBe("/settings/plugins/work-board");
     fireEvent.click(await listed.findByRole("button", { name: "Board" }));
     expect(listed.navigateCalls).toContainEqual({
       method: "toPluginPanel",
       path: "work-board",
-      options: { subPath: `${PROJECT_ID}?view=board` },
+      options: { subPath: `${PROJECT_ID}?view=board`, replace: true },
     });
     listed.lifecycle.unmount();
 
-    const reopened = openProject(PROJECT_ID);
-    const boardSegment = await reopened.findByRole("button", { name: "Board" });
-    expect(boardSegment.getAttribute("aria-pressed")).toBe("true");
-    await reopened.findByText("In Review");
+    const panel = nativePanel("tab-navigation");
+    const reopened = openProject(PROJECT_ID, panelOptions(panel));
+    await waitFor(() => expect(reopened.inspection.experimental_panelCalls).toContainEqual(KANBAN_OPEN_CALL));
+    expect(reopened.queryByText("In Review")).toBeNull();
   });
 
   it("keeps per-project choices apart and defaults unseen projects to the last one used", async () => {
-    const slot = openProject(`${PROJECT_ID}?view=list`);
+    const slot = openProject(`${PROJECT_ID}?view=list`, panelOptions(nativePanel("tab-navigation")));
     fireEvent.click(await slot.findByRole("button", { name: "Board" }));
     slot.lifecycle.unmount();
 
@@ -131,7 +163,7 @@ describe("project view preference", () => {
     const other = renderSlot(
       app.navPanels[0]!,
       { subPath: `${OTHER_PROJECT_ID}?view=list` },
-      { rpc: seededRpc() },
+      { rpc: seededRpc({ listProjects: () => ({ projects: [project, { ...project, id: OTHER_PROJECT_ID, prefix: "OTH" }] }) }), ...panelOptions(nativePanel("tab-navigation")) },
     );
     fireEvent.click(await other.findByRole("button", { name: "List" }));
     expect(loadViewMode(OTHER_PROJECT_ID)).toBe("list");
@@ -157,12 +189,12 @@ describe("project view preference", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Storage is disabled", "SecurityError");
     });
-    const slot = openProject(`${PROJECT_ID}?view=list`);
+    const slot = openProject(`${PROJECT_ID}?view=list`, panelOptions(nativePanel("tab-navigation")));
     fireEvent.click(await slot.findByRole("button", { name: "Board" }));
     expect(slot.navigateCalls).toContainEqual({
       method: "toPluginPanel",
       path: "work-board",
-      options: { subPath: `${PROJECT_ID}?view=board` },
+      options: { subPath: `${PROJECT_ID}?view=board`, replace: true },
     });
   });
 });
@@ -173,14 +205,13 @@ describe("startup screen", () => {
     listLabels: () => ({ labels: [] }),
   });
 
-  it("reopens the last visited project as a board even if it was viewed as a list", async () => {
+  it("reopens the last visited project with the native board even if it was viewed as a list", async () => {
     const visited = renderSlot(tasksRegistration, { subPath: `${OTHER_PROJECT_ID}?view=list` }, { rpc });
     await waitFor(() => expect(loadLastProjectId()).toBe(OTHER_PROJECT_ID));
     visited.lifecycle.unmount();
-    const reopened = renderSlot(tasksRegistration, { subPath: "" }, { rpc });
-    await reopened.findByText("In Review");
-    expect(reopened.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
-    expect(reopened.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${OTHER_PROJECT_ID}?view=board`, replace: true } });
+    const reopened = renderSlot(tasksRegistration, { subPath: "" }, { rpc, ...panelOptions(nativePanel("tab-navigation")) });
+    await waitFor(() => expect(reopened.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${OTHER_PROJECT_ID}?view=board`, replace: true } }));
+    expect(reopened.inspection.experimental_panelCalls).toEqual([]);
   });
 
   it.each(["all", "active", "last-project-list"])("uses the %s setting on the root route", async (defaultScreen) => {
@@ -262,25 +293,156 @@ describe("resource lock chips", () => {
 describe("kanban side panel", () => {
   const kanbanTab = navTab(app, "kanban");
 
-  it("opens the native kanban tab and leaves the project list in the main area", async () => {
-    const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=board` }, {
-      rpc: seededRpc(),
-      experimental_panel: { openTab: () => true },
-    });
-    fireEvent.click(await slot.findByRole("button", { name: "Open kanban in side panel" }));
-    expect(slot.inspection.experimental_panelCalls).toEqual([
-      { method: "openTab", options: { tab: { id: "kanban", context: { kind: "nav-panel", panelId: "work-board" }, availability: "fixed" } } },
-    ]);
-    expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${PROJECT_ID}?view=list` } });
+  const openMain = (subPath: string, panel: ExperimentalPanelTabs, overrides: Record<string, unknown> = {}, rpc = seededRpc()) =>
+    renderSlot(tasksRegistration, { subPath }, { rpc, ...panelOptions(panel, overrides) });
+  const rerenderMain = (slot: ReturnType<typeof openMain>, subPath: string) =>
+    slot.lifecycle.rerender(<tasksRegistration.component subPath={subPath} />);
+  const panelCalls = (slot: ReturnType<typeof openMain>) => slot.inspection.experimental_panelCalls;
+
+  it("Board opens the native kanban tab and the main area keeps the list", async () => {
+    const panel = nativePanel("tab-navigation");
+    const slot = openMain(`${PROJECT_ID}?view=list`, panel);
+    expect(await pressed(slot, "List")).toBe("true");
+    expect(slot.queryByRole("button", { name: "Open kanban in side panel" })).toBeNull();
+    fireEvent.click(await slot.findByRole("button", { name: "Board" }));
+    expect(panelCalls(slot)).toEqual([KANBAN_OPEN_CALL]);
+    // The toggle follows the host, not the click.
+    expect(await pressed(slot, "Board")).toBe("false");
+    panel.selectedKey = "tab-kanban";
+    rerenderMain(slot, `${PROJECT_ID}?view=board`);
+    expect(await pressed(slot, "Board")).toBe("true");
+    expect(slot.queryByText("In Review")).toBeNull();
   });
 
-  it("keeps the main board when the host declines the panel open", async () => {
-    const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=board` }, {
-      rpc: seededRpc(),
-      experimental_panel: { openTab: () => false },
-    });
-    fireEvent.click(await slot.findByRole("button", { name: "Open kanban in side panel" }));
+  it("a declined open leaves List truthful, shows an error and stores nothing", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const slot = openMain(`${PROJECT_ID}?view=list`, nativePanel("tab-navigation"), { openTab: () => false });
+    fireEvent.click(await slot.findByRole("button", { name: "Board" }));
+    expect(error).toHaveBeenCalledWith("Could not open the kanban panel");
+    expect(await pressed(slot, "List")).toBe("true");
     expect(slot.navigateCalls).toEqual([]);
+    expect(window.localStorage.getItem("bb-work-board:view-preferences")).toBeNull();
+  });
+
+  it("List selects the Navigation tab without closing other tabs or the panel", async () => {
+    const slot = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-kanban"));
+    expect(await pressed(slot, "Board")).toBe("true");
+    panelCalls(slot).length = 0;
+    fireEvent.click(await slot.findByRole("button", { name: "List" }));
+    expect(panelCalls(slot)).toEqual([{ method: "selectTab", key: "tab-navigation" }]);
+    expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${PROJECT_ID}?view=list`, replace: true } });
+    expect(loadViewMode(PROJECT_ID)).toBe("list");
+  });
+
+  it("List hides the panel only when no Navigation tab exists, and reports a failed leave", async () => {
+    const hidden = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-kanban", true, false));
+    panelCalls(hidden).length = 0;
+    fireEvent.click(await hidden.findByRole("button", { name: "List" }));
+    expect(panelCalls(hidden)).toEqual([{ method: "close" }]);
+    cleanup();
+    window.localStorage.clear();
+
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const stuck = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-kanban"), { selectTab: () => false });
+    fireEvent.click(await stuck.findByRole("button", { name: "List" }));
+    expect(error).toHaveBeenCalledWith("Could not leave the kanban panel");
+    expect(await pressed(stuck, "Board")).toBe("true");
+    expect(stuck.navigateCalls).toEqual([]);
+    expect(window.localStorage.getItem("bb-work-board:view-preferences")).toBeNull();
+  });
+
+  it("follows native tab changes: another tab or a hidden panel means List", async () => {
+    const states: Array<[string, ExperimentalPanelTabs, "List" | "Board"]> = [
+      ["kanban selected", nativePanel("tab-kanban"), "Board"],
+      ["other tab selected", nativePanel("tab-browser"), "List"],
+      ["navigation selected", nativePanel("tab-navigation"), "List"],
+      ["panel hidden", nativePanel("tab-kanban", false), "List"],
+      ["no tabs reported", { open: true, selectedKey: null, tabs: [] }, "List"],
+    ];
+    for (const [, panel, expected] of states) {
+      const slot = openMain(`${PROJECT_ID}?view=list`, panel);
+      expect(await pressed(slot, expected)).toBe("true");
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("an external tab switch or hide updates the toggle at once and a stale ?view=board never reopens it", async () => {
+    const panel = nativePanel("tab-kanban");
+    const slot = openMain(`${PROJECT_ID}?view=board`, panel);
+    expect(await pressed(slot, "Board")).toBe("true");
+    expect(panelCalls(slot)).toEqual([]);
+
+    panel.selectedKey = "tab-browser";
+    rerenderMain(slot, `${PROJECT_ID}?view=board`);
+    expect(await pressed(slot, "List")).toBe("true");
+    expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${PROJECT_ID}?view=list`, replace: true } });
+    expect(loadViewMode(PROJECT_ID)).toBe("list");
+    rerenderMain(slot, `${PROJECT_ID}?view=board`);
+    panel.open = false;
+    panel.selectedKey = "tab-kanban";
+    rerenderMain(slot, `${PROJECT_ID}?view=board`);
+    expect(await pressed(slot, "List")).toBe("true");
+    expect(panelCalls(slot)).toEqual([]);
+  });
+
+  it("opens the native board once for an explicit board deep link but not when it already shows", async () => {
+    const slot = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-navigation"));
+    await waitFor(() => expect(panelCalls(slot)).toEqual([KANBAN_OPEN_CALL]));
+    rerenderMain(slot, `${PROJECT_ID}?view=board`);
+    expect(panelCalls(slot)).toHaveLength(1);
+    cleanup();
+
+    const showing = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-kanban"));
+    await showing.findByRole("button", { name: "Board" });
+    expect(panelCalls(showing)).toEqual([]);
+  });
+
+  it("keeps the board beside a task and switching projects does not reopen an active board", async () => {
+    const panel = nativePanel("tab-kanban");
+    const slot = openMain("task/TSK-4", panel);
+    expect(await pressed(slot, "Board")).toBe("true");
+    expect(slot.getAllByText(/TSK-4/).length).toBeGreaterThan(0);
+    cleanup();
+
+    const switched = openMain(`${PROJECT_ID}?view=board`, panel);
+    await pressed(switched, "Board");
+    rerenderMain(switched, `${OTHER_PROJECT_ID}?view=board`);
+    expect(panelCalls(switched)).toEqual([]);
+  });
+
+  it("a task route keeps a usable toggle for its project and does not navigate", async () => {
+    const slot = openMain("task/TSK-4", nativePanel("tab-navigation"));
+    fireEvent.click(await slot.findByRole("button", { name: "Board" }));
+    expect(panelCalls(slot)).toEqual([KANBAN_OPEN_CALL]);
+    expect(slot.navigateCalls).toEqual([]);
+    expect(loadViewMode(PROJECT_ID)).toBe("board");
+  });
+
+  it("renders no board in the main area, so the board view adds no dataset read", async () => {
+    const slot = openMain(`${PROJECT_ID}?view=board`, nativePanel("tab-kanban"));
+    await waitFor(() => expect(slot.rpcCalls.some(({ method }) => method === "listTasks")).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(slot.queryByText("In Review")).toBeNull();
+    // Only the central list reads tasks; a second BoardView would add another read.
+    expect(slot.rpcCalls.filter(({ method }) => method === "listTasks")).toHaveLength(1);
+  });
+
+  it("keeps the right-board creation dialog in its pane", async () => {
+    const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc() });
+    fireEvent.click(await slot.findByRole("button", { name: "New Todo task" }));
+    const dialog = await slot.findByRole("dialog");
+    expect(dialog.closest("[data-dialog-scope]")).toBeTruthy();
+  });
+
+  it("the right-board Scheduled action opens Scheduled in the main surface without touching tabs", async () => {
+    const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc(), ...panelOptions(nativePanel("tab-kanban")) });
+    const region = await slot.findByRole("region", { name: "Project kanban" });
+    const scheduled = within(region).getByRole("button", { name: "Scheduled" });
+    expect(scheduled.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(scheduled);
+    expect(slot.navigateCalls).toEqual([{ method: "toPluginPanel", path: "work-board", options: { subPath: "scheduled" } }]);
+    expect(slot.inspection.experimental_panelCalls).toEqual([]);
+    expect(within(region).getAllByText("In Review")).toHaveLength(1);
   });
 
   it("renders a live board and follows the project while the main page shows a task", async () => {
@@ -979,6 +1141,22 @@ describe("tasks app shell", () => {
     await slot.findByText("No projects yet");
     fireEvent.click(slot.getByRole("button", { name: /New project/ }));
     await slot.findByText("Projects group tasks under a shared key prefix.");
+    expect(slot.getByRole("dialog").closest("[data-dialog-scope]")).not.toBeNull();
+  });
+
+  it("keeps the new task modal inside the Work Board pane", async () => {
+    const slot = renderSlot(tasksRegistration, { subPath: `${PROJECT_ID}?view=list` }, {
+      rpc: seededRpc(),
+    });
+    await slot.findByText("Tasks Plugin");
+    fireEvent.keyDown(window, { key: "c" });
+    const dialog = await slot.findByRole("dialog");
+    const scope = dialog.closest("[data-dialog-scope]");
+    expect(scope).not.toBeNull();
+    expect(scope?.className).toContain("[contain:layout]");
+    expect(dialog.className).toContain("w-[calc(100%-2rem)]");
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
   });
 
   it("does not paint another scope's empty state while its own rows load", async () => {
@@ -1032,10 +1210,10 @@ describe("tasks app shell", () => {
     const boardSlot = renderSlot(
       app.navPanels[0]!,
       { subPath: `${PROJECT_ID}?view=board` },
-      { rpc: seededRpc() },
+      { rpc: seededRpc(), ...panelOptions(nativePanel("tab-kanban")) },
     );
-    await boardSlot.findByText("Backlog");
-    await boardSlot.findByText("In Review");
+    await boardSlot.findByRole("button", { name: "Board" });
+    expect(boardSlot.queryByText("In Review")).toBeNull();
     expect(boardSlot.getByText("Tasks Plugin")).toBeDefined();
     expect(boardSlot.queryByRole("button", { name: /sidebar/i })).toBeNull();
     cleanup();

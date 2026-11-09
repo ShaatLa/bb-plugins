@@ -11,14 +11,14 @@ const base: TaskActivity = { state: "working", workingCount: 2, attachedCount: 5
 it("shows counts, sessions, failure and terminal warning", () => {
   const { container } = render(<TaskActivityIndicator activity={base} />);
   const badge = screen.getByText("Working · 2/5");
-  expect(badge.getAttribute("aria-label")).toContain("Parent (Parent thread): Attached");
+  expect(badge.getAttribute("aria-label")).toContain("Parent (Parent thread): Assigned");
   expect(badge.getAttribute("aria-label")).toContain("Worker (Worker): Working");
   expect(badge.getAttribute("aria-label")).toContain("Linked thread failed");
   expect(badge.getAttribute("aria-label")).toContain("work continues");
   expect(container.querySelector("svg.animate-spin.motion-reduce\\:animate-none")).not.toBeNull();
   expect(container.querySelectorAll("svg")).toHaveLength(3);
 });
-it.each([["attached", "Attached"], ["abandoned", "Abandoned"], ["error", "Error"], ["waiting-owner", "Waiting for owner"], ["queued", "Queued"]] as const)("renders static %s", (state, label) => {
+it.each([["attached", "Assigned"], ["abandoned", "Abandoned"], ["error", "Error"], ["waiting-owner", "Waiting for owner"], ["queued", "Queued"]] as const)("renders static %s", (state, label) => {
   const { container } = render(<TaskActivityIndicator activity={{ ...base, state, terminalWarning: false, hasFailure: false }} />);
   expect(screen.getByText(label)).toBeTruthy();
   expect(container.querySelector(".animate-spin, .animate-pulse")).toBeNull();

@@ -1,10 +1,11 @@
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { idleThreshold } from "../shared/project-settings";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BadgeCriterion } from "../shared/badge";
 import { evaluateThreadHealth, staleIdleMinutes } from "../shared/thread-health";
 import type { TasksApiStore } from ".";
 
-const LIVE = "t.archived_at IS NULL";
+const LIVE = `t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}`;
 const ACTIVE = `${LIVE} AND t.status NOT IN ('done', 'canceled')`;
 const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id
   AND json_array_length(q.payload, '$.selectedOptionIds') = 0

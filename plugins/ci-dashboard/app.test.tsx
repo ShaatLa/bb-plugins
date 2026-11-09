@@ -1372,3 +1372,67 @@ test("run-based charts default to the heaviest workflow, can pool all workflows 
     expect(((await stale.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("5");
   } finally { stale.lifecycle.unmount(); }
 });
+
+test("sample-based charts default to the workflow's main event, show their sample size and can pool all events", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number, count?: number) => dates.map((date) => ({ date, value, ...(count === undefined ? {} : { count }) }));
+  const entry = (total: number, minutes: number, count: number, runs: number) => ({ total, successMs: total * minutes * 60_000,
+    durationMedian: flat(minutes * 60_000, count), durationP90: flat(minutes * 60_000, count), runs: flat(runs), failedRuns: flat(0), startDelay: flat(1000, count) });
+  // Merge-queue runs are slow and fewer; the light pull_request runs would pull a pooled median down to 8m.
+  const events = [{ event: "merge_group", ...entry(49, 30, 49, 20) }, { event: "pull_request", ...entry(300, 7, 300, 50) }];
+  const trends = { workflows: [
+    { id: 5, name: "CI", ...entry(349, 8, 349, 70), successMs: 9e9, events },
+    { id: 8, name: "Docs", ...entry(2, 1, 2, 2), events: [{ event: "push", ...entry(2, 1, 2, 2) }] },
+  ] };
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "runs" }]));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const latest = (title: string) => slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) }).at(-1)!;
+  try {
+    const event = await slot.findByRole("combobox", { name: "First chart event" }) as HTMLSelectElement;
+    expect(event.value).toBe("merge_group");
+    expect(within(event).getAllByRole("option").map((option) => option.textContent)).toEqual(["All events", "merge_group · 49 runs", "pull_request · 300 runs"]);
+    const figure = slot.getByRole("figure", { name: "Median CI run duration" });
+    expect(figure.textContent).toContain("successful runs · merge_group");
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("30m 0s · median of 49 successful merge_group runs; failed, cancelled and skipped runs excluded");
+    expect(latest("Median CI run duration").textContent).toContain("30m 0sn 49");
+    // The runs chart counts runs, so it pools by default.
+    expect((slot.getByRole("combobox", { name: "Second chart event" }) as HTMLSelectElement).value).toBe("all");
+    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 70 ·");
+    fireEvent.change(slot.getByRole("combobox", { name: "Second chart event" }), { target: { value: "merge_group" } });
+    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 20 ·");
+    fireEvent.change(event, { target: { value: "all" } });
+    expect(figure.textContent).toContain("successful runs · all events");
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("8m 0s · median of 349 successful runs;");
+    expect(latest("Median CI run duration").textContent).toContain("n 349");
+    fireEvent.change(event, { target: { value: "pull_request" } });
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("7m 0s");
+    // A single-event workflow has nothing to split; the sample size stays.
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
+    expect(slot.queryByRole("combobox", { name: "First chart event" })).toBeNull();
+    expect(latest("Median CI run duration").textContent).toContain("n 2");
+    expect(JSON.parse(localStorage.getItem("ci-dashboard:history-charts")!)[0]).toEqual({ chart: "durationMedian", workflow: 8 });
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI run timings default to the workflow's main event and list every event's median in the breakdown", async () => {
+  const started = "2026-10-20T00:00:00Z";
+  const row = (id: number, event: string, minutes: number) => ({ id, workflow_id: 1, name: "CI", head_branch: "main", event, conclusion: "success", created_at: started, run_started_at: started,
+    updated_at: new Date(Date.parse(started) + minutes * 60_000).toISOString() });
+  const ciInsights = summarizeCi([...[30, 30, 30].map((minutes, index) => row(index + 1, "merge_group", minutes)), ...[6, 8, 10, 12, 14].map((minutes, index) => row(index + 10, "pull_request", minutes))], "main");
+  const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 8 } }] }) }, settings: {} });
+  try {
+    const card = await slot.findByRole("region", { name: "CI run timings" });
+    const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
+    const event = within(card).getByRole("combobox", { name: "Timing event" }) as HTMLSelectElement;
+    expect(event.value).toBe("merge_group");
+    expect(median()).toBe("30m 0s");
+    expect(card.textContent).toContain("successful runs only · merge_group");
+    fireEvent.change(event, { target: { value: "pull_request" } });
+    expect(median()).toBe("10m 0s");
+    fireEvent.change(event, { target: { value: "all" } });
+    expect(median()).toBe("13m 0s");
+    expect(within(card).getByRole("list", { name: "Workflow timings" }).textContent).toContain("merge_group 30m 0s · n 3pull_request 10m 0s · n 5");
+  } finally { slot.lifecycle.unmount(); }
+});

@@ -227,28 +227,64 @@ function PriorityMenu({
 
 function DueDateMenu({
   task,
+  labels,
   onUpdate,
   triggerClassName,
 }: {
   task: Task;
+  labels: Label[] | undefined;
   onUpdate: (update: TaskPropertyUpdate) => void;
   triggerClassName: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [dates, setDates] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const rpc = useTasksRpc();
+  const epic = task.type === "epic";
+  const ongoingLabel = labels?.find((label) => label.name.toLowerCase() === "ongoing");
+  const ongoing = epic && !!ongoingLabel && task.labelIds.includes(ongoingLabel.id);
   const pick = (dueDate: string | null) => {
-    onUpdate({ dueDate });
+    onUpdate({ dueDate, ...(epic && ongoingLabel ? {
+      labelIds: task.labelIds.filter((id) => id !== ongoingLabel.id),
+    } : {}) });
     setOpen(false);
   };
+  const pickOngoing = async () => {
+    if (saving || !labels) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const label = ongoingLabel ?? (await rpc.call("createLabel", {
+        projectId: task.projectId, name: "ongoing", color: DEFAULT_COLOR,
+      })).label;
+      onUpdate({ dueDate: null, labelIds: [...new Set([...task.labelIds, label.id])] });
+      setOpen(false);
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); setDates(false); setError(null); }}>
       <PopoverTrigger asChild>
-        <button type="button" className={triggerClassName}>
-          <Icon name="Clock" className="size-3.5 shrink-0" />
-          {task.dueDate ? formatDueDate(task.dueDate) : "Set due date"}
+        <button type="button" className={triggerClassName} aria-label={epic ? "Timeframe" : undefined}>
+          {ongoing ? <span aria-hidden className="inline-flex size-3.5 shrink-0 items-center justify-center">∞</span> : <Icon name="Clock" className="size-3.5 shrink-0" />}
+          {ongoing ? "Ongoing" : task.dueDate ? formatDueDate(task.dueDate) : epic ? "No deadline" : "Set due date"}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-52 p-2">
         <div className="flex flex-col">
+          {epic && !dates ? (
+            <>
+              <p className="px-2 py-1 text-xs text-muted-foreground">Timeframe</p>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => pick(null)}>No deadline</button>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => setDates(true)}>Due date…</button>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => void pickOngoing()}>Ongoing</button>
+            </>
+          ) : <>
+          {epic ? <button type="button" className="px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground" onClick={() => setDates(false)}>Back to timeframe</button> : null}
           {DUE_DATE_PRESETS.map(([label, days]) => (
             <button
               key={label}
@@ -281,6 +317,8 @@ function DueDateMenu({
               Remove due date
             </button>
           ) : null}
+          </>}
+          {error ? <p role="alert" className="px-2 py-1 text-xs text-destructive">{error}</p> : null}
         </div>
       </PopoverContent>
     </Popover>
@@ -634,6 +672,7 @@ export function PropertiesRail({
         />
         <DueDateMenu
           task={task}
+          labels={labels}
           onUpdate={onUpdate}
           triggerClassName={RAIL_ROW_CLASS}
         />
@@ -755,6 +794,7 @@ export function InlineProperties({
       />
       <DueDateMenu
         task={task}
+        labels={labels}
         onUpdate={onUpdate}
         triggerClassName={CHIP_CLASS}
       />
