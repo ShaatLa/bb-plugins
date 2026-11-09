@@ -24,6 +24,20 @@ Moving an epic moves its members and their sub-tasks; moving a member alone clea
 Deleting an epic preserves its tasks. Type conversion requires clearing incompatible links and children first.
 Read the epic description when working on a member task; `task.epicId` identifies it in JSON.
 
+An epic with the project label `ongoing` represents a permanent area, not a finite initiative.
+During actuality or closure audits, do not require completion criteria for that epic, suggest closing
+it, or ask the owner again merely because its current tasks are done. Review and close its finite
+member tasks individually; preserve the epic's owner-chosen workflow status. Close the epic only
+when the owner explicitly decides the area has ended. Do not infer this label from a vague description
+or apply it to member tasks automatically.
+
+Use the ordinary Labels picker in the UI, or `bb work-board label list --project ABC` and
+`bb work-board label create --project ABC --name ongoing` if it does not exist, then
+`bb work-board update ABC-1 --add-label ongoing`. Remove it with `--remove-label ongoing`.
+For JSON audits, resolve `task.labelIds` against project labels from `label list --json`;
+`show --json` also includes the task's labels. This is an agent convention, not a workflow status
+or a backend restriction on manual edits.
+
 ## Secret guard
 
 Task/epic titles, descriptions and comment bodies are checked at write time for common GitHub, AWS, Slack, Google, Anthropic, OpenAI, JWT and private-key formats. Remove detected credentials and retry; never repeat the value in an error report. There is no bypass flag, including for imports with `--overwrite`. Attachments and existing records are not scanned; retain the Git-side secret check.
