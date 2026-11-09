@@ -43,7 +43,7 @@ describe("Slots deterministic engine", () => {
 
   it("counts spaced passing samples, audits fast ones, resets on failure and on every grant", () => {
     const h = harness(); h.request("a"); h.request("b");
-    h.sample(); h.now = 14_999; h.sample();
+    h.sample(); h.now = 10_000; h.sample();
     expect(h.state.hosts.h.gate.streak).toBe(1);
     expect(h.state.audit.filter(e => e.type === "gate")).toHaveLength(0);
     expect(h.sample().effects).toContainEqual(expect.objectContaining({ type: "audit", event: expect.objectContaining({ type: "gate" }) }));
@@ -134,6 +134,11 @@ describe("Slots deterministic engine", () => {
       expect(h.state.leases).toEqual([]);
       expect(freed.effects).toContainEqual(expect.objectContaining({ type: "notify", threadId: "child" }));
     }
+  });
+
+  it("counts gate readings that arrive slightly before the interval", () => {
+    const h = harness(); h.request("a"); h.sample(50, 1); h.now += 14_976; h.sample(50, 1);
+    expect(h.state.leases).toHaveLength(1);
   });
 
   it("grants plain requests with JSON-safe use fields", () => {

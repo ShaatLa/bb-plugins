@@ -273,7 +273,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (passed) { gate.failingSince = null; gate.holdAlerted = false; }
       else gate.failingSince ??= input.at;
       if (!passed) reset(input.hostId);
-      else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs) {
+      // Sampler ticks land a few ms early; a strict interval would skip every other reading.
+      else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs * 0.9) {
         gate.streak = Math.min(gate.streak + 1, settings.gateSamples); gate.lastCountedAt = input.at;
       }
       if (passed) schedule(input.hostId);
