@@ -36,19 +36,20 @@ export async function readModels(baseUrl: string, defaultModel = "", dataDir = "
   return parseModels(await response.json(), defaultModel, readCaps(dataDir));
 }
 
-// Local models have no quota: one "∞" window per installed model.
-// The label is the short model name followed by an invisible separator (U+2063)
-// so CSS can target only these rows.
+// Local models have no quota: one usage row listing all installed models.
+// The label ends with an invisible separator (U+2063) so CSS can target this row.
 export function usageFor(models: { displayName: string }[]): ProviderUsage {
   const shortName = (name: string) => name.split(" ")[0];
+  const names = models.map(m => shortName(m.displayName)).filter(Boolean);
+  const label = `Available models: ${names.join(", ")}\u2063`;
   return {
     status: "ok",
     accountEmail: null,
     planLabel: "Local",
-    windows: models.map(model => ({
-      label: shortName(model.displayName) + "\u2063",
+    windows: [{
+      label,
       usedPercent: 0,
       resetsAt: null,
-    })),
+    }],
   };
 }
