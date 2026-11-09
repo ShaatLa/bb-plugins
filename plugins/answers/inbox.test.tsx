@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
-import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
+import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
+const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 import { Inbox } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; context?: any; sidebarThreads?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }) }, sdk: { threads: { send } } });
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }) }, sdk: { threads: { send, queuedMessages: options.queuedMessages, context: options.context } }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -140,4 +141,30 @@ it('shows usage when set to always and changes contact preferences from the foot
   await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ groupByProject:true }));
   fireEvent.click(slot.getByRole('menuitemradio', { name:'Never' }));
   await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ usage:'never' }));
+});
+
+it('shows a pending bubble until the matching newest item arrives, and skips drafts', async () => {
+  let items = [base];
+  const { slot, recipients } = setup({ list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' });
+  fireEvent.change(editor, { target:{ value:'New message' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  expect(slot.container.textContent).toContain('Sending…'); expect(slot.getAllByText('New message').length).toBeGreaterThan(0);
+  items = [{ ...base, id:'ans_new', question:'New message' }, base];
+  await act(async () => { fireEvent.click(recipients.getByRole('option')); });
+  await waitFor(() => expect(slot.queryByText('Sending…')).toBeNull());
+  fireEvent.change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
+  expect(slot.queryByText('Sending…')).toBeNull();
+});
+it('renders queued messages and sends or deletes them through the SDK', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
+  const sendNow = vi.fn(() => Promise.resolve({})), remove = vi.fn(() => Promise.resolve({}));
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), send:sendNow, delete:remove } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByText('Waiting text')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name:'Send now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
+  fireEvent.click(slot.getByRole('button', { name:'Delete queued message' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
+});
+it('shows sidebar project, worktree branch, and context remaining', async () => {
+  const thread = { id:'thr_one', projectId:'pr_one', environment:{ name:'Checkout', branchName:'answers/3g', isWorktree:true }, parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[{ id:'pr_one', name:'Plugins' }] }, context: () => Promise.resolve({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByText(/Plugins · answers\/3g/)).toBeTruthy(); expect(await slot.findByText('62% context left')).toBeTruthy();
 });
