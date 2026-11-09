@@ -102,6 +102,21 @@ export default function plugin(bb: BbPluginApi) {
     const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL}${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
+  // Reads made in Answers' UI also clear bb's own unread mark on a thread once nothing there is left unread here,
+  // and an undo restores it. The CLI path (`bb answers read`) is not a person reading, so it leaves bb alone.
+  async function syncBbRead(threadIds: Iterable<string>, read: boolean) {
+    for (const threadId of new Set(threadIds)) {
+      if (read && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND ${ATTENTION_SQL} LIMIT 1`).get(threadId)) continue;
+      try { await (read ? bb.sdk.threads.markRead({threadId}) : bb.sdk.threads.markUnread({threadId})); }
+      catch (e) { bb.log.warn(`Answers read sync: ${String(e)}`); }
+    }
+  }
+  const threadsOf = (sql: string, ...params: unknown[]) => (db.prepare(`SELECT DISTINCT thread_id FROM items WHERE ${sql}`).all(...params) as {thread_id:string}[]).map(r=>r.thread_id);
+  async function markReadFromUi(raw: z.infer<typeof inputs.markRead>) {
+    const p=inputs.markRead.parse(raw), result=markRead(p);
+    const threads='ids' in p ? threadsOf(`id IN (${p.ids.map(()=>'?').join(',')})`,...p.ids) : p.threadId ? [p.threadId] : result.batch ? threadsOf('read_batch=?',result.batch) : [];
+    await syncBbRead(threads,true); return result;
+  }
   let wakeTimer: ReturnType<typeof setTimeout>|undefined, disposed=false;
   function wakeDue() {
     if (disposed) return;
@@ -144,8 +159,8 @@ export default function plugin(bb: BbPluginApi) {
   const handlers = {
     list, counts,
     undoRead(raw:z.infer<typeof inputs.undoRead>) {
-      const p=inputs.undoRead.parse(raw),count=db.prepare('UPDATE items SET read_at=NULL,read_batch=NULL WHERE read_batch=? AND read_at>=?').run(p.batch,Date.now()-600000).changes;
-      invalidate(); return {ok:true as const,count};
+      const p=inputs.undoRead.parse(raw),threads=threadsOf('read_batch=? AND read_at>=?',p.batch,Date.now()-600000),count=db.prepare('UPDATE items SET read_at=NULL,read_batch=NULL WHERE read_batch=? AND read_at>=?').run(p.batch,Date.now()-600000).changes;
+      invalidate(); if (count) void syncBbRead(threads,false); return {ok:true as const,count};
     },
     keepWaiting(raw:z.infer<typeof inputs.keepWaiting>) {
       const p=inputs.keepWaiting.parse(raw),item=get(p.id);
@@ -204,7 +219,7 @@ export default function plugin(bb: BbPluginApi) {
       const plain=(text:string)=>text.replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threads.find(t=>t.id===id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'');
       return {recipients:rows.map(r=>{const t=threads.find(t=>t.id===r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(previews[rows.indexOf(r)]!)).slice(0,160)};})};
     },
-    markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw); return markRead({all:true,threadId:p.threadId});},
+    async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
     async pools(raw:z.infer<typeof inputs.pools>) {
       inputs.pools.parse(raw);
       const rows=db.prepare('SELECT * FROM pool_entries ORDER BY created_at,rowid').all() as Row[];
@@ -262,7 +277,7 @@ export default function plugin(bb: BbPluginApi) {
         invalidatePools(); invalidate(); return {...result,sent:entries.length,keptEdited};
       });
     },
-    markRead,
+    markRead: markReadFromUi,
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
     setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {

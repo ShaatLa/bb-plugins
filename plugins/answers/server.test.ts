@@ -17,6 +17,15 @@ function seed(db:Database.Database,id='ans_one',kind='for_me',thread='t') {
 }
 const deferred=<T>()=>{let resolve!:(v:T)=>void; const promise=new Promise<T>(r=>resolve=r); return {promise,resolve};};
 describe('server',()=>{
+ it('clears bb\'s unread mark when a thread has nothing left unread in Answers, and restores it on undo',async()=>{
+  const {harness,db}=setup(), read=vi.fn(async(_a:unknown)=>({})), unread=vi.fn(async(_a:unknown)=>({}));
+  harness.sdk.stub('threads.markRead',read as any); harness.sdk.stub('threads.markUnread',unread as any);
+  seed(db,'ans_x','for_me','t'); seed(db,'ans_y','for_me','t'); seed(db,'ans_z','for_me','u');
+  await harness.behavior.callRpc('markRead',{ids:['ans_x']}); expect(read).not.toHaveBeenCalled();
+  await harness.behavior.callRpc('markRead',{ids:['ans_y']}); expect(read).toHaveBeenCalledWith({threadId:'t'});
+  const all=await harness.behavior.callRpc('markRead',{all:true}) as any; expect(read).toHaveBeenLastCalledWith({threadId:'u'});
+  await harness.behavior.callRpc('undoRead',{batch:all.batch}); await vi.waitFor(()=>expect(unread).toHaveBeenCalledWith({threadId:'u'}));
+ });
  it('validates every RPC boundary and tags both reads',async()=>{
   const {harness}=setup();
   for (const [name,input] of Object.entries({list:{view:'wrong'},counts:{extra:1},markRead:{ids:['bad']},setPinned:{id:'ans_a',pinned:1},setDismissed:{id:'bad',dismissed:true},reply:{id:'ans_a',text:'x'.repeat(8001)},save:{threadId:'t',seq:-1,role:'user',text:'x'}})) await expect(harness.behavior.callRpc(name,input)).rejects.toThrow();
