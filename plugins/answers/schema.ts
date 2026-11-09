@@ -69,4 +69,5 @@ CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'he
   `ALTER TABLE items ADD COLUMN recommended TEXT;                         -- answers_ask: recommended option text
 ALTER TABLE items ADD COLUMN recommend_reason TEXT;`,
   `CREATE TABLE archived_threads (thread_id TEXT PRIMARY KEY);              -- threads archived in bb drop out of the Inbox`,
+  `ALTER TABLE items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
 ];

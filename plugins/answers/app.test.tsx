@@ -334,6 +334,21 @@ it('marks grouped members read and acts on the last member', async () => {
   fireEvent.click(slot.getByRole('button', { name: 'More' })); fireEvent.click(slot.getByRole('menuitem', { name: 'Save' }));
   await waitFor(() => expect(setPinned).toHaveBeenCalledWith({ id: last.id, pinned: true }));
 });
+it('renders each member’s image and file attachments in its own bubble', async () => {
+  const { ItemCard } = await import('./app');
+  vi.stubGlobal('URL', {createObjectURL:vi.fn(()=>'blob:attachment'),revokeObjectURL:vi.fn()});
+  const read = vi.fn(async ({path}:{path:string}) => ({bytes:new Uint8Array([1]),mimeType:path.endsWith('.png')?'image/png':'application/pdf',sizeBytes:1}));
+  const first = {...item,attachments:[{type:'localImage' as const,path:'photo.png',name:'photo.png'}]};
+  const second = {...item,id:'ans_file',question:'File question',attachments:[{type:'localFile' as const,path:'notes.pdf',name:'notes.pdf'}]};
+  const slot = renderSlot({component:()=> <ul><ItemCard item={first} members={[first,second]} /></ul>},{},{rpc:{workBoardProjects:()=>({available:false,projects:[]})},sdk:{projects:{attachments:{read}}}});
+  expect(await slot.findByRole('img',{name:'photo.png'})).toBeTruthy();
+  const link = slot.getByRole('link',{name:'notes.pdf'});
+  expect(link.getAttribute('download')).toBe('notes.pdf');
+  expect(link.closest('.rounded-xl')?.textContent).toContain('File question');
+  fireEvent.click(slot.getByRole('button',{name:'photo.png'}));
+  expect(slot.getAllByRole('img',{name:'photo.png'})).toHaveLength(2);
+  expect(read).toHaveBeenCalledTimes(2);
+});
 it('opens My questions with a saved notice and detects a dedupe hit', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
   const { app, slot } = await setup();

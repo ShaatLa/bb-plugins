@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { definePluginApp, experimental_Icon as Icon, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment, type SendOptions } from './contract';
+import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
+import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
 import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
@@ -17,6 +17,34 @@ const emptyCopy: Record<View, [IconName, string, string]> = {
   all: ['MessageQuestion', 'No answers yet', 'Your questions and the agents’ answers show up here.'],
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachment[]; projectId: string | null }) {
+  const sdk = useSdk(), [urls, setUrls] = useState<Record<number, string>>({}), [open, setOpen] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    const loaded: string[] = [];
+    attachments.forEach((attachment, index) => {
+      const owner = attachment.sourceProjectId ?? projectId;
+      if (!owner) return;
+      void sdk.projects.attachments.read({projectId:owner,path:attachment.path}).then(file => {
+        const url = URL.createObjectURL(new Blob([file.bytes as BlobPart], {type:file.mimeType}));
+        if (active) { loaded.push(url); setUrls(current => ({...current,[index]:url})); }
+        else URL.revokeObjectURL(url);
+      }).catch(() => {});
+    });
+    return () => { active = false; loaded.forEach(url => URL.revokeObjectURL(url)); };
+  }, [attachments, projectId, sdk]);
+  const images = attachments.map((attachment, index) => attachment.type === 'localImage' ? index : -1).filter(index => index >= 0);
+  const selected = open === null ? null : attachments[open];
+  return <>
+    <div className="mt-2 flex flex-wrap gap-2">{attachments.map((attachment, index) => {
+      const name = attachment.name ?? attachment.path.split('/').at(-1) ?? 'Attachment', url = urls[index];
+      return attachment.type === 'localImage' ? <button key={index} type="button" aria-label={name} className="overflow-hidden rounded-lg border border-border-seam" onClick={() => setOpen(index)} disabled={!url}>{url ? <img src={url} alt={name} className="max-h-48 max-w-64 object-contain" /> : <span className="block px-3 py-2 text-xs">{name}</span>}</button>
+        : <a key={index} href={url} download={name} aria-disabled={!url} className="inline-flex items-center gap-1.5 rounded-lg border border-border-seam px-2.5 py-1.5 text-xs hover:bg-state-hover"><Icon name="File" aria-hidden className="size-4" />{name}</a>;
+    })}</div>
+    {selected && <ImageLightbox isOpen imageSrc={urls[open!] ?? null} imageAlt={selected.name ?? 'Attached image'} title={selected.name ?? selected.path.split('/').at(-1) ?? 'Image'} hasMultipleImages={images.length > 1} previousDisabled={open === images[0]} nextDisabled={open === images.at(-1)} onClose={() => setOpen(null)} onPrevious={() => setOpen(images[images.indexOf(open!) - 1] ?? null)} onNext={() => setOpen(images[images.indexOf(open!) + 1] ?? null)} />}
+  </>;
+}
 
 export function useAnswersBadge() {
   const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
@@ -144,7 +172,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
-      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div>)}
+      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {item.answer && agentBody(item.answer, item.answerSeq)}

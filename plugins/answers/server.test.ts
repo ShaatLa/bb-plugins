@@ -121,6 +121,7 @@ describe('reply pools and inbox',()=>{
   expect(db.prepare('SELECT question FROM items').get()).toEqual({question:'Question'});
   expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]); db.close();
  });
+ it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-1).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-1)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
  it('builds exact Markdown, with empty lines and notes, and enforces caps',()=>{
   expect(buildReplyMessage([{quote:'**bold**\n\nlast',note:'note'},{quote:'only',note:''}])).toBe('> **bold**\n>\n> last\n\nnote\n\n> only');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
