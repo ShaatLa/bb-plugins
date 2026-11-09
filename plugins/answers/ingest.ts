@@ -34,10 +34,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     if (original) { hidden += db.prepare('UPDATE items SET attempt_request_id=? WHERE id=?').run(d.requestId,original.id).changes; db.prepare('INSERT OR IGNORE INTO request_aliases VALUES (?,?,?)').run(threadId,d.requestId,original.id); cursor=e.seq; continue; }
    }
    const text = (Array.isArray(d.input) ? d.input : []).filter((x:any) => x.type === 'text' && typeof x.text === 'string').map((x:any) => x.text).join('\n').trim();
+   const attachments = (Array.isArray(d.input) ? d.input : []).filter((x:any) => (x.type === 'localImage' || x.type === 'localFile') && typeof x.path === 'string').map((x:any) => ({type:x.type,path:x.path,...(x.name ? {name:x.name} : {}),...(x.mimeType ? {mimeType:x.mimeType} : {}),...(x.sizeBytes != null ? {sizeBytes:x.sizeBytes} : {}),...(x.hostId ? {hostId:x.hostId} : {}),...(x.sourceProjectId ? {sourceProjectId:x.sourceProjectId} : {})}));
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
    if (trackQuestions && d.initiator === 'user' && d.senderThreadId == null && d.originPluginId == null && text && !command) {
-    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
+    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
    }
   } else if (e.type === 'client/turn/rejected' && d.requestId) {
    failRequest(db,threadId,d.requestId,e.createdAt ?? now,live);

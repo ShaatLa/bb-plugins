@@ -89,7 +89,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.created_at}|${last.id}` : null};
