@@ -101,6 +101,8 @@ Expanded timing lists use compact inset rows with aligned duration values. Workf
 
 ## Agent access
 
+Use `view=lanes` for seven UTC days of successful full-attempt wall and per-lane p50/p90 timings and sample counts; optional `event` selects a pipeline. Data comes from the local job store.
+
 Use the native **ci_dashboard_metrics** tool to read CI data. For example:
 
 ```json

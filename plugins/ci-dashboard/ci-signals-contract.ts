@@ -60,6 +60,9 @@ export const rerunRowSchema = z.object({
   repeatedRunnerMs: z.number(), url: z.url(),
 });
 
+const laneStatSchema = z.object({ p50: z.number(), p90: z.number(), n: z.number(), days: z.array(z.object({ date: z.string(), p50: z.number(), p90: z.number(), n: z.number() })) });
+export const laneTimingsSchema = z.object({ pipelines: z.array(z.object({ workflow: z.string(), event: z.string(), runs: z.number(), wall: laneStatSchema, lanes: z.array(laneStatSchema.extend({ name: z.string() })) })) });
+
 export const repositorySignalsSchema = z.object({
   repository: repositorySchema,
   updatedAt: timestamp.nullable(),
@@ -79,6 +82,7 @@ export const repositorySignalsSchema = z.object({
   failureCountsByEvent: z.record(z.string(), z.record(failureClass, z.number())),
   /** Queue wait (start - created) and duration percentiles per runner pool over executed jobs of the window; "unknown" when the pool is not known. */
   poolTimings: z.record(z.string(), poolTimingSchema),
+  laneTimings: laneTimingsSchema.optional(),
   poolTimingsByEvent: z.record(z.string(), z.record(z.string(), poolTimingSchema)),
   runnerLosses: z.object({ byPool: z.record(z.string(), tally), byJob: z.record(z.string(), tally), byDay: z.record(z.string(), tally) }),
   massCancels: z.array(z.object({ since: timestamp, until: timestamp, runners: z.array(z.string()), runIds: z.array(z.number()), jobs: z.number() })),
