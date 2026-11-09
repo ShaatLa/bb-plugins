@@ -1,3 +1,4 @@
+import { useState } from 'react';
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
@@ -34,7 +35,7 @@ function editor(value = '', options: any = {}) {
 }
 it('renders thread tokens with bb pill presentation', () => {
   const { box } = editor('See @thread:thr_one');
-  expect(box.querySelector('.prompt-mention-pill')).toHaveProperty('textContent', 'Thread: Fix login');
+  expect(box.querySelector('.prompt-mention-pill')).toHaveProperty('textContent', 'Fix login');
   expect(box.querySelector('[data-test-serialized]')).toBeTruthy();
 });
 it('turns a pasted thread URL into a token pill', () => {
@@ -85,4 +86,57 @@ it('shows thread titles with the host title component', () => {
 it('keeps quote Markdown text literal while editing, as bb composer does', () => {
   const { box } = editor('> Quoted line');
   expect(box.textContent).toBe('> Quoted line');
+});
+
+function nativeEditor(options: any = {}) {
+  const onSend = vi.fn();
+  const slot = renderSlot({ component: () => {
+    const [value, setValue] = useState('');
+    return <Composer label="Native editor" value={value} onChange={setValue} attachments={[]} onAttachments={() => {}} projectId="proj_one" onSend={onSend} />;
+  } }, {}, { sidebarThreads: { threads: [thread], projects: [] }, ...options } as any);
+  const box = slot.getByRole('textbox', { name: 'Native editor' }) as HTMLElement;
+  box.focus(); const range = document.createRange(), selection = window.getSelection()!;
+  range.selectNodeContents(box); range.collapse(false); selection.removeAllRanges(); selection.addRange(range);
+  return { box, onSend };
+}
+function nativeType(box: HTMLElement, text: string) {
+  for (const char of text) {
+    const before = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char });
+    if (!fireEvent(box, before)) continue;
+    const selection = window.getSelection()!, range = selection.getRangeAt(0);
+    range.deleteContents(); const node = document.createTextNode(char); range.insertNode(node);
+    range.setStartAfter(node); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
+    fireEvent.input(box, { inputType: 'insertText', data: char });
+  }
+}
+it('types plain text through native beforeinput and input without duplication', () => {
+  const { box } = nativeEditor(); nativeType(box, 'H');
+  const firstNode = box.firstChild; nativeType(box, 'ello world');
+  expect(box.firstChild).toBe(firstNode);
+  expect(box.textContent).toBe('Hello world');
+});
+it('types a thread token into one pill, then continues after it', () => {
+  const { box } = nativeEditor(); nativeType(box, 'See @thread:thr_one and more');
+  expect(box.querySelectorAll('.prompt-mention-pill')).toHaveLength(1);
+  expect(box.querySelector('.prompt-mention-pill')?.textContent).toBe('Fix login');
+  expect(box.textContent).toBe('See Fix login and more');
+  expect(Array.from(box.childNodes).map(node => node instanceof HTMLElement && node.dataset.raw ? node.dataset.raw : node.textContent).join('')).toBe('See @thread:thr_one and more');
+});
+it('backspaces the whole pill and sends on Enter after native typing', () => {
+  const { box, onSend } = nativeEditor(); nativeType(box, '@thread:thr_one');
+  fireEvent.keyDown(box, { key: 'Backspace' });
+  expect(box.querySelector('.prompt-mention-pill')).toBeNull();
+  expect(box.textContent).toBe('');
+  nativeType(box, 'Reply'); fireEvent.keyDown(box, { key: 'Enter' });
+  expect(onSend).toHaveBeenCalledOnce();
+  expect(box.textContent).toBe('Reply');
+});
+
+it('keeps a mixed draft intact while typing around thread and link pills', () => {
+  const { box } = nativeEditor();
+  const text = 'See @thread:thr_one and [ACM-5](/plugins/work-board/work-board/task/ACM-5) ok ';
+  nativeType(box, text);
+  expect(Array.from(box.childNodes).map(node => node instanceof HTMLElement && node.dataset.raw ? node.dataset.raw : node.textContent).join('')).toBe(text);
+  expect(box.querySelectorAll('.prompt-mention-pill')).toHaveLength(2);
+  expect(box.textContent).toBe('See Fix login and ACM-5 ok ');
 });
