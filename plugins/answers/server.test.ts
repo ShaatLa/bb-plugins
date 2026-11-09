@@ -494,3 +494,13 @@ describe('0.3 server attention',()=>{
   expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:false,projects:[]});
  });
 });
+
+it('sends only selected pool IDs and keeps other entries', async () => {
+  const { harness, db, send } = setup(vi.fn(async () => ({ ok: true, delivery: 'sent' }))); seed(db);
+  const call = (name: string, input: object) => harness.behavior.callRpc(name, input) as Promise<any>;
+  const first = await call('poolAdd', { threadId: 't', quote: 'first', note: 'one', itemId: 'ans_one' });
+  const second = await call('poolAdd', { threadId: 't', quote: 'second', note: 'two', itemId: 'ans_one' });
+  await call('poolSend', { threadId: 't', ids: [first.id] });
+  expect((send.mock.calls[0] as any[])[0].input[0].text).toBe('> first\n\none');
+  expect((await call('pools', {})).pools[0].entries.map((entry: any) => entry.id)).toEqual([second.id]);
+});

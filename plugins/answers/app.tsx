@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
+import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { Button } from './components/ui/button';
@@ -338,6 +339,13 @@ export default definePluginApp(app => {
     if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? 'Unable to add to reply pool');
     rpcContract.poolAdd.output.parse(body.result);
     experimental_panel.openTab({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
+  } });
+  app.slots.experimental_appOverlay({ id: 'chat-comment', component: ChatComment });
+  app.slots.messageAction({ id: 'comment', title: 'Comment', icon: 'MessageSquare', run({ selectedText, message, composer }) {
+    if (!composer) throw new Error('The thread composer is unavailable on this surface');
+    const selection = window.getSelection();
+    const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    window.dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: { quote: selectedText ?? message.text, composer, top: rect?.bottom ?? window.innerHeight / 2, left: rect?.left ?? window.innerWidth / 2 } }));
   } });
   app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
