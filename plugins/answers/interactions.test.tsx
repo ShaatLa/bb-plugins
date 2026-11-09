@@ -4,9 +4,10 @@ import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { PendingInteractions } from './interactions';
 
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: () => () => {}, registerActionHandler: () => () => {} }) }));
+const host = vi.hoisted(() => ({ bound: true }));
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: host.bound ? new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]) : new Map(), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: () => () => {}, registerActionHandler: () => () => {} }) }));
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); host.bound = true; });
 const question = (overrides = {}) => ({ id: 'i1', threadId: 'thr_one', status: 'pending', payload: { kind: 'user_question', questions: [{ id: 'q1', prompt: 'Choose?', shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha', description: 'First' }, { value: 'b', label: 'Beta', description: 'Second' }] }] }, ...overrides });
 function setup(rows: any[], pending = true) {
   const list = vi.fn(async () => rows), resolve = vi.fn(async () => ({})), respond = vi.fn(async () => ({})), cancel = vi.fn(async () => ({})), stop = vi.fn(async () => ({}));
@@ -65,4 +66,13 @@ it('links plugin and provider extension interactions to bb chat', async () => {
   expect(await slot.findByText('Choose a target')).toBeTruthy();
   expect(slot.getByText('Open in chat to answer').closest('a')?.getAttribute('href')).toContain('/threads/thr_one');
   expect(respond).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
+});
+it('numbers options and takes digit keys itself where bb binds no shortcuts (the Answers page)', async () => {
+  host.bound = false;
+  const { slot } = setup([question()]);
+  await slot.findAllByText('Choose?');
+  const form = slot.container.querySelector('[data-question-form]')! as HTMLElement;
+  expect(Array.from(form.querySelectorAll('kbd')).map(k => k.textContent)).toEqual(['1', '2', '3']);
+  fireEvent.keyDown(form, { key: '2' });
+  await waitFor(() => expect(form.querySelectorAll('[aria-pressed=true]').length).toBe(1));
 });
