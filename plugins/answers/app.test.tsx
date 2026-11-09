@@ -381,3 +381,10 @@ it('embeds bb\u2019s chat for the selected conversation and marks it read', asyn
   expect(chat.getAttribute('data-variant')).toBe('full');
   await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_one' }));
 });
+it('keeps Reply on agent questions in the thread side panel', async () => {
+  const { AnswersPanel } = await import('./app');
+  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Pick one?', answer: null };
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [ask, item], nextCursor: null }) } });
+  await slot.findByText('Pick one?');
+  expect(slot.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
+});
