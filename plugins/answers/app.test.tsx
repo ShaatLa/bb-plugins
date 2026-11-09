@@ -21,11 +21,19 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const markRead = vi.fn(() => ({ ok: true }));
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
   pickView(slot, 'History');
-  await slot.findByText('What changed?');
+  await slot.findByText(overrides.list ? /Quoted passage|What changed\?/ : 'What changed?');
   return { app, slot, list, markRead };
 }
 
 describe('Answers app', () => {
+  it('shows inline comment passage and comment without plugin boilerplate', async () => {
+    const question = '@short\nContext for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> Quoted passage\n\nTheir comment on it: My comment';
+    const { slot } = await setup({ list: () => ({ items: [{ ...item, question }], nextCursor: null }) });
+    expect(slot.getByText('Quoted passage')).toBeTruthy();
+    expect(slot.getByText('My comment')).toBeTruthy();
+    expect(slot.queryByText(/resolved by plugin/)).toBeNull();
+  });
+
   it('names the dismiss action per item and hides it where it does nothing', async () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));

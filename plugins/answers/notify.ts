@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { ATTENTION_SQL } from './ingest';
+import { inlineCommentPreview } from './inline-comments';
 
 type Row={id:string;kind:string;status:string;thread_id:string;question:string;answer:string|null;failed_at:number|null};
 type Level='off'|'asked'|'questions'|'all';
@@ -52,7 +53,7 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if(!batch.length)return;
   const ids=[...new Set(batch.map(r=>r.thread_id))];
   const titles=new Map((await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})).map(t=>[t.id,t.title ?? 'Answers']));
-  if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Answers',80)||'Answers',body:clean(body,180),threadId:r.thread_id});}
+  if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Answers',80)||'Answers',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});}
   else await push({title:`${batch.length} new in Answers`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Answers').join(', '),180),...(ids.length===1?{threadId:ids[0]}:{})});
  }
  function run(){return serial(()=>{

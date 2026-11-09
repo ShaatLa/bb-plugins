@@ -6,6 +6,7 @@ import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
+import { parseInlineComments } from './inline-comments';
 
 const emptyCopy: Record<View, [IconName, string, string]> = {
   unread: ['MailOpen', 'All caught up', 'New answers will show up here.'],
@@ -143,7 +144,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
-      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><UserText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div>)}
+      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div>)}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {item.answer && agentBody(item.answer, item.answerSeq)}
@@ -208,6 +209,14 @@ const viewOptions = (thread: boolean): ViewOption[] => [
 // User text stays plain (no Markdown reflow); only thread mentions go through bb's renderer to become chips.
 // Thread mentions and Markdown links (the composer stores task chips as links) render through bb as a whole.
 const MENTION = /(@thread:thr_[A-Za-z0-9]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
+function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string[] }) {
+  const parsed = parseInlineComments(text);
+  return <div className="space-y-2">{parsed.comments.map((entry, index) => <div key={index}>
+    {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3">{entry.passage}</div></div>}
+    {entry.comment && <div>{entry.comment}</div>}
+  </div>)}{parsed.text && <div><UserText text={parsed.text} prefixes={prefixes} /></div>}</div>;
+}
+
 function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
   const task = prefixes.length ? new RegExp(`(?<![\\w-])((?:${prefixes.map(p => p.replace(/[^A-Za-z0-9]/g, '')).join('|')})-\\d+)(?![\\w-])`) : null;
