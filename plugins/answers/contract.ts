@@ -37,7 +37,7 @@ export const rpcContract=defineRpcContract({
  undoRead:{input:inputs.undoRead,output:z.object({ok:z.literal(true),count:time})},
  keepWaiting:{input:inputs.keepWaiting,output:ok},setInterim:{input:inputs.setInterim,output:ok},
  snooze:{input:inputs.snooze,output:ok},retryTurn:{input:inputs.retryTurn,output:ok},
- workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string()}))})},
+ workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},

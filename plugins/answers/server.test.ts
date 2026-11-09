@@ -141,6 +141,12 @@ describe('reply pools and inbox',()=>{
   expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
  });
+ it('shows thread titles and link text in recipient previews',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a');
+  db.prepare("UPDATE items SET status='answered',answer=? WHERE id='ans_a'").run('Sent **@thread:thr_mgr#msg=3** see [ANV-5](/plugins/work-board/work-board/task/ANV-5) and `x`');
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.includes('thr_mgr') ? [makeThreadResponse({id:'thr_mgr',title:'Manager'})] : [makeThreadResponse({id:'a',title:'A'})]);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].preview).toBe('Sent @Manager see ANV-5 and x');
+ });
  it('validates pool CRUD, revisions, ordering, missing threads and tags',async()=>{
   const {harness,db}=setup();
   harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'a',title:'A',projectId:'p'}),makeThreadResponse({id:'b',title:'B',projectId:'p'})]);
@@ -450,9 +456,9 @@ describe('0.3 server attention',()=>{
  });
  it('validates Work Board output and stores task keys',async()=>{
   const {harness,db}=setup(); seed(db);
-  const rpc=vi.fn(async(args:any)=>args.method==='listProjects' ? {projects:[{id:'p',name:'Project'}]} : {ok:true,task:{key:'TASK-1'}});
+  const rpc=vi.fn(async(args:any)=>args.method==='listProjects' ? {projects:[{id:'p',name:'Project',prefix:'TASK'}]} : {ok:true,task:{key:'TASK-1'}});
   harness.sdk.stub('plugins.callRpc',rpc as any);
-  expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:true,projects:[{id:'p',name:'Project'}]});
+  expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:true,projects:[{id:'p',name:'Project',prefix:'TASK'}]});
   expect(await harness.behavior.callRpc('createTask',{id:'ans_one',projectId:'p'})).toEqual({key:'TASK-1'});
   expect((db.prepare('SELECT task_key FROM items').get() as any).task_key).toBe('TASK-1');
   rpc.mockImplementation(async()=>({ok:false,error:{message:'Denied'}}) as any);

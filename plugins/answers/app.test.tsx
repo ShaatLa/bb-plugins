@@ -343,3 +343,8 @@ it('renders thread mentions in user questions through bb markdown', async () => 
   expect(chip).toBeTruthy();
   expect(chip!.parentElement!.textContent).toBe('Send @thread:thr_abc123 the rules\nnow');
 });
+it('links task keys of known Work Board projects in user questions', async () => {
+  const { slot } = await setup({ workBoardProjects: () => ({ available: true, projects: [{ id: 'p', name: 'Anvil', prefix: 'ANV' }] }), list: () => ({ items: [item, { ...item, id: 'ans_task', question: 'See ANV-5, not GPT-6 or XANV-7' }], nextCursor: null }) });
+  await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('[ANV-5](/plugins/work-board/work-board/task/ANV-5)'));
+  expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent).filter(text => /GPT|XANV/.test(text!))).toEqual([]);
+});

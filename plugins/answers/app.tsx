@@ -134,7 +134,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
-      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><UserText text={member.question} /></div></div>)}
+      {group.map(member => <div key={member.id} className={userBubble}><div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><UserText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div>)}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {item.answer && agentBody(item.answer, item.answerSeq)}
@@ -198,8 +198,12 @@ const viewOptions = (thread: boolean): ViewOption[] => [
 
 // User text stays plain (no Markdown reflow); only thread mentions go through bb's renderer to become chips.
 const MENTION = /(@thread:thr_[A-Za-z0-9]+(?:#msg=\d+)?)/;
-function UserText({ text }: { text: string }) {
-  return <>{text.split(MENTION).map((part, index) => index % 2 ? <Markdown key={index} content={part} className="inline-block align-baseline [&_p]:m-0" /> : part)}</>;
+function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
+  // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
+  const task = prefixes.length ? new RegExp(`(?<![\\w-])((?:${prefixes.map(p => p.replace(/[^A-Za-z0-9]/g, '')).join('|')})-\\d+)(?![\\w-])`) : null;
+  const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
+  return <>{text.split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
+    : task ? part.split(task).map((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : piece) : [part])}</>;
 }
 
 function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value: View | 'inbox'; onChange: (value: View | 'inbox') => void }) {
