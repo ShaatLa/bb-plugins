@@ -13,7 +13,7 @@ test('lists installed models with readable names and an unlimited usage window e
     assert.equal(models[0].isDefault,true);
     const usage=usageFor(models);
     assert.equal(usage.status,'ok');
-    assert.deepEqual(usage.status==='ok'&&usage.windows,[{label:'gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]);
+    assert.deepEqual(usage.status==='ok'&&usage.windows,[{label:'Available models: gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]);
   } finally {await server.close();}
   const two={data:[{id:'a/Qwen-GGUF:Q4'},{id:'b/gpt-oss-GGUF:MXFP4'}]};
   assert.deepEqual(parseModels(two,'b/gpt-oss-GGUF:MXFP4').map(m=>m.isDefault),[false,true]);
