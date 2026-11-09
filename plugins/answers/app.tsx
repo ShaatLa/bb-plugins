@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { definePluginApp, experimental_Icon as Icon, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools } from './inbox';
 import { Composer } from './composer';
@@ -125,6 +125,8 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
   const isQuestion = item.kind === 'mine' && /[?？]/.test(item.question);
+  // bb's own working spinner while the answer is pending; a failed turn shows its own notice instead.
+  const status = item.status === 'waiting' && item.failedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center"><ThreadStatusGlyph indicator="runtime" size="compact" /><span className="sr-only">waiting</span></span> : item.status;
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
   return <li ref={card} className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
@@ -132,7 +134,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
       <span className="flex-1" />
-      {item.status !== 'answered' && <span>{item.status}</span>}
+      {item.status !== 'answered' && <span>{status}</span>}
       {time}
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
@@ -166,7 +168,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
         </div>}
       </div>
       {item.kind !== 'saved' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
-      {chat && item.status !== 'answered' && <span className="ml-1 text-xs">{item.status}</span>}
+      {chat && item.status !== 'answered' && <span className="ml-1 inline-flex items-center text-xs">{status}</span>}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full text-xs text-muted-foreground">Recommended: {item.recommendReason}</p>}</div>}

@@ -39,8 +39,9 @@ export function Inbox({ questions = false, onBulkRead }: { questions?: boolean; 
   const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: { ...(selected ? { selected } : {}), ...(questions ? { questions } : {}) } });
-  // Keep the last list while a new selection refetches it, so switching conversations does not blank the list.
-  const lastRecipients = useRef(result.data); if (result.data) lastRecipients.current = result.data; const recipients = result.data ?? lastRecipients.current;
+  // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
+  // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
+  const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const recipients = lastRecipients.current ?? result.data;
   const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
@@ -147,7 +148,7 @@ export function Inbox({ questions = false, onBulkRead }: { questions?: boolean; 
   return <div className="grid h-full min-[640px]:grid-cols-[minmax(170px,230px)_1fr]">
     <div role="listbox" aria-label="Recipients" className={`space-y-0.5 overflow-auto p-2 min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}>
       {result.error && <p role="alert">{result.error.message}</p>}
-      {recipients?.recipients.length && recipients.recipients.every(r => !r.unread) ? <p className="px-3 py-2 text-xs text-muted-foreground">All caught up</p> : null}{recipients?.recipients.length === 0 && <EmptyState icon="MailOpen" title={questions ? 'No open questions' : 'All caught up'}>{questions ? 'Answers to your questions will show up here.' : 'New answers from your threads will show up here.'}</EmptyState>}
+      {recipients?.recipients.length === 0 && <EmptyState icon="MailOpen" title={questions ? 'No open questions' : 'All caught up'}>{questions ? 'Answers to your questions will show up here.' : 'New answers from your threads will show up here.'}</EmptyState>}
       {recipients?.recipients.map(recipient => <button key={recipient.threadId} role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'} ${recipient.unread ? '' : 'opacity-70'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
         if (selected !== recipient.threadId) { setCompose(composeDrafts()[recipient.threadId] ?? { text: '', files: [] }); setComposeError(''); setDepth(1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
         else try { onBulkRead?.(await rpc.call('markThreadRead', { threadId: recipient.threadId })); refresh(); } catch (e) { setError(errorText(e)); }

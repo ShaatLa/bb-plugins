@@ -349,3 +349,8 @@ it('links task keys of known Work Board projects in user questions', async () =>
   await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('[ANV-5](/plugins/work-board/work-board/task/ANV-5)'));
   expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent).filter(text => /ANV|GPT/.test(text!))).toEqual(['[ANV-5](/plugins/work-board/work-board/task/ANV-5)', '[ANV-9](/plugins/work-board/work-board/task/ANV-9)']);
 });
+it('shows bb’s working spinner instead of the waiting label', async () => {
+  const { slot } = await setup({ list: () => ({ items: [{ ...item, status: 'waiting', answer: null }], nextCursor: null }) });
+  await waitFor(() => expect(slot.container.querySelector('[data-thread-status-glyph="runtime"]')).toBeTruthy());
+  expect(slot.queryByText('waiting', { selector: ':not(.sr-only)' })).toBeNull();
+});

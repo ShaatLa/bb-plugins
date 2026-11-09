@@ -15,8 +15,8 @@ function setup(options: { recipients?: typeof one[]; list?: (input: any) => any;
 }
 it('mutes read rows, shows the caught-up line, and previews failures', async () => {
   const { slot, recipients } = setup({ recipients:[{ ...one, unread:0, preview:'Turn failed: Question one' }] });
-  expect(await slot.findByText('All caught up')).toBeTruthy();
-  expect(recipients.getByText('Turn failed: Question one')).toBeTruthy();
+  expect(await recipients.findByText('Turn failed: Question one')).toBeTruthy();
+  expect(slot.queryByText('All caught up')).toBeNull();
   expect(recipients.queryByLabelText(/unread/)).toBeNull();
   expect(recipients.getByRole('option').className).toContain('opacity-70');
 });
