@@ -36,7 +36,7 @@ export default function plugin(bb: BbPluginApi) {
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
-  const driver = createDriver(bb,db,() => {invalidate(); invalidatePools(); onAttention();});
+  const driver = createDriver(bb,db,() => {invalidate(); onAttention();});
   const sending = new Set<string>();
   // Drafts wait in the thread's queue until the user sends them from the chat, like bb's built-in Drafts plugin.
   bb.experimental_hooks.on('message.dispatch',ctx=>{
@@ -123,7 +123,7 @@ export default function plugin(bb: BbPluginApi) {
     if (wakeTimer) clearTimeout(wakeTimer);
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
-    const next=db.prepare('SELECT min(snoozed_until) AS at FROM items').get() as {at:number|null};
+    const next=db.prepare('SELECT min(snoozed_until) AS at FROM items WHERE snoozed_until IS NOT NULL').get() as {at:number|null};
     if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(0,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
@@ -198,26 +198,31 @@ export default function plugin(bb: BbPluginApi) {
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
       const p=inputs.recipients.parse(raw);
+      const chosenAttention=ATTENTION_SQL.replace('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
-      const rows=db.prepare(`WITH ranked AS (
-        SELECT *,CASE WHEN ${ATTENTION_SQL} THEN 1 ELSE 0 END AS attention,
-        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY CASE WHEN ${ATTENTION_SQL} THEN 0 ELSE 1 END,updated_at DESC,id DESC) AS rank
+      const rows=db.prepare(`WITH grouped AS (
+        SELECT thread_id,sum(CASE WHEN ${ATTENTION_SQL} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
         FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
-      ), grouped AS (
-        SELECT thread_id,sum(attention) AS unread,max(updated_at) AS last_at,
-        max(CASE WHEN rank=1 THEN project_id END) AS project_id,
-        max(CASE WHEN rank=1 THEN CASE WHEN attention=1 AND kind='mine' AND status='answered' THEN answer WHEN attention=1 AND kind='mine' THEN 'Turn failed: '||question WHEN attention=1 THEN question ELSE coalesce(answer,question) END END) AS preview
-        FROM ranked GROUP BY thread_id
-      ) SELECT * FROM grouped ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200`).all(p.selected ?? '') as Row[];
+        GROUP BY thread_id ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
+      ) SELECT grouped.*,chosen.project_id,
+        CASE WHEN ${chosenAttention} AND chosen.kind='mine' AND chosen.status='answered' THEN chosen.answer
+             WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
+             WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
+        FROM grouped JOIN items chosen ON chosen.id=(
+          SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0 ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
+          ORDER BY CASE WHEN ${ATTENTION_SQL.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
+        )`).all(p.selected ?? '') as Row[];
       if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
       const projects=rows.length ? await bb.sdk.projects.list() : [];
-      const previews=rows.map(r=>(r.preview ?? '') as string);
-      const mentioned=[...new Set(previews.flatMap(text=>[...text.matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threads.some(t=>t.id===id)).slice(0,200);
+      const threadMap=new Map(threads.map(t=>[t.id,t]));
+      const projectMap=new Map(projects.map(p=>[p.id,p]));
+      const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
       if (mentioned.length) threads.push(...await bb.sdk.threads.list({threadIds:mentioned,includeHidden:true,limit:200}));
-      const plain=(text:string)=>text.replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threads.find(t=>t.id===id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'');
-      return {recipients:rows.map(r=>{const t=threads.find(t=>t.id===r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(previews[rows.indexOf(r)]!)).slice(0,160)};})};
+      for(const t of threads) threadMap.set(t.id,t);
+      const plain=(text:string)=>text.replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'');
+      return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview((r.preview ?? '') as string)).slice(0,160)};})};
     },
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
     async pools(raw:z.infer<typeof inputs.pools>) {
