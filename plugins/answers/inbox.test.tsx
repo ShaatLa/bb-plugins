@@ -71,3 +71,12 @@ it('groups consecutive questions with a shared answer', async () => {
   await slot.findByText('Shared answer'); expect(slot.getAllByText('Shared answer')).toHaveLength(1);
   expect(document.querySelectorAll('[data-history-ids]')).toHaveLength(1);
 });
+it('shows Reply only on agent questions in the conversation', async () => {
+  const agentQuestion = { ...base, id:'ans_agent', kind:'for_me' as const, status:'open' as const, question:'Choose?', answer:null, answerSeq:null, options:['Yes'] };
+  const { slot, recipients } = setup({ list: () => ({ items:[agentQuestion, base], nextCursor:null }) });
+  fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Choose?');
+  expect(within(document.querySelector('[data-history-ids="ans_one"]')!).queryByRole('button', { name:'Reply' })).toBeNull();
+  expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
+  expect(slot.getByRole('button', { name:'Yes' })).toBeTruthy();
+});

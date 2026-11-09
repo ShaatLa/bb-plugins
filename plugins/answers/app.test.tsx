@@ -57,6 +57,7 @@ describe('Answers app', () => {
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
     expect(app.messageActions[1]).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
+    expect(slot.getByRole('button', { name: 'Reply' })).toBeTruthy();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
     pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
