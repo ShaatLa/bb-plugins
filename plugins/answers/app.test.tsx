@@ -364,7 +364,7 @@ it('embeds bb\u2019s chat for the selected conversation and marks it read', asyn
   fireEvent.click(await slot.findByRole('option'));
   const chat = await slot.findByTestId('bb-thread-chat');
   expect(chat.getAttribute('data-thread-id')).toBe('thr_one');
-  expect(chat.getAttribute('data-variant')).toBe('compact');
+  expect(chat.getAttribute('data-variant')).toBe('full');
   await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_one' }));
   fireEvent.click(slot.getByRole('button', { name: 'bb chat' }));
   expect(slot.queryByTestId('bb-thread-chat')).toBeNull();
