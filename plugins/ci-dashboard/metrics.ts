@@ -379,10 +379,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
   }
   function errorMessage(reason: unknown) {
     const message = reason instanceof Error ? reason.message : "";
-    return message.startsWith("GitHub") || message.startsWith("More than")
-      ? message : "Unable to load this data. Check connectivity and try again.";
+    if (message.startsWith("GitHub") || message.startsWith("More than")) return message;
+    // A slow GitHub or a dropped connection is transient: say so instead of blaming the user's connectivity.
+    if (reason instanceof Error && (reason.name === "TimeoutError" || /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket/i.test(`${message} ${String(reason.cause ?? "")}`)))
+      return "GitHub did not respond in time or the connection dropped. The next refresh retries.";
+    return "Unable to load this data. Check connectivity and try again.";
   }
-  function failedMetric(reason: unknown) {
+  function failedMetric(field: string, reason: unknown) {
+    // The card only shows a summary; the log keeps the actual cause.
+    if (!signal.aborted) options.onWarning?.(`${field}: ${reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason)}`);
     return { value: null, detail: "Unavailable", series: null, seriesError: null, error: errorMessage(reason) };
   }
   const empty = { value: null, detail: "Loading…", error: null, series: null, seriesError: null };
@@ -419,12 +424,12 @@ export async function loadMetrics(repository: string, token: string | undefined,
     historyData.head = head;
   }, options.previous).then(() => summarizeCommitActivity(historyData.commits!.filter((row) => Date.parse(row.committedDate) >= cutoff && Date.parse(row.committedDate) <= end), historyData.branch!));
   await Promise.all([
-    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric(reason) })),
-    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric(reason) })),
-    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric(reason), ciOutcomes: null })),
+    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric("deployments", reason) })),
+    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric("pullRequests", reason) })),
+    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric("ci", reason), ciOutcomes: null })),
     settle("reviewQueue", reviews().then((reviewQueue) => ({ reviewQueue })), (reason) => ({ reviewQueue: { total: null, items: [], error: errorMessage(reason) } })),
     settle("production", production().then((production) => ({ production })), (reason) => ({ production: { deployment: null, error: errorMessage(reason) } })),
-    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
+    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric("pullRequestsCreated", reason) })),
     settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
   ]);
   if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run, options.draftRules) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];

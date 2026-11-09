@@ -130,6 +130,17 @@ test("agent CI access is read-only, uses the local cache, marks stale data and s
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("a GitHub timeout or dropped connection is named as transient and logged with its cause", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  for (const failure of [new DOMException("The operation was aborted due to timeout", "TimeoutError"), new TypeError("fetch failed")]) {
+    fetchMock.mockImplementation(async (input: string) => { if (input.includes("/deployments")) throw failure; return normal(input); });
+    const warnings: string[] = [];
+    const result = await loadMetrics("acme/widgets", "private-token", new AbortController().signal, undefined, undefined, undefined, { onWarning: (message) => warnings.push(message) });
+    expect(result.deployments.error).toBe("GitHub did not respond in time or the connection dropped. The next refresh retries.");
+    expect(warnings).toContain(`deployments: ${failure.name}: ${failure.message}`);
+  }
+});
+
 test("counts paginated deployments inside the seven-day window and calculates all metrics", async () => {
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string) => {

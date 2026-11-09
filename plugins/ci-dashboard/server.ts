@@ -306,7 +306,7 @@ export default function plugin(bb: BbPluginApi) {
       // One repository history serves every contained view; PR creation counts remain range-specific.
       // Cached loads only ever add draft classifications to the stored runs; rewrite the row only when one was added.
       const classified = () => source.records.runs.reduce((count, run) => count + (run.draftDeferred === undefined ? 0 : 1), 0), before = classified();
-      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, draftRules: draftRules(values), onProgress: progress });
+      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, draftRules: draftRules(values), onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`Dashboard metrics for ${repository}: ${message}`); } });
       if (canWrite() && classified() !== before) database.prepare("UPDATE repository_history SET data = ? WHERE repository = ? AND configuration = ?").run(compress(JSON.stringify(source)), repository, config);
       return metrics;
     }
@@ -321,7 +321,7 @@ export default function plugin(bb: BbPluginApi) {
     let records: HistoricalRecords | undefined;
     const checks = windowChecks.get(key) ?? new Map<string, number>();
     windowChecks.set(key, checks);
-    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, reuse: source ? { coverage: source.coverage, checked: checks } : undefined, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
+    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, reuse: source ? { coverage: source.coverage, checked: checks } : undefined, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`Dashboard metrics for ${repository}: ${message}`); } }).then((metrics) => {
       if (records && canWrite()) {
         const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
         database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, compress(JSON.stringify(result)), Date.now());
