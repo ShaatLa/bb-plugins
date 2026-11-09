@@ -337,3 +337,9 @@ it('snoozes for the four local menu deadlines', async () => {
   await waitFor(() => expect(snooze).toHaveBeenCalledTimes(4));
   for (const [index, call] of snooze.mock.calls.entries()) expect(call[0].until).toBeGreaterThan(Date.now() + (index === 0 ? 0 : 1000));
 });
+it('renders thread mentions in user questions through bb markdown', async () => {
+  const { slot } = await setup({ list: () => ({ items: [item, { ...item, id: 'ans_mention', question: 'Send @thread:thr_abc123 the rules\nnow' }], nextCursor: null }) });
+  const chip = (await slot.findAllByTestId('bb-markdown')).find(node => node.textContent === '@thread:thr_abc123');
+  expect(chip).toBeTruthy();
+  expect(chip!.parentElement!.textContent).toBe('Send @thread:thr_abc123 the rules\nnow');
+});
