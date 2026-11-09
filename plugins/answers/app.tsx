@@ -246,7 +246,18 @@ function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string
   return <div className="space-y-2">{parsed.comments.map((entry, index) => <div key={index}>
     {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3">{entry.passage}</div></div>}
     {entry.comment && <div>{entry.comment}</div>}
-  </div>)}{parsed.text && <div><UserText text={parsed.text} prefixes={prefixes} /></div>}</div>;
+  </div>)}{quoteSegments(parsed.text).map((part, index) => part.quote
+    ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><Markdown content={part.text} /></div></div>
+    : <div key={`t${index}`}><UserText text={part.text} prefixes={prefixes} /></div>)}</div>;
+}
+// Pool replies and quote replies are Markdown with '> ' quote lines; show those as quote bars, the rest as plain text.
+export function quoteSegments(text: string) {
+  const parts: { quote: boolean; text: string }[] = [];
+  for (const line of text.split('\n')) {
+    const quote = /^>\s?/.test(line), body = quote ? line.replace(/^>\s?/, '') : line, last = parts.at(-1);
+    if (last && last.quote === quote) last.text += `\n${body}`; else parts.push({ quote, text: body });
+  }
+  return parts.map(part => ({ ...part, text: part.text.trim() })).filter(part => part.text);
 }
 
 function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {

@@ -478,3 +478,8 @@ it('persists attachments added to a pool entry', async () => {
   fireEvent.change(slot.container.querySelector('input[type="file"]')!, { target: { files: [new File(['data'], 'file.txt', { type: 'text/plain' })] } });
   await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Ready', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }], revision: 0 }), { timeout: 2000 });
 });
+it('splits quote lines from plain text in user messages', async () => {
+  const { quoteSegments } = await import('./app');
+  expect(quoteSegments('> 1. **Bold**\n\nMy note\n\n> 2. Next\n> line')).toEqual([{ quote:true, text:'1. **Bold**' }, { quote:false, text:'My note' }, { quote:true, text:'2. Next\nline' }]);
+  expect(quoteSegments('plain only')).toEqual([{ quote:false, text:'plain only' }]);
+});
