@@ -237,6 +237,8 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
   const view = stored === 'pinned' ? 'saved' : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
+  // shortcut: trial switch between bb's embedded chat and the classic conversation; remove with the classic code.
+  const [bbChat, setBbChat] = useStoredState('bb-plugin-answers:page:bb-chat', true);
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', false);
   const [error, setError] = useState('');
@@ -250,6 +252,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
         <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={setView} />
         <span className="flex-1" />
         {view !== 'for_me' && <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>}
+        {view === 'inbox' && <Button size="sm" variant="ghost" className={`h-7 px-2 text-xs ${bbChat ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={bbChat} onClick={() => setBbChat(!bbChat)}>bb chat</Button>}
         {(view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
       </div>
       {list && <div className="flex gap-2">
@@ -258,7 +261,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className="min-h-0 flex-1 overflow-auto p-4"><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { itemSchema, type Item } from './contract';
@@ -8,6 +8,8 @@ const item: Item = itemSchema.parse({snoozedUntil:null,failedAt:null,likelyInter
   id: 'ans_one', kind: 'mine', threadId: 'thr_one', projectId: 'pr_one', threadTitle: 'A thread', projectName: 'A project', status: 'answered', question: 'What changed?', questionSeq: 10,
   requestId: null, turnId: null, candidate: null, candidateSeq: null, interim: null, interimSeq: null, answer: 'The answer', answerSeq: 20, answerSource: 'turn', resolveTurnId: null, note: null, readAt: null, pinned: false, dismissedAt: null, threadDeleted: false, createdAt: Date.now(), updatedAt: Date.now(),
 });
+// Most tests cover the classic conversation; the embedded bb chat has its own test.
+beforeEach(() => { localStorage.setItem('bb-plugin-answers:page:bb-chat', 'false'); });
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 function pickView(slot: { getByRole: (...args: any[]) => HTMLElement }, label: string) {
   fireEvent.click(slot.getByRole('button', { name: /^View:/ }));
@@ -353,4 +355,17 @@ it('shows bb’s working spinner instead of the waiting label', async () => {
   const { slot } = await setup({ list: () => ({ items: [{ ...item, status: 'waiting', answer: null }], nextCursor: null }) });
   await waitFor(() => expect(slot.container.querySelector('[data-thread-status-glyph="runtime"]')).toBeTruthy());
   expect(slot.queryByText('waiting', { selector: ':not(.sr-only)' })).toBeNull();
+});
+it('embeds bb\u2019s chat for the selected conversation and marks it read', async () => {
+  localStorage.setItem('bb-plugin-answers:page:bb-chat', 'true');
+  const app = await loadPluginApp(() => import('./app'));
+  const markThreadRead = vi.fn(() => ({ ok: true, batch: 'b', count: 1 }));
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [{ threadId: 'thr_one', threadTitle: 'One', projectId: 'p', projectName: 'P', unread: 1, lastAt: 1, preview: 'x' }] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 1, waiting: 0, forMe: 0 }), markThreadRead } });
+  fireEvent.click(await slot.findByRole('option'));
+  const chat = await slot.findByTestId('bb-thread-chat');
+  expect(chat.getAttribute('data-thread-id')).toBe('thr_one');
+  expect(chat.getAttribute('data-variant')).toBe('compact');
+  await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_one' }));
+  fireEvent.click(slot.getByRole('button', { name: 'bb chat' }));
+  expect(slot.queryByTestId('bb-thread-chat')).toBeNull();
 });
