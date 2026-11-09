@@ -1,7 +1,6 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { DependenciesSection } from "./dependencies";
-import { ShareTaskButton } from "../../components/share-task-button";
 import { ClaimsLine } from "../../components/claims-line";
 import { PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
@@ -100,7 +99,7 @@ function SubTaskDonut({
   );
 }
 
-function CopyTaskKey({
+function CopyTaskLink({
   taskKey,
   onError,
 }: {
@@ -114,11 +113,11 @@ function CopyTaskKey({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const copyKey = async () => {
+  const copyLink = async () => {
     try {
       if (
         !(await experimental_copyToClipboard({
-          text: taskKey,
+          text: `[${taskKey}](/plugins/work-board/work-board/task/${encodeURIComponent(taskKey)})`,
         }))
       ) {
         throw new Error("Clipboard write failed");
@@ -126,7 +125,7 @@ function CopyTaskKey({
       setCopied(true);
     } catch {
       setCopied(false);
-      onError("Could not copy task key. Please try again.");
+      onError("Could not copy task link. Please try again.");
     }
   };
 
@@ -140,19 +139,19 @@ function CopyTaskKey({
               variant="ghost"
               size="icon"
               className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-              aria-label="Copy task key"
-              onClick={() => void copyKey()}
+              aria-label="Copy task link"
+              onClick={() => void copyLink()}
             >
               <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            {copied ? "Copied" : "Copy task key"}
+            {copied ? "Copied" : "Copy task link"}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <span role="status" className="sr-only">
-        {copied ? "Task key copied" : ""}
+        {copied ? "Task link copied. Paste it into the agent chat." : ""}
       </span>
     </>
   );
@@ -532,7 +531,7 @@ function TaskDetail({
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
-            <><CopyTaskKey key={task.id} taskKey={task.key} onError={push} /><ShareTaskButton taskKey={task.key} /></>,
+            <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
           <ScheduledSourceBanner task={task} />
           {task.type === "epic" ||

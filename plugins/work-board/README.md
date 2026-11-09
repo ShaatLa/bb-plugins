@@ -615,3 +615,5 @@ Cards, task details, and CLI `list` / `show` expose advisory warnings (`advisori
 Agent tasks in `in_progress` with complete activity diagnostics and no live attached session prompt reassignment or queueing. Owner actions are excluded. The report includes the latest retained attachment and task activity; removed attachment details may no longer be retained. Session checks expire after one minute. Expired UI advice disappears until a fresh metadata read; there are no extra GitHub requests or per-card network polling. PR refreshes invalidate both predecessor and dependent advice. These checks never move statuses, remove dependency links, block commands or send notifications. Only Done satisfies a dependency; a merged PR alone does not.
 
 Управление метками и пресетами доступно из верхней панели: **шестерёнка → Manage labels and presets → Labels**. Пункт **Plugin settings** в том же меню открывает настройки Work Board.
+
+В заголовке карточки кнопка **Copy task link** рядом с ключом копирует Markdown-ссылку для вставки в чат агента; отдельной дублирующей кнопки Share в карточке нет. В Scheduled доступен прежний Share.
