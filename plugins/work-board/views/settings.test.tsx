@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { navTab } from "../test-fixtures";
 import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({
@@ -269,9 +270,10 @@ it("saves a project workflow in compact settings and uses it in the list, board 
     expect(list.container.querySelector('[data-status-icon="in_testing"][data-status-glyph="testing"]')).toBeTruthy();
     expect((list.container.querySelector('[data-status-icon="in_testing"]') as SVGElement).style.color).toBe("indianred");
     list.lifecycle.unmount();
+    // The board lives only in the native right-panel Kanban tab.
     const board = renderSlot(
-      app.navPanels[0]!,
-      { subPath: `${project.id}?view=board` },
+      { component: navTab(app, "kanban").component },
+      { subPath: project.id },
       { rpc },
     );
     await board.findByText(task.title);
@@ -460,4 +462,28 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
     cleanup();
     await harness.dispose();
   }
+});
+
+it("saves notification modes independently for each selected project", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const mode = () => settings.getByRole("combobox", { name: "Task status notifications" });
+    await settings.findByRole("combobox", { name: "Task status notifications" });
+    fireEvent.click(mode());
+    fireEvent.click(await settings.findByRole("option", { name: "Done only" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done"));
+    expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("off");
+    fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
+    await waitFor(() => expect(mode().textContent).toContain("Off"));
+    fireEvent.click(mode());
+    fireEvent.click(await settings.findByRole("option", { name: "All status changes" }));
+    await waitFor(() => expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("all"));
+    expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done");
+  } finally { cleanup(); await harness.dispose(); }
 });

@@ -1,246 +1,430 @@
-// ACP agent that runs each turn through `codex exec` against a local OpenAI-compatible server.
+// ACP agent that runs its own tool loop against a local OpenAI-compatible server (llama.cpp router).
 // Materialized on each execution host so the host artifact is self-contained.
+// Inside String.raw: no backticks and no dollar-brace sequences.
 export const shimSource = String.raw`
 import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomUUID} from 'node:crypto';
-import {mkdirSync,writeFileSync,readFileSync,renameSync,mkdtempSync,rmSync,readdirSync,openSync,fstatSync,readSync,closeSync} from 'node:fs';
-import {join} from 'node:path';
-import {tmpdir,homedir} from 'node:os';
-import http from 'node:http';
-import https from 'node:https';
+import {mkdirSync,writeFileSync,readFileSync,renameSync} from 'node:fs';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {join,resolve,relative,isAbsolute,dirname} from 'node:path';
+import {tmpdir} from 'node:os';
 
-const codex=process.env.CODEX_BIN,baseUrl=process.env.LM_BASE_URL;
-if(!codex||!baseUrl){process.stderr.write('Codex CLI or local model server is not configured.\n');process.exit(1);}
+const baseUrl=(process.env.LM_BASE_URL||'').replace(/\/+$/,'');
+if(!baseUrl){process.stderr.write('The local model server is not configured.\n');process.exit(1);}
 const dataDir=process.env.LM_BB_DATA_DIR||join(tmpdir(),'local-models-bb');
-const tempDir=process.env.LM_BB_TEMP_DIR||tmpdir();
 const permissionMode=process.argv.slice(2).find(arg=>arg.startsWith('--bb-permission-mode='))?.split('=')[1];
 if(!['full','accept-edits'].includes(permissionMode))throw Error('Unsupported or missing permission mode.');
-const EFFORTS=['low','medium','high'];
+const EFFORTS=['none','low','medium','high','xhigh'];
+const env=(name,fallback)=>{const value=Number(process.env[name]);return value>0?value:fallback;};
+// A cold load of a dense 31B model plus prompt processing takes minutes on a laptop, so the
+// time to the first byte is generous; once streaming, prompt_progress/tokens keep the idle timer alive.
+const FIRST_BYTE_MS=env('LM_FIRST_BYTE_TIMEOUT_MS',20*60000),IDLE_MS=env('LM_IDLE_TIMEOUT_MS',10*60000);
+const RETRY_MS=env('LM_RETRY_DELAY_MS',5000),MAX_STEPS=env('LM_MAX_STEPS',60),OUTPUT_LIMIT=30000;
 mkdirSync(join(dataDir,'sessions'),{recursive:true,mode:0o700});
-const sessions=new Map(),pendingRoots=new Set();
+const sessions=new Map(),clientPending=new Map();let clientNext=0;
 const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
 const fail=(id,message,code=-32602)=>send({id,error:{code,message}});
 const update=(sessionId,value)=>send({method:'session/update',params:{sessionId,update:value}});
-// JSON strings and string arrays are valid TOML values for codex -c overrides.
-const toml=value=>JSON.stringify(value);
+const minutes=ms=>ms<60000?Math.round(ms/1000)+' s':Math.round(ms/6000)/10+' min';
+const clip=text=>text.length<=OUTPUT_LIMIT?text:text.slice(0,OUTPUT_LIMIT/2)+'\n[... '+(text.length-OUTPUT_LIMIT)+' characters omitted ...]\n'+text.slice(-OUTPUT_LIMIT/2);
 const label=id=>{const [name,quant]=(id.split('/').at(-1)||id).split(':');return name.replace(/-GGUF$/i,'')+(quant?' ('+quant+')':'');};
 function contextOf(model){
   const args=model.status?.args,index=Array.isArray(args)?args.indexOf('--ctx-size'):-1;
-  const size=Number(index>=0?args[index+1]:model.meta?.n_ctx);
+  // The --ctx-size the router loads with is the real limit; context_length is the trained one.
+  const arg=index>=0?Number(args[index+1]):0,size=arg>0?arg:Number(model.context_length??model.meta?.n_ctx);
   return Number.isInteger(size)&&size>0?size:null;
 }
-const models=await fetch(baseUrl.replace(/\/+$/,'')+'/models',{signal:AbortSignal.timeout(10000)})
-  .then(response=>response.ok?response.json():{data:[]})
-  .then(body=>(Array.isArray(body?.data)?body.data:[]).filter(model=>typeof model?.id==='string'&&model.id).map(model=>({value:model.id,name:label(model.id),ctx:contextOf(model)})))
-  .catch(()=>[]);
-// Codex sends developer messages and namespaced MCP tools; strict chat templates (Qwen, Gemma)
-// reject non-leading system messages and llama.cpp drops namespace tools, so rewrite before forwarding.
-function adapt(body,flat){
-  const notes=[],input=[];
-  for(const item of Array.isArray(body.input)?body.input:[]){
-    if((item?.type==='message'||!item?.type)&&(item?.role==='developer'||item?.role==='system'))
-      notes.push(...(typeof item.content==='string'?[item.content]:(Array.isArray(item.content)?item.content:[]).map(part=>part?.text).filter(text=>typeof text==='string')));
-    else input.push(item);
-  }
-  const instructions=[body.instructions,...notes].filter(Boolean).join('\n\n');
-  // MCP namespaces become flat mcp__server__tool functions; other namespaces (built-in sub-agents) only cost local context.
-  const tools=Array.isArray(body.tools)?body.tools.flatMap(tool=>tool?.type!=='namespace'?[tool]
-    :String(tool.name).startsWith('mcp__')&&Array.isArray(tool.tools)?tool.tools.map(inner=>{
-      flat.set(tool.name+'__'+inner.name,{namespace:tool.name,name:inner.name});return {...inner,name:tool.name+'__'+inner.name};
-    }):[]):body.tools;
-  return {...body,input,tools,...(instructions?{instructions}:{})};
+let capsCache={};try{capsCache=JSON.parse(readFileSync(join(dataDir,'model-caps.json'),'utf8'));}catch{}
+function deriveCaps(body) {
+  const template = String(body.chat_template ?? ''), caps = body.chat_template_caps;
+  const levels = caps?.supports_reasoning_effort && Array.isArray(caps.reasoning_effort_levels) ? caps.reasoning_effort_levels.filter((x) => ['low','medium','high','xhigh'].includes(String(x))) : [];
+  return { knob: levels.length ? 'reasoning_effort' : template.includes('reasoning_strength') ? 'reasoning_strength' : null, levels: levels.length ? levels : template.includes('reasoning_strength') ? ['low','medium','high','xhigh'] : [], none: template.includes('enable_thinking'), checkedAt: Date.now() };
 }
-// Codex only accepts calls to namespaced tools as {namespace, name}, so split flat names back in the reply.
-function restore(value,flat){
-  if(Array.isArray(value)){for(const entry of value)restore(entry,flat);return;}
-  if(!value||typeof value!=='object')return;
-  if(value.type==='function_call'&&flat.has(value.name))Object.assign(value,flat.get(value.name));
-  for(const key in value)restore(value[key],flat);
+const ORDER=['low','medium','high','xhigh'];
+// Nearest supported level, ties go up (high -> xhigh on Qwen3.8); 'none' falls to the lowest.
+const nearest=(levels,effort)=>ORDER.filter(value=>levels.includes(value)).reduce((best,value)=>!best||Math.abs(ORDER.indexOf(value)-ORDER.indexOf(effort))<=Math.abs(ORDER.indexOf(best)-ORDER.indexOf(effort))?value:best,undefined);
+function reasoningParams(caps, effort) {
+  if (!caps || !effort) return {};
+  if (effort === 'none' && caps.none) return { reasoning_effort: 'none' };
+  const level = nearest(caps.levels, effort);
+  return !level || !caps.knob ? {} : caps.knob === 'reasoning_effort' ? { reasoning_effort: level } : { chat_template_kwargs: { reasoning_strength: level } };
 }
-const upstream=new URL(baseUrl);
-const proxy=http.createServer((req,res)=>{
-  const chunks=[];req.on('data',chunk=>chunks.push(chunk));
-  req.on('end',()=>{
-    let body=Buffer.concat(chunks);const flat=new Map();
-    if(req.method==='POST'&&/\/responses$/.test(req.url.split('?')[0])&&!req.headers['content-encoding'])
-      try{body=Buffer.from(JSON.stringify(adapt(JSON.parse(body.toString('utf8')),flat)));}catch{ /* Forward unparseable bodies unchanged. */ }
-    const headers={...req.headers,host:upstream.host,'content-length':String(body.length)};delete headers['transfer-encoding'];
-    const out=(upstream.protocol==='https:'?https:http).request(new URL(req.url,upstream.origin),{method:req.method,headers},reply=>{
-      if(!flat.size||reply.headers['content-encoding']||!String(reply.headers['content-type']).includes('event-stream')){res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);return;}
-      const replyHeaders={...reply.headers};delete replyHeaders['content-length'];res.writeHead(reply.statusCode,replyHeaders);
-      const fix=line=>{if(!line.startsWith('data:'))return line;try{const event=JSON.parse(line.slice(5));restore(event,flat);return 'data: '+JSON.stringify(event);}catch{return line;}};
-      let pending='';reply.setEncoding('utf8');
-      reply.on('data',chunk=>{const lines=(pending+chunk).split('\n');pending=lines.pop();if(lines.length)res.write(lines.map(fix).join('\n')+'\n');});
-      reply.on('end',()=>res.end(fix(pending)));
-    });
-    out.on('error',()=>{if(!res.headersSent)res.writeHead(502);res.end();});
-    out.end(body);
-  });
-});
-await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
-const proxyBase='http://127.0.0.1:'+proxy.address().port+upstream.pathname.replace(/\/+$/,'');
-function sessionFile(id){if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid session ID.');return join(dataDir,'sessions',id+'.json');}
-// Codex logs per-request token counts only in its session rollout file.
-function rolloutFile(session){
-  if(session.rollout)return session.rollout;
-  const base=join(process.env.CODEX_HOME||join(homedir(),'.codex'),'sessions');
-  // UUIDv7 thread ids start with the creation time in ms; Codex names date folders in local time.
-  const created=parseInt(session.threadId.replace(/-/g,'').slice(0,12),16);
-  for(const offset of [0,-86400000,86400000]){
-    const day=new Date(created+offset),pad=n=>String(n).padStart(2,'0');
-    const dir=join(base,String(day.getFullYear()),pad(day.getMonth()+1),pad(day.getDate()));
-    let name;try{name=readdirSync(dir).find(f=>f.endsWith('-'+session.threadId+'.jsonl'));}catch{}
-    if(name)return session.rollout=join(dir,name);
-  }
-  return null;
-}
-function emitUsage(session){
+
+async function modelCaps(modelId,signal){
+  if(capsCache[modelId])return capsCache[modelId];
   try{
-    const file=session.threadId&&rolloutFile(session);if(!file)return;
-    // shortcut: only the last 1 MB is scanned, enough for the latest token_count; read more if Codex ever logs huge items after it.
-    const fd=openSync(file,'r'),size=fstatSync(fd).size,length=Math.min(size,1048576),buffer=Buffer.alloc(length);
-    try{readSync(fd,buffer,0,length,size-length);}finally{closeSync(fd);}
-    let usage=null;
-    for(const line of buffer.toString('utf8').split('\n')){
-      if(!line.includes('"token_count"'))continue;
-      let info;try{info=JSON.parse(line).payload?.info;}catch{continue;}
-      const last=info?.last_token_usage;
-      if(Number.isInteger(last?.input_tokens)&&Number.isInteger(last?.output_tokens)&&Number.isInteger(info.model_context_window))
-        usage={used:last.input_tokens+last.output_tokens,size:info.model_context_window};
-    }
-    if(!usage||(session.usage?.used===usage.used&&session.usage?.size===usage.size))return;
-    session.usage=usage;update(session.id,{sessionUpdate:'usage_update',...usage});
-  }catch{ /* The rollout log is Codex-internal: a missing file or new format only hides the indicator. */ }
+    const response=await fetch(baseUrl.replace(/\/v1$/,'')+'/props?model='+encodeURIComponent(modelId),{signal});
+    if(!response.ok)return;
+    const caps=deriveCaps(await response.json());capsCache[modelId]=caps;
+    try{const file=join(dataDir,'model-caps.json'),temp=file+'.'+process.pid+'.tmp';writeFileSync(temp,JSON.stringify(capsCache),{mode:0o600});renameSync(temp,file);}catch{}
+    return caps;
+  }catch{return;}
 }
+let models=[];
+// Re-read while empty, so a router that was down when BB started this agent does not need a restart.
+async function loadModels(){
+  if(models.length)return models;
+  models=await fetch(baseUrl+'/models',{signal:AbortSignal.timeout(10000)})
+    .then(response=>response.ok?response.json():{data:[]})
+    .then(body=>(Array.isArray(body?.data)?body.data:[]).filter(model=>typeof model?.id==='string'&&model.id).map(model=>({value:model.id,name:label(model.id),ctx:contextOf(model)})))
+    .catch(()=>[]);
+  return models;
+}
+
+const fn=(name,description,properties,required)=>({type:'function',function:{name,description,parameters:{type:'object',properties,required}}});
+const BUILTIN_TOOLS=[
+  fn('shell','Run a shell command in the workspace. Returns combined stdout/stderr and the exit code.',{command:{type:'string'},timeout_seconds:{type:'number',description:'Default 120, max 1800.'}},['command']),
+  fn('read_file','Read a text file; returns numbered lines.',{path:{type:'string'},offset:{type:'number',description:'First line (1-based).'},limit:{type:'number',description:'Number of lines, default 400.'}},['path']),
+  fn('write_file','Create or overwrite a file.',{path:{type:'string'},content:{type:'string'}},['path','content']),
+  fn('edit_file','Replace an exact string in a file. old_string must be unique unless replace_all is true.',{path:{type:'string'},old_string:{type:'string'},new_string:{type:'string'},replace_all:{type:'boolean'}},['path','old_string','new_string']),
+];
+// Local prompt processing is slow, so the prompt stays small and stable (llama.cpp reuses the cached prefix).
+function systemPrompt(cwd){
+  const lines=['You are a coding agent. Workspace: '+cwd+' ('+process.platform+'). Today is '+new Date().toISOString().slice(0,10)+'.',
+    'Use the tools to inspect files, run commands and make changes instead of guessing. Prefer read_file/edit_file for files; keep command output short (e.g. pipe to head). The task\'s files are in the workspace: start by listing it, never search the whole disk. Relative paths resolve against the workspace. When done, answer briefly.'];
+  // shortcut: only the workspace AGENTS.md, capped at 8 KB; nested or user-level instruction files are not read.
+  try{const text=readFileSync(join(cwd,'AGENTS.md'),'utf8').trim();if(text)lines.push('Project instructions (AGENTS.md):\n'+text.slice(0,8000));}catch{}
+  return lines.join('\n\n');
+}
+
+function startMcp(server,index,cwd){
+  const name=(String(server.name??'').replace(/[^A-Za-z0-9_-]/g,'_')||'bb_'+index);
+  const child=spawn(server.command,server.args.map(String),{cwd,env:{...process.env,...Object.fromEntries(server.env.map(entry=>[entry.name,entry.value]))},stdio:['pipe','pipe','ignore']});
+  const pending=new Map();let next=0,closed=false;
+  const write=value=>{if(!closed)child.stdin.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');};
+  const close=message=>{closed=true;for(const waiter of pending.values())waiter.reject(Error(message));pending.clear();};
+  child.on('error',error=>close('MCP server '+name+' failed: '+error.message));child.on('exit',()=>close('MCP server '+name+' exited.'));child.stdin.on('error',()=>{});
+  createInterface({input:child.stdout}).on('line',line=>{
+    let message;try{message=JSON.parse(line);}catch{return;}
+    if(message?.method&&message.id!==undefined){write({id:message.id,...(message.method==='ping'?{result:{}}:{error:{code:-32601,message:'Unsupported client method.'}})});return;}
+    const waiter=pending.get(message?.id);if(!waiter)return;pending.delete(message.id);
+    if(message.error)waiter.reject(Error(String(message.error.message||'MCP error')));else waiter.resolve(message.result);
+  });
+  const request=(method,params,signal,timeout)=>new Promise((resolve,reject)=>{
+    if(closed)return reject(Error('MCP server '+name+' is not running.'));
+    const id=++next;pending.set(id,{resolve,reject});write({id,method,params});
+    const abort=reason=>{if(pending.delete(id)){write({method:'notifications/cancelled',params:{requestId:id}});reject(Error(reason));}};
+    signal?.addEventListener('abort',()=>abort('Cancelled.'),{once:true});
+    if(timeout)setTimeout(()=>abort('MCP server '+name+' did not answer '+method+'.'),timeout).unref();
+  });
+  const client={name,child,tools:[],request};
+  client.ready=(async()=>{
+    await request('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'bb-local-models',version:'0.2.0'}},null,30000);
+    write({method:'notifications/initialized'});
+    let cursor;
+    do{const page=await request('tools/list',cursor?{cursor}:{},null,30000);client.tools.push(...(Array.isArray(page?.tools)?page.tools:[]));cursor=page?.nextCursor;}while(cursor);
+  })().catch(()=>{client.tools=[];});
+  return client;
+}
+function closeMcp(session){for(const client of session.mcp||[])stopChild(client.child,'SIGTERM');session.mcp=[];}
+function attachMcp(session,servers=[]){
+  for(const server of servers)if(typeof server.command!=='string'||!Array.isArray(server.args)||!Array.isArray(server.env))throw Error('Only stdio MCP is supported.');
+  closeMcp(session);
+  session.mcp=servers.map((server,index)=>startMcp(server,index,session.cwd));
+  session.mcpTools=null;
+}
+// MCP tools become flat mcp__server__tool functions; BB's own tool servers are pre-approved like on other providers.
+async function mcpTools(session){
+  if(session.mcpTools)return session.mcpTools;
+  await Promise.all(session.mcp.map(client=>client.ready));
+  session.mcpRoutes=new Map();
+  session.mcpTools=session.mcp.flatMap(client=>client.tools.filter(tool=>typeof tool?.name==='string').map(tool=>{
+    const name=('mcp__'+client.name+'__'+tool.name).replace(/[^A-Za-z0-9_-]/g,'_');
+    session.mcpRoutes.set(name,{client,tool:tool.name});
+    return {type:'function',function:{name,description:String(tool.description??'').slice(0,1000),parameters:tool.inputSchema&&typeof tool.inputSchema==='object'?tool.inputSchema:{type:'object',properties:{}}}};
+  }));
+  return session.mcpTools;
+}
+
+function sessionFile(id){if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid session ID.');return join(dataDir,'sessions',id+'.json');}
 function save(session){
   const file=sessionFile(session.id),temporary=file+'.'+process.pid+'.tmp';
-  const {id,cwd,threadId,selected,effort}=session;
-  writeFileSync(temporary,JSON.stringify({id,cwd,threadId,selected,effort}),{mode:0o600});renameSync(temporary,file);
+  const {id,cwd,selected,effort,messages,usage,instructions}=session;
+  writeFileSync(temporary,JSON.stringify({version:2,id,cwd,selected,effort,messages,usage,instructions}),{mode:0o600});renameSync(temporary,file);
 }
 function config(session){
+  const caps=capsCache[session.selected],levels=caps?[...(caps.none?['none']:[]),...caps.levels]:['low','medium','high'];
   return {configOptions:[
     {id:'model',name:'Model',category:'model',type:'select',currentValue:session.selected,options:models.map(m=>({value:m.value,name:m.name}))},
-    {id:'thought_level',name:'Reasoning effort',category:'thought_level',type:'select',currentValue:session.effort,options:EFFORTS.map(value=>({value,name:value[0].toUpperCase()+value.slice(1)}))},
+    {id:'thought_level',name:'Reasoning effort',category:'thought_level',type:'select',currentValue:levels.includes(session.effort)?session.effort:nearest(levels,session.effort)??levels[0],options:levels.map(value=>({value,name:value==='xhigh'?'Extra high':value[0].toUpperCase()+value.slice(1)}))},
   ]};
 }
-function attachMcp(session,servers=[]){
-  if(session.root){rmSync(session.root,{recursive:true,force:true});pendingRoots.delete(session.root);}
-  const root=mkdtempSync(join(tempDir,'local-models-bb-session-'));session.root=root;pendingRoots.add(root);
-  session.mcpArgs=[];session.mcpEnv={};
-  servers.forEach((server,index)=>{
-    if(typeof server.command!=='string'||!Array.isArray(server.args)||!Array.isArray(server.env))throw Error('Only stdio MCP is supported.');
-    const key='mcp_servers.'+(String(server.name??'').replace(/[^A-Za-z0-9_-]/g,'_')||'bb_'+index);
-    // Secrets travel through the child environment and env_vars, never argv.
-    for(const entry of server.env){
-      if(entry.name in session.mcpEnv&&session.mcpEnv[entry.name]!==entry.value)throw Error('Conflicting MCP environment.');
-      session.mcpEnv[entry.name]=entry.value;
+function emitUsage(session){if(session.usage)update(session.id,{sessionUpdate:'usage_update',...session.usage});}
+function getSession(id){const session=sessions.get(id);if(!session)throw Error('Unknown session.');return session;}
+function userContent(parts){
+  const texts=[],images=[];
+  for(const part of parts){
+    if(part.type==='text'&&typeof part.text==='string')texts.push(part.text);
+    else if(part.type==='image'&&typeof part.data==='string'){
+      if(!['image/png','image/jpeg','image/webp','image/gif'].includes(part.mimeType))throw Error('Unsupported image type.');
+      images.push({type:'image_url',image_url:{url:'data:'+part.mimeType+';base64,'+part.data}});
     }
-    // Headless exec cannot show approval prompts, so BB's own tool servers are pre-approved like on other providers.
-    session.mcpArgs.push('-c',key+'.command='+toml(server.command),'-c',key+'.args='+toml(server.args.map(String)),'-c',key+'.env_vars='+toml(server.env.map(entry=>entry.name)),'-c',key+'.default_tools_approval_mode="approve"');
+    else if(part.type==='resource'&&typeof part.resource?.text==='string')texts.push(part.resource.text);
+    else throw Error('Unsupported prompt content.');
+  }
+  const text=texts.filter(Boolean).join('\n\n');
+  return images.length?[{type:'text',text},...images]:text;
+}
+
+// BB prepends its plugin instructions (~5k tokens) to the first prompt of every attach. In the user turn they bury the
+// task: LFM2.5 repeated finished tool calls 2 of 3 times, 0 of 5 with the block in the system prompt. The newest copy wins.
+function takeInstructions(session,content){
+  const end=typeof content==='string'&&content.startsWith('<system_instructions>')?content.indexOf('</system_instructions>'):-1;
+  if(end<0)return content;
+  session.instructions=content.slice(0,end+22);
+  return content.slice(end+22).trimStart();
+}
+const sleep=(ms,signal)=>new Promise(done=>{const timer=setTimeout(done,ms);signal.addEventListener('abort',()=>{clearTimeout(timer);done();},{once:true});});
+const reasonOf=error=>String(error?.cause?.code||error?.cause?.message||error?.message||error);
+// One streamed chat completion. Every failure mode ends in a thrown Error with a readable reason.
+async function streamCompletion(body,signal,onChunk,deadline){
+  for(;;){
+    const controller=new AbortController();let reason='',timer;
+    const stop=why=>{reason=why;controller.abort();};
+    const arm=(ms,why)=>{clearTimeout(timer);timer=setTimeout(()=>stop(why),ms);};
+    const onCancel=()=>stop('Cancelled.');signal.addEventListener('abort',onCancel,{once:true});
+    arm(Math.max(0,deadline-Date.now()),'the model server sent nothing for '+minutes(FIRST_BYTE_MS)+' (model load or prompt processing took too long)');
+    try{
+      let response;
+      try{response=await fetch(baseUrl+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:controller.signal});}
+      catch(error){const code=reasonOf(error);throw Error(reason||(/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(code)?'cannot reach the model server at '+baseUrl:'the model server dropped the connection')+' ('+code+')');}
+      // The router answers 503 while a model is still loading; wait for it within the first-byte budget.
+      if(response.status===503&&Date.now()+RETRY_MS<deadline){await response.body?.cancel().catch(()=>{});await sleep(RETRY_MS,signal);if(signal.aborted)throw Error('Cancelled.');continue;}
+      if(!response.ok){
+        const text=await response.text().catch(()=>'');let message=text;
+        try{message=JSON.parse(text).error?.message||text;}catch{}
+        throw Error('the model server answered '+response.status+(message?': '+String(message).slice(0,300):''));
+      }
+      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',finished=false;
+      for(;;){
+        let chunk;
+        try{chunk=await reader.read();}catch(error){throw Error(reason||'the model server closed the stream ('+reasonOf(error)+')');}
+        if(chunk.done)break;
+        arm(IDLE_MS,'the model server stopped streaming for '+minutes(IDLE_MS));
+        buffer+=decoder.decode(chunk.value,{stream:true});
+        const lines=buffer.split('\n');buffer=lines.pop();
+        for(const line of lines){
+          if(!line.startsWith('data:'))continue;
+          const data=line.slice(5).trim();
+          if(data==='[DONE]'){finished=true;continue;}
+          let event;try{event=JSON.parse(data);}catch{continue;}
+          if(event.error)throw Error(String(event.error.message||JSON.stringify(event.error)).slice(0,300));
+          if(event.choices?.[0]?.finish_reason)finished=true;
+          onChunk(event);
+        }
+      }
+      if(reason)throw Error(reason);
+      if(!finished)throw Error('the model server ended the stream before the reply was complete');
+      return;
+    }finally{clearTimeout(timer);signal.removeEventListener('abort',onCancel);}
+  }
+}
+
+function inside(cwd,file){const path=relative(cwd,file);return path===''||(!path.startsWith('..')&&!isAbsolute(path));}
+function describe(session,name,args){
+  const path=typeof args?.path==='string'?resolve(session.cwd,args.path):null;
+  if(name==='shell')return {title:String(args?.command??'shell'),kind:'execute',rawInput:{command:args?.command}};
+  if(name==='read_file')return {title:'Read '+(path??''),kind:'read',locations:path?[{path,line:args.offset??null}]:[],rawInput:args};
+  if(name==='write_file'||name==='edit_file')return {title:'Edit '+(path??''),kind:'edit',locations:path?[{path}]:[],rawInput:{path}};
+  const route=session.mcpRoutes?.get(name);
+  return {title:route?route.client.name+'.'+route.tool:name,kind:'other',rawInput:args};
+}
+function askPermission(session,toolCall,signal,allowAllLabel){
+  return new Promise(done=>{
+    const id='lm-'+(++clientNext);clientPending.set(id,done);
+    signal.addEventListener('abort',()=>{if(clientPending.delete(id))done({result:{outcome:{outcome:'cancelled'}}});},{once:true});
+    send({id,method:'session/request_permission',params:{sessionId:session.id,toolCall,options:[
+      {optionId:'allow',name:'Allow',kind:'allow_once'},
+      ...(allowAllLabel?[{optionId:'always',name:allowAllLabel,kind:'allow_always'}]:[]),
+      {optionId:'deny',name:'Deny',kind:'reject_once'}]}});
+  }).then(reply=>reply.error?'error: '+String(reply.error.message||'unknown'):reply.result?.outcome?.outcome==='selected'?reply.result.outcome.optionId:'cancelled');
+}
+function runShell(session,command,seconds,signal){
+  return new Promise(done=>{
+    const child=spawn(command,{shell:true,cwd:session.cwd,env:process.env,stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
+    session.children.add(child);let output='',timedOut=false;
+    const collect=chunk=>{output+=chunk;if(output.length>4*OUTPUT_LIMIT)output=output.slice(0,OUTPUT_LIMIT)+output.slice(-2*OUTPUT_LIMIT);};
+    child.stdout.setEncoding('utf8').on('data',collect);child.stderr.setEncoding('utf8').on('data',collect);
+    const timer=setTimeout(()=>{timedOut=true;stopChild(child,'SIGKILL');},Math.min(Math.max(Number(seconds)||120,1),1800)*1000);
+    const finish=(code,error)=>{clearTimeout(timer);session.children.delete(child);
+      const note=signal.aborted?'[cancelled by the user; the command was killed]':timedOut?'[timed out]':error?'[failed to start: '+error.message+']':'[exit code '+code+']';
+      done({ok:!error&&code===0&&!timedOut&&!signal.aborted,text:clip(output)+(output.endsWith('\n')||!output?'':'\n')+note});};
+    child.on('error',error=>finish(null,error));child.on('close',code=>finish(code));
   });
 }
-function getSession(id){const session=sessions.get(id);if(!session)throw Error('Unknown session.');return session;}
-function promptText(session,parts,images){
-  return parts.map(part=>{
-    if(part.type==='text'&&typeof part.text==='string')return part.text;
-    if(part.type==='image'&&typeof part.data==='string'){
-      const extension=new Map([['image/png','png'],['image/jpeg','jpg'],['image/webp','webp'],['image/gif','gif']]).get(part.mimeType);
-      if(!extension)throw Error('Unsupported image type.');
-      const file=join(session.root,'image-'+randomUUID()+'.'+extension);writeFileSync(file,Buffer.from(part.data,'base64'),{mode:0o600});
-      images.push(file);return '';
-    }
-    if(part.type==='resource'&&typeof part.resource?.text==='string')return part.resource.text;
-    throw Error('Unsupported prompt content.');
-  }).filter(Boolean).join('\n\n');
+async function execute(session,name,args,signal){
+  const path=typeof args.path==='string'&&args.path?resolve(session.cwd,args.path):null;
+  if(name==='shell'){if(typeof args.command!=='string'||!args.command.trim())throw Error('command is required.');return runShell(session,args.command,args.timeout_seconds,signal);}
+  if(name==='read_file'){
+    if(!path)throw Error('path is required.');
+    const lines=(await readFile(path,'utf8')).split('\n'),start=Math.max(1,Math.floor(Number(args.offset)||1)),count=Math.max(1,Math.floor(Number(args.limit)||400));
+    const shown=lines.slice(start-1,start-1+count).map((line,index)=>(start+index)+'\t'+line).join('\n');
+    return {ok:true,text:clip(shown)+(start-1+count<lines.length?'\n[file has '+lines.length+' lines; continue with offset '+(start+count)+']':'')};
+  }
+  if(name==='write_file'){
+    if(!path||typeof args.content!=='string')throw Error('path and content are required.');
+    const old=await readFile(path,'utf8').catch(()=>null);
+    await mkdir(dirname(path),{recursive:true});await writeFile(path,args.content);
+    return {ok:true,text:(old===null?'Created ':'Wrote ')+path,content:[{type:'diff',path,oldText:old,newText:args.content}]};
+  }
+  if(name==='edit_file'){
+    if(!path||typeof args.old_string!=='string'||typeof args.new_string!=='string'||!args.old_string)throw Error('path, old_string and new_string are required.');
+    const text=await readFile(path,'utf8'),count=text.split(args.old_string).length-1;
+    if(!count)throw Error('old_string was not found in '+path+'.');
+    if(count>1&&!args.replace_all)throw Error('old_string occurs '+count+' times in '+path+'; include more context or set replace_all.');
+    const index=text.indexOf(args.old_string);
+    const next=args.replace_all?text.split(args.old_string).join(args.new_string):text.slice(0,index)+args.new_string+text.slice(index+args.old_string.length);
+    await writeFile(path,next);
+    return {ok:true,text:'Edited '+path+(count>1?' ('+count+' replacements)':''),content:[{type:'diff',path,oldText:args.old_string,newText:args.new_string}]};
+  }
+  const route=session.mcpRoutes?.get(name);
+  if(!route)throw Error('Unknown tool '+name+'.');
+  const result=await route.client.request('tools/call',{name:route.tool,arguments:args},signal);
+  const text=(Array.isArray(result?.content)?result.content:[]).map(part=>part?.type==='text'?part.text:JSON.stringify(part)).join('\n')||JSON.stringify(result?.structuredContent??result??null);
+  return {ok:!result?.isError,text:clip(String(text))};
 }
-function describe(item){
-  if(item.type==='command_execution')return {title:String(item.command),kind:'execute',rawInput:{command:item.command},text:item.aggregated_output};
-  if(item.type==='file_change'){const changes=Array.isArray(item.changes)?item.changes:[];return {title:'Edit '+changes.map(c=>c.path).join(', '),kind:'edit',locations:changes.map(c=>({path:c.path}))};}
-  if(item.type==='mcp_tool_call')return {title:item.server+'.'+item.tool,kind:'other',rawInput:item.arguments,text:item.error?.message??(item.result?JSON.stringify(item.result.content??item.result):'')};
-  if(item.type==='web_search')return {title:'Search: '+item.query,kind:'fetch'};
-  return {title:String(item.type||'Tool'),kind:'other'};
+async function runTool(session,call,signal){
+  const toolCallId='lm-'+randomUUID(),name=call.function.name;
+  let args=null;try{args=JSON.parse(call.function.arguments||'{}');}catch{}
+  const info=describe(session,name,args);
+  update(session.id,{sessionUpdate:'tool_call',toolCallId,...info,status:'in_progress'});
+  const done=(status,text,content)=>{update(session.id,{sessionUpdate:'tool_call_update',toolCallId,status,content:content??(text?[{type:'content',content:{type:'text',text}}]:[])});return text;};
+  if(!args||typeof args!=='object'||Array.isArray(args))return done('failed','Error: the tool arguments are not a JSON object.');
+  const path=typeof args.path==='string'?resolve(session.cwd,args.path):null;
+  // accept-edits: edits inside the workspace and all reads run freely; commands and outside writes need the user.
+  const gated=permissionMode!=='full'&&((name==='shell'&&!session.allowShell)||((name==='write_file'||name==='edit_file')&&path&&!inside(session.cwd,path)));
+  if(gated){
+    const choice=await askPermission(session,{toolCallId,...info},signal,name==='shell'?'Allow all commands this session':null);
+    if(signal.aborted)return done('failed','Cancelled by the user.');
+    if(choice==='always')session.allowShell=true;
+    else if(choice==='cancelled')return done('failed','The approval request was cancelled before the user answered; the tool did not run.');
+    else if(choice.startsWith('error: '))return done('failed','The approval request failed ('+choice.slice(7)+'); the tool did not run.');
+    else if(choice!=='allow')return done('failed','The user denied this tool call. Do not retry it; continue without it or tell the user what you need.');
+  }
+  try{
+    const result=await execute(session,name,args,signal);
+    done(result.ok?'completed':'failed',result.text,result.content&&[...result.content,{type:'content',content:{type:'text',text:result.text}}]);
+    return result.text;
+  }catch(error){return done('failed','Error: '+(signal.aborted?'Cancelled.':reasonOf(error)));}
+}
+async function runTurn(session,signal,progress){
+  const tools=[...BUILTIN_TOOLS,...await mcpTools(session)],model=models.find(m=>m.value===session.selected);
+  // Only back-to-back identical calls count: re-running a test after an edit is legitimate.
+  let lastKey='',repeats=0,lastResult='';
+  for(let step=0;step<MAX_STEPS;step++){
+    if(session.usage && session.usage.used>0.7*session.usage.size){
+      const users=session.messages.map((m,i)=>m.role==='user'?i:-1).filter(i=>i>=0),cut=users.at(-2)??0;
+      for(let i=0;i<cut;i++)if(session.messages[i].role==='tool'&&session.messages[i].content?.length>200)session.messages[i].content='[old tool output removed to save context]';
+      save(session);
+    }
+    const reply={content:'',calls:[],finish:null,usage:null};progress.reply=reply;
+    const deadline=Date.now()+FIRST_BYTE_MS,waitingId='lm-'+randomUUID();let waiting=false,real=false,lastProgress=0;
+    const waitTimer=setTimeout(()=>{if(!real){waiting=true;update(session.id,{sessionUpdate:'tool_call',toolCallId:waitingId,kind:'other',status:'in_progress',title:'Waiting for '+label(session.selected)});}},env('LM_WAIT_ROW_MS',3000));
+    const finishWait=status=>{clearTimeout(waitTimer);if(waiting){update(session.id,{sessionUpdate:'tool_call_update',toolCallId:waitingId,status});waiting=false;}};
+    try{
+    const caps=await modelCaps(session.selected,AbortSignal.any([signal,AbortSignal.timeout(Math.max(1,deadline-Date.now()))]));
+    if(signal.aborted)throw Error('Cancelled.');
+    const body={model:session.selected,stream:true,stream_options:{include_usage:true},return_progress:true,
+      // The BB block lists ~34 absolute SKILL.md paths; without this trailing reminder LFM2.5 opened them first in 5 of 20 runs (0 of 20 with it).
+      messages:[{role:'system',content:session.system+(session.instructions?'\n\n'+session.instructions+'\n\nReminder: the task is in the workspace '+session.cwd+'. The SKILL.md paths above are reference docs; open one only if the task needs it.':'')},...session.messages],tools,...reasoningParams(caps,session.effort)};
+    await streamCompletion(body,signal,event=>{
+      const d=event.choices?.[0]?.delta;
+      if(d&&(d.content||d.reasoning_content||d.tool_calls?.length)){real=true;finishWait('completed');}
+      if(waiting&&event.prompt_progress&&Date.now()-lastProgress>=2000){
+        lastProgress=Date.now();const p=event.prompt_progress;
+        const percent=Math.round(100*(p.processed??0)/(p.total||1));
+        update(session.id,{sessionUpdate:'tool_call_update',toolCallId:waitingId,title:'Waiting for '+label(session.selected)+': processing prompt '+percent+'%'});
+      }
+      if(event.usage)reply.usage=event.usage;
+      const choice=event.choices?.[0];if(!choice)return;
+      const delta=choice.delta||{};
+      if(typeof delta.reasoning_content==='string'&&delta.reasoning_content)update(session.id,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:delta.reasoning_content}});
+      if(typeof delta.content==='string'&&delta.content){
+        const text=(progress.hadText&&!reply.content?'\n\n':'')+delta.content;
+        reply.content+=delta.content;progress.hadText=true;
+        update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text}});
+      }
+      for(const part of Array.isArray(delta.tool_calls)?delta.tool_calls:[]){
+        const slot=reply.calls[part.index??0]??={id:'',name:'',arguments:''};
+        if(part.id)slot.id=part.id;
+        if(part.function?.name&&!slot.name)slot.name=part.function.name;
+        if(typeof part.function?.arguments==='string')slot.arguments+=part.function.arguments;
+      }
+      if(choice.finish_reason)reply.finish=choice.finish_reason;
+    },deadline);finishWait('completed');
+    }catch(error){finishWait('failed');throw error;}
+    progress.reply=null;
+    if(reply.usage&&model?.ctx){
+      session.usage={used:(reply.usage.prompt_tokens||0)+(reply.usage.completion_tokens||0),size:model.ctx};emitUsage(session);
+    }
+    const calls=reply.calls.filter(call=>call?.name).map(call=>({id:call.id||'call_'+randomUUID().slice(0,8),type:'function',function:{name:call.name,arguments:call.arguments||'{}'}}));
+    session.messages.push({role:'assistant',content:reply.content,...(calls.length?{tool_calls:calls}:{})});
+    if(!calls.length)return reply.finish==='length'?'max_tokens':'end_turn';
+    let stopped=false;
+    for(const call of calls){
+      const key=call.function.name+'\n'+call.function.arguments;repeats=key===lastKey?repeats+1:1;lastKey=key;
+      let result;
+      if(stopped||repeats>=4){stopped=true;result='Stopped: the model kept repeating the same tool call.';}
+      else if(repeats===3)result='You already made this exact call 2 times in a row. Last result:\n'+lastResult.slice(0,2000)+'\nDo not repeat it; use the result or answer.';
+      else {result=signal.aborted?'Cancelled by the user.':await runTool(session,call,signal);lastResult=result;}
+      session.messages.push({role:'tool',tool_call_id:call.id,content:result});
+    }
+    if(stopped){progress.hadText=true;update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Stopped: the model kept repeating the same tool call.'}});return 'end_turn';}
+    save(session);
+    if(signal.aborted)return 'cancelled';
+  }
+  progress.hadText=true;update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Stopped after '+MAX_STEPS+' tool steps without a final answer.'}});
+  return 'max_turn_requests';
 }
 function runPrompt(id,session,prompt){
-  if(session.child)throw Error('A prompt is already running.');
-  const images=[],text=promptText(session,prompt,images),model=models.find(m=>m.value===session.selected);
-  // The user's config.toml targets cloud models and its MCP servers bloat a local prompt; everything needed is passed with -c.
-  const args=['exec',...(session.threadId?['resume']:[]),'--json','--skip-git-repo-check','--ignore-user-config','-m',session.selected,
-    '-c','model_provider="bb_local"','-c','model_providers.bb_local.name="Local models"',
-    '-c','model_providers.bb_local.base_url='+toml(proxyBase),'-c','model_providers.bb_local.wire_api="responses"',
-    '-c','model_reasoning_effort='+toml(session.effort),
-    // ChatGPT Apps connectors come from the account login, not config.toml, and add ~130k tokens of tool schemas.
-    '-c','features.apps=false','-c','approval_policy="never"',
-    '-c','sandbox_mode='+toml(permissionMode==='full'?'danger-full-access':'workspace-write'),...session.mcpArgs];
-  if(model?.ctx)args.push('-c','model_context_window='+model.ctx);
-  for(const image of images)args.push('-i',image);
-  // --image takes several values; positionals must follow "--".
-  args.push('--',...(session.threadId?[session.threadId]:[]),'-');
-  const child=spawn(codex,args,{cwd:session.cwd,env:{...process.env,...session.mcpEnv},stdio:['pipe','pipe','pipe'],detached:process.platform!=='win32'});
-  session.child=child;session.cancelled=false;session.turn=(session.turn||0)+1;
-  child.stdin.on('error',()=>{});child.stdin.end(text);child.stderr.resume();
-  const open=new Set(),seen=new Set(),turn='t'+session.turn+'-';let hadText=false,completed=false,failure='',answered=false;
-  const finish=code=>{
-    if(answered)return;answered=true;if(session.cancelled)stopChild(child,'SIGKILL');clearTimeout(session.cancelTimer);session.child=null;
-    for(const toolCallId of open)update(session.id,{sessionUpdate:'tool_call_update',toolCallId,status:'failed'});
-    try{save(session);}catch{fail(id,'Local models session could not be saved.',-32603);return;}
-    if(session.cancelled){send({id,result:{stopReason:'cancelled'}});return;}
-    if(!completed||code!==0){fail(id,'Local model turn failed'+(failure?': '+failure.slice(0,300):'. Check that the local model server is running.'),-32603);return;}
-    if(!hadText)update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'The local model finished without a text response. Review tool results; completion does not imply every requested action ran.'}});
-    emitUsage(session);
-    send({id,result:{stopReason:'end_turn'}});
-  };
-  createInterface({input:child.stdout}).on('line',line=>{
-    let event;try{event=JSON.parse(line);}catch{return;}
-    if(event.type==='thread.started'&&typeof event.thread_id==='string'){session.threadId=event.thread_id;return;}
-    if(event.type==='turn.completed'){completed=true;return;}
-    if(event.type==='turn.failed'||event.type==='error'){failure=String(event.error?.message??event.message??'');return;}
-    const item=event.item;if(!event.type?.startsWith('item.')||!item)return;
-    const done=event.type==='item.completed';
-    if(item.type==='agent_message'){
-      if(done&&item.text){update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:(hadText?'\n\n':'')+item.text}});hadText=true;}
-      return;
-    }
-    if(item.type==='reasoning'){if(done&&item.text)update(session.id,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:item.text}});return;}
-    // Non-fatal Codex notices, e.g. missing metadata for a local model.
-    if(item.type==='error')return;
-    if(item.type==='todo_list'){
-      update(session.id,{sessionUpdate:'plan',entries:(Array.isArray(item.items)?item.items:[]).map(entry=>({content:String(entry.text),status:entry.completed?'completed':'pending',priority:'medium'}))});
-      return;
-    }
-    const toolCallId=turn+String(item.id),{text:output,...call}=describe(item);
-    const status=item.status==='failed'||item.status==='declined'?'failed':done?'completed':'in_progress';
-    const content=output?[{type:'content',content:{type:'text',text:String(output)}}]:[];
-    if(!seen.has(toolCallId))update(session.id,{sessionUpdate:'tool_call',toolCallId,...call,status,content});
-    else update(session.id,{sessionUpdate:'tool_call_update',toolCallId,status,content});
-    if(done)emitUsage(session);
-    seen.add(toolCallId);
-    if(status==='in_progress')open.add(toolCallId);else open.delete(toolCallId);
-  });
-  child.on('error',()=>finish(1));child.on('close',finish);
+  if(session.running)throw Error('A prompt is already running.');
+  const content=takeInstructions(session,userContent(prompt)),controller=new AbortController(),progress={hadText:false,reply:null};
+  session.running=true;session.cancelled=false;session.abort=controller;
+  session.messages.push({role:'user',content});
+  (async()=>{
+    let stopReason,failure=null;
+    try{stopReason=await runTurn(session,controller.signal,progress);}
+    catch(error){failure=error;}
+    // Keep user/assistant alternation for strict chat templates when a reply was cut short.
+    if(session.messages.at(-1)?.role==='user')session.messages.push({role:'assistant',content:progress.reply?.content||'(interrupted)'});
+    for(const child of session.children)stopChild(child,'SIGKILL');
+    session.running=false;session.abort=null;
+    try{save(session);}catch{return fail(id,'Local models session could not be saved.',-32603);}
+    if(session.cancelled)return send({id,result:{stopReason:'cancelled'}});
+    if(failure)return fail(id,'Local model turn failed: '+reasonOf(failure),-32603);
+    if(!progress.hadText)update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'The local model finished without a text response.'}});
+    send({id,result:{stopReason}});
+  })();
+}
+async function openSession(params,stored){
+  await loadModels();
+  if(!models.length)throw Error('No local models available. Start the local model server at '+baseUrl+'.');
+  const selected=models.find(m=>m.value===stored?.selected)||models.find(m=>m.value===process.env.LM_DEFAULT_MODEL)||models[0];
+  const cwd=params.cwd||stored?.cwd;if(typeof cwd!=='string')throw Error('No workspace available.');
+  const session={id:stored?.id??randomUUID(),cwd,selected:selected.value,effort:EFFORTS.includes(stored?.effort)?stored.effort:'medium',
+    // Sessions stored by the Codex-based version carry no transcript; they continue without earlier context.
+    messages:Array.isArray(stored?.messages)?stored.messages:[],usage:stored?.usage??null,instructions:typeof stored?.instructions==='string'?stored.instructions:null,
+    system:systemPrompt(cwd),children:new Set(),running:false,allowShell:false};
+  const previous=sessions.get(session.id);if(previous){previous.abort?.abort();closeMcp(previous);}
+  attachMcp(session,params.mcpServers);save(session);sessions.set(session.id,session);
+  return session;
 }
 async function handle(request){
   const {id,method,params:p={}}=request;
-  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-local-models',version:'0.1.0'}}});
+  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-local-models',version:'0.2.0'}}});
   if(method==='authenticate')return send({id,result:{}});
-  if(method==='session/new'){
-    if(!models.length||typeof p.cwd!=='string')throw Error('No local models or workspace available.');
-    const session={id:randomUUID(),cwd:p.cwd,threadId:null,selected:(models.find(m=>m.value===process.env.LM_DEFAULT_MODEL)||models[0]).value,effort:'medium',child:null};attachMcp(session,p.mcpServers);save(session);sessions.set(session.id,session);
-    return send({id,result:{sessionId:session.id,...config(session)}});
-  }
+  if(method==='session/new'){const session=await openSession(p,null);return send({id,result:{sessionId:session.id,...config(session)}});}
   if(method==='session/load'||method==='session/resume'){
     const stored=JSON.parse(readFileSync(sessionFile(p.sessionId),'utf8'));
-    if(stored.id!==p.sessionId||typeof stored.cwd!=='string'||typeof stored.selected!=='string'||!(stored.threadId===null||typeof stored.threadId==='string'))throw Error('Invalid stored session.');
-    const selected=models.find(model=>model.value===stored.selected)||models[0];
-    if(!selected)throw Error('No local models available.');
-    const session={...stored,selected:selected.value,effort:EFFORTS.includes(stored.effort)?stored.effort:'medium',cwd:p.cwd||stored.cwd,child:null};
-    attachMcp(session,p.mcpServers);save(session);sessions.set(session.id,session);
+    if(stored.id!==p.sessionId||typeof stored.cwd!=='string'||typeof stored.selected!=='string')throw Error('Invalid stored session.');
+    const session=await openSession(p,stored);
     send({id,result:config(session)});
     // After the load reply, so BB already maps this session to its thread.
     return emitUsage(session);
   }
   if(method==='session/set_config_option'||method==='session/set_model'){
-    const session=getSession(p.sessionId);if(session.child)throw Error('Cannot change a running session.');
+    const session=getSession(p.sessionId);if(session.running)throw Error('Cannot change a running session.');
     const option=p.configId||'model',value=p.value||p.modelId;
     if(option==='model'&&models.some(m=>m.value===value))session.selected=value;
     else if(option==='thought_level'&&EFFORTS.includes(value))session.effort=value;
@@ -249,25 +433,24 @@ async function handle(request){
   }
   if(method==='session/prompt')return runPrompt(id,getSession(p.sessionId),p.prompt);
   if(method==='session/cancel'){
-    const session=getSession(p.sessionId),child=session.child;
-    if(!child)return;
-    session.cancelled=true;stopChild(child,'SIGINT');
-    // A hung CLI must not hold up a BB steer indefinitely.
-    session.cancelTimer=setTimeout(()=>stopChild(child,'SIGKILL'),2000);session.cancelTimer.unref();
+    const session=getSession(p.sessionId);if(!session.running)return;
+    session.cancelled=true;session.abort?.abort();
+    for(const child of session.children)stopChild(child,'SIGKILL');
     return;
   }
   if(id!==undefined)fail(id,'Unsupported Local models ACP method.',-32601);
 }
 createInterface({input:process.stdin}).on('line',line=>{
   let request;try{request=JSON.parse(line);}catch{return;}
+  if(request&&request.method===undefined&&clientPending.has(request.id)){const done=clientPending.get(request.id);clientPending.delete(request.id);done(request);return;}
   if(!request||typeof request.method!=='string')return;
-  Promise.resolve().then(()=>handle(request)).catch(()=>{if(request.id!==undefined)fail(request.id,'Invalid Local models request or unavailable session.');});
+  Promise.resolve().then(()=>handle(request)).catch(error=>{if(request.id!==undefined)fail(request.id,error instanceof Error&&error.message?error.message:'Invalid Local models request or unavailable session.');});
 }).on('close',shutdown);
 function stopChild(child,signal){
   if(!child?.pid)return;
   if(process.platform==='win32')spawn('taskkill',['/pid',String(child.pid),'/T','/F'],{stdio:'ignore'});
   else {
-    // PTY commands can start their own process groups, outside the CLI's group.
+    // Commands can start their own process groups, outside the shell's group.
     try {
       const rows=execFileSync('ps',['-axo','pid=,ppid=,lstart='],{encoding:'utf8',timeout:1000,maxBuffer:2097152})
         .trim().split('\n').map(line=>line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).filter(Boolean)
@@ -279,8 +462,9 @@ function stopChild(child,signal){
       for(const row of rows.reverse())if(child.descendants.get(row.pid)===row.started)try{process.kill(row.pid,signal);}catch{}
     }catch{ /* Process groups remain the fallback when ps is unavailable. */ }
     try{process.kill(-child.pid,signal);}catch{}
+    try{child.kill(signal);}catch{}
   }
 }
-function shutdown(){for(const session of sessions.values())stopChild(session.child,'SIGTERM');for(const root of pendingRoots)rmSync(root,{recursive:true,force:true});process.exit(0);}
+function shutdown(){for(const session of sessions.values()){session.abort?.abort();for(const child of session.children)stopChild(child,'SIGKILL');closeMcp(session);}process.exit(0);}
 for(const signal of ['SIGTERM','SIGINT'])process.on(signal,shutdown);
 `;

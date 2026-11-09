@@ -127,6 +127,11 @@ test("formats event sentences and compact durations", async () => {
     ["revoke", undefined, "Lease revoked"],
     ["prioritize", "high", "Priority updated for QA checks"],
     ["port-release", undefined, "Port 41000 released"],
+    ["unleased-load", undefined, "High checkout load without a heavy slot"],
+    ["idle-lease", undefined, "Heavy slot held while its checkout stayed idle"],
+    ["use-expired", undefined, "A wrapped run stopped renewing; its use expired"],
+    ["use-dropped", undefined, "A lent slot returned to its owner; the borrower's runs were dropped"],
+    ["unclaimed", undefined, "Slot released because no run claimed it"],
   ] as const) expect(eventSentence({ ...base, type, reason, port: 41000 }, fixture)).toBe(text);
   const slot = render();
   const summary = await slot.findByText("Recent activity · 2");
@@ -276,7 +281,8 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
   });
   const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
     gateIntervalSeconds: 15, leaseTtlMinutes: 30, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
-    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto" };
+    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
+    watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
   const write = vi.fn((input: unknown) => {
     const change = input as { values?: Record<string, unknown>; unset?: string[] };
     const key = change.unset?.[0] ?? Object.keys(change.values ?? {})[0];
@@ -290,7 +296,13 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
   }, sdk: { threads: { list: async () => [{ id: "manager", title: "Manager session", status: "idle" }] as any,
     get: async () => ({ title: "Manager session" }) as any } } });
   await slot.findByRole("region", { name: "Slots" });
-  for (const name of ["Machine check", "Leases", "Manager / observer", "Grant mode", "Dev-server ports"]) expect(slot.getByRole("region", { name })).toBeTruthy();
+  for (const name of ["Machine check", "Leases", "Load watch", "Manager / observer", "Grant mode", "Dev-server ports"]) expect(slot.getByRole("region", { name })).toBeTruthy();
+  expect(slot.getByText(/Warns when processes in a session/)).toBeTruthy();
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Reset Cores threshold to default" })); });
+  expect(write).toHaveBeenLastCalledWith({ unset: ["watchCores"] });
+  await act(async () => { fireEvent.change(slot.getByRole("combobox", { name: "Load watch policy" }), { target: { value: "off" } }); });
+  expect(write).toHaveBeenLastCalledWith({ values: { watchPolicy: "off" } });
+  write.mockClear();
   const heavy = slot.getByRole("spinbutton", { name: "Heavy jobs capacity" });
   fireEvent.change(heavy, { target: { value: "19" } });
   expect(write).not.toHaveBeenCalled();

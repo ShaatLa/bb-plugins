@@ -59,6 +59,7 @@ import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/eviden
 import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
+import { scheduledCliCommands } from "../scheduled/cli";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -913,6 +914,14 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        ...scheduledCliCommands(bb, {
+          group: groupCommand,
+          projects: () => listProjects(domain),
+          project: (ctx, address, required) => selectedProject(domain, ctx, address, required),
+          task: (address) => resolveTask(domain, address),
+          preset: async (address) => resolvePreset(await listPresets(domain), address),
+          readText: async (ctx, machine, path) => (await readTextOption(bb, ctx, await resolveClientHostId(bb, domain, machine, ctx), undefined, path)) ?? "",
+        }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
           summary: `${action} storage across all projects; preserve accessible task history`,
@@ -1792,6 +1801,7 @@ export function registerTasksCli(
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
             "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
+            "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -1850,6 +1860,7 @@ export function registerTasksCli(
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
+                statusNotifications: input.options["status-notifications"],
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -1866,6 +1877,7 @@ export function registerTasksCli(
                 changes.statuses === undefined &&
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
+                changes.statusNotifications === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -1886,6 +1898,7 @@ export function registerTasksCli(
                 changes.statuses !== undefined ||
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
+                changes.statusNotifications !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -1907,6 +1920,7 @@ export function registerTasksCli(
                   statuses: updateInput?.statuses,
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
+                  statusNotifications: updateInput?.statusNotifications,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -2405,6 +2419,10 @@ export function registerTasksCli(
               type: "boolean",
               description: "Keep only tasks with a live agent thread",
             },
+            "include-scheduled": {
+              type: "boolean",
+              description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
+            },
             search: {
               type: "string",
               placeholder: "query",
@@ -2496,6 +2514,7 @@ export function registerTasksCli(
                         : undefined,
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
+                    ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
                     limit,

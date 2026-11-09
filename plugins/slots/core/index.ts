@@ -1,6 +1,8 @@
+import { duration as minutes } from "../lib/duration.js";
+import { updateWatch } from "./watch.js";
 import {
   DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS,
-  type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput,
+  type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput, type NotificationMessage,
   type ObserverEvent, type GateState, type HostSettings, type Input, type Lease, type LogParams,
   type Priority, type Result, type Settings, type SlotsError, type State,
   type StatusSnapshot, type Transition,
@@ -26,6 +28,9 @@ export function validateSettings(settings: Settings): string | null {
     Array.isArray(s.observerEvents) && s.observerEvents.every(e => OBSERVER_EVENTS.includes(e)) &&
     Number.isSafeInteger(s.observerQueueWaitMs) && s.observerQueueWaitMs > 0 &&
     Number.isSafeInteger(s.observerGateHoldMs) && s.observerGateHoldMs > 0 &&
+    ["off", "warn"].includes(s.watchPolicy) && Number.isFinite(s.watchCores) && s.watchCores >= 1 &&
+    Number.isInteger(s.watchWindowSeconds) && s.watchWindowSeconds >= 60 && s.watchWindowSeconds <= 900 &&
+    Number.isInteger(s.idleLeaseMinutes) && s.idleLeaseMinutes >= 10 && s.idleLeaseMinutes <= 240 &&
     (s.grantMode === "auto" || s.grantMode === "manual") &&
     Number.isSafeInteger(s.portRange.from) && Number.isSafeInteger(s.portRange.to) &&
     s.portRange.from >= 1 && s.portRange.to <= 65535 && s.portRange.from <= s.portRange.to;
@@ -34,11 +39,8 @@ export function validateSettings(settings: Settings): string | null {
 }
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const priority = (value: unknown): value is Priority => value === "urgent" || value === "high" || value === "normal";
-const minutes = (ms: number): string => {
-  const total = Math.round(ms / 60_000);
-  return total < 60 ? `${total}m` : `${Math.floor(total / 60)}h${total % 60 ? ` ${total % 60}m` : ""}`;
-};
 const rank = { urgent: 0, high: 1, normal: 2 };
+const URGENT = new Set<AuditType>(["warn", "revoke", "expire", "release", "unleased-load"]);
 const sorted = (state: State) => state.requests.map((request, index) => ({ request, index }))
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
@@ -100,10 +102,11 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     state.audit = state.audit.slice(-50);
     effects.push({ type: "audit", event: structuredClone(event) });
   };
-  const notify = (threadId: string, reason: AuditType, message: string) => effects.push({ type: "notify", threadId, reason, text: message });
-  const observer = (hostId: string, reason: ObserverEvent, message: string, ...recipients: string[]) => {
+  // Steer only notices the agent must act on now; the rest wait until it is free.
+  const notify = (threadId: string, reason: AuditType, message: NotificationMessage, queue = !URGENT.has(reason)) => effects.push({ type: "notify", threadId, reason, ...(queue ? { queue: true as const } : {}), ...message });
+  const observer = (hostId: string, reason: ObserverEvent, message: NotificationMessage, ...recipients: string[]) => {
     const { observerThreadId: id, observerEvents } = settingsFor(ctx.settings, hostId);
-    if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message);
+    if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message, true);
   };
   const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
   const refresh = (l: Lease) => {
@@ -121,11 +124,12 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     });
   };
   const free = (l: Lease, type: "release" | "expire" | "revoke", reason: string) => {
+    if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
-    const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id}: ${reason}.`;
-    notify(l.holderThreadId, type, message);
-    if (l.ownerThreadId !== l.holderThreadId) notify(l.ownerThreadId, type, message);
+    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
+    const initiator = type === "release" && reason === "released" ? l.ownerThreadId : null; // the CLI already showed the owner its release
+    for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
@@ -143,13 +147,14 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (leases.length >= capacity || index >= capacity) return { ok: false, error: { code: "capacity", message: "Pool is at capacity" } };
     const lease: Lease = { id: `lease-${state.nextId++}`, requestId, hostId, pool, slotIndex: index,
       ownerThreadId: request.threadId, holderThreadId: request.threadId, job: request.job, estMs: request.estMs,
-      grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null };
+      grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null,
+      uses: request.uses, autoRelease: request.autoRelease, graceUntil: request.graceUntil };
     refresh(lease);
     state.leases.push(lease);
     state.requests = state.requests.filter(r => r.id !== requestId);
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
-    const message = `Granted ${pool} slot ${index}, lease ${lease.id}: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
     notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
@@ -165,9 +170,10 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (leaseId !== undefined && l.id !== leaseId) continue;
       if (l.ownerThreadId === threadId) { free(l, "release", reason); result.released.push(l.id); }
       else if (l.holderThreadId === threadId) {
-        l.holderThreadId = l.ownerThreadId; refresh(l);
+        for (const use of l.uses ?? []) audit("use-dropped", { ...fields(l), reason: use.id });
+        l.uses = []; l.holderThreadId = l.ownerThreadId; refresh(l);
         audit("transfer", { ...fields(l), reason: "returned-to-owner" });
-        const message = `${l.pool} slot ${l.slotIndex}, lease ${l.id} returned to you: ${l.job}.`;
+        const message: NotificationMessage = { title: "Slot returned to you", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }] };
         notify(l.ownerThreadId, "transfer", message);
         observer(l.hostId, "transfer", message, l.ownerThreadId);
         result.returned.push(l.id);
@@ -177,12 +183,23 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (r.threadId !== threadId || (leaseId !== undefined && r.id !== leaseId)) return true;
       result.canceled.push(r.id);
       audit("release", { hostId: r.hostId, pool: r.pool, threadId, requestId: r.id, reason });
-      observer(r.hostId, "release", `Request ${r.id} (${r.pool}: ${r.job}) by ${threadId}: ${reason}.`);
+      observer(r.hostId, "release", { title: "Slot released", lines: [{ value: r.job }, { label: "Request", value: `\`${r.id}\` · ${r.pool}` }, { label: "Thread", value: `\`${threadId}\`` }, ...(reason === "released" ? [] : [{ label: "Reason", value: `\`${reason}\`` }])] });
       return false;
     });
     return result;
   };
   switch (input.type) {
+    case "usage": {
+      if (![input.startAt, input.endAt].every(n => Number.isSafeInteger(n) && n >= 0) || !Number.isFinite(input.unknownCores) || input.unknownCores < 0 || input.subjects.some(s => !text(s.key) || !s.threadIds.length || s.threadIds.some(t => !text(t)) || !Number.isFinite(s.cores) || s.cores < 0)) return fail("invalid-input", "Invalid usage");
+      for (const alert of updateWatch(host(input.hostId), state.leases, input, ctx)) {
+        audit(alert.reason, { hostId: input.hostId, reason: [alert.message.title, ...alert.message.lines.map(line => line.value), alert.message.hint].filter(Boolean).join("; ") });
+        const recipients = alert.reason === "unleased-load" && alert.subject.threadIds.length === 1 ? [...alert.subject.threadIds] : [];
+        const config = settingsFor(ctx.settings, input.hostId);
+        if (config.observerThreadId && config.observerEvents.includes(alert.reason) && !recipients.includes(config.observerThreadId)) recipients.push(config.observerThreadId);
+        for (const threadId of recipients) effects.push({ type: "notify", threadId, reason: alert.reason, ...(alert.subject.threadIds.includes(threadId) ? {} : { queue: true as const }), ...alert.message, watch: { hostId: input.hostId, subject: alert.subject, holderThreadId: alert.holderThreadId } });
+      }
+      break;
+    }
     case "request": {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
@@ -199,6 +216,49 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       data = { kind: "queued", request }; break;
+    }
+    case "acquire": {
+      if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
+          !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
+          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required");
+      const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
+      if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
+      let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);
+      if (!lease && !request) {
+        request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool, threadId: input.threadId,
+          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true };
+        state.requests.push(request);
+        audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
+      }
+      const target = lease ?? request!;
+      const use = { id: `use-${state.nextId++}`, threadId: input.threadId, startedAt: ctx.now,
+        expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
+      (target.uses ??= []).push(use); target.graceUntil = null;
+      if (lease) { refresh(lease); lease.expiresAt = Math.max(lease.expiresAt, use.expiresAt); data = { kind: "leased", lease, useId: use.id }; }
+      else data = { kind: "queued", request: request!, useId: use.id };
+      break;
+    }
+    case "done": case "detach": case "heartbeatUse": {
+      const target = [...state.leases, ...state.requests].find(item => item.uses?.some(use => use.id === input.useId));
+      if (!target) return fail("not-found", "Use not found");
+      const use = target.uses!.find(use => use.id === input.useId)!;
+      if (use.threadId !== input.threadId) return fail("forbidden", "Use belongs to another thread");
+      const lease = "holderThreadId" in target ? target : undefined;
+      if (input.type === "heartbeatUse") {
+        use.expiresAt = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
+        if (lease) { refresh(lease); lease.expiresAt = Math.max(lease.expiresAt, use.expiresAt); }
+        data = lease ? { kind: "leased", lease, useId: use.id } : { kind: "queued", request: target as import("../contract.js").SlotRequest, useId: use.id };
+      } else if (input.type === "detach" && lease) data = { kind: "leased", lease, useId: use.id };
+      else {
+        target.uses = target.uses!.filter(u => u.id !== use.id);
+        if (target.autoRelease && !target.uses.length) {
+          if (input.type === "detach") target.graceUntil = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
+          else if (lease) free(lease, "release", "last use completed");
+          else release(input.threadId, target.id, "last use completed");
+        }
+        if (input.type === "detach") data = { kind: "queued", position: sorted(state).filter(r => r.hostId === target.hostId && r.pool === target.pool).findIndex(r => r.id === target.id) + 1 };
+      }
+      break;
     }
     case "gateSample": {
       const gate = host(input.hostId).gate;
@@ -227,13 +287,14 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     case "heartbeat": heartbeat(input.threadId); data = { leases: state.leases.filter(l => l.holderThreadId === input.threadId) }; break;
     case "release": {
       if (input.leaseId !== undefined) {
-        const lease = state.leases.find(l => l.id === input.leaseId);
+        // A request id also names the lease it was granted as.
+        const lease = state.leases.find(l => l.id === input.leaseId || l.requestId === input.leaseId);
         const request = state.requests.find(r => r.id === input.leaseId);
         if (!lease && !request) return fail("not-found", "Lease or request not found");
         if (request && request.threadId !== input.threadId) return fail("forbidden", "Only requester may cancel");
         if (lease && lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Only owner or holder may release");
       }
-      data = release(input.threadId, input.leaseId); break;
+      data = release(input.threadId, state.leases.find(l => l.requestId === input.leaseId)?.id ?? input.leaseId); break;
     }
     case "threadEnded": data = release(input.threadId, undefined, input.reason, true); break;
     case "transfer": {
@@ -242,12 +303,13 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (owned.length !== 1) return fail(owned.length ? "invalid-input" : "forbidden", "Specify exactly one lease owned by the caller");
       if (!input.isChild) return fail("forbidden", "Target must be a child of the holder");
       const lease = owned[0];
+      if (lease.uses?.length || lease.graceUntil != null) return fail("in-use", "Lease has active uses or grace");
       if (state.leases.some(l => l.id !== lease.id && l.hostId === lease.hostId && l.pool === lease.pool &&
           (l.ownerThreadId === input.toThreadId || l.holderThreadId === input.toThreadId)) ||
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      const message = `${lease.pool} slot ${lease.slotIndex}, lease ${lease.id} transferred to you: ${lease.job}. Run bb slots gate before each launch; bb slots heartbeat to extend; bb slots release ${lease.id} promptly.`;
+      const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
       notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
@@ -288,15 +350,25 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!Number.isSafeInteger(input.capacity) || input.capacity < 0) return fail("invalid-input", "Capacity must be a nonnegative integer");
       host(input.hostId);
       audit("capacity", { hostId: input.hostId, pool: input.pool, reason: String(input.capacity) });
-      observer(input.hostId, "capacity", `${input.pool} capacity on ${input.hostId} set to ${input.capacity}.`);
+      observer(input.hostId, "capacity", { title: "Capacity changed", lines: [{ value: `${input.pool} capacity set to ${input.capacity}.` }, { label: "Host", value: `\`${input.hostId}\`` }] });
       data = { capacity: input.capacity }; break;
     }
     case "tick": {
+      for (const target of [...state.requests, ...state.leases]) {
+        const expired = (target.uses ?? []).filter(u => ctx.now >= u.expiresAt);
+        for (const use of expired) audit("use-expired", { hostId: target.hostId, pool: target.pool, threadId: use.threadId, reason: use.id });
+        if (expired.length) target.uses = target.uses!.filter(u => ctx.now < u.expiresAt);
+        if (target.autoRelease && !(target.uses?.length) && (expired.length > 0 || (target.graceUntil != null && ctx.now >= target.graceUntil))) {
+          if (!expired.length) audit("unclaimed", { hostId: target.hostId, pool: target.pool, reason: target.id });
+          if ("holderThreadId" in target) free(target, "release", expired.length ? "use expired" : "unclaimed");
+          else release(target.threadId, target.id, expired.length ? "use expired" : "unclaimed");
+        }
+      }
       for (const lease of [...state.leases]) {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
-          const message = `Lease ${lease.id} (${lease.pool}: ${lease.job}) expires at ${new Date(lease.expiresAt).toISOString()}; run bb slots heartbeat to keep it, or bb slots release ${lease.id}.`;
+          const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool}` }, { label: "Expires", value: `in ${minutes(lease.expiresAt - ctx.now)}` }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
           notify(lease.holderThreadId, "warn", message);
           observer(lease.hostId, "warn", message, lease.holderThreadId);
         }
@@ -313,7 +385,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const position = sorted(state).filter(r => r.hostId === request.hostId && r.pool === request.pool).findIndex(r => r.id === request.id) + 1;
         const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;
         audit("queue-wait", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id, reason: message });
-        observer(request.hostId, "queue-wait", message);
+        observer(request.hostId, "queue-wait", { title: "Request waiting too long", lines: [{ value: request.job }, { label: "Request", value: `\`${request.id}\` · ${request.pool} · \`${request.hostId}\`` }, { label: "Thread", value: `\`${request.threadId}\`` }, { label: "Queue", value: `estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}` }, { label: "Reasons", value: reasons.join(" / ") }] });
       }
       for (const [hostId, { gate }] of Object.entries(state.hosts)) {
         const settings = settingsFor(ctx.settings, hostId);
@@ -323,7 +395,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const { memFreePct, load1, at } = gate.latest;
         const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;
         audit("gate-hold", { hostId, readings: { memFreePct, load1, at }, reason: message });
-        observer(hostId, "gate-hold", message);
+        observer(hostId, "gate-hold", { title: "Machine busy too long", lines: [{ value: `Gate failing for ${minutes(ctx.now - gate.failingSince)}.` }, { label: "Host", value: `\`${hostId}\`` }, { label: "Memory free", value: `${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%)` }, { label: "Load", value: `${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)})` }] });
       }
       break;
     }
@@ -331,12 +403,23 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const settings = settingsFor(ctx.settings, input.hostId);
       const next = settings.observerThreadId;
       audit("observer", { hostId: input.hostId, reason: `${input.previousThreadId ?? "none"} → ${next ?? "none"}; events: ${input.previousEvents.join(",")} → ${settings.observerEvents.join(",")}` });
-      if (next) notify(next, "observer", `You are now the Machine Slots observer; you will receive: ${settings.observerEvents.join(", ") || "no events"}.`);
-      if (!input.previousEnded && input.previousThreadId && input.previousThreadId !== next) notify(input.previousThreadId, "observer", `Observer handed over to ${input.title ?? "none"}.`);
+      if (next) notify(next, "observer", { title: "Observer changed", lines: [{ value: "You are now the Machine Slots observer." }, { label: "Events", value: settings.observerEvents.join(", ") || "no events" }] });
+      if (!input.previousEnded && input.previousThreadId && input.previousThreadId !== next) notify(input.previousThreadId, "observer", { title: "Observer changed", lines: [{ value: `Observer handed over to ${input.title ?? "none"}.` }] });
       break;
     }
-    case "restored": for (const id of Object.keys(state.hosts)) reset(id); break;
+    case "restored":
+      for (const id of Object.keys(state.hosts)) { reset(id); const w = state.hosts[id].watch; if (w) { w.lastEndAt = null; for (const s of Object.values(w.subjects)) { s.intervals = []; s.episode = false; } } }
+      for (const l of state.leases) l.idle = { since: null, alerted: false };
+      break;
     default: return fail("invalid-input", "Unknown operation");
+  }
+  for (const old of original.leases.filter(l => l.pool === "heavy")) {
+    const current = state.leases.find(l => l.id === old.id);
+    if (!current || current.holderThreadId !== old.holderThreadId) { const h = host(old.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[old.holderThreadId] = ctx.now; }
+  }
+  for (const l of state.leases.filter(l => l.pool === "heavy")) {
+    const old = original.leases.find(o => o.id === l.id);
+    if (!old || old.holderThreadId !== l.holderThreadId) { l.idle = { since: null, alerted: false }; l.holdingSince = ctx.now; }
   }
   cleanupPorts();
   return { state, effects, result: { ok: true, data: structuredClone(data) } };

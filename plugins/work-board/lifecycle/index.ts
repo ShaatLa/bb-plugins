@@ -26,14 +26,17 @@ function liveStatusFromThread(thread: SdkThread): TaskThreadLiveStatus {
   }
 }
 
-function trackedThreads(store: TasksApiStore): TaskThread[] {
-  const tracked: TaskThread[] = [];
-  for (const task of store.tasks.listTasks()) {
-    for (const thread of store.tasks.listTaskThreads(task.id)) {
-      tracked.push(thread);
-    }
-  }
-  return tracked;
+function trackedThreads(bb: BbPluginApi, store: TasksApiStore): TaskThread[] {
+  // Completed scheduled results keep provenance, not perpetual startup SDK reads.
+  const ids = bb.storage.database().prepare<[], { id: string }>(`SELECT t.id FROM tasks t
+    WHERE EXISTS (SELECT 1 FROM task_threads tt WHERE tt.task_id=t.id)
+      AND NOT EXISTS (SELECT 1 FROM task_scheduled_sources ss WHERE ss.task_id=t.id AND
+        (ss.role='template' OR ss.started_at IS NULL OR t.status IN ('done','canceled')))`
+  ).all().map(row => row.id);
+  const links: TaskThread[] = [];
+  for (let offset = 0; offset < ids.length; offset += 500)
+    links.push(...store.tasks.listTaskThreadsForTasks(ids.slice(offset, offset + 500)));
+  return links;
 }
 
 function statusCommentBody(
@@ -132,7 +135,7 @@ async function reconcileTrackedThreads(
   store: TasksApiStore,
 ): Promise<void> {
   const groups = new Map<string, TaskThread[]>();
-  for (const link of trackedThreads(store)) {
+  for (const link of trackedThreads(bb, store)) {
     const group = groups.get(link.threadId) ?? [];
     group.push(link);
     groups.set(link.threadId, group);

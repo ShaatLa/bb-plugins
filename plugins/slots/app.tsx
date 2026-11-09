@@ -10,12 +10,8 @@ import type { AuditEvent, StatusView } from "./contract";
 import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
-export function duration(ms: number) {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
-}
+export { duration } from "./lib/duration";
+import { duration } from "./lib/duration";
 
 function ThreadLink({ id, titles }: { id: string; titles: StatusView["titles"] }) {
   const navigate = useBbNavigate();
@@ -77,6 +73,11 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
     case "capacity": return `Capacity set to ${event.reason && /^\d+$/.test(event.reason) ? plural(Number(event.reason), "slot") : "a new limit"}`;
     case "port": return `Port ${event.port ?? ""} leased`;
     case "port-release": return `Port ${event.port ?? ""} released`;
+    case "unleased-load": return "High checkout load without a heavy slot";
+    case "idle-lease": return "Heavy slot held while its checkout stayed idle";
+    case "use-expired": return "A wrapped run stopped renewing; its use expired";
+    case "use-dropped": return "A lent slot returned to its owner; the borrower's runs were dropped";
+    case "unclaimed": return "Slot released because no run claimed it";
     case "gate": return "Machine checked";
   }
 }

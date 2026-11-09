@@ -27,7 +27,7 @@ export function attachNamedTaskThread(bb: BbPluginApi, store: TasksApiStore, thr
   const db = bb.storage.database();
   for (const key of keys) {
     const task = store.tasks.getTaskByKey(key);
-    if (!task || !projectIds.has(task.projectId) || attached.has(task.id) || task.archivedAt || task.executionTarget === "owner" || ["done", "canceled"].includes(task.status)) continue;
+    if (!task || task.ordinaryVisible === false || !projectIds.has(task.projectId) || attached.has(task.id) || task.archivedAt || task.executionTarget === "owner" || ["done", "canceled"].includes(task.status)) continue;
     // Manual detachment wins for that card; other explicitly named cards can still attach.
     if (db.prepare<[string, string], { found: number }>(
       "SELECT 1 AS found FROM comments WHERE task_id = ? AND thread_id = ? AND kind = 'system' AND body LIKE 'Thread detached (manual):%' LIMIT 1",

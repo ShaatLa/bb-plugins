@@ -142,13 +142,28 @@ describe("summarizeAnalysis and sortSignals", () => {
       const reruns = summarizeReruns([failed({ runId: 20, event: "merge_group", headBranch: queue }), failed({ runId: 20, attempt: 2, jobId: 9, event: "merge_group", headBranch: queue })]);
       expect(summarizeAnalysis({ classified: [], reruns, massCancels: [], losses: runnerLosses([]), repository: REPO }).reruns[0]).toMatchObject({ event: "merge_group", queuePullRequest: 12 });
     });
-    it("serves the pools view and puts the timings into the stall view", () => {
+    it("puts the timings, overall and by event, into the stall view", () => {
       const samples = timingSamples(set);
       const output = { repositories: [{ repository: REPO, updatedAt: null, error: null, live: { pools: [], truncated: false, polledAt: null }, signals: [], problems: [], projectId: null,
         window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null }, ...summarizeAnalysis({ classified, reruns: [], massCancels: [], losses: runnerLosses(classified), repository: REPO, samples }) }], actors: {} } as never;
-      const [pools] = ciSliceReport(output, "pools").repositories as Record<string, unknown>[];
+      const [pools] = ciSliceReport(output, "stall").repositories as Record<string, unknown>[];
       expect(pools).toMatchObject({ poolTimings: { "self-hosted": { jobs: 6 } }, poolTimingsByEvent: { merge_group: { "self-hosted": { jobs: 3 } }, pull_request: { "self-hosted": { jobs: 3 } } } });
-      expect(ciSliceReport(output, "stall").repositories[0]).toHaveProperty("poolTimings");
+    });
+    it("serves problems alone, and puts problems before a compact open-signals list", () => {
+      const signal = (n: number, open: boolean) => ({ id: `s${n}`, kind: "flake", severity: "info", title: `t${n}`, what: "w", impact: "i", actor: "lead", where: {}, since: at(0), until: null, open });
+      const problem = { id: "p1", kind: "signal", severity: "warning", title: "p", what: "w", impact: "i", where: {}, since: at(0), handled: null };
+      const base = { repository: REPO, updatedAt: null, error: null, live: { pools: [], truncated: false, polledAt: null }, projectId: null,
+        window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null },
+        signals: [...Array.from({ length: 3 }, (_, n) => signal(n, true)), ...Array.from({ length: 30 }, (_, n) => signal(100 + n, false))], problems: [problem] };
+      const output = { repositories: [{ ...base, ...summarizeAnalysis({ classified: [], reruns: [], massCancels: [], losses: runnerLosses([]), repository: REPO }) }], actors: {} } as never;
+      const only = ciSliceReport(output, "problems").repositories[0] as Record<string, unknown>;
+      expect(only.problems).toHaveLength(1); expect(only).not.toHaveProperty("signals");
+      const row = ciSliceReport(output, "signals").repositories[0] as Record<string, unknown>;
+      const keys = Object.keys(row);
+      expect(keys.indexOf("problems")).toBeLessThan(keys.indexOf("signals"));
+      // Open signals only, compact rows without the where block.
+      expect(row.signals).toHaveLength(3);
+      expect((row.signals as Record<string, unknown>[])[0]).toEqual({ id: "s0", kind: "flake", severity: "info", title: "t0", what: "w", since: at(0), actor: "lead" });
     });
   });
   it("lists the newest 20 reruns first", () => {
@@ -160,5 +175,21 @@ describe("summarizeAnalysis and sortSignals", () => {
     const make = (id: string, severity: Signal["severity"], since: string, open = true): Signal => ({ ...stall, id, severity, since, open });
     expect(sortSignals([make("r", "critical", "2026-11-05T10:00:00Z", false), make("i", "info", "2026-11-05T10:00:00Z"), make("w-old", "warning", "2026-11-05T09:00:00Z"), make("w-new", "warning", "2026-11-05T10:00:00Z"), make("c", "critical", "2026-11-05T08:00:00Z")]).map((s) => s.id))
       .toEqual(["c", "w-new", "w-old", "i", "r"]);
+  });
+});
+
+describe("lane view", () => {
+  it("selects pipelines, bounds lanes, and accepts old rows", () => {
+    const stat = { p50: 1, p90: 2, n: 1, days: [] };
+    const pipeline = (event: string) => ({ workflow: "CI", event, runs: 1, wall: stat, lanes: Array.from({ length: 200 }, (_, i) => ({ name: `Unit tests ${i}`, ...stat })) });
+    const base = { repository: REPO, updatedAt: null, error: null, window: { since: at(0), until: at(10) }, backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null } };
+    const output = (laneTimings?: object) => ({ repositories: [{ ...base, laneTimings }], actors: {} }) as never;
+    const row = (data: never, event?: string) => ciSliceReport(data, "lanes", event).repositories[0] as Record<string, unknown>;
+    const data = output({ pipelines: [pipeline("merge_group"), pipeline("pull_request")] });
+    expect(row(data).pipeline).toMatchObject({ event: "merge_group" });
+    expect(row(data, "pull_request").pipeline).toMatchObject({ event: "pull_request" });
+    expect(row(data).moreLanes).toBeGreaterThan(0);
+    expect(JSON.stringify(row(data)).length).toBeLessThan(7600);
+    expect(row(output()).pipeline).toBeNull();
   });
 });

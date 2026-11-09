@@ -95,10 +95,10 @@ it("recognizes historical per-card agent work without treating attachment as wor
   db.exec("DROP TRIGGER task_activity_agent_comment; DROP TABLE task_activity_claims; DROP TABLE task_activity_queue; DROP TABLE task_activity_history; DELETE FROM schema_version WHERE version=17");
   initializeTasksSchema(db);
   const service = uncached(activityService(host.bb, store));
-  expect((await service.metadata([worked.id, assigned.id])).get(worked.id)?.state).toBe("abandoned");
+  expect((await service.metadata([worked.id, assigned.id])).get(worked.id)?.state).toBeNull();
   expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBeNull();
   store.tasks.createComment({ taskId: assigned.id, kind: "agent", threadId: "thr_new", authorName: "Agent", body: "Investigated this card" });
-  expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBe("abandoned");
+  expect((await service.metadata([assigned.id])).get(assigned.id)?.state).toBeNull();
   await host.harness.dispose();
 });
 

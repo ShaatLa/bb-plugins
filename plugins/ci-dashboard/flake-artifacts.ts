@@ -8,7 +8,8 @@ const xmlText = (text: string) => text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
 // One failed test: `title` is the "FAIL <suite> <test>" line the signature matching sees, `name` the short label for people, `output` its log lines.
-type Failure = { title: string; name: string; output: string[] };
+// `build` is set when the entry is a build or setup failure (nothing ran): the package or suite that did not start.
+type Failure = { title: string; name: string; output: string[]; build?: string };
 const lastSegment = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 function jestFailures(report: Record<string, unknown>): Failure[] {
@@ -24,22 +25,37 @@ function jestFailures(report: Record<string, unknown>): Failure[] {
       out.push({ title: `FAIL ${file.name} ${test.fullName ?? test.title}`, name: String(test.fullName ?? test.title), output });
     }
     // A suite that failed to run reports no assertions, only a message.
-    if (!tests.length && file.status === "failed") out.push({ title: `FAIL ${file.name}`, name: lastSegment(String(file.name)), output: stripAnsi(String(file.message ?? "")).split(/\r?\n/) });
+    // With an exec error or a message it is a setup failure (syntax error, missing module): the suite never started.
+    if (!tests.length && file.status === "failed") {
+      const message = stripAnsi(String(file.message ?? ""));
+      out.push({ title: `FAIL ${file.name}`, name: lastSegment(String(file.name)), output: message.split(/\r?\n/), ...(file.testExecError || message.trim() ? { build: String(file.name) } : {}) });
+    }
   }
   return out;
 }
 function goFailures(lines: string[]): Failure[] {
   const tests = new Map<string, { package: unknown; test: unknown; last: string; output: string[] }>();
+  // Package-level events (no Test): a package that did not compile or set up reports `[build failed]` / `[setup failed]` and a final fail.
+  const packages = new Map<string, { last: string; output: string[] }>();
   for (const line of lines) {
     const event = line.trim() ? asRecord(JSON.parse(line)) : null;
-    if (!event || typeof event.Test !== "string") continue;
+    if (!event) continue;
+    const text = event.Action === "output" && typeof event.Output === "string" ? event.Output.replace(/\r?\n$/, "").split(/\r?\n/) : null;
+    if (typeof event.Test !== "string") {
+      const entry = packages.get(String(event.Package)) ?? { last: "", output: [] };
+      packages.set(String(event.Package), entry);
+      if (text) entry.output.push(...text); else if (event.Action === "pass" || event.Action === "fail" || event.Action === "skip") entry.last = String(event.Action);
+      continue;
+    }
     const key = `${event.Package}\0${event.Test}`;
     const entry = tests.get(key) ?? { package: event.Package, test: event.Test, last: "", output: [] };
     tests.set(key, entry);
-    if (event.Action === "output" && typeof event.Output === "string") entry.output.push(...event.Output.replace(/\r?\n$/, "").split(/\r?\n/));
+    if (text) entry.output.push(...text);
     else if (event.Action === "pass" || event.Action === "fail" || event.Action === "skip") entry.last = event.Action;
   }
-  return [...tests.values()].filter((entry) => entry.last === "fail").map((entry) => ({ title: `FAIL ${entry.package} ${entry.test}`, name: `${lastSegment(String(entry.package))}.${entry.test}`, output: entry.output }));
+  const built = [...packages].filter(([, entry]) => entry.last === "fail" && entry.output.some((l) => /\[(?:build|setup) failed\]/.test(l)))
+    .map(([name, entry]): Failure => ({ title: `BUILD FAILED ${name}`, name: `${lastSegment(name)} (build failed)`, output: entry.output, build: name }));
+  return [...built, ...[...tests.values()].filter((entry) => entry.last === "fail").map((entry) => ({ title: `FAIL ${entry.package} ${entry.test}`, name: `${lastSegment(String(entry.package))}.${entry.test}`, output: entry.output }))];
 }
 function junitFailures(xml: string): Failure[] {
   const out: Failure[] = [], attribute = (attributes: string, name: string) => xmlText(new RegExp(`\\b${name}="([^"]*)"`).exec(attributes)?.[1] ?? "");
@@ -70,7 +86,12 @@ function failures(text: string): Failure[] | null {
  * "" for a report with no failures; null when the text is not a recognized report (the caller matches its lines).
  */
 export function failedTestCorpus(text: string): string | null {
-  return failures(text)?.flatMap((failure) => [failure.title, ...failure.output]).join("\n") ?? null;
+  return failedTestEvidence(text)?.corpus ?? null;
+}
+/** The failed-test corpus plus the first build or setup failure of a recognized report (its package or suite); null when the text is not a report. */
+export function failedTestEvidence(text: string): { corpus: string; build: string | null } | null {
+  const found = failures(text);
+  return found && { corpus: found.flatMap((failure) => [failure.title, ...failure.output]).join("\n"), build: found.find((failure) => failure.build)?.build ?? null };
 }
 /** Names of the FAILED tests of a recognized test report (no output, no passing tests); null when the text is not a report. */
 export function failedTestNames(text: string): string[] | null {
@@ -102,15 +123,18 @@ export function* zipTextEntries(zip: Buffer, maxTotal = MAX_UNZIPPED_BYTES): Gen
     yield { name, text: data.toString("utf8") };
   }
 }
-export function scanZip(zip: Buffer, rules: FlakeRule[], maxTotal?: number): SignatureHit | null {
+/** What a zip says about a failure: `report` is true when it holds a recognized test report; then `hit` and `build` come from the failed tests only, otherwise `hit` from its text lines. */
+export type ZipEvidence = { report: boolean; hit: SignatureHit | null; build: string | null };
+export function scanZip(zip: Buffer, rules: FlakeRule[], maxTotal?: number): ZipEvidence {
+  const out: ZipEvidence = { report: false, hit: null, build: null };
   try {
-    const entries = [...zipTextEntries(zip, maxTotal)].map(({ text }) => ({ text, corpus: failedTestCorpus(text) }));
+    const entries = [...zipTextEntries(zip, maxTotal)].map(({ text }) => ({ text, found: failedTestEvidence(text) }));
     // Sidecar files next to a test report (manifests, file lists) name passing tests too: search only the failures then.
-    const reports = entries.some((entry) => entry.corpus !== null);
-    for (const { text, corpus } of entries) {
-      const hit = corpus !== null ? firstMatch(rules, corpus) : reports ? null : firstMatch(rules, text);
-      if (hit) return hit;
+    out.report = entries.some((entry) => entry.found);
+    for (const { text, found } of entries) {
+      if (found) { out.hit ??= firstMatch(rules, found.corpus); out.build ??= found.build; }
+      else if (!out.report) out.hit ??= firstMatch(rules, text);
     }
   } catch { /* A corrupt archive has no readable evidence. */ }
-  return null;
+  return out;
 }

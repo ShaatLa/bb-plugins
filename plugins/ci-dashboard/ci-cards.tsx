@@ -134,12 +134,17 @@ export function CiTiming({ repo }: { repo: Metrics }) {
   const defaultWorkflow = data?.workflows.find((workflow) => workflow.name.trim().toLowerCase() === "ci");
   const selection = selectedWorkflow ?? (defaultWorkflow ? String(defaultWorkflow.id) : "all");
   const workflow = data?.workflows.find((row) => String(row.id) === selection);
-  const timing = workflow?.timing ?? data?.timing;
-  const successful = workflow?.passed ?? repo.ciOutcomes?.success ?? 0;
-  const total = workflow?.total ?? data?.total ?? 0;
+  const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
+  // Events are split only when there are several: pooled they would mix e.g. a light PR preflight with the full merge-queue check.
+  const events = workflow?.events && workflow.events.length >= 2 ? workflow.events : [];
+  const eventName = selectedEvent === "all" || events.some((row) => row.event === selectedEvent) ? selectedEvent : events[0]?.event;
+  const event = events.find((row) => row.event === eventName);
+  const timing = event?.timing ?? workflow?.timing ?? data?.timing;
+  const successful = event?.passed ?? workflow?.passed ?? repo.ciOutcomes?.success ?? 0;
   return <Card role="region" aria-label="CI run timings" className="space-y-4 border-border p-4 sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">successful runs only</p></div>
+      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">successful runs only{events.length > 0 && ` · ${event?.event ?? "all events"}`}</p></div>
+      <div className="flex flex-wrap items-center gap-3">
       {data && <label className="flex items-center gap-2 text-xs text-muted-foreground">Summary workflow
         <span className="relative inline-block">
           <select aria-label="Timing workflow" value={workflow ? String(workflow.id) : "all"} onChange={(event) => setSelectedWorkflow(event.target.value)} className="h-9 max-w-64 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground">
@@ -149,6 +154,16 @@ export function CiTiming({ repo }: { repo: Metrics }) {
           <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
         </span>
       </label>}
+      {events.length > 0 && <label className="flex items-center gap-2 text-xs text-muted-foreground">Event
+        <span className="relative inline-block">
+          <select aria-label="Timing event" value={event?.event ?? "all"} onChange={(e) => setSelectedEvent(e.target.value)} className="h-9 max-w-64 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground">
+            <option value="all">All events</option>
+            {events.map((row) => <option key={row.event} value={row.event}>{row.event} · {plural(row.total, "run")}</option>)}
+          </select>
+          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
+        </span>
+      </label>}
+      </div>
     </div>
     {!data || !timing ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
@@ -174,6 +189,9 @@ export function CiTiming({ repo }: { repo: Metrics }) {
             <span className="tabular-nums">{workflow.total - workflow.passed} excluded</span>
             <span className="tabular-nums">Total {elapsed(workflow.timing.count ? workflow.timing.totalMs : null)}</span>
           </div>
+          {workflow.events && workflow.events.length >= 2 && <div className="col-span-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {workflow.events.map((row) => <span key={row.event}>{row.event} <span className="font-medium tabular-nums text-foreground">{elapsed(row.timing.medianMs)}</span> · <span className="tabular-nums">n {row.timing.count.toLocaleString()}</span></span>)}
+          </div>}
         </li>)}</ul>
       </details>}
       {data.slowRuns.length > 0 && <details className="border-t border-border pt-3">

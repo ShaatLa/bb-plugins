@@ -67,7 +67,20 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(19);
+      ).toBe(22);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("upgrades the scheduled status trigger on an existing database", async () => {
+    const { db, harness } = setup();
+    try {
+      const sql = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='task_scheduled_status'").get()!.sql;
+      db.exec("DROP TRIGGER task_scheduled_status; DELETE FROM schema_version WHERE version=22;");
+      db.exec(sql.replace("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND ", ""));
+      createTasksStore(db);
+      expect(db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE name='task_scheduled_status'").get()!.sql).toContain("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id");
     } finally {
       await harness.dispose();
     }

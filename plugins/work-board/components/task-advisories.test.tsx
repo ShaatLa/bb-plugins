@@ -5,7 +5,7 @@ import { TaskAdvisories } from "./task-advisories";
 import type { TaskAdvisory } from "../shared/task-advisories";
 const { go, toThread } = vi.hoisted(() => ({ go: vi.fn(), toThread: vi.fn() }));
 vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go }) }));
-vi.mock("@get-bb/plugin-sdk/app", () => ({ useBbNavigate: () => ({ toThread }) }));
+vi.mock("@get-bb/plugin-sdk/app", async importOriginal => ({ ...await importOriginal<typeof import("@get-bb/plugin-sdk/app")>(), useBbNavigate: () => ({ toThread }) }));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 function items(): TaskAdvisory[] {
   const checkedAt = new Date().toISOString(), validUntil = new Date(Date.now() + 60_000).toISOString();

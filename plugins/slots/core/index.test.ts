@@ -1,3 +1,6 @@
+import { formatNotification } from "../server.js";
+import type { Effect } from "../contract.js";
+const rendered = (effect: Effect | undefined) => effect?.type === "notify" ? formatNotification(effect) : "";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, type Input, type Settings, type Transition } from "../contract.js";
 import { apply, initialState, logSince, portCandidates, statusSnapshot, validateSettings } from "./index.js";
@@ -133,6 +136,22 @@ describe("Slots deterministic engine", () => {
     }
   });
 
+  it("releases a granted lease by its request id", () => {
+    const h = harness(); h.request("a"); const requestId = h.state.requests[0].id; h.open(); const leaseId = h.state.leases[0].id;
+    expect(h.send({ type: "release", threadId: "b", leaseId: requestId }).result.ok).toBe(false);
+    expect(h.send({ type: "release", threadId: "a", leaseId: requestId }).result).toEqual({ ok: true, data: { released: [leaseId], returned: [], canceled: [] } });
+    expect(h.state.leases).toEqual([]);
+  });
+
+  it("steers a released child but not the releasing owner, and queues grant and observer notices", () => {
+    const h = harness({ observerThreadId: "manager", observerEvents: ["grant", "release"] }); h.request("owner");
+    const granted = h.open().effects.filter(e => e.type === "notify");
+    expect(granted.map(e => [e.threadId, e.queue])).toEqual([["owner", true], ["manager", true]]);
+    h.send({ type: "transfer", threadId: "owner", toThreadId: "child", isChild: true });
+    const freed = h.send({ type: "release", threadId: "owner" }).effects.filter(e => e.type === "notify");
+    expect(freed.map(e => [e.threadId, e.queue])).toEqual([["child", undefined], ["manager", true]]);
+  });
+
   it("preserves live leases on capacity reduction, raises immediately, uses lowest free index", () => {
     const h = harness(); h.request("a"); h.request("b"); h.open(); h.open();
     h.settings.capacities.heavy = 1;
@@ -251,13 +270,14 @@ it("release cancels all queued pools or a single owned request", () => {
   expect(h.state.requests).toHaveLength(1);
   h.send({ type: "release", threadId: "a" }); expect(h.state.requests).toHaveLength(0);
 });
-it("warning and grant name exact commands with a UTC expiry", () => {
+it("warning and grant name exact commands with a relative expiry", () => {
   const h = harness(); h.request("a");
-  expect(h.open().effects).toContainEqual(expect.objectContaining({ type: "notify", text: expect.stringContaining("bb slots gate") }));
+  expect(h.open().effects.some(e => rendered(e).includes("Run heavy commands through `slots-run` (`bb slots wrapper`); release with `bb slots release"))).toBe(true);
   h.now = h.state.leases[0].expiresAt - h.settings.heartbeatIntervalMs;
   const warning = h.send({ type: "tick" }).effects.find(e => e.type === "notify");
-  expect(warning).toMatchObject({ text: expect.stringContaining(new Date(h.state.leases[0].expiresAt).toISOString()) });
-  expect(warning).toMatchObject({ text: expect.stringContaining("bb slots heartbeat") });
+  expect(rendered(warning)).toContain(`- Expires: in ${h.settings.heartbeatIntervalMs / minute}m`);
+  expect(rendered(warning)).not.toContain(new Date(h.state.leases[0].expiresAt).toISOString());
+  expect(rendered(warning)).toContain("bb slots heartbeat");
 });
 
 const observerCopies = (change: Transition, reason?: string) => change.effects.filter(e => e.type === "notify" && e.threadId === "manager" && (!reason || e.reason === reason));
@@ -299,9 +319,10 @@ it.each(["gate", "capacity", "manual"])("queue-wait alerts once at the threshold
   h.now = 20 * minute - 1; expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
   h.now++; const result = h.send({ type: "tick" });
   const copies = observerCopies(result, "queue-wait"); expect(copies).toHaveLength(2);
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining("position 2") });
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining("a tests; estimate 1m, waiting 20m") });
-  expect(copies[1]).toMatchObject({ text: expect.stringContaining(blocker === "gate" ? "gate not open" : blocker === "capacity" ? "no free slot" : "manual grant mode") });
+  expect(rendered(copies[1])).toContain("position 2");
+  expect(rendered(copies[1])).toContain("a tests\n");
+  expect(rendered(copies[1])).toContain("estimate 1m, waiting 20m");
+  expect(rendered(copies[1])).toContain(blocker === "gate" ? "gate not open" : blocker === "capacity" ? "no free slot" : "manual grant mode");
   h.send({ type: "restored" }); h.now += minute;
   expect(observerCopies(h.send({ type: "tick" }), "queue-wait")).toEqual([]);
 });
@@ -314,7 +335,7 @@ it("gate-hold alerts only while queued, persists per hold, re-arms on any pass a
   h.now++; h.sample(9, 40);
   const first = h.send({ type: "tick" }); expect(observerCopies(first, "gate-hold")).toHaveLength(1);
   expect(first.state.audit.at(-1)).toMatchObject({ type: "gate-hold", readings: { memFreePct: 9, load1: 40, at: h.now }, reason: expect.stringContaining("min 20%") });
-  expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("max 18") });
+  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("max 18");
   h.send({ type: "restored" }); h.now += minute;
   expect(observerCopies(h.send({ type: "tick" }), "gate-hold")).toEqual([]);
   h.sample(50, 1); expect(h.state.hosts.h.gate.failingSince).toBeNull();
@@ -328,8 +349,116 @@ it("rounds observer durations and gate readings for human messages", () => {
   h.send({ type: "request", hostId: "h", threadId: "a", pool: "heavy", job: "long tests", estMs: (65 * minute + 6000) });
   h.sample(9.4, 40.1234); h.now = 20 * minute + 2000;
   const first = h.send({ type: "tick" });
-  expect(observerCopies(first, "queue-wait")[0]).toMatchObject({ text: expect.stringContaining("estimate 1h 5m, waiting 20m") });
-  expect(observerCopies(first, "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 20m: memory free 9% (min 20%), load 40.1 (max 18.0), sampled 00:00Z") });
+  expect(rendered(observerCopies(first, "queue-wait")[0])).toContain("estimate 1h 5m, waiting 20m");
+  expect(rendered(observerCopies(first, "gate-hold")[0])).toContain("Memory free: 9% (min 20%)\n- Load: 40.1 (max 18.0)");
+  expect(rendered(observerCopies(first, "gate-hold")[0])).not.toContain("Sampled:");
   h.sample(50, 1); h.sample(9.4, 40.1234); h.now += (65 * minute + 6000);
-  expect(observerCopies(h.send({ type: "tick" }), "gate-hold")[0]).toMatchObject({ text: expect.stringContaining("failing for 1h 5m") });
+  expect(rendered(observerCopies(h.send({ type: "tick" }), "gate-hold")[0])).toContain("failing for 1h 5m");
+});
+
+it("tracks independent uses through grant, renewal, completion and grace", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); const first = h.state.requests[0].uses![0].id;
+  acquire(); const second = h.state.requests[0].uses![1].id;
+  expect(h.send({ type: "done", threadId: "b", useId: first }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(h.send({ type: "detach", threadId: "a", useId: first }).result).toMatchObject({ ok: true, data: { kind: "queued", position: 1 } });
+  h.open(); expect(h.state.leases[0].uses).toHaveLength(1);
+  expect(h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true }).result).toMatchObject({ ok: false, error: { code: "in-use" } });
+  h.now += minute; h.send({ type: "heartbeatUse", threadId: "a", useId: second });
+  expect(h.state.leases[0].expiresAt).toBeGreaterThanOrEqual(h.state.leases[0].uses![0].expiresAt);
+  h.send({ type: "done", threadId: "a", useId: second }); expect(h.state.leases).toHaveLength(0);
+  acquire(); const id = h.state.requests[0].id; const use = h.state.requests[0].uses![0].id;
+  h.send({ type: "detach", threadId: "a", useId: use }); acquire();
+  expect(h.state.requests[0].id).toBe(id);
+  h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id });
+  h.now += h.settings.heartbeatIntervalMs; h.send({ type: "tick" });
+  expect(h.state.requests).toHaveLength(0); expect(h.state.audit.some(e => e.type === "unclaimed")).toBe(true);
+});
+
+it("expires uses independently of thread heartbeat and preserves plain leases", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  const use = h.state.leases[0].uses![0].id;
+  h.now += h.settings.heartbeatIntervalMs; h.send({ type: "heartbeat", threadId: "a" }); h.send({ type: "tick" });
+  expect(h.state.leases).toHaveLength(1); expect(h.state.leases[0].uses).toEqual([]);
+  expect(h.send({ type: "done", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "not-found" } });
+});
+
+it("joins a granted grace lease and releases after the retry finishes", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); const id = h.state.requests[0].id;
+  h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id });
+  h.open(); expect(h.state.leases[0]).toMatchObject({ requestId: id, uses: [] });
+  expect(h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true }).result).toMatchObject({ ok: false, error: { code: "in-use" } });
+  acquire(); const use = h.state.leases[0].uses![0].id;
+  h.send({ type: "done", threadId: "a", useId: use }); expect(h.state.leases).toEqual([]);
+});
+it("retires only expired uses and cleans up an unclaimed granted lease", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); h.open();
+  const [first, second] = h.state.leases[0].uses!;
+  h.now += h.settings.heartbeatIntervalMs / 2;
+  h.send({ type: "heartbeatUse", threadId: "a", useId: second.id });
+  h.now = first.expiresAt; h.send({ type: "heartbeat", threadId: "a" }); h.send({ type: "tick" });
+  expect(h.state.leases[0].uses?.map(u => u.id)).toEqual([second.id]);
+  h.now = h.state.leases[0].uses![0].expiresAt; h.send({ type: "tick" }); expect(h.state.leases).toEqual([]);
+  acquire(); h.send({ type: "detach", threadId: "a", useId: h.state.requests[0].uses![0].id }); h.open();
+  h.now = h.state.leases[0].graceUntil!; h.send({ type: "tick" });
+  expect(h.state.leases).toEqual([]); expect(h.state.audit.some(e => e.type === "unclaimed")).toBe(true);
+});
+it("rejects transferred owners and drops child uses when a lease returns", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.send({ type: "transfer", threadId: "a", toThreadId: "child", isChild: true });
+  const acq = (threadId: string) => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId, job: "test", estMs: minute });
+  expect(acq("a").result).toMatchObject({ ok: false, error: { code: "transferred" } });
+  acq("child"); const use = h.state.leases[0].uses![0].id;
+  expect(h.send({ type: "heartbeatUse", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(h.send({ type: "detach", threadId: "a", useId: use }).result).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  h.send({ type: "threadEnded", threadId: "child", reason: "archived" });
+  expect(h.state.leases[0]).toMatchObject({ holderThreadId: "a", uses: [] });
+  expect(h.state.audit.some(e => e.type === "use-dropped")).toBe(true);
+});
+it("refreshes an almost-expired held lease and waits for all concurrent uses", () => {
+  const h = harness(); h.request("a"); h.open();
+  h.now = h.state.leases[0].expiresAt - 1;
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); const [a, b] = h.state.leases[0].uses!;
+  expect(h.state.leases[0].expiresAt).toBeGreaterThanOrEqual(b.expiresAt);
+  h.send({ type: "done", threadId: "a", useId: a.id }); h.send({ type: "done", threadId: "a", useId: b.id });
+  expect(h.state.leases).toHaveLength(1);
+  const auto = harness();
+  const get = () => auto.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  get(); get(); auto.open(); const [first, second] = auto.state.leases[0].uses!;
+  auto.send({ type: "done", threadId: "a", useId: first.id }); expect(auto.state.leases).toHaveLength(1);
+  auto.send({ type: "done", threadId: "a", useId: second.id }); expect(auto.state.leases).toHaveLength(0);
+});
+it("preserves the other waiter when one detaches and exposes a shared grant", () => {
+  const h = harness();
+  const acquire = () => h.send({ type: "acquire", hostId: "h", pool: "heavy", threadId: "a", job: "test", estMs: minute });
+  acquire(); acquire(); const requestId = h.state.requests[0].id;
+  const [first, second] = h.state.requests[0].uses!;
+  h.send({ type: "detach", threadId: "a", useId: first.id });
+  expect(h.state.requests[0]).toMatchObject({ id: requestId, graceUntil: null });
+  acquire(); const third = h.state.requests[0].uses![1];
+  h.open();
+  for (const use of [second, third]) expect(h.send({ type: "heartbeatUse", threadId: "a", useId: use.id }).result)
+    .toMatchObject({ ok: true, data: { kind: "leased", lease: { requestId }, useId: use.id } });
+});
+
+it.each(["release", "revoke", "expire", "archive"])("shows job and reason when a lease ends: %s", kind => {
+  const h = harness(); h.request("a"); h.open();
+  const id = h.state.leases[0].id;
+  if (kind === "expire") h.now = h.state.leases[0].expiresAt;
+  const result = kind === "expire" ? h.send({type:"tick"}) : kind === "revoke" ? h.send({type:"revoke",leaseId:id,reason:"revoked by manager"}) : kind === "archive" ? h.send({type:"threadEnded",threadId:"a",reason:"archived"}) : h.send({type:"release",threadId:"a"});
+  const notices = result.effects.filter(e => e.type === "notify");
+  // The owner already saw its own release in the CLI.
+  if (kind === "release") return expect(notices).toEqual([]);
+  expect(notices[0]).not.toHaveProperty("queue");
+  const message = rendered(notices[0]);
+  expect(message).toContain("\na tests\n- Lease:");
+  const reason = {release:null, revoke:"revoked by manager", expire:null, archive:"`archived`"}[kind];
+  if (reason) expect(message).toContain(`- Reason: ${reason}`); else expect(message).not.toContain("- Reason:");
 });

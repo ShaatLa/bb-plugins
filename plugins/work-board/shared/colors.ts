@@ -13,7 +13,8 @@ export const COLOR_PALETTE = [
 ] as const;
 
 export function paletteColor(value: string | undefined): string | undefined {
-  // Keep saved palette values stable when adjusting their appearance.
+  // Keep saved values stable; monochrome status icons follow BB foreground in every theme.
+  if (value === "black") return "var(--foreground)";
   return value === "slategray" ? "darkgray" : value;
 }
 

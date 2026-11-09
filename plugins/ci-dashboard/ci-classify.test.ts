@@ -45,6 +45,10 @@ describe("classifyJobs", () => {
     expect(one(cancelled(MANUAL))?.evidence).toMatch(/canceled by @\S+/);
     const transient = one(failed({ logExcerpt: "setup\n2026-11-05T10:01:00.1234567Z curl: archive_download_http_504" }));
     expect(transient).toMatchObject({ class: "transient", evidence: "curl: archive_download_http_504" });
+    // A download that was unavailable or timed out (the tool never ran) is the same kind of failure; a test timeout is not.
+    expect(one(failed({ logExcerpt: "linter refused: archive_download_unavailable_or_timed_out" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "Download timed out after 60s" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "panic: test timed out after 10m0s" }))?.class).toBe("real");
   });
 
   it("prefers runner loss over timeout and treats a log without a transient line as an ordinary failure", () => {
@@ -60,6 +64,32 @@ describe("classifyJobs", () => {
     expect(one(cancelled(SUPERSEDED, { jobName: "CI summary" }), { aggregatorJobs: ["CI summary"] })?.class).toBe("consequence");
   });
 
+  it("a shutdown notice that only reached the log is a runner loss, above everything else", () => {
+    const excerpt = "line\n2026-11-07T15:46:42.70Z ##[error]Process completed with exit code 130.\n2026-11-07T15:46:42.71Z ##[error]The runner has received a shutdown signal.";
+    expect(one(failed({ logExcerpt: excerpt }))).toMatchObject({ class: "runner_loss", evidence: "##[error]The runner has received a shutdown signal." });
+  });
+  it("an interrupted step (exit 130) with no test failure or build error is a runner loss", () => {
+    const interrupted = (over: Partial<JobRecord> = {}) => failed({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }], ...over });
+    expect(one(interrupted())).toMatchObject({ class: "runner_loss", reason: "interrupted (exit 130) without a test failure" });
+    // A test failure line, a build error or another failure annotation keeps it the job's own failure.
+    expect(one(interrupted({ logExcerpt: "--- FAIL: TestThing (0.01s)" }))?.class).toBe("real");
+    expect(one(interrupted({ buildFailure: { match: "build failed" } }))?.class).toBe("real");
+    expect(one(interrupted({ annotations: [{ level: "failure", title: "", message: "Process completed with exit code 130." }, { level: "failure", title: "", message: "Error: assertion failed" }] }))?.class).toBe("real");
+    expect(one(failed())?.class).toBe("real");
+  });
+  it("a job cancelled with exit 130 while every other job of the attempt passed is a runner loss, else collateral", () => {
+    const evicted = cancelled("Process completed with exit code 130.", { jobId: 1 });
+    const sibling = (conclusion: string, over: Partial<JobRecord> = {}) => job({ jobId: 2, jobName: "Other", conclusion, ...over });
+    const opts = { aggregatorJobs: ["CI complete"] };
+    const classOf = (jobs: JobRecord[]) => classifyJobs(jobs, opts).find((c) => c.job.jobId === 1)?.class;
+    // The aggregator failing because of it does not count.
+    expect(classOf([evicted, sibling("success"), failed({ jobId: 3, jobName: "CI complete" })])).toBe("runner_loss");
+    // A failing or cancelled sibling (fail-fast, a cancelled run) makes it collateral, and so does a cancel notice.
+    expect(classOf([evicted, sibling("failure")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("cancelled")])).toBe("collateral_cancel");
+    expect(classOf([evicted, sibling("success", { runId: 99 }), sibling("failure", { runId: 99, jobId: 4 })])).toBe("runner_loss");
+    expect(one(cancelled("The operation was canceled."))?.class).toBe("collateral_cancel");
+  });
   describe("flake versus real at the same sha", () => {
     const base = failed({ runId: 10 });
     const pass = (over: Partial<JobRecord> = {}) => job({ runId: 11, jobId: 2, event: "pull_request", headBranch: "feature", ...over });
@@ -150,6 +180,11 @@ describe("runnerLosses and detectMassCancel", () => {
     expect(detectMassCancel(hits, { minRunners: 4 })).toHaveLength(0);
     expect(detectMassCancel(hits, { windowMs: 20_000 })).toHaveLength(0);
   });
+  it("ignores a merge queue rebuild that cancels in-flight group jobs, but not lost runners in the queue", () => {
+    const queue = (runner: string, cls: FailureClass) => classify(failed({ runId: 2, event: "merge_group", runnerName: runner, completedAt: at(0, 0) }), cls);
+    expect(detectMassCancel(["q-a", "q-b", "q-c", "q-d"].map((r) => queue(r, "collateral_cancel")))).toEqual([]);
+    expect(detectMassCancel(["q-a", "q-b", "q-c"].map((r) => queue(r, "runner_loss")))).toHaveLength(1);
+  });
   it("ignores other failure classes and repeated losses on one runner", () => {
     expect(detectMassCancel([mk("runner-a", 0, 0), mk("runner-a", 0, 10), mk("runner-b", 0, 20), mk("runner-c", 0, 30, "real")])).toEqual([]);
   });
@@ -201,5 +236,34 @@ describe("percentile and pool timings", () => {
     expect(Object.keys(poolTimingsByEvent).sort()).toEqual(["merge_group", "push"]);
     expect(poolTimingsByEvent.merge_group!.unknown!.jobs).toBe(1);
     expect(poolTimingsByEvent.push!["self-hosted"]!.jobs).toBe(4);
+  });
+});
+
+describe("inherited failures", () => {
+  const group = (over: Partial<JobRecord> = {}) => failed({ event: "merge_group", headBranch: "gh-readonly-queue/main/pr-8-abc123", buildFailure: { match: "pkg/core: build failed" }, inheritedFrom: { pullRequest: 7, runId: 50 }, ...over });
+  it("keeps the class and evidence and names the origin in the reason", () => {
+    expect(one(group())).toMatchObject({ class: "real", reason: "build or setup failed, inherited from #7", evidence: "pkg/core: build failed" });
+    expect(one(group({ inheritedFrom: null }))?.reason).toBe("build or setup failed");
+  });
+  it("never tags runner losses, timeouts, transient or refused failures", () => {
+    for (const j of [group({ annotations: [failure(LOSS)] }), group({ annotations: [failure(TIMEOUT)] }), group({ logExcerpt: "##[error] ECONNRESET" })]) expect(one(j)!.reason).not.toContain("inherited");
+    expect(one(group(), { refusalSteps: ["Run tests"] })).toMatchObject({ class: "refused", reason: "intentional refusal by a gate step" });
+  });
+});
+
+describe("laneTimings", () => {
+  it("groups complete attempts and successful lanes by UTC day and ranks representative pipelines", async () => {
+    const { laneTimings } = await import("./ci-classify");
+    const now = Date.parse("2026-11-08T12:00:00Z");
+    const make = (runId: number, event: string, duration: number, extra: Partial<JobRecord> = {}) => job({ runId, workflowName: "CI", jobName: "Unit tests", event, startedAt: "2026-11-08T00:00:00Z", completedAt: new Date(Date.parse("2026-11-08T00:00:00Z") + duration).toISOString(), ...extra });
+    const jobs = [make(1, "merge_group", 1000), make(1, "merge_group", 2000, { jobName: "Build image", startedAt: "2026-11-07T23:59:59Z", completedAt: "2026-11-08T00:00:01Z" }),
+      ...Array.from({ length: 10 }, (_, i) => make(i + 2, "pull_request", 100)), make(12, "push", 10000), make(17, "merge_group", 2000),
+      make(13, "merge_group", 1000), make(13, "merge_group", 1000, { conclusion: "failure" }),
+      make(14, "merge_group", 1000), make(14, "merge_group", 1000, { carried: true }),
+      make(15, "merge_group", 1000, { startedAt: null }), make(16, "merge_group", 1000, { startedAt: "2026-11-01T00:00:00Z", completedAt: "2026-11-01T00:00:01Z" })];
+    const result = laneTimings(jobs, now).pipelines;
+    expect(result[0]).toMatchObject({ event: "merge_group", runs: 2, wall: { p50: 2000, n: 2, days: [{ date: "2026-11-08", n: 2 }] } });
+    expect(result[0]!.lanes.find((lane) => lane.name === "Unit tests")).toMatchObject({ n: 4, p90: 2000 });
+    expect(result.at(-1)?.event).toBe("push");
   });
 });

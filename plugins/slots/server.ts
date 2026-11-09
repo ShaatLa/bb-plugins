@@ -3,11 +3,16 @@ import * as os from "node:os";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
+import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
+
+export function formatNotification(message: import("./contract.js").NotificationMessage): string {
+  return [`**Machine Slots** · \`${message.title}\``, ...message.lines.map(line => line.label ? `- ${line.label}: ${line.value}` : line.value), ...(message.hint ? [message.hint] : [])].join("\n");
+}
 
 export interface Runtime {
   now: () => number;
@@ -16,6 +21,8 @@ export interface Runtime {
   metrics: typeof metrics;
   probePort: typeof probePort;
   store?: DiskStore;
+  watchCollector?: Parameters<typeof createWatcher>[0]["collector"];
+  realpath?: Parameters<typeof createWatcher>[0]["realpath"];
 }
 export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Result<unknown>>;
 
@@ -28,6 +35,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
   let settingsWarnings: string[] = [];
   const descriptors = {
+    watchPolicy: { type: "select", label: "Load watch", options: ["off", "warn"], default: "warn" },
+    watchCores: { type: "number", label: "Watch cores", default: Math.min(3, Math.max(1, cores - 1)), experimental_schema: z.number().min(1).max(cores) },
+    watchWindowSeconds: { type: "number", label: "Watch window seconds", default: 120, experimental_schema: z.number().int().min(60).max(900) },
+    idleLeaseMinutes: { type: "number", label: "Idle lease minutes", default: 30, experimental_schema: z.number().int().min(10).max(240) },
     heavyCapacity: { type: "number", label: "Heavy jobs", description: `Default ${heavyDefault} · max ${cores} (CPU cores). Zero disables the pool.`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
     localModelCapacity: { type: "number", label: "Local model", description: `Default 1 · max 10000. Zero disables the pool.`, default: 1, experimental_schema: z.number().int().min(0).max(10000) },
     memFreeMinPct: { type: "number", label: "Memory free minimum", description: `Minimum percentage of free memory required to start work.`, default: 20, experimental_schema: z.number().min(0).max(100) },
@@ -51,13 +62,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
   const readValues = () => ({ ...defaults, ...explicit }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
+    watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
-    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && (key === "heavyCapacity" || key === "loadMax") && typeof value === "number" ? Math.min(value, cores) : value);
+    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && (key === "heavyCapacity" || key === "loadMax" || key === "watchCores") && typeof value === "number" ? Math.min(value, cores) : value);
     else if (typeof value !== "string" || !descriptor.options.includes(value)) throw new Error("Invalid grant mode");
     return value as number | string;
   }
@@ -73,20 +85,22 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (initialized) await transition({ type: "restored" });
   }
   function formView(): SettingsFormView {
-    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax }, defaults,
-      maxima: { heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
+    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
+      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();
     const settings = resolveSettings(current);
     settingsWarnings = [
       ...(current.loadMax > cores ? [`Saved load limit ${current.loadMax} exceeds ${cores} CPU cores; using ${cores}.`] : []),
+      ...(current.watchCores > cores ? [`Saved watch threshold ${current.watchCores} exceeds ${cores} CPU cores; using ${cores}.`] : []),
       ...(current.heavyCapacity > cores ? [`Saved heavy capacity ${current.heavyCapacity} exceeds ${cores} CPU cores; using ${cores}.`] : []),
     ];
     return settings;
   };
   function resolveSettings(values: ReturnType<typeof readValues>): Settings {
     const settings: Settings = {
+      watchPolicy: values.watchPolicy, watchCores: Math.min(values.watchCores, cores), watchWindowSeconds: values.watchWindowSeconds, idleLeaseMinutes: values.idleLeaseMinutes,
       capacities: { heavy: Math.min(values.heavyCapacity, cores), "local-model": values.localModelCapacity },
       memFreeMinPct: values.memFreeMinPct, loadMax: Math.min(values.loadMax, cores), gateSamples: values.gateSamples,
       gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
@@ -101,7 +115,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   let settings = await getSettings();
   let state: State = initialState();
-  let localHostId = "";
+  let localHostId = "", dataDir = "";
   let initialized = false;
   let disposed = false;
   const titles = new Map<string, { until: number; value: Promise<string> }>();
@@ -110,7 +124,13 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const next = queue.then(() => { if (disposed) throw new Error("Slots unloaded"); return fn(); });
     queue = next.catch(() => {}); return next;
   }
-  async function transition(input: Input, manualSample = false) {
+  async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
+    try {
+      await bb.sdk.threads.send({ threadId: effect.threadId, mode: effect.queue ? "queue-if-active" : "auto", originPluginId: bb.pluginId,
+        input: [{ type: "text", text: formatNotification(effect), mentions: [] }] });
+    } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
+  }
+  async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {
     if (input.type === "threadEnded") titles.delete(input.threadId);
     const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
     if (!change.result.ok) return change.result;
@@ -119,10 +139,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const effect of change.effects) {
       if (effect.type === "audit") await store.audit(effect.event);
       else {
-        try {
-          await bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
-            input: [{ type: "text", text: `[Slots] ${effect.text}`, mentions: [] }] });
-        } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
+        if (effect.watch) {
+          if (verified.has(effect.watch.holderThreadId ? `${effect.watch.subject.key}\0${effect.watch.holderThreadId}` : effect.watch.subject.key) && settings.watchPolicy !== "off") pending.push(effect);
+        } else await sendNotification(effect);
       }
     }
     bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
@@ -150,6 +169,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const config = await bb.sdk.system.config();
     if (!config.primaryHostId) throw new Error("Cannot resolve BB server host");
     localHostId = config.primaryHostId;
+    dataDir = config.dataDir;
     const saved = await store.load();
     state = saved === undefined ? initialState() : stateSchema.parse(saved);
     await transition({ type: "restored" });
@@ -225,7 +245,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (method === "status") {
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
-        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings, watcher: watcher.diagnostics() } };
       }
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");
@@ -294,6 +314,23 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     await initialize();
     if (state.leases.some(l => l.holderThreadId === thread.id)) await transition({ type: "heartbeat", threadId: thread.id });
   }));
+  const watcher = createWatcher({ sdk: bb.sdk, hostId: () => localHostId, dataDir: () => dataDir, enabled: () => initialized && settings.watchPolicy !== "off" && !disposed,
+    now: runtime.now, collector: runtime.watchCollector, realpath: runtime.realpath, warn: error => bb.log.warn(`Slots watcher: ${String(error)}`),
+    preview: usage => serial(async () => apply(state, usage, { now: runtime.now(), settings }).effects),
+    commit: async (usage, verified, signal) => {
+      const pending: Extract<Effect, { type: "notify" }>[] = [];
+      await serial(async () => transition(usage, false, verified, pending));
+      for (const effect of pending) {
+        if (signal.aborted || disposed || settings.watchPolicy === "off") break;
+        await sendNotification(effect);
+      }
+    },
+  });
+  for (const event of ["thread.created", "thread.archived", "thread.unarchived", "thread.deleted"] as const) bb.events.on(event, () => { watcher.invalidate(); });
+  bb.background.service("watcher", { async start(signal) {
+    if (settings.watchPolicy !== "off") await serial(initialize).catch(error => bb.log.warn(`Slots watcher initialization: ${String(error)}`));
+    await watcher.start(signal);
+  } });
   bb.background.service("sampler", { async start(signal) {
     let lastSample = -Infinity;
     let lastTick = -Infinity;
@@ -315,6 +352,6 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       await sleep(Math.max(1, Math.min(lastTick + 15000, untilSample) - runtime.now()), undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
     }
   } });
-  bb.onDispose(async () => { disposed = true; titles.clear(); await queue; });
+  bb.onDispose(async () => { disposed = true; watcher.dispose(); titles.clear(); await queue; });
   return { invoke };
 }

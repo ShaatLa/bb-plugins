@@ -1,3 +1,4 @@
+import { registerScheduled } from "./scheduled";
 import { migrateSettings } from "./settings";
 import { storageService } from "./storage";
 import { gitSyncService } from "./git-sync/service";
@@ -14,7 +15,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.23.1";
+export const WORK_BOARD_PLUGIN_VERSION = "0.27.6";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -36,6 +37,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);
+  registerScheduled(bb, store);
   registerMentions(bb, store);
   // Read when a provider session starts, so only threads started or resumed after install see it.
   bb.agents.contributeInstructions(({ projectId }) =>

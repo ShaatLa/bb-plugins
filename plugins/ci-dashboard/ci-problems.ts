@@ -46,6 +46,8 @@ export function withoutBenignAlerts(alerts: CiInsights["alerts"], classified: Cl
 }
 
 export type ContextSection = { title: string; lines: string[] };
+/** What problemContext needs of a problem; open signals that are not problems (info severity) fit it too. */
+export type ProblemLike = Pick<Problem, "id" | "title" | "what" | "impact" | "where" | "since"> & { severity: Signal["severity"] };
 export type ProblemContextInput = {
   repository: string; classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; pools: PoolQueueState[]; alerts: CiInsights["alerts"];
   defaultBranch: string | null; backfill?: { remaining: number; failed: number; pausedUntil: string | null }; coverage: string | null;
@@ -53,6 +55,10 @@ export type ProblemContextInput = {
   // From memory and the local store only; every field is optional so older callers and legacy history still work.
   runs?: Run[]; deployments?: { environment?: string; ref?: string; sha?: string; created_at: string }[]; liveJobs?: JobRecord[];
   windowDays?: number; notes?: string; actors?: Record<Actor, string>;
+  /** Related refs (see ci-refs.ts) listed in a "Refs" section so an agent can drill down with ci_dashboard_inspect. */
+  refs?: string[];
+  /** Agent drill-down mode: lists hold at most `maxLines` rows, and job evidence omits log excerpts, annotations and classifier evidence text (labels and ids only). Notes are left out. */
+  compact?: { maxLines: number };
 };
 
 const DAY = 86_400_000;
@@ -64,7 +70,7 @@ const ACTIONS: Partial<Record<FailureClass, [string, Actor | null]>> = {
 };
 const DEFAULT_ACTORS: Record<Actor, string> = { owner_sre: "Runner owner / SRE", pr_author: "PR author", lead: "Lead", manager: "Manager" };
 // Never shrunk or cut by seedPrompt.
-const PROTECTED = new Set(["Verdict", "Problem", "Suggested action", "Team notes"]);
+const PROTECTED = new Set(["Verdict", "Problem", "Suggested action", "Team notes", "Refs"]);
 
 const LIST_CAP = 20, EVIDENCE_JOBS = 5, TEXT_CAP = 500, PROMPT_CAP = 12_000;
 // Classes that explain themselves through another job; they stay out of the detailed evidence.
@@ -73,7 +79,6 @@ const clip = (text: string, max = TEXT_CAP) => text.length > max ? `${text.slice
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: Pick<JobRecord, "runId" | "jobId">) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
 const kv = (label: string, value: string | number | null | undefined, indent = "") => value === null || value === undefined || value === "" ? [] : [`${indent}- ${label}: ${value}`];
-const capped = (rows: string[]) => rows.length > LIST_CAP ? [...rows.slice(0, LIST_CAP), `- … ${rows.length - LIST_CAP} more`] : rows;
 const timeOf = (job: JobRecord) => job.completedAt ?? job.startedAt ?? job.createdAt;
 const newestFirst = (a: ClassifiedJob, b: ClassifiedJob) => Date.parse(timeOf(b.job)) - Date.parse(timeOf(a.job));
 function duration(job: JobRecord) {
@@ -82,7 +87,7 @@ function duration(job: JobRecord) {
   return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-function evidence(repository: string, defaultBranch: string | null, { job, class: cls, reason, evidence: found }: ClassifiedJob): string[] {
+function evidence(repository: string, defaultBranch: string | null, { job, class: cls, reason, evidence: found }: ClassifiedJob, compact = false): string[] {
   const failures = job.annotations.filter((annotation) => annotation.level === "failure");
   const sub = "  ";
   return [
@@ -93,9 +98,9 @@ function evidence(repository: string, defaultBranch: string | null, { job, class
     ...kv("Pool", job.pool, sub), ...kv("Runner", job.runnerName ? `${job.runnerName}${job.runnerGroup ? ` (group ${job.runnerGroup})` : ""}` : null, sub), ...kv("Labels", job.labels.join(", "), sub),
     ...kv("Status", `${job.status}${job.conclusion ? ` / ${job.conclusion}` : ""}`, sub), ...kv("Started", job.startedAt, sub), ...kv("Completed", job.completedAt, sub), ...kv("Duration", duration(job), sub),
     ...kv("Failed steps", job.failedSteps.join(", "), sub),
-    ...kv("Classification", `${cls} — ${reason}${found ? `; evidence: ${clip(found)}` : ""}`, sub),
-    ...(failures.length ? [`${sub}- Failure annotations:`, ...failures.slice(0, LIST_CAP).map((annotation) => `${sub}  - ${clip(`${annotation.title ? `${annotation.title}: ` : ""}${annotation.message}`)}`)] : []),
-    ...(job.logExcerpt ? [`${sub}- Log excerpt (up to 30 lines before the first error):`, ...job.logExcerpt.split("\n").slice(0, 30).map((line) => `${sub}  | ${clip(line, 300)}`)] : []),
+    ...kv("Classification", `${cls} — ${reason}${found && !compact ? `; evidence: ${clip(found)}` : ""}`, sub),
+    ...(compact ? [] : failures.length ? [`${sub}- Failure annotations:`, ...failures.slice(0, LIST_CAP).map((annotation) => `${sub}  - ${clip(`${annotation.title ? `${annotation.title}: ` : ""}${annotation.message}`)}`)] : []),
+    ...(!compact && job.logExcerpt ? [`${sub}- Log excerpt (up to 30 lines before the first error):`, ...job.logExcerpt.split("\n").slice(0, 30).map((line) => `${sub}  | ${clip(line, 300)}`)] : []),
   ];
 }
 const brief = (repository: string, { job, class: cls, reason }: ClassifiedJob) =>
@@ -113,9 +118,10 @@ export function codeBrokenVerdict(ofRuns: ClassifiedJob[], runIds: number[]): "y
 }
 
 /** Everything the dashboard already knows about one problem, as plain-text sections; sections without data are left out. Pure: no GitHub requests. */
-export function problemContext(problem: Problem, input: ProblemContextInput): ContextSection[] {
+export function problemContext(problem: ProblemLike, input: ProblemContextInput): ContextSection[] {
   const { repository, classified, reruns, massCancels, pools, alerts, defaultBranch, backfill, coverage, analysisAt, polledAt, now } = input;
-  const history = input.runs ?? [], windowDays = input.windowDays ?? 14;
+  const history = input.runs ?? [], windowDays = input.windowDays ?? 14, compact = input.compact, cap = compact?.maxLines ?? LIST_CAP;
+  const capped = (rows: string[]) => rows.length > cap ? [...rows.slice(0, cap), `- … ${rows.length - cap} more`] : rows;
   const { where } = problem, prefix = problem.id.split(":")[0] ?? "";
   const alert = prefix === "run" ? alerts.find((item) => alertProblemId(item) === problem.id) : undefined;
   const group = prefix === "mass_cancel" ? massCancels.find((item) => `mass_cancel:${item.since}` === problem.id) : undefined;
@@ -123,7 +129,7 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
   const ofRun = runId === undefined ? [] : classified.filter((c) => c.job.runId === runId);
   const attempt = where.attempt ?? (ofRun.length ? Math.max(...ofRun.map((c) => c.job.attempt)) : undefined);
   const sameAttempt = ofRun.filter((c) => c.job.attempt === attempt);
-  const primary = where.jobId !== undefined ? sameAttempt.filter((c) => c.job.jobId === where.jobId) : sameAttempt.filter((c) => !SECONDARY.has(c.class)).slice(0, EVIDENCE_JOBS);
+  const primary = where.jobId !== undefined ? sameAttempt.filter((c) => c.job.jobId === where.jobId) : sameAttempt.filter((c) => !SECONDARY.has(c.class)).slice(0, compact ? Math.min(EVIDENCE_JOBS, 2) : EVIDENCE_JOBS);
   const others = sameAttempt.filter((c) => !primary.includes(c));
   const sections: ContextSection[] = [];
   const add = (title: string, lines: string[]) => { if (lines.length) sections.push({ title, lines }); };
@@ -150,12 +156,12 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
     ...kv("Run URL", runId === undefined ? undefined : runUrl(repository, runId)),
     ...kv("Job URL", where.jobId !== undefined && runId !== undefined ? jobUrl(repository, { runId, jobId: where.jobId }) : undefined), ...kv("Link", where.url),
   ]);
-  const failingRuns = runIds.slice(0, LIST_CAP).map((id) => {
+  const failingRuns = runIds.slice(0, cap).map((id) => {
     const row = history.find((run) => run.id === id), job = ofRuns.find((c) => c.job.runId === id)?.job, title = row?.display_title;
     const sha = row?.head_sha || job?.headSha, pr = title?.match(/\(#(\d+)\)/)?.[1] ?? row?.pull_requests?.[0] ?? job?.pullRequests[0];
     return `- Run ${id}${row ? ` (${row.created_at})` : ""}: commit ${sha ? sha.slice(0, 12) : "unknown"}${title ? ` "${clip(title, 200)}"` : ""}${pr ? ` · PR #${pr}` : ""} · ${runUrl(repository, id)}`;
   });
-  add("Failing runs", [...failingRuns, ...(runIds.length > LIST_CAP ? [`- … ${runIds.length - LIST_CAP} older run(s)`] : [])]);
+  add("Failing runs", [...failingRuns, ...(runIds.length > cap ? [`- … ${runIds.length - cap} older run(s)`] : [])]);
 
   if (runIds.length) {
     const latest = Math.max(...runIds), anchorRun = history.find((run) => run.id === latest), anchorJob = ofRuns[0]?.job;
@@ -182,7 +188,7 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
   for (const d of input.deployments ?? []) if (d.environment && Date.parse(d.created_at) > Date.parse(environments.get(d.environment)?.created_at ?? "0")) environments.set(d.environment, d);
   add("Deploy state", environments.size ? ["Latest deployment per environment (stored history):", ...capped([...environments].sort((a, b) => a[0].localeCompare(b[0])).map(([name, d]) => `- ${name}: ref ${d.ref ?? "unknown"}${d.sha ? ` (commit ${d.sha.slice(0, 12)})` : ""}, deployed ${d.created_at}`))]
     : input.deployments?.length ? ["Stored deployment history has no environment details yet; they appear after the next full refresh."] : []);
-  add("Evidence (job records)", primary.flatMap((c) => evidence(repository, defaultBranch, c)));
+  add("Evidence (job records)", primary.flatMap((c) => evidence(repository, defaultBranch, c, compact !== undefined)));
   const rerun = runId === undefined ? undefined : reruns.find((item) => item.runId === runId);
   add("Same run", [
     ...capped(others.map((c) => brief(repository, c))),
@@ -202,7 +208,7 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
     ]);
   }
   if (alert) {
-    const recent = classified.filter((c) => c.job.workflowName === alert.name && c.job.headBranch === alert.branch).sort(newestFirst).slice(0, 10);
+    const recent = classified.filter((c) => c.job.workflowName === alert.name && c.job.headBranch === alert.branch).sort(newestFirst).slice(0, compact ? Math.min(10, cap) : 10);
     add("Run-level alert", [
       `Workflow: ${alert.name}`, `Branch: ${alert.branch}${alert.branch === defaultBranch ? " (default branch)" : ""}`, `Consecutive failures: ${alert.consecutive}`, `Latest failed run: ${runUrl(repository, alert.runId)} (${alert.createdAt})`,
       ...(recent.length ? ["Last classified failures of this workflow on this branch (infrastructure vs real):", ...recent.map((c) => brief(repository, c))] : []),
@@ -229,25 +235,16 @@ export function problemContext(problem: Problem, input: ProblemContextInput): Co
   ]);
   const actors = input.actors ?? DEFAULT_ACTORS;
   add("Suggested action", presentClasses.flatMap((cls) => ACTIONS[cls] ? [`- ${cls}: ${ACTIONS[cls]![0]} (who: ${ACTIONS[cls]![1] ? actors[ACTIONS[cls]![1]!] : "nobody"})`] : []));
-  add("Team notes", input.notes?.trim() ? input.notes.trim().split("\n") : []);
+  add("Team notes", !compact && input.notes?.trim() ? input.notes.trim().split("\n") : []);
+  add("Refs", input.refs?.length ? [`drill down with ci_dashboard_metrics ref=<ref>: ${input.refs.join(", ")}`] : []);
   return sections;
 }
 
 const render = (sections: ContextSection[], dropped: number[]) => sections.flatMap(({ title, lines }, index) => ["", `## ${title}`, ...lines, ...(dropped[index] ? [`- … ${dropped[index]} more line(s) omitted to keep the prompt short`] : [])]).join("\n");
 
-/** Plain-text first message for the BB session that investigates one problem. Lists shrink to fit the cap; the instructions never do. */
-export function seedPrompt(repository: string, problem: Problem, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() })) {
-  const head = `Investigate a CI problem in ${repository}: ${problem.title}.`;
-  const tail = [
-    "", "## How to dig further (read-only)",
-    "- ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns), or `bb plugin rpc call delivery-dashboard ci --input-file <json>`.",
-    `- gh run view <runId> --repo ${repository} --log-failed`, `- gh run view <runId> --repo ${repository} --json jobs`, `- gh api repos/${repository}/actions/jobs/<jobId>/logs`,
-    "", "## Your task",
-    "Classify the root cause: infrastructure, flaky test, real failure, or tool/network. Give the evidence, propose the fix and say who should act. Find the root cause and report back.",
-    "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks.",
-  ].join("\n");
-  const budget = PROMPT_CAP - head.length - tail.length - 1;
-  const kept = context.map((section) => ({ ...section, lines: section.title === "Team notes" ? section.lines : section.lines.map((line) => clip(line, 600)) })), dropped = kept.map(() => 0);
+/** Clips every line and pops lines off the largest list until the rendered sections fit `budget` characters. Protected sections keep their lines. */
+export function fitSections(context: ContextSection[], budget: number, lineCap = 600) {
+  const kept = context.map((section) => ({ ...section, lines: section.title === "Team notes" ? section.lines : section.lines.map((line) => clip(line, lineCap)) })), dropped = kept.map(() => 0);
   let body = render(kept, dropped);
   while (body.length > budget) {
     // Shrink the largest list first; Verdict, Problem, Suggested action and Team notes keep their lines.
@@ -257,5 +254,20 @@ export function seedPrompt(repository: string, problem: Problem, context: Contex
     kept[target]!.lines.pop(); dropped[target]!++;
     body = render(kept, dropped);
   }
+  return { kept, dropped, body };
+}
+
+/** Plain-text first message for the BB session that investigates one problem. Lists shrink to fit the cap; the instructions never do. */
+export function seedPrompt(repository: string, problem: ProblemLike, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() })) {
+  const head = `Investigate a CI problem in ${repository}: ${problem.title}.`;
+  const tail = [
+    "", "## How to dig further (read-only)",
+    "- ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref> from the Refs section for one drill-down), or `bb plugin rpc call delivery-dashboard ci --input-file <json>`.",
+    `- gh run view <runId> --repo ${repository} --log-failed`, `- gh run view <runId> --repo ${repository} --json jobs`, `- gh api repos/${repository}/actions/jobs/<jobId>/logs`,
+    "", "## Your task",
+    "Classify the root cause: infrastructure, flaky test, real failure, or tool/network. Give the evidence, propose the fix and say who should act. Find the root cause and report back.",
+    "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks.",
+  ].join("\n");
+  const { body } = fitSections(context, PROMPT_CAP - head.length - tail.length - 1);
   return [head, body, tail].join("\n");
 }

@@ -10,7 +10,7 @@ export const repositorySchema = z.string().max(200).regex(
 );
 const seriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable() }));
 /** A history chart series; `parts` splits `value` into components charted side by side (e.g. additions and deletions). */
-const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional() }));
+const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional(), count: z.number().int().nonnegative().optional() }));
 const metricSchema = z.object({
   value: z.number().nonnegative().nullable(),
   detail: z.string(),
@@ -44,6 +44,11 @@ export const metricsSchema = z.object({
     workflows: z.array(z.object({
       id: z.number().int().positive(), name: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
       durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      /** The same series per event (main event first); optional so stored snapshots still parse. */
+      events: z.array(z.object({
+        event: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
+        durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      })).optional(),
     })),
   }).partial().optional(),
   ciOutcomes: z.record(z.string(), z.number().int().nonnegative()).nullable(),
@@ -143,13 +148,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
   const historyStart = Date.parse(historyRange.since), historyEnd = Date.parse(historyRange.until);
   const calendarDay = range.label === "today";
   const days = calendarDay ? 1 : Math.max(1, end - cutoff) / 86_400_000;
-  const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - cutoff) / range.bucketMs);
+  // Buckets that tile a day (or are whole days) start at UTC midnight, so a "6 Nov" bar is that calendar day; the first and last may be partial.
+  const anchor = (range.bucketMs <= day ? day % range.bucketMs : range.bucketMs % day) === 0 ? cutoff - (cutoff - Math.floor(cutoff / day) * day) % range.bucketMs : cutoff;
+  const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - anchor) / range.bucketMs);
   const emptySeries = () => Array.from({ length: bucketCount }, (_, i) => ({
-    date: new Date(calendarDay ? cutoff + (i + 1) * range.bucketMs : Math.min(end, cutoff + (i + 1) * range.bucketMs)).toISOString(), value: 0,
+    date: new Date(calendarDay ? cutoff + (i + 1) * range.bucketMs : Math.min(end, anchor + (i + 1) * range.bucketMs)).toISOString(), value: 0,
   }));
   const bucket = (timestamp: string) => {
     const time = Date.parse(timestamp);
-    return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - cutoff) / range.bucketMs));
+    return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - anchor) / range.bucketMs));
   };
   const request: GitHubRequest = options.request ?? ((path, init) => githubRequest(path, token, signal, init));
   const deploymentPages = new Map<number, ReturnType<typeof request>>();

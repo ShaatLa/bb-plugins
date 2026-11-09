@@ -4,11 +4,12 @@ import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { register } from "./server.js";
+import { register, formatNotification } from "./server.js";
 import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
 import { stateSchema } from "./schemas.js";
-import { renderResult } from "./cli.js";
+import { registerCli, renderResult } from "./cli.js";
+import type { Invoke } from "./server.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -72,11 +73,11 @@ it("serializes concurrent idempotent requests, persists and restores after a liv
 });
 it("archives release leases, cancel queues, and grant/warning notifications wake threads", async () => {
   const h = await setup(); const lease = await h.grant();
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "auto", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots gate") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "queue-if-active", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots wrapper") })] }));
   h.advance(1200000);
   // The service heartbeats active holders only; idle holders get the warning.
   const service = h.harness.behavior.runService("sampler");
-  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat to keep it") })] })));
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("bb slots heartbeat` to keep it") })], mode: "auto" })));
   service.controller.abort(); await service.done;
   const event = await h.harness.behavior.emitThreadEvent("thread.archived", { thread: h.threads.get("a")! });
   expect(event.errors).toEqual([]); expect((await h.view()).pools[0].leases).toEqual([]);
@@ -120,10 +121,25 @@ it("reads retained JSONL with inclusive bounds and removes old daily files", asy
   expect((await h.invoke("log", { since: Date.parse("2026-11-08T12:00:00Z") }))).toMatchObject({ ok: true, data: { events: [] } });
   await expect(readFile(join(h.path, "2026-10-01.jsonl"))).rejects.toThrow();
 });
-it("CLI timeout withdraws queued request and remote-free status stays bounded", async () => {
+it("CLI timeout keeps queued request and remote-free status stays bounded", async () => {
   const h = await setup();
   const result = await h.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms", "--json"], { threadId: "a" });
-  expect(result.exitCode).toBe(1); expect((await h.view()).pools[0].queue).toHaveLength(0);
+  expect(result.exitCode).toBe(75); const queue = (await h.view()).pools[0].queue; expect(queue).toHaveLength(1);
+  const retry = await h.request();
+  expect(retry).toMatchObject({ ok: true, data: { kind: "queued", request: { id: queue[0].id, createdAt: queue[0].createdAt } } });
+});
+it("resolves a grant at the wait deadline and withdraws on abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const lease = { id: "lease-2", requestId: "req-1", pool: "heavy", slotIndex: 0, holderThreadId: "a", job: "tests", expiresAt: 10000 };
+  const invoke = vi.fn(async (method: string) => method === "request" ? { ok: true, data: { kind: "queued", request: { id: "req-1" } } } :
+    method === "status" ? { ok: true, data: { pools: [{ leases: [lease], queue: [] }] } } : { ok: true, data: {} });
+  registerCli(host.bb, invoke as Invoke);
+  const args = ["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1ms"];
+  expect((await host.harness.behavior.runCli(args, { threadId: "a" })).exitCode).toBe(0);
+  const controller = new AbortController(); controller.abort();
+  expect((await host.harness.behavior.runCli(args, { threadId: "a", signal: controller.signal })).exitCode).toBe(1);
+  expect(invoke).toHaveBeenCalledWith("release", { threadId: "a", leaseId: "req-1" });
+  await host.harness.lifecycle.dispose();
 });
 it("uses public SDK imports only", () => {
   const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge|@testing-library\/react)$/] });
@@ -231,7 +247,7 @@ it("observer CLI and tool show, self, hand over, filter and clear through settin
   const handover = await h.harness.behavior.runCli(["observer", "--thread", "b", "--json"]);
   expect(handover.exitCode).toBe(0);
   expect(h.send).toHaveBeenCalledTimes(2);
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("You are now the Machine Slots observer; you will receive: warn, expire") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "b", input: [expect.objectContaining({ text: expect.stringContaining("Events: warn, expire") })] }));
   expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", input: [expect.objectContaining({ text: expect.stringContaining("Observer handed over to Title b") })] }));
   expect((await h.harness.behavior.runCli(["observer"])).stdout).toContain("b · Title b");
   expect(JSON.parse(await h.harness.behavior.callAgentTool("slots_observer", { self: true }, { threadId: "a" }) as string)).toMatchObject({ ok: true, data: { threadId: "a" } });
@@ -401,4 +417,121 @@ it("keeps observer and explicit overrides from an existing config file on restar
   const replacement = await h.harness.lifecycle.reload(async bb => { ({ invoke } = await register(bb, h.runtime)); });
   cleanups.push(() => replacement.harness.lifecycle.dispose());
   expect(await invoke("settingsRead", {})).toMatchObject({ ok: true, data: { values: { observerThreadId: "b", heavyCapacity: 2 }, setKeys: expect.arrayContaining(["heavyCapacity", "observerThreadId"]) } });
+});
+
+it("exposes acquire, use heartbeat and done through CLI and RPC", async () => {
+  const h = await setup();
+  const queued = await h.harness.behavior.runCli(["acquire", "--pool", "heavy", "--job", "test", "--est", "1m", "--timeout", "1ms"], { threadId: "a" });
+  expect(queued.exitCode).toBe(75);
+  expect((await h.view()).pools[0].queue[0].graceUntil).not.toBeNull();
+  const acquired = await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  if (!acquired.ok) throw new Error(acquired.error.message);
+  const useId = (acquired.data as { useId: string }).useId;
+  expect((await h.harness.behavior.runCli(["heartbeat", "--use", useId], { threadId: "b" })).exitCode).toBe(2);
+  expect((await h.harness.behavior.runCli(["heartbeat", "--use", useId], { threadId: "a" })).exitCode).toBe(0);
+  expect((await h.harness.behavior.runCli(["done", useId], { threadId: "a" })).exitCode).toBe(0);
+  expect((await h.view()).pools[0].queue).toHaveLength(0);
+});
+
+
+it("loads 0.3 state and restores active uses", async () => {
+  const h = await setup(); await h.request();
+  const old = JSON.parse(await readFile(join(h.path, "state.json"), "utf8"));
+  expect(stateSchema.parse(old).requests[0]).toMatchObject({ uses: [], autoRelease: false, graceUntil: null });
+  await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  const restored = await setup(h.path);
+  expect((await restored.view()).pools[0].queue[0].uses).toHaveLength(1);
+});
+
+it("acquire resolves a grant at its deadline and cleans up on abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const lease = { id: "lease-2", requestId: "req-1" };
+  const invoke = vi.fn(async (method: string) => {
+    if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1" }, useId: "use-3" } };
+    if (method === "status") return { ok: true, data: { hostSettings: { other: { heartbeatIntervalMs: 120000 }, local: { heartbeatIntervalMs: 600000 } } } };
+    if (method === "heartbeatUse") return { ok: true, data: { kind: "queued", useId: "use-3" } };
+    if (method === "detach") return { ok: true, data: { kind: "leased", lease, useId: "use-3" } };
+    return { ok: true, data: null };
+  });
+  registerCli(host.bb, invoke as Invoke);
+  const args = ["acquire", "--pool", "heavy", "--job", "tests", "--est", "1m", "--timeout", "1ms"];
+  const granted = await host.harness.behavior.runCli(args, { threadId: "a" });
+  expect(granted).toMatchObject({ exitCode: 0, stdout: "use use-3 lease lease-2 renew 200" });
+  const controller = new AbortController(); controller.abort();
+  expect((await host.harness.behavior.runCli(args, { threadId: "a", signal: controller.signal })).exitCode).toBe(1);
+  expect(invoke).toHaveBeenCalledWith("done", { threadId: "a", useId: "use-3" });
+  await host.harness.lifecycle.dispose();
+});
+it("withdraws a lease granted concurrently with a request wait abort", async () => {
+  const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
+  const invoke = vi.fn(async (method: string, params: unknown) => {
+    if (method === "request") return { ok: true, data: { kind: "queued", request: { id: "req-1" } } };
+    if (method === "status") return { ok: true, data: { pools: [{ leases: [{ id: "lease-2", requestId: "req-1" }], queue: [] }] } };
+    if (method === "release" && (params as { leaseId: string }).leaseId === "req-1") return { ok: false, error: { code: "not-found", message: "gone" } };
+    return { ok: true, data: {} };
+  });
+  registerCli(host.bb, invoke as Invoke);
+  const controller = new AbortController(); controller.abort();
+  await host.harness.behavior.runCli(["request", "--pool", "heavy", "--job", "tests", "--est", "1m", "--wait", "--timeout", "1m"], { threadId: "a", signal: controller.signal });
+  expect(invoke).toHaveBeenCalledWith("release", { threadId: "a", leaseId: "lease-2" });
+  await host.harness.lifecycle.dispose();
+});
+it("expires a restored use even when its thread remains active", async () => {
+  const h = await setup();
+  await h.invoke("acquire", { hostId: "local", pool: "heavy", threadId: "a", job: "test", estMs: 60000 });
+  await h.invoke("gate", { hostId: "local", threadId: "a" }); h.advance(15000); await h.invoke("gate", { hostId: "local", threadId: "a" });
+  const next = await setup(h.path); next.advance(610000);
+  const service = next.harness.behavior.runService("sampler");
+  await vi.waitFor(async () => expect((await next.view()).pools[0].leases).toHaveLength(0));
+  service.controller.abort(); await service.done;
+});
+it("prints the wrapper through the CLI", async () => {
+  const h = await setup();
+  const result = await h.harness.behavior.runCli(["wrapper"], { threadId: "a" });
+  expect(result.exitCode).toBe(0); expect(result.stdout).toContain('bb slots acquire');
+});
+
+it("validates watch settings, machine defaults/clamp, and preserves explicit 0.3.x observer filters", async () => {
+  const h = await setup(undefined, { cores: 2, totalMemory: 8 * 1024 ** 3 }, { observerEvents: "warn,expire", watchCores: 8 });
+  expect((await h.view()).hostSettings.local).toMatchObject({ watchPolicy: "warn", watchCores: 2, watchWindowSeconds: 120, idleLeaseMinutes: 30, observerEvents: ["warn", "expire"] });
+  const invalid: Record<string, string | number>[] = [{watchPolicy:"pause"},{watchCores:0},{watchCores:3},{watchWindowSeconds:59},{watchWindowSeconds:901},{idleLeaseMinutes:9},{idleLeaseMinutes:241}];
+  for (const values of invalid) await expect(h.configure(values)).rejects.toThrow();
+  await h.configure({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
+  expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8")).values).toMatchObject({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
+  expect((await h.invoke("config", {operation:"unset",key:"watchCores"}))).toMatchObject({ok:true,data:{values:{watchCores:1}}});
+  expect((await h.harness.behavior.runCli(["status","--json"])).stdout).toContain('"average10m"');
+});
+it("restores 0.3.x leases/config without watch fields and keeps the original config file", async () => {
+  const h=await setup(); await h.grant(); await h.configure({observerEvents:"warn"});
+  const config=await readFile(join(h.path,"config.json"),"utf8");
+  const saved=JSON.parse(await readFile(join(h.path,"state.json"),"utf8"));
+  for(const host of Object.values(saved.hosts) as any[]) delete host.watch;
+  for(const lease of saved.leases) {delete lease.idle;delete lease.holdingSince;}
+  await writeFile(join(h.path,"state.json"),JSON.stringify(saved));
+  const restored=await setup(h.path);
+  expect((await restored.view()).pools[0].leases).toHaveLength(1);
+  expect((await restored.view()).hostSettings.local).toMatchObject({watchPolicy:"warn",watchCores:3,observerEvents:["warn"]});
+  expect(await readFile(join(h.path,"config.json"),"utf8")).toBe(config);
+});
+it("a hung watcher SDK read leaves gate operations and sampler ticks independent", async () => {
+  const h=await setup(); await h.view();
+  h.harness.sdk.stub("threads.list", ()=>new Promise(()=>{}));
+  const watcher=h.harness.behavior.runService("watcher");
+  const sampler=h.harness.behavior.runService("sampler");
+  const gate=await h.invoke("gate",{threadId:"a",hostId:"local"}); expect(gate.ok).toBe(true);
+  await vi.waitFor(()=>expect(h.metrics).toHaveBeenCalled());
+  watcher.controller.abort(); sampler.controller.abort(); await Promise.all([watcher.done,sampler.done]);
+});
+it("watcher initialization errors leave the loop running for recovery", async () => {
+  const h=await setup(); let calls=0;
+  h.harness.sdk.stub("system.config",async()=>{if(calls++===0) throw new Error("temporary config failure"); return {primaryHostId:"local"};});
+  const service=h.harness.behavior.runService("watcher");
+  await vi.waitFor(()=>expect(h.harness.logEntries.some(e=>e.message.includes("temporary config failure"))).toBe(true));
+  expect((await h.invoke("gate",{threadId:"a",hostId:"local"})).ok).toBe(true);
+  service.controller.abort(); await service.done;
+});
+
+it("formats structured notifications as short readable Markdown", () => {
+  expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("**Machine Slots** · `Idle heavy slot`\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
+  expect(formatNotification({ title: "Slot granted", lines: [] })).not.toContain("[Slots]");
 });
