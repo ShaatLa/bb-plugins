@@ -159,13 +159,23 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   useEffect(() => { if (!selected) { setContext(null); return; } let active = true; const read = () => { void sdk.threads.context({ threadId: selected }).then(value => { if (active) setContext(value); }).catch(() => { if (active) setContext(null); }); }; read(); const timer = working ? setInterval(read, 30000) : undefined; return () => { active = false; clearInterval(timer); }; }, [sdk, selected, loaded, working]);
   async function queueAction(action: () => Promise<unknown>) { try { await action(); setQueueVersion(n => n + 1); refresh(); } catch (e) { setQueueError(errorText(e)); } }
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
-  const editHold = useRef<{ threadId: string; queuedMessageId: string } | null>(null);
+  const editHold = useRef<{ threadId: string; queuedMessageId: string } | null>(null), editLease = useRef(120000);
   const releaseEditHold = async () => { const target = editHold.current; editHold.current = null; if (target) await sdk.threads.queuedMessages.experimental_releaseEditHold(target); };
   useEffect(() => { setQueueEdit(null); return () => { void releaseEditHold(); }; }, [selected]);
+  // bb's edit hold is a lease (2 min); bb's own editor renews it every quarter lease, so a long edit never dispatches mid-way.
+  useEffect(() => {
+    const target = editHold.current; if (!queueEdit || !target) return;
+    const timer = setInterval(() => void sdk.threads.queuedMessages.experimental_holdForEdit(target).catch(e => {
+      // Gone (404) or already being sent (409): the edit cannot be saved, so close it like bb does; other failures retry on the next tick.
+      const status = (e as { status?: number }).status;
+      if ((status === 404 || status === 409) && editHold.current === target) { editHold.current = null; setQueueEdit(null); setQueueError(errorText(e)); }
+    }), editLease.current / 4);
+    return () => clearInterval(timer);
+  }, [queueEdit?.id]);
   const queueText = (row: typeof queue[number]) => row.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
   const queueFiles = (row: typeof queue[number]): Attachment[] => row.content.flatMap(part => part.type === 'localImage' ? [{ type: 'localImage', path: part.path, name: part.path.split('/').at(-1) || 'Image', ...(part.sourceProjectId ? { sourceProjectId: part.sourceProjectId } : {}) }] as Attachment[] : part.type === 'localFile' ? [{ type: 'localFile', path: part.path, name: part.name || part.path.split('/').at(-1) || 'File', ...(part.mimeType ? { mimeType: part.mimeType } : {}), ...(part.sizeBytes ? { sizeBytes: part.sizeBytes } : {}), ...(part.sourceProjectId ? { sourceProjectId: part.sourceProjectId } : {}) }] as Attachment[] : []);
   // bb holds a queued row while it is edited so it cannot dispatch mid-edit; every exit path releases the hold.
-  async function startQueueEdit(row: typeof queue[number]) { try { const target = { threadId: row.threadId, queuedMessageId: row.id }; await sdk.threads.queuedMessages.experimental_holdForEdit(target); editHold.current = target; setQueueEdit({ id: row.id, text: queueText(row), files: queueFiles(row), model: row.model, reasoningLevel: row.reasoningLevel as QueueEdit['reasoningLevel'], serviceTier: row.serviceTier as QueueEdit['serviceTier'], permissionMode: row.permissionMode }); } catch (e) { setQueueError(errorText(e)); } }
+  async function startQueueEdit(row: typeof queue[number]) { try { const target = { threadId: row.threadId, queuedMessageId: row.id }; const { leaseMs } = await sdk.threads.queuedMessages.experimental_holdForEdit(target); if (leaseMs > 0) editLease.current = leaseMs; editHold.current = target; setQueueEdit({ id: row.id, text: queueText(row), files: queueFiles(row), model: row.model, reasoningLevel: row.reasoningLevel as QueueEdit['reasoningLevel'], serviceTier: row.serviceTier as QueueEdit['serviceTier'], permissionMode: row.permissionMode }); } catch (e) { setQueueError(errorText(e)); } }
   async function finishQueueEdit(row: typeof queue[number], save: boolean) {
     const target = { threadId: row.threadId, queuedMessageId: row.id }, text = queueEdit?.text ?? '', files = queueEdit?.files ?? [];
     setQueueEdit(null);

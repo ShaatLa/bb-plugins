@@ -191,6 +191,14 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
+it('renews the edit hold lease while the queued message is being edited', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };
+  const hold = vi.fn(() => Promise.resolve({ leaseMs:200 }));
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit:hold, experimental_releaseEditHold: () => Promise.resolve({}) } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Edit queued message 1' }));
+  await slot.findByRole('textbox', { name:'Edit queued message' });
+  await waitFor(() => expect(hold.mock.calls.length).toBeGreaterThanOrEqual(3));
+});
 it('edits queued text and attachments through the composer, holding it while edited', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }, { type:'localFile', path:'/old', name:'old.txt' }], model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', updatedAt:7 };
   const hold = vi.fn(() => Promise.resolve({})), update = vi.fn(() => Promise.resolve({})), release = vi.fn(() => Promise.resolve({}));
