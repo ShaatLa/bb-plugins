@@ -16,6 +16,7 @@ type Props = {
   projectId: string | null | undefined;
   onSend: (options?: SendOptions) => void; sendDisabled?: boolean; pending?: boolean;
   actions?: ReactNode; autoFocus?: boolean; placeholder?: string;
+  onBlur?: () => void;
   // The Inbox composer keeps edits made during a send; other boxes clear on success, so they lock while sending.
   editableWhilePending?: boolean;
   sendLabel?: string; header?: ReactNode; className?: string;
@@ -23,7 +24,7 @@ type Props = {
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
   const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
@@ -80,7 +81,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
       <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
       <VoiceInputTextarea ref={editor} aria-label={label} rows={1} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className={`block w-full resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground ${tall ? '' : 'pr-10'}`} value={value} disabled={pending && !editableWhilePending}
-        onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive}
+        onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive} onBlur={onBlur}
         onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
         onKeyDown={event => { if (event.key === 'Escape' && editMode) { event.preventDefault(); onCancel?.(); } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>

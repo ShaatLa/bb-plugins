@@ -225,7 +225,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     poolUpdate(raw:z.infer<typeof inputs.poolUpdate>) {
       const p=inputs.poolUpdate.parse(raw);
-      if (!db.prepare('UPDATE pool_entries SET note=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(p.note,Date.now(),p.id,p.revision).changes) throw new Error('Pool entry changed or removed — refresh before editing');
+      if (!db.prepare('UPDATE pool_entries SET note=?,attachments=COALESCE(?,attachments),revision=revision+1,updated_at=? WHERE id=? AND revision=?').run(p.note,p.attachments ? JSON.stringify(p.attachments) : null,Date.now(),p.id,p.revision).changes) throw new Error('Pool entry changed or removed — refresh before editing');
       invalidatePools(); return {revision:p.revision+1};
     },
     poolRemove(raw:z.infer<typeof inputs.poolRemove>) {

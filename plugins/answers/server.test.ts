@@ -504,3 +504,14 @@ it('sends only selected pool IDs and keeps other entries', async () => {
   expect((send.mock.calls[0] as any[])[0].input[0].text).toBe('> first\n\none');
   expect((await call('pools', {})).pools[0].entries.map((entry: any) => entry.id)).toEqual([second.id]);
 });
+it('updates pool attachments with revision checks and forwards steer', async () => {
+  const { harness, send } = setup();
+  const call = (name: string, input: object) => harness.behavior.callRpc(name, input) as Promise<any>;
+  const { id } = await call('poolAdd', { threadId: 't', quote: '', note: 'Ready' });
+  const attachments = [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }];
+  await call('poolUpdate', { id, note: 'Ready', attachments, revision: 0 });
+  await expect(call('poolUpdate', { id, note: 'Stale', attachments: [], revision: 0 })).rejects.toThrow('changed');
+  expect((await call('pools', {})).pools[0].entries[0].attachments).toEqual(attachments);
+  await call('poolSend', { threadId: 't', ids: [id], send: { mode: 'steer' } });
+  expect((send.mock.calls[0] as any[])[0]).toMatchObject({ mode: 'steer-if-active', input: [{ type: 'text' }, { type: 'localFile', path: 'file.txt' }] });
+});

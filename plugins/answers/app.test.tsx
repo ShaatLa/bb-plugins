@@ -251,7 +251,7 @@ it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure
   const note = await slot.findByRole('textbox', { name: 'Pool note' });
   fireEvent.change(note, { target: { value: 'Dirty note' } });
   fireEvent.click(slot.getByRole('button', { name: 'Send all' }));
-  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Dirty note', revision: 0 }));
+  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Dirty note', attachments: [], revision: 0 }));
   expect(poolSend).not.toHaveBeenCalled();
   expect((slot.getByRole('button', { name: 'Sending…' }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => { if (failure) reject(new Error('stale revision')); else resolve({ revision: 1 }); });
@@ -452,6 +452,29 @@ it('pool note Enter sends its entry after saving; Shift+Enter does not', async (
   expect(poolSend).not.toHaveBeenCalled();
   fireEvent.change(first!, { target: { value: 'Dirty' } });
   fireEvent.keyDown(first!, { key: 'Enter' });
-  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'one', note: 'Dirty', revision: 0 }));
+  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'one', note: 'Dirty', attachments: [], revision: 0 }));
   await waitFor(() => expect(poolSend).toHaveBeenCalledWith({ threadId: item.threadId, ids: ['one'] }));
+});
+it('passes per-entry steer and removes through composer actions', async () => {
+  const { Pools } = await import('./inbox');
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: 'Quote', quoteSeq: 20, itemId: item.id, note: 'Ready', attachments: [], revision: 0, createdAt: 1, updatedAt: 1 };
+  const poolSend = vi.fn(() => ({ delivery: 'sent', sent: 1, keptEdited: 0 }));
+  const poolRemove = vi.fn(() => ({ ok: true }));
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: 'pr_one', entries: [entry] }] }), poolSend, poolRemove } });
+  await slot.findByRole('textbox', { name: 'Pool note' });
+  fireEvent.click(slot.getAllByRole('button', { name: 'More send options' })[0]!);
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Steer' }));
+  await waitFor(() => expect(poolSend).toHaveBeenCalledWith({ threadId: item.threadId, ids: ['pool_one'], send: { mode: 'steer' } }));
+  fireEvent.click(slot.getByRole('button', { name: 'Remove' }));
+  await waitFor(() => expect(poolRemove).toHaveBeenCalledWith({ id: 'pool_one' }));
+});
+it('persists attachments added to a pool entry', async () => {
+  const { Pools } = await import('./inbox');
+  const entry = { id: 'pool_one', threadId: item.threadId, quote: '', quoteSeq: null, itemId: null, note: 'Ready', attachments: [], revision: 0, createdAt: 1, updatedAt: 1 };
+  const poolUpdate = vi.fn(() => ({ revision: 1 }));
+  const upload = vi.fn(async () => ({ type: 'localFile', path: 'file.txt', name: 'file.txt' }));
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: 'pr_one', entries: [entry] }] }), poolUpdate }, sdk: { projects: { attachments: { upload } } } } as any);
+  await slot.findByRole('textbox', { name: 'Pool note' });
+  fireEvent.change(slot.container.querySelector('input[type="file"]')!, { target: { files: [new File(['data'], 'file.txt', { type: 'text/plain' })] } });
+  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Ready', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }], revision: 0 }), { timeout: 2000 });
 });
