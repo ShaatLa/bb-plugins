@@ -17,3 +17,11 @@ it('blocks keyboard and send controls while voice input is active', () => {
   fireEvent.click(slot.getByRole('button', { name:'Stop voice' })); fireEvent.keyDown(editor, { key:'Enter' });
   expect(onSend).toHaveBeenCalledOnce();
 });
+it('starts as one row and opens for a second line or attachments', () => {
+  const view = (value: string, attachments: any[] = []) => renderSlot({ component: () => <Composer label="Reply" value={value} onChange={() => {}} attachments={attachments} onAttachments={() => {}} projectId="p" onSend={() => {}} /> }, {});
+  const open = (slot: ReturnType<typeof view>) => slot.getByRole('button', { name:'Attach files' }).className.includes('row-start-2');
+  expect(open(view(''))).toBe(false); cleanup();
+  expect(open(view('one line'))).toBe(false); cleanup();
+  expect(open(view('two\nlines'))).toBe(true); cleanup();
+  expect(open(view('', [{ type:'localFile', path:'/a', name:'a.txt' }]))).toBe(true);
+});
