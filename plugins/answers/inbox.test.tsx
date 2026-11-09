@@ -21,6 +21,11 @@ it('shows a renamed thread at once from bb\'s live sidebar title', async () => {
   expect(await recipients.findByText('Renamed')).toBeTruthy();
   expect(recipients.queryByText('One')).toBeNull();
 });
+it('badges a contact avatar with its thread\'s agent provider', async () => {
+  const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const { recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'Renamed', providerId:'codex' }], projects:[] } });
+  expect(await recipients.findByTitle('codex')).toBeTruthy();
+});
 it('mutes read rows, shows the caught-up line, and previews failures', async () => {
   const { slot, recipients } = setup({ recipients:[{ ...one, unread:0, preview:'Turn failed: Question one' }] });
   expect(await recipients.findByText('Turn failed: Question one')).toBeTruthy();
