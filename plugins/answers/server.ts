@@ -7,6 +7,7 @@ import { cap, QUESTION_SQL, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
+import { inlineCommentPreview } from './inline-comments';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask to ask the user a question, including decisions that block your work; end the turn after asking; the reply arrives as a user message quoting it. Decisions about a specific Work Board task belong on that task. Options: 1–6 unique, ≤200 chars, optional recommended + reason.";
 const toolInputs = {
@@ -176,7 +177,7 @@ export default function plugin(bb: BbPluginApi) {
       const p=inputs.createTask.parse(raw),item=get(p.id);
       const outputSchema=z.discriminatedUnion('ok',[z.object({ok:z.literal(true),task:z.object({key:z.string().min(1)})}),z.object({ok:z.literal(false),error:z.object({message:z.string()})})]);
       const path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
-      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(item.question.split('\n').find((line:string)=>line.trim()) ?? item.question).trim().slice(0,120),description:[item.question,item.answer,`[Open thread](${path})`].filter(Boolean).join('\n\n'),requesterThreadId:item.thread_id},outputSchema}));
+      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(inlineCommentPreview(item.question).split('\n').find((line:string)=>line.trim()) ?? '').trim().slice(0,120),description:[item.question,item.answer,`[Open thread](${path})`].filter(Boolean).join('\n\n'),requesterThreadId:item.thread_id},outputSchema}));
       if (!result.ok) throw new Error(result.error.message);
       commit('UPDATE items SET task_key=? WHERE id=?',result.task.key,p.id); return {key:result.task.key};
     },
@@ -197,11 +198,11 @@ export default function plugin(bb: BbPluginApi) {
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
       const projects=rows.length ? await bb.sdk.projects.list() : [];
-      const previews=rows.map(r=>(r.preview ?? '').slice(0,1000) as string);
+      const previews=rows.map(r=>(r.preview ?? '') as string);
       const mentioned=[...new Set(previews.flatMap(text=>[...text.matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threads.some(t=>t.id===id)).slice(0,200);
       if (mentioned.length) threads.push(...await bb.sdk.threads.list({threadIds:mentioned,includeHidden:true,limit:200}));
       const plain=(text:string)=>text.replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threads.find(t=>t.id===id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'');
-      return {recipients:rows.map(r=>{const t=threads.find(t=>t.id===r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(previews[rows.indexOf(r)]!).slice(0,160)};})};
+      return {recipients:rows.map(r=>{const t=threads.find(t=>t.id===r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projects.find(p=>p.id===projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(previews[rows.indexOf(r)]!)).slice(0,160)};})};
     },
     markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw); return markRead({all:true,threadId:p.threadId});},
     async pools(raw:z.infer<typeof inputs.pools>) {

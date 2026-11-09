@@ -159,6 +159,14 @@ describe('reply pools and inbox',()=>{
   await harness.behavior.emitThreadEvent('thread.unarchived',{thread:makeThreadResponse({id:'a'})});
   expect(await call('counts')).toMatchObject({unread:1,inbox:2});
  });
+ it('uses inline comments in recipient previews and task titles',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a');
+  db.prepare("UPDATE items SET question=? WHERE id='ans_a'").run('@short\nContext for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> Quoted passage\n\nTheir comment on it: My comment');
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].preview).toBe('My comment');
+  let title=''; harness.sdk.stub('plugins.callRpc',async(args:any)=>{title=args.input.title;return {ok:true,task:{key:'TASK-1'}};});
+  await harness.behavior.callRpc('createTask',{id:'ans_a',projectId:'p'});
+  expect(title).toBe('My comment');
+ });
  it('shows thread titles and link text in recipient previews',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a');
   db.prepare("UPDATE items SET status='answered',answer=? WHERE id='ans_a'").run('Sent **@thread:thr_mgr#msg=3** see [ANV-5](/plugins/work-board/work-board/task/ANV-5) and `x`');
