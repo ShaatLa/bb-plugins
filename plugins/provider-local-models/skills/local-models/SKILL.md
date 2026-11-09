@@ -3,14 +3,9 @@ name: local-models
 description: Pick, query and dispatch tasks to local llama.cpp models.
 ---
 Run `bb local-models status --json` for installed model ids, load state, context
-size and known reasoning levels. For coding tasks, Muse Glimmer 30B and
-Qwen3.6-35B-A3B are the most reliable: Muse followed specs most completely and did
-git worktree work cleanly; Qwen3.6 is fastest on small edits but may ignore exact
-paths. LFM2.5-24B-A2B is fast and fine with git but skips spec details. Flint may
-wander outside the workspace on loosely specified tasks. Dense Qwen3.8-27B is many
-times slower with no better results. The router keeps one model
-loaded: switching costs about 10 seconds for LFM and minutes for dense models.
-Run one thread at a time on this single GPU.
+size and known reasoning levels. The router usually keeps one model loaded:
+switching costs seconds for small MoE models and minutes for large dense ones.
+On a single GPU, run one local thread at a time.
 
 Dispatch with `bb thread spawn --provider local-models --model <id>
 --permission-mode full --parent-self …`. Use full because BB automatically
