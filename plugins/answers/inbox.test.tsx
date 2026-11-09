@@ -220,6 +220,18 @@ it('mounts pending questions above the hidden composer like bb', async () => {
   expect(card.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(composer.parentElement?.hidden).toBe(true);
   expect(card.className).toContain('bg-surface-recessed');
+  expect(card.closest('[data-promptbox-shell]')).toBeTruthy();
+});
+it('shows a child interaction in the parent stack and opens its question inline', async () => {
+  const parent = { id:'thr_one', title:'Parent', displayTitle:'Parent', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const child = { ...parent, id:'thr_child', title:'Child task', displayTitle:'Child task', parentThreadId:'thr_one', hasPendingInteraction:true };
+  const question = { id:'i_child', threadId:'thr_child', status:'pending', payload:{ kind:'user_question', questions:[{ id:'q1', prompt:'Allow Codex to use bb?', shortLabel:'Choice', required:true, multiSelect:false, allowFreeText:false, options:[{ value:'a', label:'Yes' }] }] } };
+  const { slot, recipients } = setup({ sidebarThreads:{ threads:[parent, child], projects:[] }, interactions:{ list: ({ threadId }: { threadId: string }) => Promise.resolve(threadId === 'thr_child' ? [question] : []) } }); fireEvent.click(await recipients.findByRole('option'));
+  const row = await slot.findByRole('button', { name:/Child task: Allow Codex to use bb\?/ });
+  expect(row.closest('[data-promptbox-shell]')).toBeTruthy();
+  fireEvent.click(row);
+  expect(await slot.findByText('Open child thread')).toBeTruthy();
+  expect((await slot.findAllByText('Allow Codex to use bb?')).length).toBeGreaterThan(0);
 });
 it('renews the edit hold lease while the queued message is being edited', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };

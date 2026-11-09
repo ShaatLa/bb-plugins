@@ -7,7 +7,7 @@ type Question = Extract<Row['payload'], { kind: 'user_question' }>['questions'][
 type Answer = { selected: string[]; freeText?: string };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function PendingInteractions({ threadId, projectId, pending, status }: { threadId: string; projectId?: string | null; pending: boolean; status?: string }) {
+export function PendingInteractions({ threadId, projectId, pending, status, stacked = false }: { threadId: string; projectId?: string | null; pending: boolean; status?: string; stacked?: boolean }) {
   const sdk = useSdk(), { refresh } = experimental_useRpcRefresh();
   const [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [version, setVersion] = useState(0);
   useEffect(() => {
@@ -22,18 +22,18 @@ export function PendingInteractions({ threadId, projectId, pending, status }: { 
     catch (e) { setError(errorText(e)); }
   }
   if (!pending && !error) return null;
-  return <div className="mb-2 space-y-2">{rows.map(row => {
+  return <div className={stacked ? 'space-y-2' : 'mb-2 space-y-2'}>{rows.map(row => {
     const payload = row.payload;
-    if (payload.kind === 'user_question') return <QuestionCard key={row.id} questions={payload.questions} onSubmit={answers => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: { kind: 'user_answer', answers } }))} onCancel={() => act(row, () => sdk.threads.stop({ threadId }))} />;
+    if (payload.kind === 'user_question') return <QuestionCard key={row.id} stacked={stacked} questions={payload.questions} onSubmit={answers => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: { kind: 'user_answer', answers } }))} onCancel={() => act(row, () => sdk.threads.stop({ threadId }))} />;
     if (payload.kind === 'approval') return <ApprovalForm key={row.id} row={row as ApprovalRow} onDecide={decision => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: decision === 'deny' ? { decision } : { decision, grantedPermissions: payload.subject.kind === 'permission_grant' ? payload.subject.permissions : (payload.subject.kind === 'command' || payload.subject.kind === 'file_change') && decision === 'allow_for_session' ? payload.subject.sessionGrant : null } }))} />;
     return <div key={row.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><p className="font-medium text-foreground">{payload.title}</p><UrlLink href={`${projectId ? `/projects/${projectId}` : ''}/threads/${threadId}`}>Open in chat to answer</UrlLink></div>;
   })}{error && <p role="alert" className="rounded-md border border-surface-destructive-border bg-surface-destructive px-3 py-2 text-xs text-destructive-text">{error}</p>}</div>;
 }
 
 type Draft = { selected: string[]; other: boolean; text: string };
-function QuestionCard(props: { questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel: () => Promise<void> }) {
+function QuestionCard({ stacked, ...props }: { stacked: boolean; questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel: () => Promise<void> }) {
   const [expanded, setExpanded] = useState(true), label = props.questions.length === 1 ? 'Question' : `${props.questions.length} questions`;
-  return <section data-pending-question-card aria-label={label} data-expanded={expanded || undefined} className="@container mb-2 flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden rounded-lg border border-border bg-surface-recessed text-xs text-muted-foreground"><div className={`flex min-h-9 shrink-0 items-center gap-2 pl-3 pr-1.5 ${expanded ? 'border-b border-border-hairline py-1.5' : 'py-1'}`}><button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-h-7 min-w-0 flex-1 items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span className="min-w-0 text-xs font-medium text-foreground">{label}</span></button><button type="button" aria-label={expanded ? 'Hide details' : 'Show details'} onClick={() => setExpanded(!expanded)} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground"><Icon name="ChevronDown" className={`size-3.5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} aria-hidden /></button></div>{expanded && <div className="min-h-0 max-h-[min(32rem,50dvh)] touch-pan-y overflow-y-auto overscroll-contain px-3 pb-3 pt-2.5"><QuestionForm {...props} /></div>}</section>;
+  return <section data-pending-question-card aria-label={label} data-expanded={expanded || undefined} className={`@container flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-surface-recessed text-xs text-muted-foreground ${stacked ? '' : 'mb-2 rounded-lg border border-border'}`}><div className={`flex min-h-9 shrink-0 items-center gap-2 pl-3 pr-1.5 ${expanded ? 'border-b border-border-hairline py-1.5' : 'py-1'}`}><span aria-hidden className="size-2 shrink-0 rounded-full bg-attention ring-[3px] ring-surface-attention" /><button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-h-7 min-w-0 flex-1 items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span className="min-w-0 text-xs font-medium text-foreground">{label}</span></button><button type="button" aria-label={expanded ? 'Hide details' : 'Show details'} onClick={() => setExpanded(!expanded)} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground"><Icon name="ChevronDown" className={`size-3.5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} aria-hidden /></button></div>{expanded && <div className="min-h-0 max-h-[min(32rem,50dvh)] touch-pan-y overflow-y-auto overscroll-contain px-3 pb-3 pt-2.5"><QuestionForm {...props} /></div>}</section>;
 }
 function QuestionForm({ questions, onSubmit, onCancel }: { questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel: () => Promise<void> }) {
   const host = experimental_useQuestionFormHost();
