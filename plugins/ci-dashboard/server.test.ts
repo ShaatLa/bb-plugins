@@ -1275,7 +1275,8 @@ test("startup removes cache rows that can never be read again and logs the count
     insert("other:ci-metadata-v3", Date.now());
     const reloaded = await harness.lifecycle.reload(plugin);
     expect(reloaded.bb.storage.database().prepare("SELECT cache_key FROM github_responses").all().map((row) => (JSON.parse((row as { cache_key: string }).cache_key) as string[])[0])).toEqual(["other:ci-metadata-v3"]);
-    expect(reloaded.harness.inspection.logEntries).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Purged 2 unreachable cached GitHub responses." })]));
+    // Routine maintenance writes nothing to the log.
+    expect(reloaded.harness.inspection.logEntries.filter((entry) => /Purged|Cache cleanup/.test(entry.message))).toEqual([]);
   } finally { await harness.lifecycle.dispose(); }
 });
 

@@ -183,7 +183,7 @@ The plugin keeps only what the UI or the agent tool can still show; the rest is 
 - Job rows: `skipped` jobs are not stored; rows hold only fields not already in columns. Rows and their attempts are removed after "Days of job history" + 1 day, immediately when a repository is no longer configured, and oldest days first above a hard 64 MB ceiling.
 - Cached GitHub pages, snapshots and run history: removed after 7 days without use, outside the 1-year boundary, for unconfigured repositories, and above a 64 MB cap. Run history deeper than 90 days (the largest preset) is trimmed back to 90 days when no older range was requested for 7 days.
 - Stored incident state: at most 200 open signals (most severe, newest first) and 50 resolved ones from the last 7 days; state of unconfigured repositories is deleted.
-- The log shows one `Storage: total … MB (jobs …, history …, http cache …, snapshots …, free pages …)` line per hour when the total moved by more than 1 MB. The plugin log file itself is managed by BB.
+- The log shows one `Storage: total … MB (jobs …, history …, http cache …, snapshots …, free pages …)` line per hour when the total moved by more than 1 MB. Routine cache cleanup is not logged; failures are. The plugin log file itself is managed by BB (JSONL, rotated at 5 MB).
 
 ## Rename compatibility
 

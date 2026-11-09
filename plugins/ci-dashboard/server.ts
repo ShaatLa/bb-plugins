@@ -118,8 +118,8 @@ export default function plugin(bb: BbPluginApi) {
   database.prepare("UPDATE github_responses SET last_used_at = checked_at WHERE last_used_at = 0").run();
   database.prepare("UPDATE repository_history SET last_used_at = ? WHERE last_used_at = 0").run(Date.now());
   try {
-    const purged = purgeDeadResponses(database);
-    if (purged) bb.log.info(`Purged ${purged} unreachable cached GitHub responses.`);
+    // Routine maintenance stays out of the log; only failures are worth a line.
+    purgeDeadResponses(database);
   } catch { bb.log.warn("Cache purge failed; a later cleanup will retry without interrupting metrics."); }
   const cachedRequest = createGitHubCache(database);
   const repositoryPending = new Map<string, Promise<Metrics>>();
@@ -148,8 +148,7 @@ export default function plugin(bb: BbPluginApi) {
   function clean(compact = false) {
     if (compact) nextCleanup = Date.now() + 3_600_000;
     try {
-      const result = cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0, Date.now() - lastDeepAt >= deepIdleMs ? shallowFloor() : undefined);
-      if (result.removed) bb.log.info(`Cache cleanup removed ${result.removed} entries; ${result.bytes} payload bytes retained.`);
+      cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0, Date.now() - lastDeepAt >= deepIdleMs ? shallowFloor() : undefined);
     } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
   }
   function currentTimings(result: DashboardData) {
