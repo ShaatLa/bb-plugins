@@ -249,6 +249,13 @@ it('reads the thread tab oldest first', async () => {
   await slot.findByText('Newer question');
   const text = slot.getByRole('list', { name: 'Answers' }).textContent!;
   expect(text.indexOf('Older question')).toBeLessThan(text.indexOf('Newer question'));
+  expect(slot.getByText('New').closest('li')!.nextElementSibling!.textContent).toContain('Older question');
+  expect(slot.getAllByLabelText('Unread')).toHaveLength(2);
+  expect(slot.queryByRole('button', { name: 'Reply' })).toBeNull();
+  expect(slot.getByRole('list', { name: 'Answers' }).className).toContain('divide-y');
+  expect(slot.getByRole('list', { name: 'Answers' }).closest('section')!.className).toContain('bg-background');
+  pickView(slot, 'Asked of you');
+  expect(slot.getByRole('button', { name: 'View: Asked of you' })).toBeTruthy();
 });
 it('adds selected chat text to the thread pool and opens My questions', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
