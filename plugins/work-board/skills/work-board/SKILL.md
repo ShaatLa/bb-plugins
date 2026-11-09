@@ -33,7 +33,10 @@ or apply it to member tasks automatically.
 
 Use the ordinary Labels picker in the UI, or `bb work-board label list --project ABC` and
 `bb work-board label create --project ABC --name ongoing` if it does not exist, then
-`bb work-board update ABC-1 --add-label ongoing`. Remove it with `--remove-label ongoing`.
+`bb work-board update ABC-1 --add-label ongoing --no-due`. Remove it with `--remove-label ongoing`.
+The epic Timeframe picker offers No deadline, Due date and Ongoing. Ongoing clears the deadline;
+choosing a date or No deadline removes the ongoing label, preserving other labels. In CLI edits,
+pair `--due YYYY-MM-DD` with `--remove-label ongoing` when making a permanent epic finite.
 For JSON audits, resolve `task.labelIds` against project labels from `label list --json`;
 `show --json` also includes the task's labels. This is an agent convention, not a workflow status
 or a backend restriction on manual edits.
