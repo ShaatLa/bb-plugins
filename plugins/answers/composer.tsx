@@ -1,3 +1,4 @@
+import { RichEditor } from './rich-editor';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { experimental_Icon as Icon, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
@@ -25,7 +26,7 @@ type Props = {
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
-  const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
+  const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -41,10 +42,8 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   const tall = !!editMode || grown || !!header || attachments.length > 0 || uploading > 0 || value.includes('\n');
   useLayoutEffect(() => {
     const node = editor.current; if (!node) return;
-    node.style.height = 'auto';
     const style = getComputedStyle(node), oneLine = parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     if (!value) setGrown(false); else if (node.scrollHeight > oneLine + 2) setGrown(true);
-    node.style.height = `${Math.min(node.scrollHeight, Math.max(96, window.innerHeight * .4))}px`;
   }, [value, tall]);
   // The send group can include extra actions; its width places bb's microphone just left of it in the open layout.
   useLayoutEffect(() => { if (root.current && right.current) root.current.style.setProperty('--right-w', `${right.current.offsetWidth}px`); });
@@ -76,14 +75,11 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       {uploading > 0 && <li role="status" className="flex items-center rounded-lg border border-dashed border-border-seam px-2 py-1 text-xs text-muted-foreground">Uploading {uploading}…</li>}
     </ul>}
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
-    {/* bb draws its microphone in a layer over the textarea's bottom-right ([&>.relative>.absolute]). In one row that is
-        already just left of Send; in the open layout the layer moves down into the action row, left of the send group. */}
+    {/* The host voice control sits beside Send in both grid layouts. */}
     <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
       <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
-      <VoiceInputTextarea ref={editor} aria-label={label} rows={1} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className={`block w-full resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground ${tall ? '' : 'pr-10'}`} value={value} disabled={pending && !editableWhilePending}
-        onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive} onBlur={onBlur}
-        onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
-        onKeyDown={event => { if (event.key === 'Escape' && editMode) { event.preventDefault(); onCancel?.(); } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
+      <RichEditor insertRef={insertText} editorRef={editor} label={label} value={value} onChange={onChange} onSend={() => submit()} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className={`block w-full overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none ${tall ? '' : 'pr-10'}`} />
+      <div className={`absolute bottom-2 right-[calc(var(--right-w)+4px)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
         {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>}

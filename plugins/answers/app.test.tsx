@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
+const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { useComposer } from '@get-bb/plugin-sdk/app';
 import { loadPluginApp, renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
@@ -86,7 +87,7 @@ describe('Answers app', () => {
     const reply = vi.fn(() => new Promise(done => { resolve = done; }));
     const { slot } = await setup({ reply });
     fireEvent.click(slot.getByRole('button', { name: 'Reply' }));
-    fireEvent.change(slot.getByRole('textbox', { name: 'Reply text' }), { target: { value: 'More details please' } });
+    change(slot.getByRole('textbox', { name: 'Reply text' }), { target: { value: 'More details please' } });
     fireEvent.click(slot.getByRole('button', { name: 'Send reply' }));
     await waitFor(() => expect((slot.getByRole('button', { name: 'Send reply' }) as HTMLButtonElement).disabled).toBe(true));
     expect((slot.getByRole('button', { name: 'Reply' }) as HTMLButtonElement).disabled).toBe(true);
@@ -100,10 +101,10 @@ describe('Answers app', () => {
     const { slot } = await setup({ reply });
     fireEvent.click(slot.getByRole('button', { name: 'Reply' }));
     const text = slot.getByRole('textbox', { name: 'Reply text' }) as HTMLTextAreaElement;
-    fireEvent.change(text, { target: { value: 'My reply' } });
+    change(text, { target: { value: 'My reply' } });
     fireEvent.keyDown(text, { key: 'Enter', metaKey: true });
     expect(await slot.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Delivery uncertain'));
-    expect(text.value).toBe('My reply');
+    expect(text.textContent).toBe('My reply');
     expect(reply).toHaveBeenCalledTimes(1);
   });
 });
@@ -205,9 +206,9 @@ it('snapshots a quote draft through focus and refresh; Add to pool opens the poo
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
   const text = slot.getByRole('textbox', { name: 'Quote reply text' }) as HTMLTextAreaElement;
-  fireEvent.focus(text); fireEvent.change(text, { target: { value: 'Snapshot note' } });
+  fireEvent.focus(text); change(text, { target: { value: 'Snapshot note' } });
   await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
-  expect(text.value).toBe('Snapshot note');
+  expect(text.textContent).toBe('Snapshot note');
   fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Add to pool' }) });
   fireEvent.click(slot.getByRole('button', { name: 'Add to pool' }));
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', quoteSeq: 20, note: 'Snapshot note' }));
@@ -249,13 +250,13 @@ it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure
   const { Pools } = await import('./inbox');
   const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: null, entries: [entry] }] }), poolUpdate, poolSend } });
   const note = await slot.findByRole('textbox', { name: 'Pool note' });
-  fireEvent.change(note, { target: { value: 'Dirty note' } });
+  change(note, { target: { value: 'Dirty note' } });
   fireEvent.click(slot.getByRole('button', { name: 'Send all' }));
   await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Dirty note', attachments: [], revision: 0 }));
   expect(poolSend).not.toHaveBeenCalled();
   expect((slot.getByRole('button', { name: 'Sending…' }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => { if (failure) reject(new Error('stale revision')); else resolve({ revision: 1 }); });
-  if (failure) { expect(poolSend).not.toHaveBeenCalled(); expect((note as HTMLTextAreaElement).value).toBe('Dirty note'); }
+  if (failure) { expect(poolSend).not.toHaveBeenCalled(); expect(note.textContent).toBe('Dirty note'); }
   else { await waitFor(() => expect(poolSend).toHaveBeenCalled()); expect(await slot.findByText('Sent — 1 edited entries were not sent')).toBeTruthy(); }
 });
 it('reads the thread tab oldest first', async () => {
@@ -292,7 +293,7 @@ it('sends a chat comment as a quoted message to the thread and cancels on Esc', 
   const context = { threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant' as const, text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'First\nSecond', composer, experimental_panel: {} as any };
   act(() => { void action.run(context); });
   const note = slot.getByRole('textbox', { name: 'Comment text' });
-  fireEvent.change(note, { target: { value: 'My comment' } });
+  change(note, { target: { value: 'My comment' } });
   fireEvent.keyDown(note, { key: 'Enter' });
   await waitFor(() => expect(send).toHaveBeenCalledWith({ threadId: item.threadId, mode: 'queue-if-active', input: [{ type: 'text', text: '> First\n> Second\n\nMy comment', mentions: [] }] }));
   await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
@@ -312,7 +313,7 @@ it('sends the snapshot to its original recipient after switching recipients', as
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 10, bottom: 50, width: 30, height: 10 }] });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
-  fireEvent.change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Immediate note' } });
+  change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Immediate note' } });
   fireEvent.pointerDown(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
   fireEvent.click(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
   expect(slot.getByRole('dialog')).toBeTruthy();
@@ -332,7 +333,7 @@ it('renders stacked pools and preserves notes on uncertain delivery', async () =
   await slot.findByText('First pool'); expect(slot.getByText('Second pool')).toBeTruthy();
   fireEvent.click(slot.getAllByRole('button', { name: 'Send all' })[0]!);
   await slot.findByText(/Delivery uncertain/);
-  expect((slot.getAllByRole('textbox', { name: 'Pool note' })[0] as HTMLTextAreaElement).value).toBe('Saved note');
+  expect(slot.getAllByRole('textbox', { name: 'Pool note' })[0].textContent).toBe('Saved note');
   expect(poolSend).toHaveBeenCalledTimes(1);
 });
 
@@ -455,7 +456,7 @@ it('pool note Enter sends its entry after saving; Shift+Enter does not', async (
   const [first, second] = await slot.findAllByRole('textbox', { name: 'Pool note' });
   fireEvent.keyDown(second!, { key: 'Enter', shiftKey: true });
   expect(poolSend).not.toHaveBeenCalled();
-  fireEvent.change(first!, { target: { value: 'Dirty' } });
+  change(first!, { target: { value: 'Dirty' } });
   fireEvent.keyDown(first!, { key: 'Enter' });
   await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'one', note: 'Dirty', attachments: [], revision: 0 }));
   await waitFor(() => expect(poolSend).toHaveBeenCalledWith({ threadId: item.threadId, ids: ['one'] }));
@@ -480,7 +481,7 @@ it('persists attachments added to a pool entry', async () => {
   const upload = vi.fn(async () => ({ type: 'localFile', path: 'file.txt', name: 'file.txt' }));
   const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: 'pr_one', entries: [entry] }] }), poolUpdate }, sdk: { projects: { attachments: { upload } } } } as any);
   await slot.findByRole('textbox', { name: 'Pool note' });
-  fireEvent.change(slot.container.querySelector('input[type="file"]')!, { target: { files: [new File(['data'], 'file.txt', { type: 'text/plain' })] } });
+  change(slot.container.querySelector('input[type="file"]')!, { target: { files: [new File(['data'], 'file.txt', { type: 'text/plain' })] } });
   await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_one', note: 'Ready', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }], revision: 0 }), { timeout: 2000 });
 });
 it('splits quote lines from plain text in user messages', async () => {

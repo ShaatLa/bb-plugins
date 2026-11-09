@@ -1,5 +1,6 @@
+import { mentionsForText } from './mentions';
 import { useEffect, useRef, useState } from 'react';
-import { experimental_Icon as Icon, Markdown, useComposer, useSdk } from '@get-bb/plugin-sdk/app';
+import { experimental_Icon as Icon, Markdown, experimental_useSidebarThreads, useComposer, useSdk } from '@get-bb/plugin-sdk/app';
 import type { SendOptions } from './contract';
 import { Composer } from './composer';
 import { Button } from './components/ui/button';
@@ -8,7 +9,7 @@ type CommentRequest = { quote: string; threadId: string; composer: ReturnType<ty
 export const COMMENT_EVENT = 'answers:chat-comment';
 
 export function ChatComment() {
-  const sdk = useSdk(), [request, setRequest] = useState<CommentRequest | null>(null), [pending, setPending] = useState(false);
+  const sdk = useSdk(), { threads } = experimental_useSidebarThreads(), [request, setRequest] = useState<CommentRequest | null>(null), [pending, setPending] = useState(false);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const popup = useRef<HTMLDivElement>(null);
@@ -32,7 +33,7 @@ export function ChatComment() {
     const quote = request.quote.trim().split('\n').map(line => `> ${line}`).join('\n');
     setPending(true); setError('');
     try {
-      await sdk.threads.send({ threadId: request.threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input: [{ type: 'text', text: `${quote}\n\n${text.trim()}`, mentions: [] }], ...(options?.sendAt ? { sendAt: options.sendAt } : {}) });
+      await sdk.threads.send({ threadId: request.threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input: [{ type: 'text', text: `${quote}\n\n${text.trim()}`, mentions: mentionsForText(`${quote}\n\n${text.trim()}`, id => { const thread = threads.find(t => t.id === id); return thread ? { label: thread.displayTitle, projectId: thread.projectId } : undefined; }) }], ...(options?.sendAt ? { sendAt: options.sendAt } : {}) });
       setRequest(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setPending(false); }

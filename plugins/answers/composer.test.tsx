@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent } from '@testing-library/react';
+import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_VoiceInputTextarea: ({ onValueChange, onVoiceInputActiveChange, ...props }: any) => <><textarea {...props} onChange={event => onValueChange(event.target.value)} /><button onClick={() => onVoiceInputActiveChange(true)}>Start voice</button><button onClick={() => onVoiceInputActiveChange(false)}>Stop voice</button></> }));
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_readPromptMentionClipboard: (element: Element) => element.getAttribute('data-test-kind') === 'project' ? { text: '@project:proj_one', mention: { kind: 'project', projectId: 'proj_one', label: 'Project One' } } : null, experimental_promptMentionClipboardAttributes: (_mention: any, text: string) => ({ 'data-prompt-mention': 'true', 'data-test-serialized': text }), experimental_VoiceInputTextarea: ({ onValueChange, onVoiceInputActiveChange, ...props }: any) => <><textarea {...props} onChange={event => onValueChange(event.target.value)} /><button onClick={() => onVoiceInputActiveChange(true)}>Start voice</button><button onClick={() => onVoiceInputActiveChange(false)}>Stop voice</button></> }));
 import { Composer } from './composer';
 afterEach(cleanup);
 it('blocks keyboard and send controls while voice input is active', () => {
@@ -24,4 +24,65 @@ it('starts as one row and opens for a second line or attachments', () => {
   expect(open(view('one line'))).toBe(false); cleanup();
   expect(open(view('two\nlines'))).toBe(true); cleanup();
   expect(open(view('', [{ type:'localFile', path:'/a', name:'a.txt' }]))).toBe(true);
+});
+
+const thread = { id: 'thr_one', projectId: 'proj_one', title: 'Fix login', displayTitle: 'Fix login' };
+function editor(value = '', options: any = {}) {
+  const onChange = vi.fn();
+  const slot = renderSlot({ component: () => <Composer label="Reply" value={value} onChange={onChange} attachments={[]} onAttachments={() => {}} projectId="proj_one" onSend={() => {}} /> }, {}, { sidebarThreads: { threads: [thread], projects: [] }, ...options } as any);
+  return { slot, onChange, box: slot.getByRole('textbox', { name: 'Reply' }) as HTMLElement };
+}
+it('renders thread tokens with bb pill presentation', () => {
+  const { box } = editor('See @thread:thr_one');
+  expect(box.querySelector('.prompt-mention-pill')).toHaveProperty('textContent', 'Thread: Fix login');
+  expect(box.querySelector('[data-test-serialized]')).toBeTruthy();
+});
+it('turns a pasted thread URL into a token pill', () => {
+  const { box, onChange } = editor();
+  fireEvent.paste(box, { clipboardData: { files: [], getData: (kind: string) => kind === 'text/plain' ? 'https://bb.example/projects/proj_one/threads/thr_one#msg=2' : '' } });
+  expect(onChange).toHaveBeenCalledWith('@thread:thr_one');
+});
+it('renders a Markdown link as a compact link pill', () => {
+  const { box } = editor('[ACM-5](/plugins/work-board/work-board/task/ACM-5)');
+  expect(box.querySelector('[data-raw]')).toHaveProperty('textContent', 'ACM-5');
+});
+it('removes the entire adjacent pill with Backspace', () => {
+  const { box, onChange } = editor('@thread:thr_one');
+  box.focus(); const selection = window.getSelection()!, range = document.createRange(); range.selectNodeContents(box); range.collapse(false); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(box, { key: 'Backspace' });
+  expect(onChange).toHaveBeenCalledWith('');
+});
+it('inserts a thread from the @ menu', () => {
+  const { box, slot, onChange } = editor();
+  box.dataset.testValue = '@Fix'; fireEvent.input(box);
+  expect(slot.getByRole('listbox', { name: 'Threads' })).toBeTruthy();
+  fireEvent.keyDown(box, { key: 'Enter' });
+  expect(onChange).toHaveBeenLastCalledWith('@thread:thr_one ');
+});
+it('renders a message link with bb message label', () => {
+  const { box } = editor('@thread:thr_one#msg=12');
+  expect(box.querySelector('.prompt-mention-pill')?.textContent).toContain('· message');
+});
+
+it('renders only keys from connected Work Board projects', async () => {
+  const { box } = editor('ACM-5 GPT-6 UTF-8', { rpc: { workBoardProjects: () => ({ available: true, projects: [{ id: 'p', prefix: 'ACM', name: 'Acme' }] }) } });
+  await waitFor(() => expect(box.querySelectorAll('.prompt-mention-pill')).toHaveLength(1));
+  expect(box.querySelector('.prompt-mention-pill')?.textContent).toBe('ACM-5');
+});
+it('recreates a pasted bb project mention inside copied message HTML', () => {
+  const { box, onChange, slot } = editor();
+  fireEvent.paste(box, { clipboardData: { files: [], getData: (kind: string) => kind === 'text/html' ? '<div>See <span data-prompt-mention="true" data-test-kind="project">Project One</span></div>' : 'See Project One' } });
+  expect(onChange).toHaveBeenCalledWith('See @project:proj_one');
+  // The parent draft stores text; a controlled rerender resolves the remembered resource.
+  slot.unmount(); cleanup();
+  const next = editor('See @project:proj_one');
+  expect(next.box.querySelector('.prompt-mention-pill')?.textContent).toContain('Project One');
+});
+it('shows thread titles with the host title component', () => {
+  const { box } = editor('@thread:thr_one');
+  expect(box.querySelector('.prompt-mention-pill')?.textContent).toContain('Fix login');
+});
+it('keeps quote Markdown text literal while editing, as bb composer does', () => {
+  const { box } = editor('> Quoted line');
+  expect(box.textContent).toBe('> Quoted line');
 });

@@ -1,3 +1,4 @@
+import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
@@ -283,7 +284,7 @@ export function quoteSegments(text: string) {
 
 function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
-  const task = prefixes.length ? new RegExp(`(?<![\\w-])((?:${prefixes.map(p => p.replace(/[^A-Za-z0-9]/g, '')).join('|')})-\\d+)(?![\\w-])`) : null;
+  const task = taskKeyRegex(prefixes);
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
   // A pasted bb thread link reads as that thread's mention pill, as bb's composer turns it into one.
   return <>{text.replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
