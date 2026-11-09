@@ -83,7 +83,7 @@ export function ContactsFooter() {
   const groupByProject = values?.groupByProject === true, usage = (values?.usage ?? 'auto') as Usage, usageData = useUsage(usage !== 'never');
   const set = (prefs: { groupByProject?: boolean; usage?: Usage }) => { setError(''); void rpc.call('setPreferences', prefs).catch(e => setError(e instanceof Error ? e.message : String(e))); };
   const item = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover';
-  return <div className="border-t border-border-seam">
+  return <div>
     {(usage === 'always' || (usage === 'auto' && collapsed)) && <UsageSummary {...usageData} />}
     <div ref={menu} className="relative flex items-center justify-end px-2 py-1">
       {error && <p role="alert" className="mr-auto truncate text-xs text-destructive">{error}</p>}
