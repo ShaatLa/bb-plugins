@@ -242,7 +242,7 @@ function DueDateMenu({
   const [error, setError] = useState<string | null>(null);
   const rpc = useTasksRpc();
   const epic = task.type === "epic";
-  const ongoingLabel = labels?.find((label) => label.name === "ongoing");
+  const ongoingLabel = labels?.find((label) => label.name.toLowerCase() === "ongoing");
   const ongoing = epic && !!ongoingLabel && task.labelIds.includes(ongoingLabel.id);
   const pick = (dueDate: string | null) => {
     onUpdate({ dueDate, ...(epic && ongoingLabel ? {

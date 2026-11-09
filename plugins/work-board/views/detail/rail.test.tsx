@@ -259,12 +259,16 @@ it.each(["rail", "inline"])("opens the selected epic independently of its picker
 
 const ongoingLabel = { id: "01HZZZZZZZZZZZZZZZZZZZZZL1", projectId: PROJECT_ID, name: "ongoing", color: "purple" };
 
-it.each(["rail", "inline"])("changes an ongoing epic to no deadline or a date in %s properties", async layout => {
+it.each(["rail", "inline"].flatMap(layout => ["ongoing", "Ongoing"].map(name => ({ layout, name }))))("changes an $name epic to no deadline or a date in $layout properties", async ({ layout, name }) => {
   const updates: unknown[] = [];
-  const props = { ...railProps(null), task: { ...task, type: "epic" as const, labelIds: ["other", ongoingLabel.id] }, labels: [ongoingLabel], onUpdate: (update: unknown) => updates.push(update) };
+  const props = { ...railProps(null), task: { ...task, type: "epic" as const, labelIds: ["other", ongoingLabel.id] }, labels: [{ ...ongoingLabel, name }], onUpdate: (update: unknown) => updates.push(update) };
   function Harness() { return <TasksRefreshProvider>{layout === "rail" ? <PropertiesRail {...props} /> : <InlineProperties {...props} />}</TasksRefreshProvider>; }
   const slot = renderSlot({ component: Harness }, {}, { rpc: { listBbProjects: () => ({ bbProjects: [] }) } });
   expect(slot.getByRole("button", { name: "Timeframe" }).textContent).toContain("Ongoing");
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Ongoing" }));
+  expect(updates).toEqual([{ dueDate: null, labelIds: ["other", ongoingLabel.id] }]);
+  updates.length = 0;
   fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
   fireEvent.click(await slot.findByRole("button", { name: "No deadline" }));
   expect(updates).toEqual([{ dueDate: null, labelIds: ["other"] }]);
