@@ -32,7 +32,7 @@ export const inputs = {
  list: z.object({view: viewSchema, questions: z.boolean().optional(), threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
  markRead: z.union([z.object({ids: z.array(idSchema).min(1).max(1000)}).strict(), z.object({all:z.literal(true), threadId:threadId.optional()}).strict()]),
  setPinned: z.object({id:idSchema,pinned:z.boolean()}).strict(), setDismissed: z.object({id:idSchema,dismissed:z.boolean()}).strict(),
- reply: z.object({id:idSchema,text:z.string().trim().min(1).max(8000),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(), save: z.object({threadId,seq:time,role:z.string().min(1).max(100),text:z.string().trim().min(1).max(20000)}).strict(),
+ reply: z.object({id:idSchema,text:z.string().trim().max(8000),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict().refine(p=>p.text || p.attachments?.length,{message:'Write a reply or attach a file',path:['text']}), save: z.object({threadId,seq:time,role:z.string().min(1).max(100),text:z.string().trim().min(1).max(20000)}).strict(),
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({

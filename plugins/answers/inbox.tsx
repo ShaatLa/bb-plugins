@@ -131,13 +131,13 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   const release = () => { clearTimeout(settle.current); pin.current = null; setSettled(true); };
   function updateCompose(threadId: string, value: ComposeDraft) { const all = composeDrafts(); all[threadId] = value; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(all)); } catch { /* storage unavailable */ } if (threadId === selectedRef.current) setCompose(value); }
   async function sendCompose(options?: SendOptions) {
-    if (!selected || composePending || !compose.text.trim()) return;
+    if (!selected || composePending || (!compose.text.trim() && !compose.files.length)) return;
     const threadId = selected, sent = compose;
     setComposePending(true); setComposeError('');
-    const optimisticId = Date.now() + Math.random(), showBubble = options?.mode !== 'draft' && !options?.sendAt;
+    const optimisticId = Date.now() + Math.random(), showBubble = options?.mode !== 'draft' && !options?.sendAt && !!sent.text.trim();
     if (showBubble) setOptimistic(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     try {
-      const input = [{ type: 'text' as const, mentions: [], text: sent.text }, ...sent.files.map(f => f.type === 'localImage' ? { type: 'localImage' as const, path: f.path, ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) } : { type: 'localFile' as const, path: f.path, name: f.name, ...(f.mimeType ? { mimeType: f.mimeType } : {}), ...(f.sizeBytes ? { sizeBytes: f.sizeBytes } : {}), ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) })];
+      const input = [...(sent.text.trim() ? [{ type: 'text' as const, mentions: [], text: sent.text }] : []), ...sent.files.map(f => f.type === 'localImage' ? { type: 'localImage' as const, path: f.path, ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) } : { type: 'localFile' as const, path: f.path, name: f.name, ...(f.mimeType ? { mimeType: f.mimeType } : {}), ...(f.sizeBytes ? { sizeBytes: f.sizeBytes } : {}), ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) })];
       await sdk.threads.send({ threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'answers', data: { kind: 'draft' } } } : {}) });
       if (JSON.stringify(composeDrafts()[threadId]) === JSON.stringify(sent)) { const all = composeDrafts(); delete all[threadId]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(all)); } catch { /* storage unavailable */ } }
       if (selectedRef.current === threadId) setCompose(current => JSON.stringify(current) === JSON.stringify(sent) ? { text: '', files: [] } : current);

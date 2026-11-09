@@ -202,7 +202,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full text-xs text-muted-foreground">Recommended: {item.recommendReason}</p>}</div>}
-    {replying && <div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim()} onSend={options => void reply(options)} /></div>}
+    {replying && <div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div>}
     {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
 }

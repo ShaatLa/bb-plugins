@@ -122,7 +122,7 @@ export default function plugin(bb: BbPluginApi) {
     if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
     const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
     try {
-      const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[{type:'text',mentions:[],text},...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
+      const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[...(text.trim() ? [{type:'text' as const,mentions:[],text}] : []),...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
     } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
@@ -248,8 +248,9 @@ export default function plugin(bb: BbPluginApi) {
         if (!entries.length) throw new Error('Pool is empty');
         checkSources(p.threadId,entries);
         const text=buildReplyMessage(entries as {quote:string;note:string}[]);
-        if (!text) throw new Error('Nothing to send — write a reply first');
-        const result=await deliver(p.threadId,text,entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]),p.send);
+        const files=entries.flatMap(e=>JSON.parse(e.attachments as string) as Attachment[]);
+        if (!text && !files.length) throw new Error('Nothing to send — write a reply first');
+        const result=await deliver(p.threadId,text,files,p.send);
         let keptEdited=0;
         db.transaction(()=>{
           for (const entry of entries) {
