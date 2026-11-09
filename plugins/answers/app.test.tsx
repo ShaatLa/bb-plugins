@@ -413,6 +413,11 @@ it('renders thread mentions in user questions through bb markdown', async () => 
   expect(chip).toBeTruthy();
   expect(chip!.parentElement!.textContent).toBe('Send @thread:thr_abc123 the rules\nnow');
 });
+it('shows a pasted bb thread link as that thread\'s mention pill', async () => {
+  const { slot } = await setup({ list: () => ({ items: [item, { ...item, id: 'ans_link', question: 'See http://127.0.0.1:38886/projects/proj_x/threads/thr_abc123 please' }], nextCursor: null }) });
+  await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('@thread:thr_abc123'));
+  expect(slot.container.textContent).not.toContain('127.0.0.1');
+});
 it('links task keys of known Work Board projects in user questions', async () => {
   const { slot } = await setup({ workBoardProjects: () => ({ available: true, projects: [{ id: 'p', name: 'Acme', prefix: 'ACM' }] }), list: () => ({ items: [item, { ...item, id: 'ans_task', question: 'See ACM-5, not GPT-6 or XACM-7, and [ACM-9](/plugins/work-board/work-board/task/ACM-9)' }], nextCursor: null }) });
   await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('[ACM-5](/plugins/work-board/work-board/task/ACM-5)'));

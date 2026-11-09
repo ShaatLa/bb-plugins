@@ -240,6 +240,7 @@ const viewOptions = (thread: boolean): ViewOption[] => [
 
 // User text stays plain (no Markdown reflow); only thread mentions go through bb's renderer to become chips.
 // Thread mentions and Markdown links (the composer stores task chips as links) render through bb as a whole.
+const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9]+)(?![\w/])/g;
 const MENTION = /(@thread:thr_[A-Za-z0-9]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
 function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string[] }) {
   const parsed = parseInlineComments(text);
@@ -264,7 +265,8 @@ function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
   const task = prefixes.length ? new RegExp(`(?<![\\w-])((?:${prefixes.map(p => p.replace(/[^A-Za-z0-9]/g, '')).join('|')})-\\d+)(?![\\w-])`) : null;
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
-  return <>{text.split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
+  // A pasted bb thread link reads as that thread's mention pill, as bb's composer turns it into one.
+  return <>{text.replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
     : task ? part.split(task).map((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : piece) : [part])}</>;
 }
 
