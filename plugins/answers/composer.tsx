@@ -43,7 +43,9 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   }
   const blocked = sendDisabled || pending || uploading > 0 || voiceActive;
   const submit = (options?: SendOptions) => { if (!blocked) onSend(options); };
-  return <div className={`rounded-xl border border-border bg-background ${className}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
+  // bb draws its microphone in a layer over the textarea's bottom-right; move it into the action row just left of Send
+  // (56px button + 8px row padding + 4px gap), where bb's own composer keeps it.
+  return <div className={`rounded-xl border border-border bg-background [&>.relative>.absolute]:-bottom-8 [&>.relative>.absolute]:right-[68px] ${className}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
