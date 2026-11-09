@@ -41,7 +41,7 @@ export async function readModels(baseUrl: string, defaultModel = "", dataDir = "
 export function usageFor(models: { displayName: string }[]): ProviderUsage {
   const shortName = (name: string) => name.split(" ")[0];
   const names = models.map(m => shortName(m.displayName)).filter(Boolean);
-  const label = `Available models: ${names.join(", ")}\u2063`;
+  const label = names.join(", ")+"\u2063";
   return {
     status: "ok",
     accountEmail: null,

@@ -7,7 +7,7 @@ cancellation and BB agent tools.
 
 ## Usage and context
 
-Provider usage shows one row `Available models: …` with no quota bar or
+Provider usage shows one row listing the installed models, with no quota bar or
 percent. Context size comes from the router's `--ctx-size` and is shown by
 `bb local-models status`.
 
