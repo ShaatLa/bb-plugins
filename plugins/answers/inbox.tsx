@@ -1,7 +1,7 @@
 import { mentionsForText } from './mentions';
 import { PendingInteractions } from './interactions';
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { useSettings, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_useProviders, experimental_PermissionModePicker as PermissionModePicker, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, experimental_useTabVisible, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, type ExperimentalProviderModelPickerValue } from '@get-bb/plugin-sdk/app';
+import { useSettings, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_useProviders, experimental_PermissionModePicker as PermissionModePicker, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, type ExperimentalProviderModelPickerValue } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
@@ -88,10 +88,11 @@ function Avatar({ id, title, provider }: { id: string; title: string | null; pro
   </span>;
 }
 export function Inbox({ questions = false, onBulkRead, bbChat = false }: { questions?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean }) {
-  const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel(), tabVisible = experimental_useTabVisible();
+  const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => { const update = () => setDocumentVisible(document.visibilityState !== 'hidden'); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
-  const visible = tabVisible && documentVisible;
+  // useTabVisible is false outside a panel tab, and this page is not one, so only the document's visibility pauses polling.
+  const visible = documentVisible;
   const sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads, projects = sidebar.projects;
   const providers = experimental_useProviders().providers;
   // A thread read in bb drops its unread mark there; refetch so the server can mark the same answers read here.
@@ -180,7 +181,7 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   }
   useEffect(() => () => clearTimeout(settle.current), []);
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
-  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion]);
+  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
   useEffect(() => { if (!selected || !visible || !queue.length) return; const timer = setInterval(() => setQueueVersion(n => n + 1), 5000); return () => clearInterval(timer); }, [selected, visible, queue.length]);
   const openThread = sidebarThreads.find(t => t.id === selected);
   const working = openThread ? statusOf(openThread).isWorking : false;
