@@ -345,7 +345,7 @@ export default definePluginApp(app => {
     if (!composer) throw new Error('The thread composer is unavailable on this surface');
     const selection = window.getSelection();
     const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
-    window.dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: { quote: selectedText ?? message.text, composer, top: rect?.bottom ?? window.innerHeight / 2, left: rect?.left ?? window.innerWidth / 2 } }));
+    window.dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: { quote: selectedText ?? message.text, threadId: message.threadId, composer, top: rect?.bottom ?? window.innerHeight / 2, left: rect?.left ?? window.innerWidth / 2 } }));
   } });
   app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });

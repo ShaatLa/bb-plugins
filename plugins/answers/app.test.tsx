@@ -282,26 +282,25 @@ it('adds selected chat text to the thread pool and opens My questions', async ()
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/poolAdd', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, quote: 'Selected', quoteSeq: 20 }) }));
   expect(openTab).toHaveBeenCalledWith({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
 });
-it('inserts selected chat comments into the host composer and cancels on Esc', async () => {
+it('sends a chat comment as a quoted message to the thread and cancels on Esc', async () => {
   const app = await loadPluginApp(() => import('./app'));
   let composer!: ReturnType<typeof useComposer>;
+  const send = vi.fn(async () => ({}));
   const Overlay = app.appOverlays.find(overlay => overlay.id === 'chat-comment')!.component;
-  const slot = renderSlot({ component: () => { composer = useComposer(); return <Overlay />; } }, {}, { composer: { text: 'Existing', scope: { kind: 'thread', threadId: item.threadId } } });
+  const slot = renderSlot({ component: () => { composer = useComposer(); return <Overlay />; } }, {}, { composer: { text: 'Existing', scope: { kind: 'thread', threadId: item.threadId } }, sdk: { threads: { send } } } as any);
   const action = app.messageActions.find(action => action.id === 'comment')!;
   const context = { threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant' as const, text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'First\nSecond', composer, experimental_panel: {} as any };
   act(() => { void action.run(context); });
   const note = slot.getByRole('textbox', { name: 'Comment text' });
   fireEvent.change(note, { target: { value: 'My comment' } });
   fireEvent.keyDown(note, { key: 'Enter' });
-  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment');
-  act(() => { void action.run({ ...context, selectedText: 'Another' }); });
-  fireEvent.change(slot.getByRole('textbox', { name: 'Comment text' }), { target: { value: 'Second comment' } });
-  fireEvent.click(slot.getByRole('button', { name: 'Insert comment' }));
-  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment\n\n> Another\n\nSecond comment');
+  await waitFor(() => expect(send).toHaveBeenCalledWith({ threadId: item.threadId, mode: 'queue-if-active', input: [{ type: 'text', text: '> First\n> Second\n\nMy comment', mentions: [] }] }));
+  await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
+  expect(slot.inspection.composer.text).toBe('Existing');
   act(() => { void action.run(context); });
   fireEvent.keyDown(slot.getByRole('textbox', { name: 'Comment text' }), { key: 'Escape' });
   expect(slot.queryByRole('dialog')).toBeNull();
-  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment\n\n> Another\n\nSecond comment');
+  expect(send).toHaveBeenCalledTimes(1);
 });
 
 it('sends the snapshot to its original recipient after switching recipients', async () => {
