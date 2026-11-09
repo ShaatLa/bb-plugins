@@ -21,3 +21,14 @@ test('lists installed models with readable names and an unlimited usage window e
   assert.throws(()=>parseModels({data:[]}),/no models/);
   await assert.rejects(()=>readModels(server.baseUrl));
 });
+
+test('reads per-model reasoning from the caps file',async()=>{
+  const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+  const dir=await mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(),'local-caps-'));const server=await startModelsServer();
+  try{
+    await writeFile(dir+'/model-caps.json',JSON.stringify({'ggml-org/gpt-oss-20b-GGUF:MXFP4':{knob:'reasoning_effort',none:true,levels:['low','medium','xhigh'],checkedAt:1}}));
+    const models=await readModels(server.baseUrl,'',dir);
+    assert.deepEqual(models[0].supportedReasoningEfforts?.map(e=>e.reasoningEffort),['none','low','medium','xhigh']);
+    assert.equal(models[0].defaultReasoningEffort,'medium');
+  }finally{await server.close();await rm(dir,{recursive:true,force:true});}
+});

@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { z } from "zod";
@@ -10,29 +11,26 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { experimental_acpProviderBridge as acp } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { shimSource } from "./shim.ts";
-import { DEFAULT_BASE_URL, readModels, resolveCodex, usageFor } from "./models.ts";
+import { DEFAULT_BASE_URL, readModels, usageFor } from "./models.ts";
 
 const io = createBridgeIo();
-const optionsSchema = z.object({ baseUrl: z.string().default(DEFAULT_BASE_URL).transform(value => value || DEFAULT_BASE_URL), codexCommand: z.string().default(""), defaultModel: z.string().default("") });
+const optionsSchema = z.object({ baseUrl: z.string().default(DEFAULT_BASE_URL).transform(value => value || DEFAULT_BASE_URL), defaultModel: z.string().default("") });
 type Options = z.infer<typeof optionsSchema>;
 let dataDir = path.join(os.tmpdir(), "bb-local-models");
-let tempDir = os.tmpdir();
 let launch: ReturnType<typeof launchSpec> | undefined;
 let launchKey = "";
 
 async function launchSpec(options: Options) {
-  const codex = await resolveCodex(options.codexCommand);
-  if (!codex) throw new Error("Install the Codex CLI on this machine first.");
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const shim = path.join(dataDir, "adapter-shim.mjs");
+  // Per-version name: bridges of still-running threads rewrite their own copy and must not swap code under new threads.
+  const shim = path.join(dataDir, `adapter-shim-${createHash("sha256").update(shimSource).digest("hex").slice(0, 12)}.mjs`);
   await writeFile(shim, shimSource, { mode: 0o600 });
   return { displayName: "Local models", command: process.execPath, args: [shim],
     permissionCli: { insertAfterArgs: 1, full: ["--bb-permission-mode=full"], workspaceWrite: ["--bb-permission-mode=accept-edits"] },
     env: {
     // BB's Electron executable needs Node mode to run the shim.
     ELECTRON_RUN_AS_NODE: "1",
-    CODEX_BIN: codex, LM_BASE_URL: options.baseUrl, LM_DEFAULT_MODEL: options.defaultModel, LM_BB_DATA_DIR: dataDir, LM_BB_TEMP_DIR: tempDir,
-    PATH: [path.dirname(codex), process.env.PATH ?? ""].join(path.delimiter),
+    LM_BASE_URL: options.baseUrl, LM_DEFAULT_MODEL: options.defaultModel, LM_BB_DATA_DIR: dataDir,
   } };
 }
 
@@ -42,12 +40,10 @@ async function readUsage(options: Options): Promise<ProviderUsage> {
 }
 
 async function readHealth(options: Options) {
-  const codex = await resolveCodex(options.codexCommand);
-  const reachable = codex ? await readModels(options.baseUrl).then(() => true, () => false) : false;
+  const reachable = await readModels(options.baseUrl).then(() => true, () => false);
   return {
-    status: !codex ? "not_installed" as const : reachable ? "ready" as const : "unknown" as const,
-    statusMessage: !codex ? "Install the Codex CLI; it runs the agent loop for local models."
-      : reachable ? null : `No local model server answers at ${options.baseUrl}.`,
+    status: reachable ? "ready" as const : "unknown" as const,
+    statusMessage: reachable ? null : `No local model server answers at ${options.baseUrl}.`,
     accountEmail: null, planLabel: "Local", installedVersion: null, minimumSupportedVersion: null,
     canInstall: false, canUpdate: false, loginCommand: null,
   };
@@ -70,7 +66,7 @@ async function dispatch(request: { id: string | number; method: string; params?:
       // BB lists models without providerOptions; the server contributes the settings as env vars instead.
       const env = request.params?.envVars ?? {};
       const options = optionsSchema.parse({ baseUrl: env.LM_BASE_URL, defaultModel: env.LM_DEFAULT_MODEL, ...request.params?.providerOptions });
-      return io.sendResult(id, { models: await readModels(options.baseUrl, options.defaultModel), selectedOnlyModels: [] });
+      return io.sendResult(id, { models: await readModels(options.baseUrl, options.defaultModel, dataDir), selectedOnlyModels: [] });
     }
     if (method === "provider/usage" || method === "provider/health") {
       const params = providerMaintenanceParamsSchema.parse(request.params);
@@ -93,12 +89,12 @@ async function dispatch(request: { id: string | number; method: string; params?:
     acp.handleLine(line);
   } catch (error) {
     io.sendError(id, error instanceof z.ZodError ? -32602 : -32603,
-      error instanceof z.ZodError ? "Invalid Local models parameters." : "Local models could not start. Check the Codex CLI and the local model server.");
+      error instanceof z.ZodError ? "Invalid Local models parameters." : "Local models could not start. Check the local model server.");
   }
 }
 
 export const experimental_providerBridge = experimental_defineProviderBridge({
-  start(context) { dataDir = context.dataDir; tempDir = context.tempDir; acp.start?.(context); },
+  start(context) { dataDir = context.dataDir; acp.start?.(context); },
   handleLine(line) {
     let request;
     try { request = JSON.parse(line); } catch { return acp.handleLine(line); }
