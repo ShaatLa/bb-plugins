@@ -136,6 +136,11 @@ describe("Slots deterministic engine", () => {
     }
   });
 
+  it("grants plain requests with JSON-safe use fields", () => {
+    const h = harness(); h.request("a"); h.open();
+    expect(h.state.leases[0]).toMatchObject({ uses: [], autoRelease: false, graceUntil: null });
+  });
+
   it("releases a granted lease by its request id", () => {
     const h = harness(); h.request("a"); const requestId = h.state.requests[0].id; h.open(); const leaseId = h.state.leases[0].id;
     expect(h.send({ type: "release", threadId: "b", leaseId: requestId }).result.ok).toBe(false);
