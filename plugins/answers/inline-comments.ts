@@ -12,11 +12,12 @@ export function parseInlineComments(text: string): { text: string; comments: { l
     if (intro < 0) continue;
     const passage = lines.slice(intro + 1).filter(line => line.startsWith('> ')).map(line => line.slice(2)).join('\n');
     const commentLine = lines.findIndex(line => line.startsWith('Their comment on it: '));
-    const comment = commentLine < 0 ? '' : lines[commentLine]!.slice('Their comment on it: '.length);
+    // The plugin appends blocks after the message, so a comment runs to the next block or the end and may span lines.
+    const comment = commentLine < 0 ? '' : [lines[commentLine]!.slice('Their comment on it: '.length), ...lines.slice(commentLine + 1)].join('\n').trim();
     const label = match[1]!;
     remaining += text.slice(cursor, start);
     comments.push({ label, passage, comment });
-    const lastLine = commentLine >= 0 ? commentLine : Math.max(intro, lines.map(line => line.startsWith('> ')).lastIndexOf(true));
+    const lastLine = commentLine >= 0 ? lines.length - 1 : Math.max(intro, lines.map(line => line.startsWith('> ')).lastIndexOf(true));
     const consumed = lines.slice(0, lastLine + 1).join('\n').length;
     cursor = start + consumed;
   }
