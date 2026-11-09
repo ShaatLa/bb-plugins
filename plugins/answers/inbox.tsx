@@ -93,7 +93,10 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: { ...(selected ? { selected } : {}), ...(questions ? { questions } : {}) } });
   // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
   // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
-  const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const recipients = lastRecipients.current ?? result.data;
+  const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const settledRecipients = lastRecipients.current ?? result.data;
+  // bb's sidebar threads are live, so a rename shows at once instead of on the next recipients refetch.
+  const liveTitles = new Map(sidebarThreads.flatMap(t => t.title ? [[t.id, t.title] as const] : []));
+  const recipients = settledRecipients && { ...settledRecipients, recipients: settledRecipients.recipients.map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle })) };
   // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
   // to read it, so Answers keeps its order in plugin settings; projects missing from it follow in bb's project order.
   const prefs = useSettings().values, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
