@@ -22,7 +22,7 @@ export const inputs = {
  undoRead:z.object({batch:z.string().min(1)}).strict(),
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
- workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
+ workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
  recipients:z.object({selected:threadId.optional(),questions:z.boolean().optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),

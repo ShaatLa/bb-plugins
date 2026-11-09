@@ -39,7 +39,7 @@ function Avatar({ id, title }: { id: string; title: string | null }) {
 }
 export function Inbox({ questions = false, onBulkRead, bbChat = false }: { questions?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
-  const sidebarThreads = experimental_useSidebarThreads().threads;
+  const sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
   // The contact column is resizable at the chat's expense; the width is remembered like the rest of the page state.
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
@@ -53,10 +53,23 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
   // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
   const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const recipients = lastRecipients.current ?? result.data;
-  // Optional project headers, like bb's sidebar; recency order is kept inside each project.
-  const byProject = useSettings().values?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
-  for (const r of recipients?.recipients ?? []) { const key = byProject ? r.projectName ?? 'No project' : null; grouped.set(key, [...(grouped.get(key) ?? []), r]); }
-  const groups = [...grouped];
+  // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
+  // to read it, so Answers keeps its order in plugin settings; projects missing from it follow in bb's project order.
+  const prefs = useSettings().values, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
+  for (const r of recipients?.recipients ?? []) { const key = byProject ? r.projectId ?? '' : null; grouped.set(key, [...(grouped.get(key) ?? []), r]); }
+  const saved = String(prefs?.projectOrder ?? ''), [projectOrder, setProjectOrder] = useState<string[] | null>(null);
+  useEffect(() => setProjectOrder(null), [saved]);
+  const known = sidebar.projects.filter(p => !p.isPersonal).map(p => p.id), stored = saved.split(',').filter(id => known.includes(id));
+  const order = projectOrder ?? [...stored, ...known.filter(id => !stored.includes(id))];
+  const rank = (key: string | null) => { const i = key ? order.indexOf(key) : -1; return i < 0 ? Infinity : i; };
+  const groups = [...grouped].sort((a, b) => rank(a[0]) - rank(b[0]));
+  const [drag, setDrag] = useState<{ id: string; over?: string; after?: boolean } | null>(null);
+  function moveProject(id: string, target: string, after: boolean) {
+    const next = order.filter(x => x !== id); let at = next.indexOf(target); if (at < 0 || !order.includes(id)) return; if (after) at++;
+    next.splice(at, 0, id); setProjectOrder(next);
+    void rpc.call('setPreferences', { projectOrder: next.join(',') }).catch(e => { setProjectOrder(null); setError(errorText(e)); });
+  }
+
   const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
@@ -173,12 +186,17 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
     <div className={`flex min-h-0 flex-col min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><div role="listbox" aria-label="Recipients" className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
       {result.error && <p role="alert">{result.error.message}</p>}
       {recipients?.recipients.length === 0 && <EmptyState icon="MailOpen" title={questions ? 'No open questions' : 'All caught up'}>{questions ? 'Answers to your questions will show up here.' : 'New answers from your threads will show up here.'}</EmptyState>}
-      {groups.map(([group, list]) => <Fragment key={group ?? ''}>{group !== null && <p className="px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground">{group}</p>}{list.map(recipient => { const thread = sidebarThreads.find(t => t.id === recipient.threadId), status = thread ? statusOf(thread) : null, busy = !!status && (status.isWorking || status.indicator === 'waiting-for-input'); const row = <button role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'} ${recipient.unread ? '' : 'opacity-70'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
+      {groups.map(([group, list]) => { const movable = !!group && order.includes(group), over = drag?.over === group && drag.id !== group; return <div key={group ?? ''} role={group !== null ? 'group' : undefined} aria-label={group !== null ? list[0]?.projectName ?? 'No project' : undefined}
+        className={`space-y-0.5 ${over ? (drag!.after ? 'shadow-[0_2px_0_0_var(--color-ring,currentColor)]' : 'shadow-[0_-2px_0_0_var(--color-ring,currentColor)]') : ''} ${drag?.id === group ? 'opacity-50' : ''}`}
+        onDragOver={event => { if (!drag || !movable || drag.id === group) return; event.preventDefault(); const r = event.currentTarget.getBoundingClientRect(), after = event.clientY > r.top + r.height / 2; if (drag.over !== group || drag.after !== after) setDrag({ ...drag, over: group!, after }); }}
+        onDrop={event => { if (!drag || !movable || drag.id === group) return; event.preventDefault(); moveProject(drag.id, group!, !!drag.after); setDrag(null); }}>
+        {group !== null && <p draggable={movable} title={movable ? 'Drag to reorder projects' : undefined} className={`px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground ${movable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', group); setDrag({ id: group }); }} onDragEnd={() => setDrag(null)}>{list[0]?.projectName ?? 'No project'}</p>}{list.map(recipient => { const thread = sidebarThreads.find(t => t.id === recipient.threadId), status = thread ? statusOf(thread) : null, busy = !!status && (status.isWorking || status.indicator === 'waiting-for-input'); const row = <button role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'} ${recipient.unread ? '' : 'opacity-70'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
         if (selected !== recipient.threadId) { setCompose(composeDrafts()[recipient.threadId] ?? { text: '', files: [] }); setComposeError(''); setDepth(1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
         else try { onBulkRead?.(await rpc.call('markThreadRead', { threadId: recipient.threadId })); refresh(); } catch (e) { setError(errorText(e)); }
       }}><Avatar id={recipient.threadId} title={recipient.threadTitle} /><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><span className={`min-w-0 flex-1 truncate ${recipient.unread ? 'font-medium' : 'font-normal text-muted-foreground'}`}>{recipient.threadTitle ?? 'Untitled thread'}</span><span className="flex shrink-0 items-center text-[11px] text-muted-foreground">{busy ? <ThreadStatusGlyph indicator={status!.indicator} size="compact" /> : ago(recipient.lastAt)}</span></span><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{recipient.preview || recipient.projectName || 'No project'}</span>{recipient.unread > 0 && <span aria-label={`${recipient.unread} unread`} className="shrink-0 rounded-full bg-foreground/85 px-1.5 text-[11px] font-medium leading-[18px] text-background">{recipient.unread}</span>}</span></span></button>
         // bb's own thread menu on right-click (Archive, Pin, Rename, Delete); threads bb does not list keep a plain row.
-        return thread ? <ThreadActionsContextMenu key={recipient.threadId} thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : <Fragment key={recipient.threadId}>{row}</Fragment>; })}</Fragment>)}
+        return thread ? <ThreadActionsContextMenu key={recipient.threadId} thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : <Fragment key={recipient.threadId}>{row}</Fragment>; })}</div>; })}
     </div><ContactsFooter /></div>
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
     <div ref={scroll} className={`relative overflow-auto min-w-0 ${!selected ? 'max-[639px]:hidden' : ''}`} onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; if (selected && !position.current.fresh) try { localStorage.setItem(SCROLL_KEY, JSON.stringify({ threadId: selected, top: node.scrollTop, depth })); } catch { /* storage unavailable */ } }}>
