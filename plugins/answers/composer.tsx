@@ -43,7 +43,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   useLayoutEffect(() => {
     const node = editor.current; if (!node) return;
     const style = getComputedStyle(node), oneLine = parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-    if (!value) setGrown(false); else if (node.scrollHeight > oneLine + 2) setGrown(true);
+    if (!value) setGrown(false); else if (node.scrollHeight > oneLine * 1.5) setGrown(true); // pills make a line a few px taller, so only a real second line opens the layout
   }, [value, tall]);
   // The send group can include extra actions; its width places bb's microphone just left of it in the open layout.
   useLayoutEffect(() => { if (root.current && right.current) root.current.style.setProperty('--right-w', `${right.current.offsetWidth}px`); });
