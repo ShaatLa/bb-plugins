@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import plugin from './server.ts';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 
-test('registers the provider and publishes unlimited usage per model', async()=>{
+test('registers the provider and publishes single Available models usage row', async()=>{
   let declaration:any;const contracts:any={},handlers:any={};
   const host={id:'machine-1',name:'Local',status:'connected'};
   const usage={status:'ok',accountEmail:null,planLabel:'Local',windows:[{label:'Available models: gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]};

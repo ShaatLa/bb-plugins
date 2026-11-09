@@ -13,8 +13,7 @@ percent. Context size comes from the router's `--ctx-size` and is shown by
 
 ## Settings
 
-Set the server URL and the default model for new threads. Your global Codex
-config, MCP servers and Apps connectors are not used.
+Set the server URL and the default model for new threads.
 
 ## Requirements and limits
 
