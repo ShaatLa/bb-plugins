@@ -1,0 +1,78 @@
+import { useEffect, useRef, useState } from 'react';
+import { experimental_Icon as Icon, experimental_useQuestionFormHost, experimental_useRpcRefresh, UrlLink, useSdk } from '@get-bb/plugin-sdk/app';
+import { Button } from './components/ui/button';
+
+type Row = Awaited<ReturnType<ReturnType<typeof useSdk>['threads']['interactions']['list']>>[number];
+type Question = Extract<Row['payload'], { kind: 'user_question' }>['questions'][number];
+type Answer = { selected: string[]; freeText?: string };
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+export function PendingInteractions({ threadId, projectId, pending, status }: { threadId: string; projectId?: string | null; pending: boolean; status?: string }) {
+  const sdk = useSdk(), { refresh } = experimental_useRpcRefresh();
+  const [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [version, setVersion] = useState(0);
+  useEffect(() => {
+    if (!pending) { setRows([]); setError(''); return; }
+    let live = true;
+    void sdk.threads.interactions.list({ threadId }).then(value => { if (live) { setRows(value.filter(row => row.status === 'pending' || row.status === 'resolving')); setError(''); } }).catch(e => { if (live) setError(errorText(e)); });
+    return () => { live = false; };
+  }, [sdk, threadId, pending, status, version]);
+  async function act(row: Row, action: () => Promise<unknown>) {
+    setError('');
+    try { await action(); setRows(current => current.filter(item => item.id !== row.id)); refresh(); setVersion(v => v + 1); }
+    catch (e) { setError(errorText(e)); }
+  }
+  if (!pending && !error) return null;
+  return <div className="mb-2 space-y-2">{rows.map(row => {
+    const payload = row.payload;
+    if (payload.kind === 'user_question') return <QuestionForm key={row.id} questions={payload.questions} onSubmit={answers => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: { kind: 'user_answer', answers } }))} onCancel={() => act(row, () => sdk.threads.stop({ threadId }))} />;
+    if (payload.kind === 'approval') return <ApprovalForm key={row.id} row={row as ApprovalRow} onDecide={decision => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: decision === 'deny' ? { decision } : { decision, grantedPermissions: payload.subject.kind === 'permission_grant' ? payload.subject.permissions : (payload.subject.kind === 'command' || payload.subject.kind === 'file_change') && decision === 'allow_for_session' ? payload.subject.sessionGrant : null } }))} />;
+    return <div key={row.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><p className="font-medium text-foreground">{payload.title}</p><UrlLink href={`${projectId ? `/projects/${projectId}` : ''}/threads/${threadId}`}>Open in chat to answer</UrlLink></div>;
+  })}{error && <p role="alert" className="rounded-md border border-surface-destructive-border bg-surface-destructive px-3 py-2 text-xs text-destructive-text">{error}</p>}</div>;
+}
+
+type Draft = { selected: string[]; other: boolean; text: string };
+function QuestionForm({ questions, onSubmit, onCancel }: { questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel: () => Promise<void> }) {
+  const host = experimental_useQuestionFormHost();
+  const [index, setIndex] = useState(0), [answers, setAnswers] = useState<Record<string, Draft>>({}), [busy, setBusy] = useState(false);
+  const root = useRef<HTMLDivElement>(null), question = questions[index];
+  const draft = (q: Question): Draft => answers[q.id] ?? { selected: [], other: !(q.options?.length), text: '' };
+  const current = question && draft(question);
+  const valid = questions.every(q => !q.required || draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim());
+  function update(q: Question, change: Partial<Draft>) { setAnswers(old => ({ ...old, [q.id]: { ...(old[q.id] ?? { selected: [], other: !(q.options?.length), text: '' }), ...change } })); }
+  async function submit() {
+    if (busy) return;
+    if (index < questions.length - 1) { setIndex(index + 1); return; }
+    if (!valid) return;
+    const value: Record<string, Answer> = {};
+    for (const q of questions) { const a = draft(q); if (!q.required && !a.selected.length && !(a.other && a.text.trim())) continue; value[q.id] = { selected: a.other && !q.multiSelect ? [] : a.selected, ...(a.other && a.text.trim() ? { freeText: a.text.trim() } : {}) }; }
+    setBusy(true); try { await onSubmit(value); } finally { setBusy(false); }
+  }
+  async function cancel() { if (busy) return; setBusy(true); try { await onCancel(); } finally { setBusy(false); } }
+  function choice(n: number) {
+    if (!question || busy) return false;
+    const option = question.options?.[n];
+    if (option) { update(question, { selected: question.multiSelect ? current!.selected.includes(option.value) ? current!.selected.filter(v => v !== option.value) : [...current!.selected, option.value] : [option.value], other: question.multiSelect ? current!.other : false }); root.current?.focus(); return true; }
+    if (n === (question.options?.length ?? 0) && question.allowFreeText && n > 0) { update(question, { other: !current!.other, selected: question.multiSelect ? current!.selected : [] }); root.current?.focus(); return true; }
+    return false;
+  }
+  function action(name: string) { if (name === 'cancel') { void cancel(); return true; } if (busy) return false; if (name === 'previous' && index > 0) setIndex(index - 1); else if (name === 'next' && index < questions.length - 1) setIndex(index + 1); else if (name === 'submit') void submit(); else return false; root.current?.focus(); return true; }
+  const handlers = useRef({ choice, action }); handlers.current = { choice, action };
+  useEffect(() => { const a = host.registerChoiceHandler(n => handlers.current.choice(n)), b = host.registerActionHandler(n => handlers.current.action(n)); return () => { a(); b(); }; }, [host]);
+  if (!question) return null;
+  return <div ref={root} tabIndex={-1} data-question-form className="-m-1 flex min-h-0 flex-col rounded-md p-1 text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); void submit(); } }}>
+    {questions.length > 1 && <div data-question-tabs className="mb-2 flex items-center gap-1 overflow-x-auto">{questions.map((q, n) => <button key={q.id} type="button" aria-pressed={n === index} title={q.prompt} onClick={() => setIndex(n)} className={`h-7 rounded-md px-2 text-xs ${n === index ? 'bg-muted text-foreground' : 'hover:bg-state-hover'}`}>{q.shortLabel ?? `Question ${n + 1}`}</button>)}<span className="ml-auto shrink-0">{index + 1} of {questions.length}</span></div>}
+    <fieldset disabled={busy} className="min-w-0"><legend className="sr-only">{question.prompt}</legend><div className="text-xs font-medium text-foreground">{question.prompt}</div>{!question.required && <div>Optional</div>}
+      <div className="mt-1 space-y-0.5">{(question.options ?? []).map((option, n) => <button key={option.value} type="button" aria-pressed={current!.selected.includes(option.value)} aria-keyshortcuts={host.shortcuts.get(String(n))?.ariaKeyshortcuts} onClick={() => choice(n)} className={`flex w-full items-start gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors ${current!.selected.includes(option.value) ? 'bg-surface-selected' : 'hover:bg-state-hover'}`}><span className={`flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? 'rounded' : 'rounded-full'} ${current!.selected.includes(option.value) ? 'border-primary bg-primary text-primary-foreground' : 'border-input'}`}>{current!.selected.includes(option.value) && <Icon name="Check" className="size-3" aria-hidden />}</span><span className="min-w-0 flex-1"><span className="block text-xs text-foreground">{option.label}</span>{option.description && <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{option.description}</span>}</span>{host.shortcuts.get(String(n)) && <kbd aria-hidden className="text-xs text-subtle-foreground">{host.shortcuts.get(String(n))!.label}</kbd>}</button>)}
+      {question.allowFreeText && !!question.options?.length && <button type="button" aria-pressed={current!.other} aria-keyshortcuts={host.shortcuts.get(String(question.options.length))?.ariaKeyshortcuts} onClick={() => choice(question.options!.length)} className={`flex w-full items-start gap-2.5 rounded-md px-2.5 py-1.5 text-left ${current!.other ? 'bg-surface-selected' : 'hover:bg-state-hover'}`}><span className={`flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? 'rounded' : 'rounded-full'} ${current!.other ? 'border-primary bg-primary text-primary-foreground' : 'border-input'}`}>{current!.other && <Icon name="Check" className="size-3" aria-hidden />}</span>Other{host.shortcuts.get(String(question.options.length)) && <kbd aria-hidden className="ml-auto text-xs text-subtle-foreground">{host.shortcuts.get(String(question.options.length))!.label}</kbd>}</button>}
+      {current!.other && <textarea aria-label={`${question.shortLabel ?? `Question ${index + 1}`} answer`} autoFocus value={current!.text} onChange={e => update(question, { text: e.target.value })} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } }} placeholder="Type your own answer…" className="mt-2 block w-full resize-none rounded-md border border-border bg-surface-raised px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground" />}</div>
+    </fieldset><div className="mt-3 flex items-center justify-between gap-2"><Button type="button" size="sm" variant="ghost" aria-keyshortcuts={host.actionShortcuts.get('cancel')?.ariaKeyshortcuts} disabled={busy} onClick={() => void cancel()}>Cancel</Button><div className="flex gap-2">{index > 0 && <Button type="button" size="sm" variant="outline" aria-keyshortcuts={host.actionShortcuts.get('previous')?.ariaKeyshortcuts} disabled={busy} onClick={() => setIndex(index - 1)}>Back</Button>}<Button type="button" size="sm" aria-keyshortcuts={host.actionShortcuts.get('submit')?.ariaKeyshortcuts} disabled={busy || index === questions.length - 1 && !valid} onClick={() => void submit()}>{index === questions.length - 1 ? 'Submit answer' : 'Next'}</Button></div></div>
+  </div>;
+}
+
+type ApprovalRow = Extract<Row, { payload: { kind: 'approval' } }>;
+function ApprovalForm({ row, onDecide }: { row: ApprovalRow; onDecide: (decision: 'allow_once' | 'allow_for_session' | 'deny') => Promise<void> }) {
+  const [busy, setBusy] = useState(false), subject = row.payload.subject;
+  const title = row.payload.reason ?? (subject.kind === 'plan' ? 'Approve plan?' : subject.kind === 'command' ? subject.command : subject.kind === 'file_change' ? 'Do you want to make these changes?' : subject.kind === 'permission_grant' ? 'Do you want to grant this permission?' : subject.presentation.title ?? subject.presentation.label.pending);
+  async function decide(decision: 'allow_once' | 'allow_for_session' | 'deny') { setBusy(true); try { await onDecide(decision); } finally { setBusy(false); } }
+  return <div data-approval-banner className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><div className="text-muted-foreground">Approval needed</div><p className="font-medium text-foreground">{title}</p>{subject.kind === 'plan' ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-card px-3 py-2">{subject.plan}</pre> : subject.kind === 'command' ? <p className="mt-2 break-all text-muted-foreground">Command: {subject.command}</p> : subject.kind === 'file_change' ? <p className="mt-2 text-muted-foreground">Write root: {subject.writeScope}</p> : subject.kind === 'permission_grant' ? <p className="mt-2 text-muted-foreground">Tool: {subject.toolName}</p> : <p className="mt-2 text-muted-foreground">{subject.presentation.detail}</p>}<div className="mt-3 flex flex-wrap gap-2">{row.payload.availableDecisions.map(decision => <Button key={decision} size="sm" variant={decision === 'allow_once' ? 'default' : decision === 'deny' ? 'ghost' : 'outline'} disabled={busy} onClick={() => void decide(decision)}>{subject.kind === 'plan' ? decision === 'deny' ? 'Keep planning' : 'Approve plan' : decision === 'allow_once' ? 'Allow once' : decision === 'allow_for_session' ? 'Allow for session' : 'Deny'}</Button>)}</div></div>;
+}
