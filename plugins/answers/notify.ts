@@ -8,7 +8,7 @@ type Level='off'|'asked'|'questions'|'all';
 const clean=(s:string,n:number)=>s.replace(/\s+/g,' ').trim().slice(0,n);
 const quietSchema=z.string().regex(/^(?:([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d)?$/).refine(s=>!s || s.slice(0,5)!==s.slice(6),'Quiet hours must have different endpoints');
 export function createNotifier(bb:BbPluginApi,db:Database.Database) {
- const settings=bb.settings.define({notify:{type:'select',label:'Push notifications',options:['off','asked','questions','all'],default:'asked'},quietHours:{type:'string',label:'Quiet hours (HH:MM-HH:MM)',default:'',experimental_schema:quietSchema}});
+ const settings=bb.settings.define({notify:{type:'select',label:'Push notifications',options:['off','asked','questions','all'],default:'asked'},quietHours:{type:'string',label:'Quiet hours (HH:MM-HH:MM)',default:'',experimental_schema:quietSchema},groupByProject:{type:'boolean',label:'Group conversations by project',default:false}});
  let level:Level='asked',quiet='',disposed=false,chain=Promise.resolve(),flushTimer:ReturnType<typeof setTimeout>|undefined,endTimer:ReturnType<typeof setTimeout>|undefined,lastError=0;
  const queue=new Set<string>();
  const windowEnd=(now=Date.now())=>{

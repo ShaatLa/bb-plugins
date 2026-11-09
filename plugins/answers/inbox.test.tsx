@@ -107,3 +107,10 @@ it('wraps a contact in bb’s thread menu when bb lists the thread', async () =>
   expect(within(menus[0]!).getByRole('option').querySelector('[data-thread-status-glyph="runtime"]')).toBeTruthy();
   expect(slot.container.querySelectorAll('[data-thread-status-glyph]')).toHaveLength(1);
 });
+it('groups contacts under project headers when the setting is on', async () => {
+  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectName:'Anvil' }, { ...one, threadId:'thr_b', threadTitle:'B', projectName:'Plugins' }, { ...one, threadId:'thr_c', threadTitle:'C', projectName:'Anvil' }];
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) }, settings: { groupByProject: true } } as any);
+  const list = slot.getByRole('listbox', { name:'Recipients' });
+  await within(list).findAllByRole('option');
+  expect([...list.querySelectorAll('p, [role=option]')].map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Anvil', 'A', 'C', 'Plugins', 'B']);
+});
