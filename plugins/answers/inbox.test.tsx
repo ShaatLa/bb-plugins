@@ -80,3 +80,18 @@ it('shows Reply only on agent questions in the conversation', async () => {
   expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
   expect(slot.getByRole('button', { name:'Yes' })).toBeTruthy();
 });
+it('keeps the list and the previous conversation on screen while switching', async () => {
+  let release!: () => void;
+  const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Answer two' };
+  const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId === 'thr_two'
+    ? new Promise(resolve => { release = () => resolve({ items:[{ ...base, id:'ans_two', threadId:'thr_two', question:'Question two', answer:'Answer two' }], nextCursor:null }); })
+    : { items:[base], nextCursor:null } });
+  fireEvent.click((await recipients.findAllByRole('option'))[0]!);
+  expect(await slot.findByText('Question one')).toBeTruthy();
+  fireEvent.click(recipients.getAllByRole('option')[1]!);
+  expect(recipients.getAllByRole('option')).toHaveLength(2);
+  expect(slot.getByText('Question one')).toBeTruthy();
+  await act(async () => { release(); });
+  expect(await slot.findByText('Question two')).toBeTruthy();
+  expect(slot.queryByText('Question one')).toBeNull();
+});
