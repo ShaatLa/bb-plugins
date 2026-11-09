@@ -42,7 +42,7 @@ it('keeps a failed draft and edits made during a pending send', async () => {
   await waitFor(() => expect(send).toHaveBeenCalledOnce());
   await act(async () => { reject(new Error('Offline')); });
   expect((editor as HTMLTextAreaElement).value).toBe('First');
-  expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('First');
+  await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('First'));
   expect(slot.getByRole('alert').textContent).toContain('Delivery uncertain');
 });
 it('loads earlier pages when a search result is selected', async () => {
@@ -60,7 +60,7 @@ it('retains a newer edit after the sent snapshot resolves', async () => {
   const { slot, recipients } = setup({ send: () => new Promise(done => { resolve = done; }) }); fireEvent.click(await recipients.findByRole('option'));
   const editor = await slot.findByRole('textbox', { name:'Send message' }); fireEvent.change(editor, { target:{ value:'First' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
   fireEvent.change(editor, { target:{ value:'Second' } }); await act(async () => { resolve({}); });
-  expect((editor as HTMLTextAreaElement).value).toBe('Second'); expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('Second');
+  expect((editor as HTMLTextAreaElement).value).toBe('Second'); await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('Second'));
 });
 it('keeps a send tied to its original thread after switching', async () => {
   let resolve!: (value: object) => void; const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Second preview' };
@@ -260,4 +260,46 @@ it('shows sidebar project, worktree branch, and context remaining', async () => 
   const thread = { id:'thr_one', projectId:'pr_one', environment:{ name:'Checkout', branchName:'answers/3g', isWorktree:true }, parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[{ id:'pr_one', name:'Plugins' }] }, context: () => Promise.resolve({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Plugins')).toBeTruthy(); expect(slot.getByText('answers/3g').parentElement!.getAttribute('title')).toBe('Worktree'); expect(await slot.findByRole('button', { name:'Context window 38% used' })).toBeTruthy();
+});
+
+it('pauses queue and context polling while hidden and refetches when visible', async () => {
+  let visible = true;
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
+  const queue = vi.fn(async () => [{ id:'q1', threadId:'thr_one', content:[], sendAt:null, updatedAt:1 }]);
+  const context = vi.fn(async () => ({ usage:null }));
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ queuedMessages:{ list:queue }, context, sidebarThreads:{ threads:[thread], projects:[] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(queue).toHaveBeenCalledOnce());
+  await waitFor(() => expect(context).toHaveBeenCalledOnce());
+  vi.useFakeTimers();
+  try {
+    act(() => { visible = false; document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => { vi.advanceTimersByTime(60000); });
+    expect(queue).toHaveBeenCalledOnce(); expect(context).toHaveBeenCalledOnce();
+    act(() => { visible = true; document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => {});
+    expect(queue).toHaveBeenCalledTimes(2); expect(context).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); slot.unmount(); }
+});
+
+it('keeps settled older pages without refetching them on item invalidation', async () => {
+  const { slot, recipients, list } = setup({ list: input => input.cursor ? { items:[{ ...base, id:'ans_old', question:'Old question' }], nextCursor:null } : { items:[base], nextCursor:'1|ans_one' } });
+  fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Load earlier' }));
+  await slot.findByText('Old question');
+  const olderCalls = () => list.mock.calls.filter(([input]) => input.cursor === '1|ans_one').length;
+  expect(olderCalls()).toBe(1);
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+  expect(olderCalls()).toBe(1);
+  expect(slot.getByText('Old question')).toBeTruthy();
+});
+
+it('does not poll usage while auto usage is hidden', async () => {
+  const usageLimits = vi.fn(async () => ({}));
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system:{ usageLimits } }, settings:{ usage:'auto' } } as any);
+  await slot.findByRole('listbox', { name:'Recipients' });
+  vi.useFakeTimers();
+  try { await act(async () => { vi.advanceTimersByTime(600000); }); expect(usageLimits).not.toHaveBeenCalled(); }
+  finally { vi.useRealTimers(); slot.unmount(); }
 });

@@ -13,12 +13,21 @@ type Provider = { status: string; accountEmail?: string | null; planLabel?: stri
 export function useBbSidebarCollapsed() {
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => {
-    // bb may re-create the sidebar element, so look it up afresh on every data-state change in the page.
-    const read = () => setCollapsed(document.querySelector('.peer[data-state]')?.getAttribute('data-state') === 'collapsed');
-    read();
-    const observer = new MutationObserver(read);
-    observer.observe(document.body, { attributes: true, attributeFilter: ['data-state'], childList: true, subtree: true });
-    return () => observer.disconnect();
+    let sidebar: Element | null = null;
+    const state = new MutationObserver(() => setCollapsed(sidebar?.getAttribute('data-state') === 'collapsed'));
+    const attach = () => {
+      const next = document.querySelector('.peer[data-state]');
+      if (next === sidebar) return;
+      state.disconnect(); sidebar = next;
+      if (sidebar) state.observe(sidebar, { attributes: true, attributeFilter: ['data-state'] });
+      setCollapsed(sidebar?.getAttribute('data-state') === 'collapsed');
+    };
+    attach();
+    const replacement = new MutationObserver(records => {
+      if (records.some(record => [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)].some(node => node === sidebar || (node instanceof Element && (node.matches('.peer[data-state]') || !!node.querySelector('.peer[data-state]')))))) attach();
+    });
+    replacement.observe(document.body, { childList: true, subtree: true });
+    return () => { state.disconnect(); replacement.disconnect(); };
   }, []);
   return collapsed;
 }
@@ -28,7 +37,7 @@ const left = (at: string) => { const m = Math.max(0, Math.round((Date.parse(at) 
 const PERIOD: Record<string, string> = { weekly: '7d', 'five-hour': '5h', daily: '1d' };
 export const windowLabel = (w: Window) => { const label = w.label.replace(/\u2063/g, '').trim(), period = w.kind ? PERIOD[w.kind] : undefined; return !period || label.startsWith(period) ? label : /limit/i.test(label) ? period : `${period} · ${label}`; };
 
-// Limit windows that reset (local models have none). Loaded while usage is enabled at all, so revealing it (e.g. collapsing bb's sidebar) shows numbers at once.
+// Limit windows that reset (local models have none). The cached value paints immediately when revealed.
 function useUsage(enabled: boolean) {
   // bb unmounts the page when switching plugins; the last numbers show at once while a fresh load runs.
   const sdk = useSdk(), [usage, setUsage] = useStoredState<Record<string, Provider> | null>('bb-plugin-answers:page:usage-cache', null), [tick, setTick] = useState(0);
@@ -81,11 +90,11 @@ export function ContactsFooter() {
     const close = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) setOpen(false); };
     document.addEventListener('pointerdown', close); return () => document.removeEventListener('pointerdown', close);
   }, [open]);
-  const groupByProject = values?.groupByProject === true, usage = (values?.usage ?? 'auto') as Usage, usageData = useUsage(usage !== 'never');
+  const groupByProject = values?.groupByProject === true, usage = (values?.usage ?? 'auto') as Usage, showUsage = usage === 'always' || (usage === 'auto' && collapsed), usageData = useUsage(showUsage);
   const set = (prefs: { groupByProject?: boolean; usage?: Usage }) => { setError(''); void rpc.call('setPreferences', prefs).catch(e => setError(e instanceof Error ? e.message : String(e))); };
   const item = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div>
-    {(usage === 'always' || (usage === 'auto' && collapsed)) && <UsageSummary {...usageData} />}
+    {showUsage && <UsageSummary {...usageData} />}
     <div ref={menu} className="relative flex items-center justify-end px-2 py-1">
       {error && <p role="alert" className="mr-auto truncate text-xs text-destructive">{error}</p>}
       <Button size="sm" variant="ghost" className="size-7 p-0 text-muted-foreground" aria-label="Contact list settings" aria-expanded={open} onClick={() => setOpen(!open)}><Icon name="Settings" aria-hidden /></Button>

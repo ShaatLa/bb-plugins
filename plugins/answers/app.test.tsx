@@ -384,7 +384,7 @@ it('renders each member’s image and file attachments in its own bubble', async
   expect(link.closest('.rounded-xl')?.textContent).toContain('File question');
   fireEvent.click(slot.getByRole('button',{name:'photo.png'}));
   expect(slot.getAllByRole('img',{name:'photo.png'})).toHaveLength(2);
-  expect(read).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(1);
 });
 it('opens My questions with a saved notice and detects a dedupe hit', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
@@ -487,4 +487,27 @@ it('splits quote lines from plain text in user messages', async () => {
   const { quoteSegments } = await import('./app');
   expect(quoteSegments('> 1. **Bold**\n\nMy note\n\n> 2. Next\n> line')).toEqual([{ quote:true, text:'1. **Bold**' }, { quote:false, text:'My note' }, { quote:true, text:'2. Next\nline' }]);
   expect(quoteSegments('plain only')).toEqual([{ quote:false, text:'plain only' }]);
+});
+
+it('debounces history search queries', async () => {
+  const { slot, list } = await setup();
+  list.mockClear();
+  const search = slot.getByRole('searchbox', { name:'Search answers' });
+  fireEvent.change(search, { target:{ value:'fir' } });
+  fireEvent.change(search, { target:{ value:'first' } });
+  expect(list).not.toHaveBeenCalledWith(expect.objectContaining({ query:'fir' }));
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ query:'first' })));
+  expect(list).not.toHaveBeenCalledWith(expect.objectContaining({ query:'fir' }));
+});
+
+it('reads file attachments only on download', async () => {
+  const { ItemCard } = await import('./app');
+  vi.stubGlobal('URL', { createObjectURL:vi.fn(() => 'blob:file'), revokeObjectURL:vi.fn() });
+  const read = vi.fn(async () => ({ bytes:new Uint8Array([1]), mimeType:'application/pdf' }));
+  const file = { ...item, attachments:[{ type:'localFile' as const, path:'notes.pdf', name:'notes.pdf' }] };
+  const slot = renderSlot({ component:() => <ul><ItemCard item={file} /></ul> }, {}, { rpc:{ workBoardProjects:() => ({ available:false, projects:[] }) }, sdk:{ projects:{ attachments:{ read } } } } as any);
+  const link = slot.getByRole('link', { name:'notes.pdf' });
+  expect(read).not.toHaveBeenCalled();
+  fireEvent.click(link);
+  await waitFor(() => expect(read).toHaveBeenCalledOnce());
 });

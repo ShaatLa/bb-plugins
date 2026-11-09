@@ -21,10 +21,13 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 
 function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachment[]; projectId: string | null }) {
   const sdk = useSdk(), [urls, setUrls] = useState<Record<number, string>>({}), [open, setOpen] = useState<number | null>(null);
+  const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let active = true;
     const loaded: string[] = [];
-    attachments.forEach((attachment, index) => {
+    const read = (index: number) => {
+      const attachment = attachments[index];
+      if (!attachment || attachment.type !== 'localImage') return;
       const owner = attachment.sourceProjectId ?? projectId;
       if (!owner) return;
       void sdk.projects.attachments.read({projectId:owner,path:attachment.path}).then(file => {
@@ -32,16 +35,29 @@ function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachme
         if (active) { loaded.push(url); setUrls(current => ({...current,[index]:url})); }
         else URL.revokeObjectURL(url);
       }).catch(() => {});
+    };
+    const targets = container.current?.querySelectorAll<HTMLElement>('[data-answers-image]') ?? [];
+    const observer = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) { observer?.unobserve(entry.target); read(Number((entry.target as HTMLElement).dataset.answersImage)); }
     });
-    return () => { active = false; loaded.forEach(url => URL.revokeObjectURL(url)); };
+    targets.forEach(target => { if (observer) observer.observe(target); else read(Number(target.dataset.answersImage)); });
+    return () => { active = false; observer?.disconnect(); loaded.forEach(url => URL.revokeObjectURL(url)); };
   }, [attachments, projectId, sdk]);
+  const download = async (attachment: ItemAttachment) => {
+    const owner = attachment.sourceProjectId ?? projectId;
+    if (!owner) return;
+    const file = await sdk.projects.attachments.read({ projectId: owner, path: attachment.path });
+    const url = URL.createObjectURL(new Blob([file.bytes as BlobPart], { type: file.mimeType }));
+    const link = document.createElement('a'); link.href = url; link.download = attachment.name ?? attachment.path.split('/').at(-1) ?? 'Attachment'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
   const images = attachments.map((attachment, index) => attachment.type === 'localImage' ? index : -1).filter(index => index >= 0);
   const selected = open === null ? null : attachments[open];
   return <>
-    <div className="mt-2 flex flex-wrap gap-2">{attachments.map((attachment, index) => {
+    <div ref={container} className="mt-2 flex flex-wrap gap-2">{attachments.map((attachment, index) => {
       const name = attachment.name ?? attachment.path.split('/').at(-1) ?? 'Attachment', url = urls[index];
-      return attachment.type === 'localImage' ? <button key={index} type="button" aria-label={name} className="overflow-hidden rounded-lg border border-border-seam" onClick={() => setOpen(index)} disabled={!url}>{url ? <img src={url} alt={name} className="max-h-48 max-w-64 object-contain" /> : <span className="block px-3 py-2 text-xs">{name}</span>}</button>
-        : <a key={index} href={url} download={name} aria-disabled={!url} className="inline-flex items-center gap-1.5 rounded-lg border border-border-seam px-2.5 py-1.5 text-xs hover:bg-state-hover"><Icon name="File" aria-hidden className="size-4" />{name}</a>;
+      return attachment.type === 'localImage' ? <button key={index} data-answers-image={index} type="button" aria-label={name} className="overflow-hidden rounded-lg border border-border-seam" onClick={() => setOpen(index)} disabled={!url}>{url ? <img src={url} alt={name} className="max-h-48 max-w-64 object-contain" /> : <span className="block px-3 py-2 text-xs">{name}</span>}</button>
+        : <a key={index} href="#" download={name} onClick={event => { event.preventDefault(); void download(attachment); }} className="inline-flex items-center gap-1.5 rounded-lg border border-border-seam px-2.5 py-1.5 text-xs hover:bg-state-hover"><Icon name="File" aria-hidden className="size-4" />{name}</a>;
     })}</div>
     {selected && <ImageLightbox isOpen imageSrc={urls[open!] ?? null} imageAlt={selected.name ?? 'Attached image'} title={selected.name ?? selected.path.split('/').at(-1) ?? 'Image'} hasMultipleImages={images.length > 1} previousDisabled={open === images[0]} nextDisabled={open === images.at(-1)} onClose={() => setOpen(null)} onPrevious={() => setOpen(images[images.indexOf(open!) - 1] ?? null)} onNext={() => setOpen(images[images.indexOf(open!) + 1] ?? null)} />}
   </>;
@@ -55,21 +71,24 @@ export function useAnswersBadge() {
 
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
 // Like Telegram's read cursor: a message is read once its end has reached the screen or was scrolled past. No timer.
+const readLists = new WeakMap<HTMLElement, { cards: Map<HTMLElement, () => void>; check: () => void; schedule: () => void; frame: number }>();
 function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void) {
   const latest = useRef(onRead); latest.current = onRead;
   useEffect(() => {
     const node = ref.current, root = node?.closest<HTMLElement>('.overflow-auto');
     if (!enabled || !node || !root) return;
-    let frame = 0, done = false;
-    const check = () => {
-      frame = 0; if (done || document.visibilityState === 'hidden') return;
-      const box = node.getBoundingClientRect();
-      if (box.height > 0 && box.bottom <= root.getBoundingClientRect().bottom) { done = true; latest.current(); }
-    };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(check); };
-    root.addEventListener('scroll', schedule, { passive: true }); document.addEventListener('visibilitychange', check);
-    check();
-    return () => { done = true; cancelAnimationFrame(frame); root.removeEventListener('scroll', schedule); document.removeEventListener('visibilitychange', check); };
+    let list = readLists.get(root);
+    if (!list) {
+      const cards = new Map<HTMLElement, () => void>();
+      list = { cards, frame: 0, check: () => {}, schedule: () => {} };
+      const shared = list;
+      shared.check = () => { shared.frame = 0; if (document.visibilityState === 'hidden') return; const bottom = root.getBoundingClientRect().bottom; for (const [card, read] of cards) { const box = card.getBoundingClientRect(); if (box.height > 0 && box.bottom <= bottom) { cards.delete(card); read(); } } };
+      shared.schedule = () => { if (!shared.frame) shared.frame = requestAnimationFrame(shared.check); };
+      root.addEventListener('scroll', shared.schedule, { passive: true }); document.addEventListener('visibilitychange', shared.schedule);
+      readLists.set(root, shared);
+    }
+    list.cards.set(node, () => latest.current()); list.schedule();
+    return () => { list.cards.delete(node); if (!list.cards.size) { cancelAnimationFrame(list.frame); root.removeEventListener('scroll', list.schedule); document.removeEventListener('visibilitychange', list.schedule); readLists.delete(root); } };
   }, [ref, enabled]);
 }
 // bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
@@ -292,6 +311,8 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
   const view = stored === 'pinned' ? 'saved' : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
+  const [searchQuery, setSearchQuery] = useState(query);
+  useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
   const bbChat = useSettings().values?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', false);
@@ -316,7 +337,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, query, projectId, questions])} {...{ threadId, view, questions }} query={list ? query : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId, questions])} {...{ threadId, view, questions }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
