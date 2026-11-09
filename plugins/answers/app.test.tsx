@@ -414,9 +414,9 @@ it('renders thread mentions in user questions through bb markdown', async () => 
   expect(chip!.parentElement!.textContent).toBe('Send @thread:thr_abc123 the rules\nnow');
 });
 it('links task keys of known Work Board projects in user questions', async () => {
-  const { slot } = await setup({ workBoardProjects: () => ({ available: true, projects: [{ id: 'p', name: 'Anvil', prefix: 'ANV' }] }), list: () => ({ items: [item, { ...item, id: 'ans_task', question: 'See ANV-5, not GPT-6 or XANV-7, and [ANV-9](/plugins/work-board/work-board/task/ANV-9)' }], nextCursor: null }) });
-  await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('[ANV-5](/plugins/work-board/work-board/task/ANV-5)'));
-  expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent).filter(text => /ANV|GPT/.test(text!))).toEqual(['[ANV-5](/plugins/work-board/work-board/task/ANV-5)', '[ANV-9](/plugins/work-board/work-board/task/ANV-9)']);
+  const { slot } = await setup({ workBoardProjects: () => ({ available: true, projects: [{ id: 'p', name: 'Acme', prefix: 'ACM' }] }), list: () => ({ items: [item, { ...item, id: 'ans_task', question: 'See ACM-5, not GPT-6 or XACM-7, and [ACM-9](/plugins/work-board/work-board/task/ACM-9)' }], nextCursor: null }) });
+  await waitFor(() => expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent)).toContain('[ACM-5](/plugins/work-board/work-board/task/ACM-5)'));
+  expect(slot.getAllByTestId('bb-markdown').map(node => node.textContent).filter(text => /ACM|GPT/.test(text!))).toEqual(['[ACM-5](/plugins/work-board/work-board/task/ACM-5)', '[ACM-9](/plugins/work-board/work-board/task/ACM-9)']);
 });
 it('shows bb’s working spinner instead of the waiting label', async () => {
   const { slot } = await setup({ list: () => ({ items: [{ ...item, status: 'waiting', answer: null }], nextCursor: null }) });

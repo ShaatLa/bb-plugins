@@ -170,9 +170,9 @@ describe('reply pools and inbox',()=>{
  });
  it('shows thread titles and link text in recipient previews',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a');
-  db.prepare("UPDATE items SET status='answered',answer=? WHERE id='ans_a'").run('Sent **@thread:thr_mgr#msg=3** see [ANV-5](/plugins/work-board/work-board/task/ANV-5) and `x`');
+  db.prepare("UPDATE items SET status='answered',answer=? WHERE id='ans_a'").run('Sent **@thread:thr_mgr#msg=3** see [ACM-5](/plugins/work-board/work-board/task/ACM-5) and `x`');
   harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.includes('thr_mgr') ? [makeThreadResponse({id:'thr_mgr',title:'Manager'})] : [makeThreadResponse({id:'a',title:'A'})]);
-  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].preview).toBe('Sent @Manager see ANV-5 and x');
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].preview).toBe('Sent @Manager see ACM-5 and x');
  });
  it('validates pool CRUD, revisions, ordering, missing threads and tags',async()=>{
   const {harness,db}=setup();

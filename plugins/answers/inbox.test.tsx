@@ -109,11 +109,11 @@ it('wraps a contact in bb’s thread menu when bb lists the thread', async () =>
   expect(slot.container.querySelectorAll('[data-thread-status-glyph]')).toHaveLength(1);
 });
 it('groups contacts under project headers when the setting is on', async () => {
-  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Anvil' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }, { ...one, threadId:'thr_c', threadTitle:'C', projectId:'pa', projectName:'Anvil' }];
+  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }, { ...one, threadId:'thr_c', threadTitle:'C', projectId:'pa', projectName:'Acme' }];
   const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) }, settings: { groupByProject: true } } as any);
   const list = slot.getByRole('listbox', { name:'Recipients' });
   await within(list).findAllByRole('option');
-  expect(Array.from(list.querySelectorAll('p, [role=option]')).map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Anvil', 'A', 'C', 'Plugins', 'B']);
+  expect(Array.from(list.querySelectorAll('p, [role=option]')).map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Acme', 'A', 'C', 'Plugins', 'B']);
 });
 it('resizes the contact column with the keyboard and remembers the width', async () => {
   const { slot } = setup();
@@ -151,18 +151,18 @@ it('names usage windows the way bb does', async () => {
   expect(windowLabel({ label:'Flint⁣', usedPercent:0, resetsAt:null })).toBe('Flint');
 });
 it('orders project groups and saves a dragged order in plugin settings', async () => {
-  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Anvil' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }];
+  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }];
   const setPreferences = vi.fn(() => ({ ok:true }));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }), setPreferences }, settings: { groupByProject: true, projectOrder: 'gone,pb' }, sidebarThreads: { threads: [], projects: [{ id:'personal', name:'Personal', isPersonal:true }, { id:'pb', name:'Plugins', isPersonal:false }, { id:'pa', name:'Anvil', isPersonal:false }] } } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }), setPreferences }, settings: { groupByProject: true, projectOrder: 'gone,pb' }, sidebarThreads: { threads: [], projects: [{ id:'personal', name:'Personal', isPersonal:true }, { id:'pb', name:'Plugins', isPersonal:false }, { id:'pa', name:'Acme', isPersonal:false }] } } as any);
   const list = slot.getByRole('listbox', { name:'Recipients' });
   await within(list).findAllByRole('option');
   const headers = () => Array.from(list.querySelectorAll('p')).map(node => node.textContent);
-  expect(headers()).toEqual(['Plugins', 'Anvil']);
-  fireEvent.dragStart(within(list).getByText('Anvil'), { dataTransfer: { setData: () => {}, effectAllowed: '' } });
+  expect(headers()).toEqual(['Plugins', 'Acme']);
+  fireEvent.dragStart(within(list).getByText('Acme'), { dataTransfer: { setData: () => {}, effectAllowed: '' } });
   const plugins = within(list).getByRole('group', { name:'Plugins' });
   fireEvent.dragOver(plugins, { clientY: -1 });
   fireEvent.drop(plugins, { clientY: -1 });
-  expect(headers()).toEqual(['Anvil', 'Plugins']);
+  expect(headers()).toEqual(['Acme', 'Plugins']);
   await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ projectOrder:'pa,pb' }));
 });
 
