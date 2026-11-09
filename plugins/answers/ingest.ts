@@ -37,7 +37,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    const attachments = (Array.isArray(d.input) ? d.input : []).filter((x:any) => (x.type === 'localImage' || x.type === 'localFile') && typeof x.path === 'string').map((x:any) => ({type:x.type,path:x.path,...(x.name ? {name:x.name} : {}),...(x.mimeType ? {mimeType:x.mimeType} : {}),...(x.sizeBytes != null ? {sizeBytes:x.sizeBytes} : {}),...(x.hostId ? {hostId:x.hostId} : {}),...(x.sourceProjectId ? {sourceProjectId:x.sourceProjectId} : {})}));
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
-   if (trackQuestions && d.initiator === 'user' && d.senderThreadId == null && d.originPluginId == null && text && !command) {
+   // Messages other plugins send are noise; the owner's own words sent through Answers (Reply, pool, quote popup) still count.
+   if (trackQuestions && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && text && !command) {
     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
    }
   } else if (e.type === 'client/turn/rejected' && d.requestId) {
