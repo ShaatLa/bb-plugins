@@ -409,9 +409,11 @@ describe('0.3 server attention',()=>{
  });
  it('validates options, stores trimmed options and enters attention',async()=>{
   const {harness,db}=setup();
-  for(const options of [[],['a',' a '],['x'.repeat(81)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
-  const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','No']},{threadId:'t'});
-  expect(db.prepare('SELECT options,notify_state FROM items WHERE id=?').get(id)).toEqual({options:'["Yes","No"]',notify_state:0});
+  for(const options of [[],['a',' a '],['x'.repeat(201)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
+  for(const extra of [{recommended:'Maybe'},{reason:'why'},{options:undefined,recommended:'Yes'}]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:['Yes','No'],...extra},{threadId:'t'})).rejects.toThrow();
+  const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','x'.repeat(200)],recommended:' Yes',reason:'Cheaper'},{threadId:'t'});
+  expect(db.prepare('SELECT options,recommended,recommend_reason,notify_state FROM items WHERE id=?').get(id)).toEqual({options:JSON.stringify(['Yes','x'.repeat(200)]),recommended:'Yes',recommend_reason:'Cheaper',notify_state:0});
+  expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0]).toMatchObject({recommended:'Yes',recommendReason:'Cheaper'});
  });
  it('retries the latest attempt and handles live pre-acceptance failures',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine');

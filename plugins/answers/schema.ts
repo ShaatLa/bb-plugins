@@ -66,4 +66,6 @@ ALTER TABLE items ADD COLUMN task_key TEXT;                               -- F12
 UPDATE items SET answered_at=CASE WHEN status='answered' THEN updated_at END, attempt_request_id=request_id;
 CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
 CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'held_for' = quiet window end`,
+  `ALTER TABLE items ADD COLUMN recommended TEXT;                         -- answers_ask: recommended option text
+ALTER TABLE items ADD COLUMN recommend_reason TEXT;`,
 ];

@@ -8,12 +8,14 @@ import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask for small non-blocking questions to the user; blocking decisions stay in Work Board. answers_ask accepts 1–6 unique short options for quick replies.";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask to ask the user a question, including decisions that block your work; end the turn after asking; the reply arrives as a user message quoting it. Decisions about a specific Work Board task belong on that task. Options: 1–6 unique, ≤200 chars, optional recommended + reason.";
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
-  ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(80)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional()}).strict(),
+  ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional()}).strict()
+    .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
+    .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
 type Row = Record<string, any>;
 export function buildReplyMessage(entries: readonly {quote:string;note:string}[]): string {
@@ -86,7 +88,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.created_at}|${last.id}` : null};
@@ -280,7 +282,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',ask:'Ask the user a small non-blocking question, optionally with 1–6 unique short quick-reply options.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -291,7 +293,8 @@ export default function plugin(bb: BbPluginApi) {
           }
           if (method==='ask') {
             const id='ans_'+randomUUID();
-            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,(p as z.infer<typeof toolInputs.ask>).question,JSON.stringify((p as z.infer<typeof toolInputs.ask>).options ?? null),now,now);
+            const ask=p as z.infer<typeof toolInputs.ask>;
+            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,recommended,recommend_reason,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,ask.question,JSON.stringify(ask.options ?? null),ask.recommended ?? null,ask.reason ?? null,now,now);
             onAttention();
             return id;
           }

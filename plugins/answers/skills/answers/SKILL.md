@@ -7,7 +7,7 @@ description: Track user questions, later answers, non-blocking questions for the
 
 Answers tracks user messages across threads (except plugin-sent messages and agent-spawned threads) and pairs them with the final reply from a successfully completed turn. It also tracks small non-blocking questions agents ask the user and messages the user saves manually.
 
-When the answer will arrive in a later turn, such as after delegated work, call `answers_defer`. When a later turn delivers the answer, call `answers_list`, then `answers_resolve`; put the answer in that turn's final message. Use `answers_ask` for a small non-blocking question to the user; optional `options` accepts 1–6 unique short quick replies. Keep blocking decisions in Work Board.
+When the answer will arrive in a later turn, such as after delegated work, call `answers_defer`. When a later turn delivers the answer, call `answers_list`, then `answers_resolve`; put the answer in that turn's final message. Use `answers_ask` to ask the user a question, including a decision that blocks your work. Do not wait for the reply in the same turn: end the turn, and the reply arrives as a new user message that quotes the question. Optional `options` accepts 1–6 unique quick replies of up to 200 characters; `recommended` must equal one option and `reason` (up to 300 characters) explains it. A decision about a specific Work Board task belongs on that task, where it stays recorded with the card.
 
 CLI:
 

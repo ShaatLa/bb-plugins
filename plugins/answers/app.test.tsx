@@ -289,8 +289,9 @@ it('uses the attention predicate for failed, snoozed and dismissed items', async
 });
 it('offers quick replies, interim actions and retry', async () => {
   const reply = vi.fn(() => ({ delivery: 'sent' })), keepWaiting = vi.fn(() => ({ ok: true })), retryTurn = vi.fn(() => ({ ok: true }));
-  const { slot } = await setup({ list: () => ({ items: [{ ...item, id: 'ans_ask', kind: 'for_me', status: 'open', question: 'Choose?', answer: null, options: ['Yes'] }, { ...item, likelyInterim: true }, { ...item, id: 'ans_fail', question: 'Failed question?', status: 'waiting', answer: null, failedAt: 1 }], nextCursor: null }), reply, keepWaiting, retryTurn });
-  fireEvent.click(slot.getByRole('button', { name: 'Yes' }));
+  const { slot } = await setup({ list: () => ({ items: [{ ...item, id: 'ans_ask', kind: 'for_me', status: 'open', question: 'Choose?', answer: null, options: ['Yes', 'No'], recommended: 'Yes', recommendReason: 'Cheaper' }, { ...item, likelyInterim: true }, { ...item, id: 'ans_fail', question: 'Failed question?', status: 'waiting', answer: null, failedAt: 1 }], nextCursor: null }), reply, keepWaiting, retryTurn });
+  expect(slot.getByText('Recommended: Cheaper')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
   fireEvent.click(slot.getByRole('button', { name: 'Keep waiting' }));
   await waitFor(() => expect(keepWaiting).toHaveBeenCalledWith({ id: item.id }));
