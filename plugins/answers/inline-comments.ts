@@ -4,8 +4,9 @@ export function parseInlineComments(text: string): { text: string; comments: { l
   if (!matches.length) return { text, comments: [] };
   const comments: { label: string; passage: string; comment: string }[] = [];
   let remaining = '', cursor = 0;
-  for (const match of matches) {
-    const start = match.index!, end = matches.find(other => other.index! > start)?.index ?? text.length;
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i]!;
+    const start = match.index!, end = matches[i + 1]?.index ?? text.length;
     const block = text.slice(start, end);
     const lines = block.split('\n');
     const intro = lines.findIndex(line => line === 'The user attached this passage from the conversation to their message:');
