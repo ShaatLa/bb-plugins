@@ -217,6 +217,11 @@ export default function plugin(bb: BbPluginApi) {
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
       const projects=rows.length ? await bb.sdk.projects.list() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
+      // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
+      const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND coalesce(answered_at,created_at)<=?`);
+      let seen=0;
+      for (const r of rows) { const readAt=threadMap.get(r.thread_id)?.lastReadAt; if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
+      if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
       if (mentioned.length) threads.push(...await bb.sdk.threads.list({threadIds:mentioned,includeHidden:true,limit:200}));

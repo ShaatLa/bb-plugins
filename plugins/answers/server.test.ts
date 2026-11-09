@@ -26,6 +26,16 @@ describe('server',()=>{
   const all=await harness.behavior.callRpc('markRead',{all:true}) as any; expect(read).toHaveBeenLastCalledWith({threadId:'u'});
   await harness.behavior.callRpc('undoRead',{batch:all.batch}); await vi.waitFor(()=>expect(unread).toHaveBeenCalledWith({threadId:'u'}));
  });
+ it('marks answers read when the thread was read in bb after they arrived',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_old','mine','t'); seed(db,'ans_new','mine','t');
+  db.prepare("UPDATE items SET status='answered',answer='a',answered_at=? WHERE id=?").run(1000,'ans_old');
+  db.prepare("UPDATE items SET status='answered',answer='b',answered_at=? WHERE id=?").run(3000,'ans_new');
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:2000} as any)]);
+  const result=await harness.behavior.callRpc('recipients',{}) as any;
+  expect(result.recipients[0].unread).toBe(1);
+  expect(db.prepare("SELECT id FROM items WHERE read_at IS NOT NULL").all()).toEqual([{id:'ans_old'}]);
+ });
  it('validates every RPC boundary and tags both reads',async()=>{
   const {harness}=setup();
   for (const [name,input] of Object.entries({list:{view:'wrong'},counts:{extra:1},markRead:{ids:['bad']},setPinned:{id:'ans_a',pinned:1},setDismissed:{id:'bad',dismissed:true},reply:{id:'ans_a',text:'x'.repeat(8001)},save:{threadId:'t',seq:-1,role:'user',text:'x'}})) await expect(harness.behavior.callRpc(name,input)).rejects.toThrow();

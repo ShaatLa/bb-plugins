@@ -87,6 +87,10 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
   useEffect(() => { const update = () => setDocumentVisible(document.visibilityState !== 'hidden'); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
   const visible = tabVisible && documentVisible;
   const sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads, projects = sidebar.projects;
+  // A thread read in bb drops its unread mark there; refetch so the server can mark the same answers read here.
+  const bbReadKey = sidebarThreads.filter(t => !t.isUnread).map(t => t.id).join(' ');
+  const firstBbRead = useRef(true);
+  useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } refresh(); }, [bbReadKey]);
   // The contact column is resizable at the chat's expense; the width is remembered like the rest of the page state.
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
