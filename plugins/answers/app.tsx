@@ -230,6 +230,7 @@ function Page({ threadId, view, projectId, query, questions, cursor }: { threadI
 
 type ViewOption = { value: View | 'inbox'; label: string; hint: string; icon: IconName };
 // The views as tasks: what is new, what I am waiting for, what I owe, what I kept, everything.
+// Removal candidate (review 2026-11): unused in day-to-day work so far (the view picker beyond Inbox); keep until a usage review decides.
 const viewOptions = (thread: boolean): ViewOption[] => [
   thread ? { value: 'unread', label: 'Unread', hint: 'New answers and questions for you in this thread', icon: 'Mail' } : { value: 'inbox', label: 'Inbox', hint: 'New answers and questions for you, by thread', icon: 'Mail' },
   { value: 'waiting', label: 'Awaiting answer', hint: 'Your questions agents have not answered yet', icon: 'Clock' },
@@ -304,7 +305,9 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       <div className="flex items-center gap-1">
         <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={setView} />
         <span className="flex-1" />
+        {/* Removal candidate (review 2026-11): the Questions filter is unused so far; keep until a usage review decides. */}
         {view !== 'for_me' && <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>}
+        {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
         {(view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
       </div>
       {list && <div className="flex gap-2">
