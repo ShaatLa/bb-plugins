@@ -190,6 +190,12 @@ it('drops the pending bubble when bb queues the message, since the queue card sh
   change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
   await waitFor(() => expect(slot.queryByText('Queued one')).toBeNull());
 });
+it('shows a quoted queued reply as the quote line and the message line', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'> Quoted passage\n\nMy reply', mentions:[] }], updatedAt:1 };
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
+  const card = await slot.findByRole('region', { name:'Queued messages' });
+  await waitFor(() => expect(within(card).getAllByTestId('bb-markdown').map(node => node.textContent)).toEqual(['Quoted passage', 'My reply']));
+});
 it('renders queued messages and sends or deletes them through the SDK', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
   const sendNow = vi.fn(() => Promise.resolve({})), remove = vi.fn(() => Promise.resolve({}));
