@@ -164,6 +164,8 @@ export default function plugin(bb: BbPluginApi) {
       if (item.kind!=='mine' || !['waiting','deferred'].includes(item.status) || item.failed_at===null || !item.attempt_request_id || item.thread_deleted) throw new Error('item has no failed attempt');
       await bb.sdk.threads.retry({threadId:item.thread_id,turnRequestId:item.attempt_request_id}); invalidate(); return {ok:true as const};
     },
+    // Contact-list preferences live in plugin settings, so they follow the user across devices.
+    async setPreferences(raw:z.infer<typeof inputs.setPreferences>) {await notifier.settings.experimental_set(inputs.setPreferences.parse(raw)); return {ok:true as const};},
     async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
       inputs.workBoardProjects.parse(raw);
       const outputSchema=z.object({projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))});

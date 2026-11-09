@@ -126,3 +126,18 @@ it('resizes the contact column with the keyboard and remembers the width', async
   fireEvent.doubleClick(handle);
   expect(handle.getAttribute('aria-valuenow')).toBe('230');
 });
+it('shows usage when set to always and changes contact preferences from the footer menu', async () => {
+  const setPreferences = vi.fn(() => ({ ok:true }));
+  const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:91, resetsAt:new Date(Date.now() + 26 * 3600000).toISOString() }] }, 'local-models':{ status:'ok', windows:[{ label:'Flint', usedPercent:0, resetsAt:null }] } }));
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }), setPreferences }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
+  const usage = await slot.findByLabelText('Usage');
+  expect(usage.textContent).toContain('Weekly limit');
+  expect(usage.textContent).toContain('91%');
+  expect(usage.textContent).toMatch(/1d [12]h/);
+  expect(usage.textContent).not.toContain('Flint');
+  fireEvent.click(slot.getByRole('button', { name:'Contact list settings' }));
+  fireEvent.click(slot.getByRole('menuitemcheckbox', { name:'Group by project' }));
+  await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ groupByProject:true }));
+  fireEvent.click(slot.getByRole('menuitemradio', { name:'Never' }));
+  await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ usage:'never' }));
+});
