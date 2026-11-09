@@ -32,7 +32,7 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
 
 - Models come from the server's `/v1/models`. The context window is read from
   the llama.cpp router's `--ctx-size` and shown by `bb local-models status`.
-- Provider usage shows a single row `Available models: …` with no bar or percent.
+- Provider usage shows a single row listing the installed models, with no bar or percent.
 - The shim runs its own agent loop against the llama.cpp router: streaming
   chat completions, built-in file and shell tools, MCP tools, reasoning effort
   mapping via `reasoning.ts`, and permission handling for accept-edits mode.
