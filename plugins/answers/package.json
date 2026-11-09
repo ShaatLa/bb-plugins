@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-answers",
-  "version": "0.3.31",
+  "version": "0.3.32",
   "type": "module",
   "license": "MIT",
   "engines": {
