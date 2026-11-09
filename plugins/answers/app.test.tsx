@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
+import { useComposer } from '@get-bb/plugin-sdk/app';
 import { loadPluginApp, renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 import { itemSchema, type Item } from './contract';
@@ -65,7 +66,7 @@ describe('Answers app', () => {
     const { app, slot, list } = await setup();
     expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'MessageQuestion' });
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
-    expect(app.messageActions[1]).toMatchObject({ title: 'Save to Answers' });
+    expect(app.messageActions.find(action => action.id === 'save')).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
     expect(slot.getByRole('button', { name: 'Reply' })).toBeTruthy();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
@@ -135,7 +136,7 @@ it('saves selected message text using its message sequence', async () => {
   const app = await loadPluginApp(() => import('./app'));
   const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved', created:true } }) }));
   vi.stubGlobal('fetch', fetch);
-  await app.messageActions[1]!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
+  await app.messageActions.find(action => action.id === 'save')!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));
 });
 
@@ -212,6 +213,21 @@ it('snapshots a quote draft through focus and refresh; Add to pool opens the poo
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', quoteSeq: 20, note: 'Snapshot note' }));
   await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
 });
+it('keeps the bottom composer mounted while the quote popup is open', async () => {
+  const { slot } = await inboxSetup();
+  const bottom = slot.getByRole('textbox', { name: 'Send message' });
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
+  Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 20, bottom: 30 }) });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  expect(slot.getByRole('textbox', { name: 'Send message' })).toBe(bottom);
+  expect(document.activeElement).toBe(slot.getByRole('textbox', { name: 'Quote reply text' }));
+  fireEvent.keyDown(slot.getByRole('textbox', { name: 'Quote reply text' }), { key: 'Escape' });
+  expect(slot.getByRole('textbox', { name: 'Send message' })).toBe(bottom);
+});
+
 it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
   const { slot } = await inboxSetup();
   const body = slot.getByText('The answer').closest('[data-agent-body]')!;
@@ -266,6 +282,28 @@ it('adds selected chat text to the thread pool and opens My questions', async ()
   expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/poolAdd', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, quote: 'Selected', quoteSeq: 20 }) }));
   expect(openTab).toHaveBeenCalledWith({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
 });
+it('inserts selected chat comments into the host composer and cancels on Esc', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  let composer!: ReturnType<typeof useComposer>;
+  const Overlay = app.appOverlays.find(overlay => overlay.id === 'chat-comment')!.component;
+  const slot = renderSlot({ component: () => { composer = useComposer(); return <Overlay />; } }, {}, { composer: { text: 'Existing', scope: { kind: 'thread', threadId: item.threadId } } });
+  const action = app.messageActions.find(action => action.id === 'comment')!;
+  const context = { threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant' as const, text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'First\nSecond', composer, experimental_panel: {} as any };
+  act(() => { void action.run(context); });
+  const note = slot.getByRole('textbox', { name: 'Comment text' });
+  fireEvent.change(note, { target: { value: 'My comment' } });
+  fireEvent.keyDown(note, { key: 'Enter' });
+  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment');
+  act(() => { void action.run({ ...context, selectedText: 'Another' }); });
+  fireEvent.change(slot.getByRole('textbox', { name: 'Comment text' }), { target: { value: 'Second comment' } });
+  fireEvent.click(slot.getByRole('button', { name: 'Insert comment' }));
+  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment\n\n> Another\n\nSecond comment');
+  act(() => { void action.run(context); });
+  fireEvent.keyDown(slot.getByRole('textbox', { name: 'Comment text' }), { key: 'Escape' });
+  expect(slot.queryByRole('dialog')).toBeNull();
+  expect(slot.inspection.composer.text).toBe('Existing\n\n> First\n> Second\n\nMy comment\n\n> Another\n\nSecond comment');
+});
+
 it('sends the snapshot to its original recipient after switching recipients', async () => {
   const quoteReply = vi.fn(() => ({ delivery: 'sent' }));
   const recipients = vi.fn((input: { selected?: string }) => ({ recipients: [recipient, { ...recipient, threadId: 'thr_two', threadTitle: 'Second recipient' }].filter(r => r.unread || r.threadId === input.selected) }));
@@ -402,4 +440,19 @@ it('keeps Reply on agent questions in the thread side panel', async () => {
   const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [ask, item], nextCursor: null }) } });
   await slot.findByText('Pick one?');
   expect(slot.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
+});
+
+it('pool note Enter sends its entry after saving; Shift+Enter does not', async () => {
+  const { Pools } = await import('./inbox');
+  const poolUpdate = vi.fn(() => ({ revision: 1 }));
+  const poolSend = vi.fn(() => ({ delivery: 'sent', sent: 1, keptEdited: 0 }));
+  const entries = ['one', 'two'].map((id, index) => ({ id, threadId: item.threadId, quote: id, quoteSeq: 20, itemId: item.id, note: '', attachments: [], revision: 0, createdAt: index, updatedAt: index }));
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: null, entries }] }), poolUpdate, poolSend } });
+  const [first, second] = await slot.findAllByRole('textbox', { name: 'Pool note' });
+  fireEvent.keyDown(second!, { key: 'Enter', shiftKey: true });
+  expect(poolSend).not.toHaveBeenCalled();
+  fireEvent.change(first!, { target: { value: 'Dirty' } });
+  fireEvent.keyDown(first!, { key: 'Enter' });
+  await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'one', note: 'Dirty', revision: 0 }));
+  await waitFor(() => expect(poolSend).toHaveBeenCalledWith({ threadId: item.threadId, ids: ['one'] }));
 });

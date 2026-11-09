@@ -244,7 +244,7 @@ export default function plugin(bb: BbPluginApi) {
       const p=inputs.poolSend.parse(raw);
       return guarded(p.threadId,async()=>{
         await bb.sdk.threads.get({threadId:p.threadId});
-        const entries=db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[];
+        const entries=(db.prepare('SELECT * FROM pool_entries WHERE thread_id=? ORDER BY created_at,rowid').all(p.threadId) as Row[]).filter(entry=>!p.ids || p.ids.includes(entry.id));
         if (!entries.length) throw new Error('Pool is empty');
         checkSources(p.threadId,entries);
         const text=buildReplyMessage(entries as {quote:string;note:string}[]);
