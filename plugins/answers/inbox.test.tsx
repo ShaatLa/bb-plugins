@@ -141,3 +141,11 @@ it('shows usage when set to always and changes contact preferences from the foot
   fireEvent.click(slot.getByRole('menuitemradio', { name:'Never' }));
   await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ usage:'never' }));
 });
+it('names usage windows the way bb does', async () => {
+  const { windowLabel } = await import('./contacts-footer');
+  expect(windowLabel({ label:'Weekly limit', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d');
+  expect(windowLabel({ label:'Fable', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d · Fable');
+  expect(windowLabel({ label:'7d · Argon', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d · Argon');
+  expect(windowLabel({ label:'5h', kind:'five-hour', usedPercent:0, resetsAt:null })).toBe('5h');
+  expect(windowLabel({ label:'Flint⁣', usedPercent:0, resetsAt:null })).toBe('Flint');
+});
