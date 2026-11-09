@@ -112,5 +112,17 @@ it('groups contacts under project headers when the setting is on', async () => {
   const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) }, settings: { groupByProject: true } } as any);
   const list = slot.getByRole('listbox', { name:'Recipients' });
   await within(list).findAllByRole('option');
-  expect([...list.querySelectorAll('p, [role=option]')].map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Anvil', 'A', 'C', 'Plugins', 'B']);
+  expect(Array.from(list.querySelectorAll('p, [role=option]')).map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Anvil', 'A', 'C', 'Plugins', 'B']);
+});
+it('resizes the contact column with the keyboard and remembers the width', async () => {
+  const { slot } = setup();
+  const handle = slot.getByRole('separator', { name:'Resize contacts' });
+  expect(handle.getAttribute('aria-valuenow')).toBe('230');
+  fireEvent.keyDown(handle, { key:'ArrowRight' });
+  expect(handle.getAttribute('aria-valuenow')).toBe('246');
+  await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:contacts-width')).toBe('246'));
+  for (let i = 0; i < 40; i++) fireEvent.keyDown(handle, { key:'ArrowLeft' });
+  expect(handle.getAttribute('aria-valuenow')).toBe('170');
+  fireEvent.doubleClick(handle);
+  expect(handle.getAttribute('aria-valuenow')).toBe('230');
 });
