@@ -23,7 +23,7 @@ type Props = {
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift' }: Props) {
-  const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLDivElement>(null), right = useRef<HTMLDivElement>(null);
+  const sdk = useSdk(), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   // Like bb: one row (attach, text, send) until the text wraps or there is more to show; it stays open until cleared,
   // so a line that wraps only in the narrow one-row layout does not flip the layout back and forth.
@@ -54,7 +54,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   }
   const blocked = sendDisabled || pending || uploading > 0 || voiceActive;
   const submit = (options?: SendOptions) => { if (!blocked) onSend(options); };
-  return <div ref={root} className={`rounded-xl border border-border bg-background ${className}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
+  return <form ref={root} className={`group/promptbox relative w-full rounded-xl border border-border bg-background ${className}`} onSubmit={event => event.preventDefault()} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
@@ -67,7 +67,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
     {/* bb draws its microphone in a layer over the textarea's bottom-right ([&>.relative>.absolute]). In one row that is
         already just left of Send; in the open layout the layer moves down into the action row, left of the send group. */}
-    <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2 ${tall ? '[&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : '[&>.relative>.absolute]:bottom-0'}`}>
+    <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
       <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
       <VoiceInputTextarea ref={editor} aria-label={label} rows={1} autoFocus={autoFocus} placeholder={placeholder} maxLength={8000} className={`block w-full resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none placeholder:text-subtle-foreground ${tall ? '' : 'pr-10'}`} value={value} disabled={pending && !editableWhilePending}
         onValueChange={onChange} onVoiceInputActiveChange={setVoiceActive}
@@ -79,7 +79,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}
-  </div>;
+  </form>;
 }
 
 /**
