@@ -123,7 +123,7 @@ export function Inbox({ questions = false, onBulkRead }: { questions?: boolean; 
     if (!body || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) return;
     const range = clipSelection(selection.getRangeAt(0), body); if (!range) return;
     const quote = selectionMarkdown(range, body); if (!quote.trim()) return;
-    setDraft({ threadId: selected, projectId: result.data?.recipients.find(r => r.threadId === selected)?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(380, scroll.current.clientWidth - 16)), width: Math.min(380, scroll.current.clientWidth - 16) });
+    setDraft({ threadId: selected, projectId: result.data?.recipients.find(r => r.threadId === selected)?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(560, scroll.current.clientWidth - 16)), width: Math.min(560, scroll.current.clientWidth - 16) });
     setText(''); setFiles([]); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
   }
   async function send(pool: boolean, options?: SendOptions) {
