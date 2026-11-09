@@ -96,10 +96,14 @@ it('keeps the list and the previous conversation on screen while switching', asy
   expect(slot.queryByText('Question one')).toBeNull();
 });
 it('wraps a contact in bb’s thread menu when bb lists the thread', async () => {
-  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', environment:{ id:'env', path:'/x' } } as any;
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: [one, { ...one, threadId:'thr_other', threadTitle:'Other' }] }), list: () => ({ items:[base], nextCursor:null }) }, sidebarThreads: { threads:[thread] } } as any);
+  const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  // The contact itself is idle; its running sub-thread makes it busy, as a collapsed row does in bb's sidebar.
+  const thread = { ...idle, id:'thr_one' } as any, child = { ...idle, id:'thr_child', parentThreadId:'thr_one', runtimeStatus:'active', indicator:'runtime' } as any;
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: [one, { ...one, threadId:'thr_other', threadTitle:'Other' }] }), list: () => ({ items:[base], nextCursor:null }) }, sidebarThreads: { threads:[thread, child] } } as any);
   const menus = await slot.findAllByTestId('bb-thread-actions-context-menu');
   expect(menus.map(menu => menu.getAttribute('data-thread-id'))).toEqual(['thr_one']);
   expect(within(menus[0]!).getByRole('option').textContent).toContain('One');
   expect(within(slot.getByRole('listbox', { name:'Recipients' })).getAllByRole('option')).toHaveLength(2);
+  expect(within(menus[0]!).getByRole('option').querySelector('[data-thread-status-glyph="runtime"]')).toBeTruthy();
+  expect(slot.container.querySelectorAll('[data-thread-status-glyph]')).toHaveLength(1);
 });
