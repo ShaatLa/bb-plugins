@@ -178,6 +178,11 @@ it('shows a pending bubble until the matching newest item arrives, and skips dra
   fireEvent.change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   expect(slot.queryByText('Sending…')).toBeNull();
 });
+it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
+  const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  await waitFor(() => expect(slot.queryByText('Queued one')).toBeNull());
+});
 it('renders queued messages and sends or deletes them through the SDK', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
   const sendNow = vi.fn(() => Promise.resolve({})), remove = vi.fn(() => Promise.resolve({}));

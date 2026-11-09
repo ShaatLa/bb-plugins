@@ -142,7 +142,9 @@ export function Inbox({ questions = false, onBulkRead, bbChat = false }: { quest
     if (showBubble) setOptimistic(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     try {
       const input = [...(sent.text.trim() ? [{ type: 'text' as const, mentions: [], text: sent.text }] : []), ...sent.files.map(f => f.type === 'localImage' ? { type: 'localImage' as const, path: f.path, ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) } : { type: 'localFile' as const, path: f.path, name: f.name, ...(f.mimeType ? { mimeType: f.mimeType } : {}), ...(f.sizeBytes ? { sizeBytes: f.sizeBytes } : {}), ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) })];
-      await sdk.threads.send({ threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'answers', data: { kind: 'draft' } } } : {}) });
+      const result = await sdk.threads.send({ threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'answers', data: { kind: 'draft' } } } : {}) });
+      // A queued message lives in the queue card until bb delivers it, as in bb's own chat; a bubble would show it twice.
+      if (result.ok && result.delivery === 'queued') setOptimistic(old => old.filter(b => b.id !== optimisticId));
       if (JSON.stringify(composeDrafts()[threadId]) === JSON.stringify(sent)) { const all = composeDrafts(); delete all[threadId]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(all)); } catch { /* storage unavailable */ } }
       if (selectedRef.current === threadId) setCompose(current => JSON.stringify(current) === JSON.stringify(sent) ? { text: '', files: [] } : current);
       setQueueVersion(n => n + 1); refresh(); scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
