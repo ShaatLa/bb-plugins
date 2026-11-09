@@ -30,7 +30,8 @@ export const windowLabel = (w: Window) => { const label = w.label.replace(/\u206
 
 // Limit windows that reset (local models have none). Loaded while usage is enabled at all, so revealing it (e.g. collapsing bb's sidebar) shows numbers at once.
 function useUsage(enabled: boolean) {
-  const sdk = useSdk(), [usage, setUsage] = useState<Record<string, Provider> | null>(null), [tick, setTick] = useState(0);
+  // bb unmounts the page when switching plugins; the last numbers show at once while a fresh load runs.
+  const sdk = useSdk(), [usage, setUsage] = useStoredState<Record<string, Provider> | null>('bb-plugin-answers:page:usage-cache', null), [tick, setTick] = useState(0);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
