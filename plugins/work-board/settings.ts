@@ -1,12 +1,25 @@
+import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   autoArchiveAfterDaysSchema,
   staleIdleThresholdSchema,
   boardPreferencesSchema,
+  statusNotificationsSchema,
   BOARD_PREFERENCES_KEY,
 } from "./shared/project-settings";
 
 export async function migrateSettings(bb: BbPluginApi) {
+  if (!(await bb.storage.kv.get("status-notifications:project-migrated"))) {
+    const saved = await bb.storage.kv.get(BOARD_PREFERENCES_KEY);
+    const legacy = z.object({ statusNotifications: statusNotificationsSchema.default("off") }).passthrough().parse(saved ?? {});
+    // NULL marks old projects; a retry never replaces an explicit per-project choice.
+    bb.storage.database().prepare<[string]>("UPDATE projects SET status_notifications=COALESCE(status_notifications, ?)").run(legacy.statusNotifications);
+    if (saved) {
+      const { statusNotifications: _old, ...preferences } = legacy;
+      await bb.storage.kv.set(BOARD_PREFERENCES_KEY, boardPreferencesSchema.parse(preferences));
+    }
+    await bb.storage.kv.set("status-notifications:project-migrated", true);
+  }
   if (await bb.storage.kv.get("project-settings:migrated")) return;
   // shortcut: legacy controls stay visible for the migration load; reload once to remove them.
   const legacy = bb.settings.define({

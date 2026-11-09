@@ -15,6 +15,7 @@ import {
   templateSchema,
 } from "../shared/contract";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../shared/attachments";
+import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema } from "../shared/scheduled";
 
 export const archiveProjectSchema = z
   .object({
@@ -32,6 +33,7 @@ export const archiveProjectSchema = z
       z.literal(10),
       z.literal(11),
       z.literal(12),
+      z.literal(13),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -39,6 +41,10 @@ export const archiveProjectSchema = z
     labels: z.array(labelSchema),
     taskIds: z.array(idSchema),
     templates: z.array(templateSchema).default([]),
+    // v13: portable schedule definitions, task provenance and retained run history (never live queue state).
+    schedules: z.array(scheduleSchema).default([]),
+    scheduleSources: z.array(scheduleSourceSchema).default([]),
+    scheduleRuns: z.array(scheduleRunSchema).default([]),
   })
   .strict();
 
@@ -108,7 +114,53 @@ function unique(ids: readonly string[], label: string) {
     throw new Error(`Duplicate ${label} in archive`);
 }
 
-export function validateArchive({ manifest, records }: ProjectArchive): void {
+// Schedules must own their template task; sources and runs are provenance and may outlive their schedule.
+function validateScheduled({ manifest, records }: ProjectArchive): void {
+  const { schedules, scheduleSources: sources, scheduleRuns: runs } = manifest;
+  if (manifest.version < 13) {
+    if (schedules.length || sources.length || runs.length) throw new Error("Scheduled tasks require archive v13");
+    return;
+  }
+  const projectId = manifest.project.id;
+  const tasks = new Map(records.map(record => [record.task.id, record.task]));
+  unique(schedules.map(schedule => schedule.id), "schedule ID");
+  unique(schedules.map(schedule => schedule.templateTaskId), "schedule template task");
+  unique(sources.map(source => source.taskId), "scheduled source task");
+  unique(sources.flatMap(source => source.runId ? [source.runId] : []), "scheduled source run");
+  unique(sources.flatMap(source => source.occurrenceKey === null ? [] : [`${source.scheduleId}\n${source.occurrenceKey}`]), "scheduled source occurrence");
+  unique(runs.map(run => run.id), "schedule run ID");
+  unique(runs.map(run => `${run.scheduleId}\n${run.occurrenceKey}`), "schedule run occurrence");
+  const sourceByTask = new Map(sources.map(source => [source.taskId, source]));
+  const runById = new Map(runs.map(run => [run.id, run]));
+  for (const schedule of schedules) {
+    const template = sourceByTask.get(schedule.templateTaskId);
+    if (schedule.projectId !== projectId || !tasks.has(schedule.templateTaskId)) throw new Error(`Invalid schedule project or template task: ${schedule.id}`);
+    if (template?.role !== "template" || template.scheduleId !== schedule.id) throw new Error(`Schedule template source does not match: ${schedule.id}`);
+  }
+  const scheduleIds = new Set(schedules.map(schedule => schedule.id));
+  for (const source of sources) {
+    if (!tasks.has(source.taskId)) throw new Error(`Scheduled source references an unknown task: ${source.taskId}`);
+    if (source.role === "template") {
+      const schedule = schedules.find(candidate => candidate.id === source.scheduleId);
+      if (!scheduleIds.has(source.scheduleId) || schedule?.templateTaskId !== source.taskId || source.occurrenceKey !== null || source.runId !== null)
+        throw new Error(`Invalid template source: ${source.taskId}`);
+    } else if (source.occurrenceKey === null) throw new Error(`Scheduled result source needs an occurrence key: ${source.taskId}`);
+    const run = source.runId ? runById.get(source.runId) : undefined;
+    if (run && (run.scheduleId !== source.scheduleId || run.occurrenceKey !== source.occurrenceKey || (run.taskId !== null && run.taskId !== source.taskId)))
+      throw new Error(`Scheduled source does not match its run: ${source.taskId}`);
+  }
+  for (const run of runs) {
+    if (run.projectId !== projectId) throw new Error(`Schedule run belongs to another project: ${run.id}`);
+    if (run.taskId === null) continue;
+    const source = sourceByTask.get(run.taskId);
+    if (!tasks.has(run.taskId) || source?.scheduleId !== run.scheduleId || source.role === "template")
+      throw new Error(`Schedule run references an invalid task: ${run.id}`);
+  }
+}
+
+export function validateArchive(archive: ProjectArchive): void {
+  const { manifest, records } = archive;
+  validateScheduled(archive);
   const projectId = manifest.project.id;
   const taskIds = new Set(manifest.taskIds);
   const incoming = new Map(manifest.taskIds.map(id => [id, 0]));

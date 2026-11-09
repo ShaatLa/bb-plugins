@@ -146,6 +146,8 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           db.prepare("DELETE FROM task_activity_queue WHERE thread_id=? AND queue_id=?").run(row.thread_id, row.queue_id);
       }
       const claims = new Map(threadIds.length ? db.prepare<string[], { thread_id: string; task_id: string; turn_id: string }>(`SELECT thread_id, task_id, turn_id FROM task_activity_claims WHERE thread_id IN (${threadIds.map(() => "?").join(",")})`).all(...threadIds).map((row) => [row.thread_id, row] as const) : []);
+      // Agent comments are work evidence, not assignment; only a confirmed lost link permits Abandoned.
+      const lost = new Set(db.prepare<string[], { task_id: string }>(`SELECT DISTINCT task_id FROM comments WHERE task_id IN (${placeholders}) AND kind='system' AND (body LIKE 'Thread detached (archived):%' OR body LIKE 'Thread detached (deleted):%' OR body LIKE 'Thread detached (missing):%' OR body LIKE 'Thread detached (manual):%' OR body LIKE 'Thread detached (private):%')`).all(...ids).map(row => row.task_id));
       const taskData = store.tasks.listTaskActivity(ids);
       const focusedKeys = new Map<string, string | null>();
       const focusedKey = (taskId: string | null) => {
@@ -184,7 +186,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
         const task = taskData.get(id);
         const status = task?.status;
-        return [id, evaluateTaskActivity({ sessions, executionTarget: task?.executionTarget ?? "agent", hasWorked: history.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, executionTarget: task?.executionTarget ?? "agent", hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

@@ -1,3 +1,4 @@
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import type { BbPluginApi, PluginMentionItem } from "@get-bb/plugin-sdk";
 import { questionSchema } from "../shared/contract";
 
@@ -48,10 +49,10 @@ function searchTasks(
           t.status
         FROM tasks t
         JOIN projects p ON p.id = t.project_id
-        WHERE @search = '%%'
+        WHERE ${ordinaryTaskVisibilitySql()} AND (@search = '%%'
           OR (p.prefix || '-' || t.number) LIKE @search ESCAPE '\\'
           OR CAST(t.number AS TEXT) LIKE @search ESCAPE '\\'
-          OR t.title LIKE @search ESCAPE '\\'
+          OR t.title LIKE @search ESCAPE '\\')
         ORDER BY
           CASE
             WHEN @bbProjectId IS NOT NULL

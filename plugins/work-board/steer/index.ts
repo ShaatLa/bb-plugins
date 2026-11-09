@@ -19,9 +19,11 @@ function steerPrompt(
   body: string,
 ): string {
   return (
-    `New comment on task ${taskKey} from ${authorName}: ${body}\n\n` +
+    "**Work Board** · `New comment`\n" +
+    `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
+    `- From: ${authorName}\n\n${body}\n\n` +
     "Treat this as updated context for your work on this task; " +
-    `reply via bb work-board comment ${taskKey} when relevant.`
+    `reply via \`bb work-board comment ${taskKey}\` when relevant.`
   );
 }
 
@@ -68,6 +70,7 @@ export async function deliverCommentToLatestAgent(
         continue;
       await bb.sdk.threads.send({
         threadId,
+        originPluginId: bb.pluginId,
         input: [{ type: "text", text: prompt, mentions: [] }],
         mode: input.mode ?? "steer-if-active",
       });

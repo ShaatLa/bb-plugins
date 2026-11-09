@@ -288,6 +288,7 @@ function PresetDispatchControl({
 export function DispatchControl(props: DispatchControlProps) {
   const [choosingThread, setChoosingThread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [assigning, setAssigning] = useState(false);
   const defaultThread = useDefaultThread(props.projectId);
   const attachedThread = props.threads[0];
   const navigate = useBbNavigate();
@@ -305,16 +306,27 @@ export function DispatchControl(props: DispatchControlProps) {
   };
   return (
     <div className={cn("grid w-full min-w-0 gap-1.5", props.className)}>
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="text-muted-foreground">{props.threads.length ? "Assigned to" : "Unassigned"}</span>
+        <Button size="sm" variant="ghost" className="h-6 px-1" onClick={() => setAssigning(true)}>Assign thread</Button>
+      </div>
       <div className="flex min-w-0">
         <Button size="sm" variant="outline" disabled={sending} className="h-7 min-w-0 flex-1 rounded-r-none" aria-label={attachedThread ? "Go to thread" : defaultThread ? `Send task to ${defaultThread.title}` : "Existing thread…"} onClick={() => void dispatch()}>
           {attachedThread ? <Icon name="ArrowUpRight" className="size-3.5" /> : null}
-          <span className="truncate">{attachedThread ? "Go to thread" : sending ? "Dispatching…" : defaultThread?.title ?? "Existing thread…"}</span>
+          <span className="truncate" title={attachedThread?.title}>{attachedThread ? `Go to ${attachedThread.title}` : sending ? "Dispatching…" : defaultThread?.title ?? "Existing thread…"}</span>
         </Button>
         <Button size="sm" variant="outline" disabled={sending} className="h-7 shrink-0 rounded-l-none border-l-0 px-1" aria-label="Choose existing thread" onClick={() => setChoosingThread(true)}>
           <Icon name="ChevronDown" className="size-3.5" />
         </Button>
       </div>
+      {attachedThread ? <Button size="sm" variant="ghost" className="h-6 justify-start px-1 text-muted-foreground" disabled={sending} aria-label={`Unassign ${attachedThread.title}`} onClick={async () => {
+        setSending(true);
+        try { await rpc.call("taskThreadsDetach", { taskId: props.taskId, threadId: attachedThread.threadId }); }
+        catch (error) { props.onError(errorMessage(error)); }
+        finally { setSending(false); }
+      }}>Unassign</Button> : null}
       {!attachedThread ? <PresetDispatchControl {...props} className="w-full" /> : null}
+      {assigning ? <ExistingThreadDialog taskId={props.taskId} projectId={props.projectId} assignOnly onClose={() => setAssigning(false)} /> : null}
       {choosingThread ? <ExistingThreadDialog taskId={props.taskId} projectId={props.projectId} onClose={() => setChoosingThread(false)} /> : null}
     </div>
   );
