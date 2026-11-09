@@ -8,6 +8,7 @@ import { projectForRoute } from "./kanban-view.js";
 import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -286,23 +287,33 @@ export function TasksTopbar({
         onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
       />
       <RefreshTasksButton />
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              asChild
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-            >
-              <a href="/settings/plugins/work-board" aria-label="Work Board settings">
-                <Icon name="Settings" className="size-3.5" />
-              </a>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Work Board settings</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <DropdownMenu>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label="Work Board settings"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+                >
+                  <Icon name="Settings" className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Work Board settings</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => onNavigate({ kind: "manage" })}>
+            Manage labels and presets
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <a href="/settings/plugins/work-board">Plugin settings</a>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" && route.kind !== "scheduled" ? (
         <Button
           size="sm"
