@@ -129,6 +129,16 @@ it('collapses consecutive quiet updates into one group with a preview of the lat
   fireEvent.click(slot.getByRole('button', { name:'Collapse agent updates' }));
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
 });
+it('keeps an opened updates group open after leaving the screen and coming back', async () => {
+  const list = () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });
+  const first = setup({ list }); fireEvent.click(await first.recipients.findByRole('option'));
+  fireEvent.click(await first.slot.findByRole('button', { name:/3 agent updates/ }));
+  expect(await first.slot.findByText('First report')).toBeTruthy();
+  first.slot.unmount?.(); cleanup();
+  const again = setup({ list }); fireEvent.click(await again.recipients.findByRole('option'));
+  expect(await again.slot.findByText('First report')).toBeTruthy();
+  expect((await again.slot.findByRole('button', { name:/3 agent updates/ })).getAttribute('aria-expanded')).toBe('true');
+});
 it('keeps an update that asks the owner as a full message that splits the run', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[quiet(5, 'Five'), quiet(4, 'Four'), quiet(3, 'Merge now?', true), quiet(2, 'Two'), quiet(1, 'One')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Merge now?');

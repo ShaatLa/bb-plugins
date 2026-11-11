@@ -126,8 +126,13 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
 }
 // A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
+const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
+const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
 export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
-  const [open, setOpen] = useState(false), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
+  // A group is known by its first update, which a newer update joining it does not change; an opened group stays open
+  // across chats, screens and reloads (the last 200 are remembered).
+  const key = items[0]!.id, [open, setOpenState] = useState(() => openGroups().includes(key)), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
+  const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
   const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it.
