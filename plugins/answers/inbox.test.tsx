@@ -355,6 +355,16 @@ it('edits queued text and attachments through the composer, holding it while edi
   fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
   await waitFor(() => expect(release).toHaveBeenCalledTimes(2)); expect(update).toHaveBeenCalledTimes(1);
 });
+it('edits a queued quote reply with the quote as a bar and only the note in the editor, keeping the quote on save', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'> Quoted line\n> second\n\nMy note', mentions:[] }], model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', updatedAt:7 };
+  const update = vi.fn(() => Promise.resolve({}));
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit: () => Promise.resolve({}), update, experimental_releaseEditHold: () => Promise.resolve({}) } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Edit queued message 1' }));
+  const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
+  expect(editor.textContent).toBe('My note'); expect(slot.getByText(/Quoted line/)).toBeTruthy();
+  change(editor, { target:{ value:'New note' } }); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ input:[expect.objectContaining({ type:'text', text:'> Quoted line\n> second\n\nNew note' })] })));
+});
 it('shows attachment count without a raw queue state', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Attached', mentions:[] }, { type:'localFile', path:'/one', name:'one.txt' }, { type:'localImage', path:'/two' }], state:'waiting', updatedAt:7 };
   const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
