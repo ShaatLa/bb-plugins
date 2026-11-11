@@ -8,6 +8,9 @@ import { badgeLabel } from "../shared/badge.js";
 import { useTasksRpc } from "./data.js";
 
 const TIME_BASED_REFRESH_MS = 60_000;
+const EVENT_DEBOUNCE_MS = 200;
+// A steady event stream must still refresh the badge, so the debounce cannot postpone it past this.
+const EVENT_MAX_WAIT_MS = 1_000;
 
 /** Work Board navigation badge: distinct tasks matching the criteria chosen in Work Board settings. */
 export function useOpenTasksBadge(): ExperimentalBadge | null {
@@ -20,6 +23,7 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
     isRunning: false,
     refreshQueued: false,
   });
+  const pendingEvent = useRef<{ timer: ReturnType<typeof setTimeout>; since: number } | null>(null);
   const [badge, setBadge] = useState<{ value: ExperimentalBadge | null; timeBased: boolean }>({
     value: null,
     timeBased: false,
@@ -51,14 +55,36 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
     })();
   }, []);
 
+  // Event bursts collapse into one trailing refresh; hidden windows skip the query and refresh on becoming visible.
+  const scheduleRefresh = useCallback(() => {
+    const now = Date.now();
+    const since = pendingEvent.current?.since ?? now;
+    clearTimeout(pendingEvent.current?.timer);
+    const timer = setTimeout(
+      () => {
+        pendingEvent.current = null;
+        if (document.visibilityState !== "hidden") refresh();
+      },
+      Math.max(0, Math.min(EVENT_DEBOUNCE_MS, since + EVENT_MAX_WAIT_MS - now)),
+    );
+    pendingEvent.current = { timer, since };
+  }, [refresh]);
+
   useEffect(() => {
     const request = requestState.current;
     request.isMounted = true;
+    const onVisible = () => {
+      if (document.visibilityState !== "hidden") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       request.isMounted = false;
       request.refreshQueued = false;
+      document.removeEventListener("visibilitychange", onVisible);
+      clearTimeout(pendingEvent.current?.timer);
+      pendingEvent.current = null;
     };
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     if (connectionState === "connected") refresh();
@@ -66,13 +92,15 @@ export function useOpenTasksBadge(): ExperimentalBadge | null {
   // The idle-thread criterion depends on elapsed time, not only on events.
   useEffect(() => {
     if (!badge.timeBased) return;
-    const timer = setInterval(refresh, TIME_BASED_REFRESH_MS);
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") refresh();
+    }, TIME_BASED_REFRESH_MS);
     return () => clearInterval(timer);
   }, [badge.timeBased, refresh]);
-  useRealtime("tasks:changed", refresh);
-  useRealtime("projects:changed", refresh);
-  useRealtime("threads:changed", refresh);
-  useRealtime("badge:changed", refresh);
+  useRealtime("tasks:changed", scheduleRefresh);
+  useRealtime("projects:changed", scheduleRefresh);
+  useRealtime("threads:changed", scheduleRefresh);
+  useRealtime("badge:changed", scheduleRefresh);
 
   return badge.value;
 }
