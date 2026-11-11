@@ -100,6 +100,15 @@ it('shows a question and its steer deferred by one turn together, with the inter
   await slot.findByText('It crashes'); expect(slot.getByText('Also check files')).toBeTruthy();
   expect(slot.getAllByText('Looking into it')).toHaveLength(1);
 });
+it('shows one reply that answers an older question and a new one once, echoing the older question as a bubble', async () => {
+  const older = { ...base, id:'ans_old', question:'Older question', questionSeq:1, answer:'Shared reply', answerSeq:50, createdAt:asked, answeredAt:asked + 40 * minute };
+  const newer = { ...base, id:'ans_new', question:'New question', questionSeq:5, answer:'Shared reply', answerSeq:50, createdAt:asked + 39 * minute, answeredAt:asked + 40 * minute };
+  const { slot, recipients } = setup({ list: () => ({ items:[newer, older, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('New question');
+  expect(slot.getAllByText('Shared reply')).toHaveLength(1);
+  const home = document.querySelector('[data-history-ids="ans_new ans_old:answer"]')!;
+  expect(home.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question');
+});
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final answer');

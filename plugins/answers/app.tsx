@@ -183,11 +183,13 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
-export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
+export function ItemCard({ item, members, late, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const group = members?.length ? members : [item], last = group.at(-1)!;
+  // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
+  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground")} block cursor-pointer text-left`} onClick={() => onJump?.(member.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{member.question}</span></button>;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
@@ -275,7 +277,8 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="px-2"><button type="button" title="Go to the question" className="block w-full cursor-pointer border-l-2 border-border-seam pl-2 text-left text-sm text-muted-foreground" onClick={() => onJump?.(last.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{group.map(member => member.question).filter(Boolean).join('\n')}</span></button></div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+      {late?.map(echo)}
       {chat && <div className="flex items-center gap-2 text-xs text-muted-foreground">{time}</div>}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
     </div>}
@@ -338,7 +341,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
     {result.data && <>
       {!cursor && !items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group, part, updates }) => { const item = group[0], card = (member: Item) => <ItemCard item={member} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} />; return <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && group.some(member => member.id === firstUnread.current) && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}{updates ? <UpdateGroup items={group}>{card}</UpdateGroup> : card(item)}</Fragment>; })}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group, part, updates, late }) => { const item = group[0], card = (member: Item) => <ItemCard item={member} part={part} late={updates ? undefined : late} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} />; return <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && group.some(member => member.id === firstUnread.current) && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}{updates ? <UpdateGroup items={group}>{card}</UpdateGroup> : card(item)}</Fragment>; })}</ul>
       {!chronological && more}
     </>}
   </>;

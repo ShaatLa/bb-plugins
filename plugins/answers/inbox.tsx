@@ -24,7 +24,8 @@ function composeDrafts(): Record<string, ComposeDraft> { try { return JSON.parse
 export function groupItems(items: Item[]) { const groups: Item[][] = []; for (const item of items) { const last = groups.at(-1)?.at(-1); if (item.kind === 'mine' && item.turnId && (item.answerSeq ?? item.interimSeq) !== null && last?.kind === 'mine' && last.turnId === item.turnId && last.status === item.status && (last.answerSeq ?? last.interimSeq) === (item.answerSeq ?? item.interimSeq)) groups.at(-1)!.push(item); else groups.push([item]); } return groups; }
 export const activityAt = (item: Item) => item.answeredAt ?? item.createdAt;
 // updates: a run of consecutive agent updates that ask nothing, shown as one collapsed group (UpdateGroup in app.tsx).
-export type Entry = { group: Item[]; part?: 'question' | 'answer'; updates?: true };
+// late: earlier questions answered by this same message (one reply resolving several), echoed above it instead of a second copy.
+export type Entry = { group: Item[]; part?: 'question' | 'answer'; updates?: true; late?: Item[] };
 const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 && entry.group[0].kind === 'update' && !entry.group[0].asks;
 // Messenger-style reply: when other messages arrived between a question and its late answer, the question stays at its
 // time and the answer becomes its own message at answer time. groups run oldest first; more: earlier pages exist, so a
@@ -38,6 +39,13 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
     const asked = group[0].createdAt, at = activityAt(group.at(-1)!);
     if (group[0].kind === 'mine' && group.at(-1)!.answer !== null && marks.some(mark => mark > asked && mark < at)) { ask(group); placed.push([at, { group, part: 'answer' }]); }
     else placed.push([at, { group }]);
+  }
+  // One message can answer an older question and a new one; it shows once, under the new question, echoing the older one.
+  for (let i = placed.length - 1; i >= 0; i--) {
+    const [, entry] = placed[i]!, seq = entry.group.at(-1)!.answerSeq;
+    if (entry.part !== 'answer' || seq === null) continue;
+    const home = placed.find(([, other]) => !other.part && other.group.at(-1)!.kind === 'mine' && other.group.at(-1)!.answerSeq === seq);
+    if (home) { home[1].late = [...(home[1].late ?? []), ...entry.group]; placed.splice(i, 1); }
   }
   const entries: Entry[] = [];
   for (const [, entry] of placed.sort((a, b) => a[0] - b[0])) { const prev = entries.at(-1); if (prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
@@ -133,14 +141,14 @@ function HistoryPage({ threadId, cursor, index, depth, receive, unread = 0 }: { 
 }
 // Recomputed groups are fresh arrays over mostly unchanged items, so rows compare their items, not the arrays.
 const sameItems = (a: Item[], b: Item[]) => a === b || (a.length === b.length && a.every((item, i) => item === b[i]));
-type RowProps = { group: Item[]; part?: Entry['part']; updates?: true; lit: boolean; reveal: string | null; isNew: boolean; settled: boolean; onJump: (id: string) => void };
-const HistoryRow = memo(function HistoryRow({ group, part, updates, lit, reveal, isNew, settled, onJump }: RowProps) {
-  const ids = group.map(member => part === 'answer' ? `${member.id}:answer` : member.id);
-  return <>{isNew && <li data-new className="border-b-0 flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<div data-history-ids={ids.join(' ')} data-flash={lit || undefined} className={`transition-colors duration-[1500ms] ${lit ? 'bg-state-active' : ''}`}>{updates ? <UpdateGroup items={group} reveal={reveal}>{member => <ItemCard item={member} chat autoRead={settled} replyToOwn={false} />}</UpdateGroup> : <ItemCard item={group.at(-1)!} members={group.length > 1 ? group : undefined} part={part} onJump={onJump} chat autoRead={settled} replyToOwn={false} />}</div></>;
-}, (a, b) => sameItems(a.group, b.group) && a.part === b.part && a.updates === b.updates && a.lit === b.lit && a.reveal === b.reveal && a.isNew === b.isNew && a.settled === b.settled && a.onJump === b.onJump);
+type RowProps = { group: Item[]; part?: Entry['part']; updates?: true; late?: Item[]; lit: boolean; reveal: string | null; isNew: boolean; settled: boolean; onJump: (id: string) => void };
+const HistoryRow = memo(function HistoryRow({ group, part, updates, late, lit, reveal, isNew, settled, onJump }: RowProps) {
+  const ids = [...group.map(member => part === 'answer' ? `${member.id}:answer` : member.id), ...(late ?? []).map(member => `${member.id}:answer`)];
+  return <>{isNew && <li data-new className="border-b-0 flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<div data-history-ids={ids.join(' ')} data-flash={lit || undefined} className={`transition-colors duration-[1500ms] ${lit ? 'bg-state-active' : ''}`}>{updates ? <UpdateGroup items={group} reveal={reveal}>{member => <ItemCard item={member} chat autoRead={settled} replyToOwn={false} />}</UpdateGroup> : <ItemCard item={group.at(-1)!} members={group.length > 1 ? group : undefined} part={part} late={late} onJump={onJump} chat autoRead={settled} replyToOwn={false} />}</div></>;
+}, (a, b) => sameItems(a.group, b.group) && sameItems(a.late ?? [], b.late ?? []) && a.part === b.part && a.updates === b.updates && a.lit === b.lit && a.reveal === b.reveal && a.isNew === b.isNew && a.settled === b.settled && a.onJump === b.onJump);
 // The conversation history; memoised so composer typing, polls and sidebar updates in Inbox do not re-render every card.
 const History = memo(function History({ groups, flash, markId, settled, onJump }: { groups: Entry[]; flash: string | null; markId: string | null; settled: boolean; onJump: (id: string) => void }) {
-  return <ul className="divide-y divide-border-seam px-4 [&>:has(+[data-new])]:border-b-0" aria-label="History">{groups.map(({ group, part, updates }) => { const ids = group.map(member => part === 'answer' ? `${member.id}:answer` : member.id), lit = flash !== null && ids.includes(flash); return <HistoryRow key={updates ? ids[0] : ids.at(-1)} {...{ group, part, updates, lit, settled, onJump }} reveal={lit ? flash : null} isNew={part !== 'question' && group.some(member => member.id === markId)} />; })}</ul>;
+  return <ul className="divide-y divide-border-seam px-4 [&>:has(+[data-new])]:border-b-0" aria-label="History">{groups.map(({ group, part, updates, late }) => { const ids = [...group.map(member => part === 'answer' ? `${member.id}:answer` : member.id), ...(late ?? []).map(member => `${member.id}:answer`)], lit = flash !== null && ids.includes(flash); return <HistoryRow key={updates ? ids[0] : group.at(-1)!.id + (part === 'answer' ? ':answer' : '')} {...{ group, part, updates, late, lit, settled, onJump }} reveal={lit ? flash : null} isNew={part !== 'question' && group.some(member => member.id === markId)} />; })}</ul>;
 });
 // Compact relative time, like chat lists: now, 5m, 3h, 2d.
 export const ago = (at: number) => { const m = Math.max(0, Math.floor((Date.now() - at) / 60000)); return m < 1 ? 'now' : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
