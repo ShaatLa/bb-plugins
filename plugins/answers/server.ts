@@ -245,7 +245,9 @@ export default function plugin(bb: BbPluginApi) {
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
       if (mentioned.length) threads.push(...await bb.sdk.threads.list({threadIds:mentioned,includeHidden:true,limit:200}));
       for(const t of threads) threadMap.set(t.id,t);
-      const plain=(text:string)=>text.replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'');
+      // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
+      const unquote=(text:string)=>{const note=text.split('\n').filter(line=>!/^\s*>/.test(line)).join('\n').trim(); return note || text.replace(/^\s*>[ \t]?/gm,'');};
+      const plain=(text:string)=>unquote(text).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview((r.preview ?? '') as string)).slice(0,160)};})};
     },
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},

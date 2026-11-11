@@ -187,6 +187,14 @@ describe('reply pools and inbox',()=>{
   expect(await call('counts')).toMatchObject({inbox:1,unread:0,forMe:1});
   expect(db.prepare("SELECT read_at FROM items WHERE id='ans_q'").get()).toEqual({read_at:null});
  });
+ it('previews a quote reply by its note and a bare quote by its text, without Markdown markers',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  seed(db,'ans_a','mine','a'); db.prepare("UPDATE items SET question=? WHERE id='ans_a'").run('> Include the board export?\n> yes or no\n\nДа');
+  seed(db,'ans_b','mine','b'); db.prepare("UPDATE items SET question=? WHERE id='ans_b'").run('> Only a quote');
+  seed(db,'ans_c','mine','c'); db.prepare("UPDATE items SET question=? WHERE id='ans_c'").run('## Plan\n- first step');
+  const previews=Object.fromEntries((await call('recipients')).recipients.map((r:any)=>[r.threadId,r.preview]));
+  expect(previews).toEqual({a:'Да',b:'Only a quote',c:'Plan first step'});
+ });
  it('groups unread recipients, orders them, keeps selected, and reads only inbox kinds',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b'); seed(db,'ans_c','for_me','b'); seed(db,'ans_wait','mine','b'); seed(db,'ans_save','saved','b');
   db.prepare("UPDATE items SET status='answered',answer=?,updated_at=10 WHERE id='ans_a'").run('x'.repeat(200));
