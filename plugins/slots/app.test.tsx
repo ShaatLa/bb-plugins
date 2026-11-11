@@ -434,3 +434,15 @@ test("settings refetch is debounced, single-flight and deferred while hidden", a
   await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(read).toHaveBeenCalledTimes(3);
 });
+
+test("Reset to default after typing drops the draft and resets instead of committing it", async () => {
+  const { slot, write } = settingsSlot();
+  const input = (await slot.findByRole("spinbutton", { name: "Cores threshold" })) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "7" } });
+  const reset = slot.getByRole("button", { name: "Reset Cores threshold to default" });
+  expect(fireEvent.mouseDown(reset)).toBe(false); // default prevented: the input keeps focus, so no blur-commit
+  await act(async () => { fireEvent.click(reset); });
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(write).toHaveBeenLastCalledWith({ unset: ["watchCores"] });
+  expect(input.value).toBe("3");
+});

@@ -45,7 +45,7 @@ function NumberField({ label, value, min, max, step, hint, reset, onCommit, onRe
   return <div className="space-y-1">
     <label className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{label}</span><Input aria-label={label} type="number" min={min} max={max} step={step} className="w-24" value={draft ?? value}
       onChange={event => setDraft(event.target.value)} onBlur={() => { void commit(); }} onKeyDown={event => { if (event.key === "Enter") void commit(); }} /></label>
-    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">{hint && <p>{hint}</p>}{reset && <Button type="button" size="sm" variant="link" className="h-auto p-0 text-xs" aria-label={`Reset ${label} to default`} onClick={onReset}>Reset to default</Button>}</div>
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">{hint && <p>{hint}</p>}{reset && <Button type="button" size="sm" variant="link" className="h-auto p-0 text-xs" aria-label={`Reset ${label} to default`} onMouseDown={event => event.preventDefault()} onClick={() => { setDraft(null); onReset(); }}>Reset to default</Button>}</div>
   </div>;
 }
 
