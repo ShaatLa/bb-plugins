@@ -206,7 +206,6 @@ describe('reply pools and inbox',()=>{
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
     {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
     {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:0,lastAt:30,preview:'Question'},
-    {threadId:'c',threadTitle:'C',projectId:'p1',projectName:'One',unread:0,lastAt:5,preview:'Question'},
   ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
@@ -218,9 +217,9 @@ describe('reply pools and inbox',()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b');
   db.prepare("UPDATE items SET status='answered',answer='x' WHERE id='ans_a'").run();
   const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','b']);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a']); // b only asked a question: no contact
   expect((await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})})).errors).toEqual([]);
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['b']);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual([]);
   expect(await call('counts')).toMatchObject({unread:0,inbox:1});
   expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id)).toEqual(['ans_b']);
   expect((await call('list',{view:'all'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_a','ans_b']);
@@ -300,7 +299,9 @@ describe('reply pools and inbox',()=>{
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
   const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,?,1,1)");
   add.run('ans_q','mine','a','answered','Ready?','a'); add.run('ans_f','for_me','c','open','Pick one',null); add.run('ans_r','for_me','d','replied','Pick two','B');
-  expect((await call('recipients',{})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',0],['d',0]]);
+  // Threads that only asked the owner something are no contacts (they live in Questions), unless opened.
+  expect((await call('recipients',{})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1]]);
+  expect((await call('recipients',{selected:'c'})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',0]]);
   expect((await call('counts',{})).inbox).toBe(2);
   await expect(call('recipients',{questions:true})).rejects.toBeDefined();
   await expect(call('list',{view:'all',questions:true})).rejects.toBeDefined();
@@ -511,7 +512,7 @@ describe('0.3 server attention',()=>{
   expect((await call('counts')).inbox).toBe(2);
   expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_ask','ans_fail']);
   const recipients=(await call('recipients')).recipients;
-  expect(recipients).toHaveLength(4); expect(recipients.map((r:any)=>r.unread)).toEqual([1,0,0,0]);
+  expect(recipients).toHaveLength(2); expect(recipients.map((r:any)=>r.unread)).toEqual([1,0]);
   expect(recipients.find((r:any)=>r.threadId==='failed').preview).toBe('Turn failed: Question');
   const batch=await call('markRead',{all:true}); expect(batch.count).toBe(2);
   expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:2});

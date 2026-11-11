@@ -204,7 +204,10 @@ export default function plugin(bb: BbPluginApi) {
       const rows=db.prepare(`WITH grouped AS (
         SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
         FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL}
-        GROUP BY thread_id ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
+        GROUP BY thread_id
+        -- A thread that only ever asked the owner something (e.g. a sub-session bypassing its manager) is no contact; it lives in Questions. The open one stays.
+        HAVING sum(kind<>'for_me')>0 OR thread_id=?
+        ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
       ) SELECT grouped.*,chosen.project_id,
         CASE WHEN ${chosenAttention} AND chosen.kind IN ('mine','update') AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
@@ -212,7 +215,7 @@ export default function plugin(bb: BbPluginApi) {
         FROM grouped JOIN items chosen ON chosen.id=(
           SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
           ORDER BY CASE WHEN ${contactAttention.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
-        )`).all(p.selected ?? '') as Row[];
+        )`).all(p.selected ?? '',p.selected ?? '') as Row[];
       if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
