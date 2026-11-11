@@ -5,15 +5,18 @@ const change = (element: Element, init: { target: { value?: string; files?: File
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 const cards = vi.hoisted(() => ({ renders: 0 }));
+// The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
+const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
 import { Inbox } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown> } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -461,4 +464,66 @@ it('does not re-render the history cards while typing in the composer or when th
   for (const value of ['H', 'He', 'Hel', 'Hell', 'Hello']) change(editor, { target:{ value } });
   await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').toContain('Hello'));
   expect(cards.renders).toBe(settled);
+});
+it('polls the queue only while a row is scheduled', async () => {
+  let visible = true;
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
+  const draft: any = { id:'q1', threadId:'thr_one', content:[], sendAt:null, updatedAt:1 };
+  const queue = vi.fn(async () => [draft]);
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ queuedMessages:{ list:queue }, sidebarThreads:{ threads:[thread], projects:[] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(queue).toHaveBeenCalledOnce());
+  vi.useFakeTimers();
+  try {
+    // Toggling visibility re-runs the queue effects under fake timers, so any poll they start is controlled here.
+    act(() => { visible = false; document.dispatchEvent(new Event('visibilitychange')); });
+    act(() => { visible = true; document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => {}); await act(async () => {});
+    const idle = queue.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(60000); });
+    expect(queue.mock.calls.length).toBe(idle);
+    queue.mockImplementation(async () => [{ ...draft, sendAt: Date.now() + 600000 }]);
+    act(() => { visible = false; document.dispatchEvent(new Event('visibilitychange')); });
+    act(() => { visible = true; document.dispatchEvent(new Event('visibilitychange')); });
+    await act(async () => {}); await act(async () => {});
+    const scheduled = queue.mock.calls.length;
+    for (let tick = 0; tick < 3; tick++) await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(queue.mock.calls.length - scheduled).toBe(3);
+  } finally { vi.useRealTimers(); slot.unmount(); }
+});
+it('refetches only the recipients when a thread is read in bb', async () => {
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const recipientsRpc = vi.fn(() => ({ recipients: [one] }));
+  const { slot, recipients, list } = setup({ rpc: { recipients: recipientsRpc }, sidebarThreads: { threads:[thread], projects:[] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(list).toHaveBeenCalled());
+  const beforeRecipients = recipientsRpc.mock.calls.length, beforeList = list.mock.calls.length;
+  try {
+    sidebarOverride.threads = [{ ...thread, isUnread: true }];
+    slot.rerender(<Inbox />);
+    await waitFor(() => expect(recipientsRpc.mock.calls.length).toBe(beforeRecipients + 1));
+    expect(list).toHaveBeenCalledTimes(beforeList);
+  } finally { sidebarOverride.threads = undefined; }
+});
+it('marks an open thread read without re-fetching what the server invalidation already refreshes', async () => {
+  const markThreadRead = vi.fn(() => ({ ok: true, batch: null, count: 0 })), onBulkRead = vi.fn();
+  const recipientsRpc = vi.fn(() => ({ recipients: [one] }));
+  // Inbox calls markThreadRead only when a host passes onBulkRead, as the Answers panel does.
+  const { recipients, list } = setup({ props: { onBulkRead }, rpc: { markThreadRead, recipients: recipientsRpc } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(list).toHaveBeenCalled());
+  const beforeList = list.mock.calls.length, beforeRecipients = recipientsRpc.mock.calls.length;
+  fireEvent.click(recipients.getByRole('option'));
+  await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_one' }));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(list).toHaveBeenCalledTimes(beforeList); expect(recipientsRpc).toHaveBeenCalledTimes(beforeRecipients);
+});
+it('keeps only the 50 most recently edited non-empty drafts', async () => {
+  const drafts = Object.fromEntries(Array.from({ length: 55 }, (_, i) => [`thr_${i}`, { text: `Draft ${i}`, files: [] }]));
+  localStorage.setItem('bb-plugin-answers:page:compose', JSON.stringify({ ...drafts, thr_empty: { text: '', files: [] } }));
+  setup();
+  const saved = JSON.parse(localStorage.getItem('bb-plugin-answers:page:compose') ?? '{}');
+  expect(Object.keys(saved)).toHaveLength(50);
+  expect(saved).toHaveProperty('thr_54'); expect(saved).not.toHaveProperty('thr_4'); expect(saved).not.toHaveProperty('thr_empty');
 });

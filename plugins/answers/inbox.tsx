@@ -159,7 +159,6 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   // A thread read in bb drops its unread mark there; refetch so the server can mark the same answers read here.
   const bbReadKey = sidebarThreads.filter(t => !t.isUnread).map(t => t.id).join(' ');
   const firstBbRead = useRef(true);
-  useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } refresh(); }, [bbReadKey]);
   // The contact column is resizable at the chat's expense; the width is remembered like the rest of the page state.
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
@@ -170,6 +169,9 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} });
+  // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
+  // and the server's invalidation refreshes the rest when that changed something.
+  useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } void result.refetch(); }, [bbReadKey]);
   // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
   // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
   const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const settledRecipients = lastRecipients.current ?? result.data;
@@ -204,7 +206,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId));
   const [compose, setCompose] = useState<ComposeDraft>(() => selected ? composeDrafts()[selected] ?? { text: '', files: [] } : { text: '', files: [] }), [composeError, setComposeError] = useState(''), [composePending, setComposePending] = useState(false), [search, setSearch] = useState(false), [query, setQuery] = useState(''), [matches, setMatches] = useState<Item[]>([]), [searchError, setSearchError] = useState(''), [jump, setJump] = useState<string | null>(null), [older, setOlder] = useState(false), [flash, setFlash] = useState<string | null>(null);
   const [drafts] = useState(composeDrafts), draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollPending = useRef<({ threadId: string } & Scroll) | null>(null);
-  const saveDrafts = () => { clearTimeout(draftTimer.current); try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); } catch { /* storage unavailable */ } };
+  // Empty drafts are dropped and only the 50 most recently edited threads kept (key order is edit order, see updateCompose).
+  const saveDrafts = () => { clearTimeout(draftTimer.current); const ids = Object.keys(drafts), kept = ids.filter(id => drafts[id]?.text.trim() || drafts[id]?.files.length).slice(-50); for (const id of ids) if (!kept.includes(id)) delete drafts[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); } catch { /* storage unavailable */ } };
   const saveScroll = () => { clearTimeout(scrollTimer.current); scrollTimer.current = undefined; if (scrollPending.current) { const { threadId, ...at } = scrollPending.current, all = readScrolls(); delete all[threadId]; all[threadId] = at; try { localStorage.setItem(SCROLL_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-50)))); } catch { /* storage unavailable */ } scrollPending.current = null; } };
   useEffect(() => () => { saveDrafts(); saveScroll(); }, []);
   useEffect(() => { saveDrafts(); saveScroll(); }, [selected]);
@@ -224,7 +227,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   // Reads count only once the open position settled: while messages above grow, the list briefly jumps past unread ones.
   const [settled, setSettled] = useState(false), settle = useRef<ReturnType<typeof setTimeout>>(undefined);
   const release = () => { clearTimeout(settle.current); pin.current = null; setSettled(true); };
-  function updateCompose(threadId: string, value: ComposeDraft) { drafts[threadId] = value; clearTimeout(draftTimer.current); draftTimer.current = setTimeout(saveDrafts, 300); if (threadId === selectedRef.current) setCompose(value); }
+  // Re-inserting moves an edited thread to the end, so key order is edit order for saveDrafts.
+  function updateCompose(threadId: string, value: ComposeDraft) { delete drafts[threadId]; drafts[threadId] = value; clearTimeout(draftTimer.current); draftTimer.current = setTimeout(saveDrafts, 300); if (threadId === selectedRef.current) setCompose(value); }
   async function sendCompose(options?: SendOptions) {
     if (!selected || composePending || (!compose.text.trim() && !compose.files.length)) return;
     const threadId = selected, sent = compose;
@@ -245,7 +249,9 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   useEffect(() => () => clearTimeout(settle.current), []);
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
   useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
-  useEffect(() => { if (!selected || !visible || !queue.length) return; const timer = setInterval(() => setQueueVersion(n => n + 1), 5000); return () => clearInterval(timer); }, [selected, visible, queue.length]);
+  // Only a scheduled row changes without an event (its due time and "in Nm" label), so only then does the queue poll.
+  const scheduledQueue = queue.some(row => !!row.sendAt && row.sendAt > Date.now());
+  useEffect(() => { if (!selected || !visible || !scheduledQueue) return; const timer = setInterval(() => setQueueVersion(n => n + 1), 5000); return () => clearInterval(timer); }, [selected, visible, scheduledQueue]);
   const openThread = sidebarThreads.find(t => t.id === selected);
   const working = openThread ? statusOf(openThread).isWorking : false;
   useEffect(() => { if (!selected) { setContext(null); return; } if (!visible) return; let active = true; const read = () => { void sdk.threads.context({ threadId: selected }).then(value => { if (active) setContext(value); }).catch(() => { if (active) setContext(null); }); }; read(); const timer = working ? setInterval(read, 30000) : undefined; return () => { active = false; clearInterval(timer); }; }, [sdk, selected, visible, working]);
@@ -339,7 +345,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     try {
       if (pool) { await rpc.call('poolAdd', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, ...(draft.quoteSeq === undefined ? {} : { quoteSeq: draft.quoteSeq }), note: text, ...(files.length ? { attachments: files } : {}) }); panel.openTab({ tab: poolsTab }); }
       else { const result = await rpc.call('quoteReply', { threadId, quote: draft.quote, itemId: draft.itemId, text, ...(files.length ? { attachments: files } : {}), ...(options ? { send: options } : {}) }); if (result.delivery === 'queued') setOptimistic(old => old.filter(b => b.id !== optimisticId)); }
-      refresh(); setDraft(null); setFiles([]);
+      setDraft(null); setFiles([]);
     } catch (e) { setOptimistic(old => old.filter(b => b.id !== optimisticId)); setError(pool ? errorText(e) : `Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setPending(false); }
   }
@@ -350,7 +356,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   if (position.current.fresh && pages.length) mark.current = items.find(isUnread)?.id ?? null;
   const openUnread = recipients?.recipients.find(r => r.threadId === selected)?.unread ?? 0;
   // bb's chat has no per-message read marks, so an open conversation counts as read.
-  useEffect(() => { if (bbChat && selected && openUnread) void rpc.call('markThreadRead', { threadId: selected }).then(() => refresh()).catch(() => {}); }, [bbChat, selected, openUnread]);
+  useEffect(() => { if (bbChat && selected && openUnread) void rpc.call('markThreadRead', { threadId: selected }).catch(() => {}); }, [bbChat, selected, openUnread]);
   const mobileHeader = selected && <div className="sticky top-0 z-[1] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2 min-[640px]:hidden"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{(() => { const current = recipients?.recipients.find(r => r.threadId === selected); return <><Avatar id={selected} title={current?.threadTitle ?? null} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{current?.threadTitle ?? 'Untitled thread'}</span><span className="block truncate text-xs text-muted-foreground">{current?.projectName ?? 'No project'}</span></span><Button asChild size="sm" variant="ghost" aria-label="Open thread"><UrlLink href={`${current?.projectId ? `/projects/${current.projectId}` : ''}/threads/${selected}`}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button></>; })()}</div>;
   return <div ref={grid} className="relative grid h-full grid-cols-[minmax(0,1fr)] min-[640px]:grid-cols-[var(--contacts-width)_minmax(0,1fr)]" style={{ '--contacts-width': `${contactsWidth}px` } as CSSProperties}>
     <div role="separator" aria-orientation="vertical" aria-label="Resize contacts" aria-valuenow={contactsWidth} aria-valuemin={CONTACTS_MIN} aria-valuemax={CONTACTS_MAX} tabIndex={0} title="Drag to resize; double-click to reset"
@@ -369,7 +375,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
         {group !== null && <p draggable={movable} title={movable ? 'Drag to reorder projects' : undefined} className={`px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground ${movable ? 'cursor-grab active:cursor-grabbing' : ''}`}
           onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', group); setDrag({ id: group }); }} onDragEnd={() => setDrag(null)}>{list[0]?.projectName ?? 'No project'}</p>}{list.map(recipient => { const thread = sidebarThreads.find(t => t.id === recipient.threadId), status = thread ? statusOf(thread) : null, busy = !!status && (status.isWorking || status.indicator === 'waiting-for-input'); const row = <button role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'} ${recipient.unread ? '' : 'opacity-70'}`} onKeyDown={event => { if (event.key === 'ArrowDown') (event.currentTarget.nextElementSibling as HTMLElement)?.focus(); if (event.key === 'ArrowUp') (event.currentTarget.previousElementSibling as HTMLElement)?.focus(); }} onClick={async () => {
         if (selected !== recipient.threadId) { const saved = readScrolls()[recipient.threadId]; restore.current = saved ? { threadId: recipient.threadId, ...saved } : null; setCompose(drafts[recipient.threadId] ?? { text: '', files: [] }); setComposeError(''); setDepth(saved?.depth ?? 1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
-        else try { onBulkRead?.(await rpc.call('markThreadRead', { threadId: recipient.threadId })); refresh(); } catch (e) { setError(errorText(e)); }
+        else try { onBulkRead?.(await rpc.call('markThreadRead', { threadId: recipient.threadId })); } catch (e) { setError(errorText(e)); }
       }}><span className="relative shrink-0"><Avatar id={recipient.threadId} title={recipient.threadTitle} provider={(id => id ? providers.find(p => p.id === id) ?? { id } : undefined)(thread?.providerId)} />{thread?.hasPendingInteraction && <Icon name="CircleQuestion" aria-label="Needs input" className="absolute -top-1 -right-1 size-3.5 rounded-full bg-background text-attention" />}</span><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><span className={`min-w-0 flex-1 truncate ${recipient.unread ? 'font-medium' : 'font-normal text-muted-foreground'}`}>{recipient.threadTitle ?? 'Untitled thread'}</span><span className="flex shrink-0 items-center text-[11px] text-muted-foreground">{busy ? <ThreadStatusGlyph indicator={status!.indicator} size="compact" /> : ago(recipient.lastAt)}</span></span><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{recipient.preview || recipient.projectName || 'No project'}</span>{recipient.unread > 0 && <span aria-label={`${recipient.unread} unread`} className="shrink-0 rounded-full bg-foreground/85 px-1.5 text-[11px] font-medium leading-[18px] text-background">{recipient.unread}</span>}</span></span></button>
         // bb's own thread menu on right-click (Archive, Pin, Rename, Delete); threads bb does not list keep a plain row.
         return thread ? <ThreadActionsContextMenu key={recipient.threadId} thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : <Fragment key={recipient.threadId}>{row}</Fragment>; })}</div>; })}
@@ -404,7 +410,7 @@ function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { e
     if (state.note === state.saved && JSON.stringify(state.files) === JSON.stringify(state.savedFiles)) return;
     const saving = state.note, savingFiles = state.files;
     setStatus('Saving…');
-    state.flight = rpc.call('poolUpdate', { id: entry.id, note: saving, attachments: savingFiles, revision: state.revision }).then(result => { state.revision = result.revision; state.saved = saving; state.savedFiles = savingFiles; setStatus('Saved'); refresh(); }).catch(e => { setStatus(`Not saved: ${errorText(e)}`); refresh(); throw e; }).finally(() => { state.flight = null; });
+    state.flight = rpc.call('poolUpdate', { id: entry.id, note: saving, attachments: savingFiles, revision: state.revision }).then(result => { state.revision = result.revision; state.saved = saving; state.savedFiles = savingFiles; setStatus('Saved'); }).catch(e => { setStatus(`Not saved: ${errorText(e)}`); refresh(); throw e; }).finally(() => { state.flight = null; });
     await state.flight;
     if (state.note !== state.saved || JSON.stringify(state.files) !== JSON.stringify(state.savedFiles)) await flush();
   }
@@ -413,25 +419,25 @@ function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { e
   useEffect(() => { if (note === local.current.saved && JSON.stringify(files) === JSON.stringify(local.current.savedFiles)) return; const timer = setTimeout(() => { void flush().catch(() => {}); }, 800); return () => clearTimeout(timer); }, [note, files]);
   // Autosave is silent: pending and in-flight states would add a line and make the card jump; only failures show.
   const problem = !['Saved', 'Saving…', 'Not saved'].includes(status);
-  const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } };
+  const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); } catch (e) { setStatus(errorText(e)); } };
   return <li className="space-y-2">
     <Composer label="Pool note" sendLabel="Send entry" autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} value={note} onChange={value => { local.current.note = value; setNote(value); setStatus('Not saved'); }} attachments={files} onAttachments={update => { const next = update(local.current.files); local.current.files = next; setFiles(next); setStatus('Not saved'); }} projectId={projectId} pending={pending} onBlur={() => void flush().catch(() => {})} onSend={options => onSend(entry.id, options)} actions={<Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>} header={entry.quote && <div className="px-4 pt-3"><div className="border-l-2 border-border-seam pl-2 text-sm text-muted-foreground [&_*]:text-muted-foreground [&_p]:m-0"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div></div>} />
     {problem && <p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{status}</p>}
   </li>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
-  const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
+  const rpc = useRpc<AnswersRpcContract>();
   const editors = useRef(new Map<string, Editor>()).current;
   const [pending, setPending] = useState(false);
   const [focusId, setFocusId] = useState<string>();
   async function addMessage() {
-    try { const { id } = await rpc.call('poolAdd', { threadId: pool.threadId, quote: '', note: '' }); setFocusId(id); refresh(); } catch (e) { setFeedback(`Not added — ${errorText(e)}`); }
+    try { const { id } = await rpc.call('poolAdd', { threadId: pool.threadId, quote: '', note: '' }); setFocusId(id); } catch (e) { setFeedback(`Not added — ${errorText(e)}`); }
   }
   async function sendAll(options?: SendOptions, id?: string) {
     setPending(true); setFeedback('');
     try {
       try { await Promise.all((id ? [editors.get(id)!] : [...editors.values()]).map(editor => editor.flush())); } catch (e) { setFeedback(`Not sent — ${errorText(e)}`); return; }
-      const result = await rpc.call('poolSend', { threadId: pool.threadId, ...(id ? { ids: [id] } : {}), ...(options ? { send: options } : {}) }); refresh();
+      const result = await rpc.call('poolSend', { threadId: pool.threadId, ...(id ? { ids: [id] } : {}), ...(options ? { send: options } : {}) });
       setFeedback(`${options?.mode === 'draft' ? 'Draft saved' : options?.sendAt ? 'Scheduled' : result.delivery === 'sent' ? 'Sent' : 'Queued'}${result.keptEdited ? ` — ${result.keptEdited} edited entries were not sent` : ''}`);
     } catch (e) { setFeedback(`Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setPending(false); }
