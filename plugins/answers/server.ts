@@ -10,7 +10,7 @@ import { registerCli } from './cli';
 import { createNotifier } from './notify';
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Ask anything that needs the user's decision with answers_ask: questions left in chat text never reach their Questions. End the turn after asking; the reply arrives as a user message quoting it. Decisions about a specific Work Board task belong on that task. Options: 1–6 unique, ≤200 chars, optional recommended + reason.";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn; the reply arrives as a user message quoting it. Options: 1–6 unique, ≤200 chars, optional recommended + reason. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),

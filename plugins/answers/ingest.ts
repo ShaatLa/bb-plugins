@@ -12,6 +12,8 @@ export const INTERIM_RE = /делегир|доложу|сообщу, когда|
 export function failRequest(db: Database.Database, threadId:string, requestId:string, at:number, live:boolean, onlyNew=false) {
  return db.prepare(`UPDATE items SET failed_at=?,attempt_request_id=?,read_at=NULL,notify_state=?,updated_at=? WHERE thread_id=? AND status='waiting' AND (${onlyNew ? 'failed_at IS NULL' : '1=1'}) AND NOT (failed_at IS NOT NULL AND attempt_request_id IS ?) AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(at,requestId,Number(live),at,threadId,requestId,requestId,threadId,requestId).changes;
 }
+// A leading [tag] (a letter, 3–60 chars, then whitespace) marks a script's message; '[ANV-12](link)' and '[x]' do not match.
+export const SCRIPT_TAG = /^\[([A-Za-z][^\]\n]{2,59})\]\s/;
 export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed'] as const;
 export const cap = (text: string, max: number) => text.length <= max ? text : text.slice(0, max - '… (truncated, open in chat)'.length) + '… (truncated, open in chat)';
 export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any; createdAt?: number };
@@ -40,12 +42,15 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
    // Messages other plugins send are noise; the owner's own words sent through Answers (Reply, pool, quote popup) still count.
-   if (trackQuestions && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && (text || attachments.length > 0) && !command) {
+   // bb records a script's `bb thread tell` into its own thread as the user's; such scripts start the text with a [tag].
+   const tag = SCRIPT_TAG.exec(text)?.[1] ?? null;
+   if (trackQuestions && !tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && (text || attachments.length > 0) && !command) {
     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
    } else if (trackQuestions && d.requestId) {
     // Remember what else can start a turn, so its final message can reach the owner as an update.
     const kind = d.senderThreadId ? 'agent' : d.originPluginId ? 'plugin' : d.initiator === 'system' ? 'system' : 'other';
-    const source = kind === 'agent' ? d.senderThreadId : kind === 'plugin' ? d.originPluginId : kind === 'system' ? /@thread:(thr_[\w-]+) completed/.exec(text)?.[1] ?? null : null;
+    // A tagged script message is an 'other' trigger named by its tag.
+    const source = kind === 'agent' ? d.senderThreadId : kind === 'plugin' ? d.originPluginId : kind === 'system' ? /@thread:(thr_[\w-]+) completed/.exec(text)?.[1] ?? null : tag;
     hidden += db.prepare('INSERT OR IGNORE INTO request_triggers(thread_id,request_id,kind,source_id,text) VALUES (?,?,?,?,?)').run(threadId,d.requestId,kind,source,cap(text,4000)).changes;
    }
   } else if (e.type === 'client/turn/rejected' && d.requestId) {

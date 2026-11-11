@@ -94,10 +94,14 @@ describe('updates',()=>{
   [system,'system','thr_child-1'],
   [{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')},'agent','thr_s'],
   [{originPluginId:'delivery-dashboard',input:text('**CI Dashboard** Deploy')},'plugin','delivery-dashboard'],
+  [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:null,notify_state:1,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ it('still counts owner messages that open with a task link or a checkbox as questions',()=>{
+  for (const t of ['[ANV-12](/plugins/work-board/work-board/task/ANV-12) ok?','[x] done','[]']) {const db=setup(); applyEvents(db,'t',[req(1,'r',{input:text(t)})]); expect(rows(db).map(r=>r.kind)).toEqual(['mine']);}
  });
  it('keeps the trigger across a retry, falls back to other, and pushes only live events',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'a',{initiator:'agent',senderThreadId:'thr_s'}),req(2,'b',{initiator:'system',retryOfRequestId:'a'}),start(3),accept(4,'b'),message(5),done(6),start(7,'y'),message(8,'no trigger seen','y'),done(9,'completed','y')]);
