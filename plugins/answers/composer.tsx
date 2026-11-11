@@ -46,7 +46,12 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     if (!value) setGrown(false); else if (node.scrollHeight > oneLine * 1.5) setGrown(true); // pills make a line a few px taller, so only a real second line opens the layout
   }, [value, tall]);
   // The send group can include extra actions; its width places bb's microphone just left of it in the open layout.
-  useLayoutEffect(() => { if (root.current && right.current) root.current.style.setProperty('--right-w', `${right.current.offsetWidth}px`); });
+  useLayoutEffect(() => {
+    if (!root.current || !right.current) return;
+    root.current.style.setProperty('--right-w', `${right.current.offsetWidth}px`);
+    // Mic box offset from the form's padding edge to the send group, row padding included (it differs per layout).
+    root.current.style.setProperty('--mic-r', `${root.current.getBoundingClientRect().right - root.current.clientLeft - right.current.getBoundingClientRect().left}px`);
+  });
   async function attach(files: File[]) {
     if (!files.length) return;
     if (!projectId) { setError('Attachments need a thread in a project'); return; }
@@ -79,8 +84,8 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
       <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
       <RichEditor insertRef={insertText} editorRef={editor} label={label} value={value} onChange={onChange} onSend={() => submit()} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className={`block w-full overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none ${tall ? '' : 'pr-10'}`} />
-      {/* bb insets its mic 4px from the bottom of this box; together they match the 8px of the other buttons. */}
-      <div className={`absolute bottom-1 right-[calc(var(--right-w)+4px)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
+      {/* bb insets its mic 4px inside this box: that makes the 8px bottom of the other buttons and their 4px gap. */}
+      <div className={`absolute bottom-1 right-[var(--mic-r)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
         {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>}
