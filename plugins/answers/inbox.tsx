@@ -107,8 +107,8 @@ export const ago = (at: number) => { const m = Math.max(0, Math.floor((Date.now(
 export function Avatar({ id, title, provider }: { id: string; title: string | null; provider?: { id: string; displayName?: string } }) {
   let hue = 0; for (const c of id) hue = (hue * 31 + c.charCodeAt(0)) % 360;
   return <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white" style={{ background: `hsl(${hue} 35% 38%)` }}><span aria-hidden>{(title ?? '?').trim().charAt(0).toUpperCase() || '?'}</span>
-    {/* The thread's agent provider, as a badge over the avatar's lower-right edge. */}
-    {provider && <span title={provider.displayName ?? provider.id} className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-background ring-1 ring-border"><ProviderIcon providerKind="agent" provider={provider} className="size-3" aria-label={provider.displayName ?? provider.id} /></span>}
+    {/* The thread's agent provider, as a badge over the avatar's lower-right edge; the avatar's white text would hide currentColor icons. */}
+    {provider && <span title={provider.displayName ?? provider.id} className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-background text-foreground ring-1 ring-border"><ProviderIcon providerKind="agent" provider={provider} className="size-3" aria-label={provider.displayName ?? provider.id} /></span>}
   </span>;
 }
 export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean }) {
