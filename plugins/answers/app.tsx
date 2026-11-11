@@ -206,7 +206,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
+      <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="px-2"><button type="button" title="Go to the question" className="block w-full cursor-pointer border-l-2 border-border-seam pl-2 text-left text-sm text-muted-foreground" onClick={() => onJump?.(last.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{group.map(member => member.question).filter(Boolean).join('\n')}</span></button></div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
