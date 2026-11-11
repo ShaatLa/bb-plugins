@@ -48,6 +48,8 @@ type Draft = { threadId: string; projectId?: string | null; itemId: string; quot
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
 const NO_PAGES: ListResult[] = [];
+// Pages can land out of order (an older one from cache while the newest refetches); only the unbroken run from the newest is shown.
+export const unbroken = (pages: ListResult[]) => { const gap = pages.findIndex(page => !page); return gap < 0 ? pages : pages.slice(0, gap); };
 // Context fill as a ring, like bb's composer footer; the label says what is left, the tooltip the token counts.
 function ContextRing({ used, total }: { used: number; total: number }) {
   const fill = Math.min(1, Math.max(0, used / total)), r = 6, c = 2 * Math.PI * r;
@@ -202,7 +204,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const restore = useRef(useState(() => { const saved = selected ? readScrolls()[selected] : undefined; return saved && selected ? { threadId: selected, ...saved } : null; })[0]);
   const [depth, setDepth] = useState(() => restore.current && restore.current.threadId === selected ? restore.current.depth : 1), [loaded, setLoaded] = useState<{ threadId?: string; pages: ListResult[] }>({ pages: [] });
   // The previous conversation stays on screen until the new one's first page arrives, then both swap in one frame.
-  const pages = loaded.threadId === selected ? loaded.pages : NO_PAGES;
+  const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = loaded.threadId === selected ? loadedPages : NO_PAGES;
   const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[] }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<Awaited<ReturnType<typeof sdk.threads.context>> | null>(null);
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId));
   const [compose, setCompose] = useState<ComposeDraft>(() => selected ? composeDrafts()[selected] ?? { text: '', files: [] } : { text: '', files: [] }), [composeError, setComposeError] = useState(''), [composePending, setComposePending] = useState(false), [search, setSearch] = useState(false), [query, setQuery] = useState(''), [matches, setMatches] = useState<Item[]>([]), [searchError, setSearchError] = useState(''), [jump, setJump] = useState<string | null>(null), [older, setOlder] = useState(false), [flash, setFlash] = useState<string | null>(null);
@@ -353,9 +355,9 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     } catch (e) { setOptimistic(old => old.filter(b => b.id !== optimisticId)); setError(pool ? errorText(e) : `Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setPending(false); }
   }
-  const shown = pages === NO_PAGES ? loaded.pages : pages.slice(0, depth);
-  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loaded.pages, depth]);
-  const historyGroups = useMemo(() => conversation(groupItems(items), !!shown.at(-1)?.nextCursor).entries, [items, pages, loaded.pages, depth]);
+  const shown = pages === NO_PAGES ? loadedPages : pages.slice(0, depth);
+  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth]);
+  const historyGroups = useMemo(() => conversation(groupItems(items), !!shown.at(-1)?.nextCursor).entries, [items, pages, loadedPages, depth]);
   // A loaded window of only quiet updates collapses to a single row; reach back (up to 5 pages) to the last real exchange.
   useEffect(() => { if (selected && shown.length === depth && depth < 5 && shown.at(-1)?.nextCursor && !historyGroups.some(entry => !entry.updates && !quietUpdate(entry))) setDepth(d => d + 1); }, [historyGroups]);
   useEffect(() => { if (!selected || !pages.length) return; const questions = [...pages.flatMap(page => page.items)].filter(item => item.threadId === selected); setOptimistic(old => { const remaining = [...questions], matched = new Set<number>(); for (const b of [...old].reverse()) { if (b.threadId !== selected) continue; const index = remaining.findIndex(item => !b.seenIds.includes(item.id) && item.question.trim() === b.text); if (index >= 0) { remaining.splice(index, 1); matched.add(b.id); } } return matched.size ? old.filter(b => !matched.has(b.id)) : old; }); }, [selected, pages]);

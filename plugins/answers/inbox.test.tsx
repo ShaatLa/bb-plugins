@@ -140,6 +140,11 @@ it('collapses consecutive quiet updates into one group with a preview of the lat
   fireEvent.click(slot.getByRole('button', { name:'Collapse background updates' }));
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
 });
+it('keeps the conversation up when an older page lands before the newest (cache on return)', async () => {
+  const { unbroken } = await import('./inbox') as any;
+  const a = { items:[base], nextCursor:'1|ans_one' }, b = { items:[], nextCursor:null }, sparse: any[] = []; sparse[1] = b;
+  expect(unbroken([...sparse])).toEqual([]); expect(unbroken([a, undefined, b])).toEqual([a]); const whole = [a, b]; expect(unbroken(whole)).toBe(whole);
+});
 it('loads earlier pages by itself while the loaded window holds only quiet updates', async () => {
   const { recipients, list } = setup({ list: input => input.cursor ? { items:[base], nextCursor:null } : { items:[quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:'1|ans_u1' } }); fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(list.mock.calls.some(([input]: any[]) => input.cursor === '1|ans_u1')).toBe(true));
