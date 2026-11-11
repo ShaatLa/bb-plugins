@@ -178,7 +178,7 @@ describe('asksOwner',()=>{
   ['Done. See https://ci.example/run?id=4 for logs.',false],['Opened [the run](https://x.dev/r?id=1).',false],['Ran `git status?` fine.',false],
   ['Logs:\n```\nok? yes\n```\nAll green.',false],['> Can you merge?\n\nMerged as asked.',false],['Use ?query=1 in the URL.',false],['Готово, всё смёржено.',false],
   ['ANV-673 готова к вашей проверке. CI зелёный.',true],['ANV-662 снова у вас.',true],['Исполнителем карточки поставил вас.',true],['PR is ready for your review.',true],
-  ['Чтобы смержить #2000, нужна ваша команда «мержи #2000».',true],['Оба ревьюера смотрят. Когда оба одобрят, нужна ваша команда «мержи #2000».',false],['**После одобрения нужна ваша команда «мержи #2000».**',false],['Ready for your review once CI passes.',false],
+  ['Чтобы смержить #2000, нужна ваша команда «мержи #2000».',true],['Оба ревьюера смотрят. Когда оба одобрят, нужна ваша команда «мержи #2000».',false],['**После одобрения нужна ваша команда «мержи #2000».**',false],['Ready for your review once CI passes.',false],['ANV-1 is back to you: CI is green.',true],['We need your go-ahead to merge #2000.',true],['Awaiting your approval on ANV-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
   ['Потом ANV-673 придёт к вам с вопросом о приёмке. Пока действий нет.',false],['Вашу приёмку ANV-662 я сверил по карточке.',false],
  ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
 });

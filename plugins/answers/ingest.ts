@@ -16,7 +16,7 @@ export function asksOwner(text: string) {
 }
 const CONDITION_RE = /(?:^|[^а-яё])(?:когда|после|как только|если|потом)(?![а-яё])|\b(?:when|once|after|if)\b/i;
 // Work handed to the owner with no '?': "ANV-1 готова к вашей проверке", "снова у вас", "ready for your review".
-const HANDOFF_RE = /готов[аоы]? к ваш(?:ей|ему|им) (?:проверк|приёмк|приемк|ревью|решени|оценк)|(?:снова|теперь) у вас(?![а-яё])|жд[ёе]т ваш|ждут ваш|жд[ёе]т вас(?![а-яё])|нужн[оаы]? ваш|на вашей стороне|поставил вас|перев[её]л[аи]? (?:её |его |их )?на вас|ready for your (?:review|acceptance|approval|decision)|waiting (?:for|on) you|needs your (?:review|approval|decision|input)|over to you/i;
+const HANDOFF_RE = /готов[аоы]? к ваш(?:ей|ему|им) (?:проверк|приёмк|приемк|ревью|решени|оценк)|(?:снова|теперь) у вас(?![а-яё])|жд[ёе]т ваш|ждут ваш|жд[ёе]т вас(?![а-яё])|нужн[оаы]? ваш|на вашей стороне|поставил вас|перев[её]л[аи]? (?:её |его |их )?на вас|ready for your (?:review|acceptance|approval|decision|check)|(?:waiting|wait) (?:for|on) you|awaits? your|awaiting your|needs? your (?:review|approval|decision|input|answer|go-ahead|command|ok)|(?:back|over) to you|assigned (?:it |this )?to you|your call(?![a-z])/i;
 export const INTERIM_RE = /делегир|доложу|сообщу, когда|отпишусь|вернусь с (ответом|результат)|как (только )?(будет|закончит)|жду (результат|ответ|завершени)|delegat|will report back|i'll (get back|report|follow up)|once (it|they|the \w+) (finish|complete)|waiting (for|on) (the )?(child|sub-?agent|thread|result)/i;
 // One failed attempt can arrive twice (live turn.failed hook, then the persisted rejection); record it once.
 export function failRequest(db: Database.Database, threadId:string, requestId:string, at:number, live:boolean, onlyNew=false) {
