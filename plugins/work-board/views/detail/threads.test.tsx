@@ -378,9 +378,9 @@ it("shows an epic's tasks and progress and creates a member without turning it i
   await slot.findByRole("button", { name: "2/2 tasks" });
 });
 
-describe("copying the task key", () => {
+describe("copying the task link", () => {
   it.each(["main", "side"])(
-    "copies only the key from the %s detail view",
+    "copies a shareable task link from the %s detail view",
     async (surface) => {
       const options = { rpc: detailRpc() };
       const slot =
@@ -388,11 +388,11 @@ describe("copying the task key", () => {
           ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
           : renderSlot(taskTab(app), { threadId: "thr_copy", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
       fireEvent.click(
-        await slot.findByRole("button", { name: "Copy task key" }),
+        await slot.findByRole("button", { name: "Copy task link" }),
       );
-      await slot.findByText("Task key copied");
+      await slot.findByText("Task link copied. Paste it into the agent chat.");
       expect(slot.inspection.experimental_clipboardWrites).toEqual([
-        { text: "TSK-5" },
+        { text: "[TSK-5](/plugins/work-board/work-board/task/TSK-5)" },
       ]);
       expect(
         slot.getByRole("textbox", { name: "Task title" }).textContent,
@@ -405,8 +405,9 @@ describe("copying the task key", () => {
       });
       const heading = back.closest("header")!;
       expect(heading.getAttribute("aria-label")).toBe("Task heading");
-      expect(slot.getByRole("button", { name: "Copy task key" }).closest("header")).toBe(heading);
-      expect(slot.getByText(task.key).nextElementSibling).toBe(slot.getByRole("button", { name: "Copy task key" }));
+      expect(slot.queryByRole("button", { name: "Share TSK-5 with agent" })).toBeNull();
+      expect(slot.getByRole("button", { name: "Copy task link" }).closest("header")).toBe(heading);
+      expect(slot.getByText(task.key).nextElementSibling).toBe(slot.getByRole("button", { name: "Copy task link" }));
       expect(
         heading.parentElement!.contains(
           slot.getByRole("textbox", { name: "Task title" }),
@@ -430,7 +431,7 @@ describe("copying the task key", () => {
     },
   );
 
-  it("copies only the key while the task title is being edited", async () => {
+  it("copies a shareable task link while the task title is being edited", async () => {
     const slot = renderSlot(
       app.navPanels[0]!,
       { subPath: "task/TSK-5" },
@@ -439,10 +440,10 @@ describe("copying the task key", () => {
     const title = await slot.findByRole("textbox", { name: "Task title" });
     title.textContent = "Updated task title";
     fireEvent.input(title);
-    fireEvent.click(slot.getByRole("button", { name: "Copy task key" }));
-    await slot.findByText("Task key copied");
+    fireEvent.click(slot.getByRole("button", { name: "Copy task link" }));
+    await slot.findByText("Task link copied. Paste it into the agent chat.");
     expect(slot.inspection.experimental_clipboardWrites).toEqual([
-      { text: "TSK-5" },
+      { text: "[TSK-5](/plugins/work-board/work-board/task/TSK-5)" },
     ]);
   });
 
@@ -461,10 +462,10 @@ describe("copying the task key", () => {
         },
       );
       fireEvent.click(
-        await slot.findByRole("button", { name: "Copy task key" }),
+        await slot.findByRole("button", { name: "Copy task link" }),
       );
-      await slot.findByText("Could not copy task key. Please try again.");
-      expect(slot.queryByText("Task key copied")).toBeNull();
+      await slot.findByText("Could not copy task link. Please try again.");
+      expect(slot.queryByText("Task link copied. Paste it into the agent chat.")).toBeNull();
     },
   );
 });
@@ -545,7 +546,7 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(document.activeElement).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");
-  expect(slot.getByRole("button", { name: "Copy task key" }).hasAttribute("disabled")).toBe(false);
+  expect(slot.getByRole("button", { name: "Copy task link" }).hasAttribute("disabled")).toBe(false);
   finishRefresh();
   await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);

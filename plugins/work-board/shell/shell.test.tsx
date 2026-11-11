@@ -137,7 +137,7 @@ describe("project view preference", () => {
 
   it("restores the remembered view when the URL names none and opens the native board for it", async () => {
     const listed = openProject(`${PROJECT_ID}?view=list`, panelOptions(nativePanel("tab-navigation")));
-    expect(listed.getByRole("link", { name: "Work Board settings" }).getAttribute("href")).toBe("/settings/plugins/work-board");
+    expect(listed.getByRole("button", { name: "Work Board settings" })).toBeTruthy();
     fireEvent.click(await listed.findByRole("button", { name: "Board" }));
     expect(listed.navigateCalls).toContainEqual({
       method: "toPluginPanel",
@@ -1406,4 +1406,22 @@ describe("tasks app shell", () => {
     });
     expect(projectCalls).toBe(settled);
   });
+});
+
+
+it("opens label management from the main toolbar settings menu", async () => {
+  const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, {
+    rpc: seededRpc({ listLabels: () => ({ labels: [] }) }),
+  });
+  fireEvent.keyDown(await slot.findByRole("button", { name: "Work Board settings" }), { key: "ArrowDown" });
+  const settings = await slot.findByRole("menuitem", { name: "Plugin settings" });
+  expect(settings.getAttribute("href")).toBe("/settings/plugins/work-board");
+  fireEvent.click(slot.getByRole("menuitem", { name: "Manage labels and presets" }));
+  expect(slot.navigateCalls).toContainEqual({
+    method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
+  });
+  slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
+  await slot.findByText("Projects, labels, agent presets, and folders.");
+  expect(slot.getByRole("tab", { name: "Labels" }).getAttribute("data-state")).toBe("active");
+  expect(await slot.findByText("No labels yet.")).toBeTruthy();
 });
