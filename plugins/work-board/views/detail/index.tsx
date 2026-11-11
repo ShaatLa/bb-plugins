@@ -2,7 +2,7 @@ import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
-import { PullRequestsSection } from "../../components/pr-links";
+import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
@@ -354,7 +354,9 @@ function TaskDetail({
       epicId ? (await query.call("getTask", { taskId: epicId })).task : null,
     ["tasks:changed"],
     [epicId],
+    { relevantTaskIds: epicId ? [epicId] : [] },
   );
+  const subtaskIdsRef = useRef<string[]>([]);
   const subtasks = useTasksQuery(
     async (query) =>
       listAllTasks(
@@ -363,7 +365,10 @@ function TaskDetail({
       ),
     ["tasks:changed"],
     [task.id, task.type],
+    // shortcut: a subtask created elsewhere only shows up on the next refresh (create events carry the new id only).
+    { relevantTaskIds: [task.id, ...subtaskIdsRef.current] },
   );
+  subtaskIdsRef.current = (subtasks.data ?? []).map((subtask) => subtask.id);
   const labels = useTasksQuery(
     async (query) =>
       (await query.call("listLabels", { projectId: task.projectId })).labels,
@@ -527,6 +532,7 @@ function TaskDetail({
   </>;
 
   return (
+    <PrLinksProvider taskId={task.id}>
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
@@ -732,6 +738,7 @@ function TaskDetail({
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />
     </div>
+    </PrLinksProvider>
   );
 }
 
@@ -742,11 +749,18 @@ export function DetailView({
   backLabel = "Back (Esc)",
   headerActions,
 }: DetailViewProps) {
+  // Before the first load the id is unknown, so every event refetches.
+  const [loaded, setLoaded] = useState<{ taskKey: string; id: string } | null>(null);
   const query = useTasksQuery(
     async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
     ["tasks:changed"],
     [taskKey],
+    { relevantTaskIds: loaded?.taskKey === taskKey ? [loaded.id] : undefined },
   );
+  const loadedId = query.data?.id;
+  useEffect(() => {
+    setLoaded(loadedId ? { taskKey, id: loadedId } : null);
+  }, [taskKey, loadedId]);
   const canonicalKey = query.data?.key;
   useEffect(() => {
     if (canonicalKey) onCanonicalKey?.(canonicalKey);

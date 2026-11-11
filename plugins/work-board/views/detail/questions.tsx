@@ -229,6 +229,7 @@ export function QuestionsSection({
       (await client.call("listQuestions", { taskId })).questions,
     ["tasks:changed"],
     [taskId],
+    { relevantTaskIds: [taskId] },
   );
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState<

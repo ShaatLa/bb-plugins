@@ -1,5 +1,5 @@
 import { UrlLink } from "@get-bb/plugin-sdk/app";
-import { useState } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,31 @@ import { errorMessage } from "../shared/errors";
 import type { PrLink, PrLinkState } from "../shared/git-sync";
 import { PR_STATE_META } from "../views/detail/meta";
 
+function useListPrLinks(taskId: string | undefined, enabled: boolean) {
+  return useTasksQuery(
+    async (rpc) => (taskId ? await rpc.call("listPrLinks", { taskId }) : { links: [], overlaps: [] }),
+    ["tasks:changed", "prs:changed"],
+    [taskId],
+    { enabled, relevantTaskIds: taskId ? [taskId] : [] },
+  );
+}
+
+type PrLinksQuery = ReturnType<typeof useListPrLinks>;
+const PrLinksContext = createContext<{ taskId: string; query: PrLinksQuery } | null>(null);
+
+// One listPrLinks query per task page, shared by the PR section and the evidence table.
+export function PrLinksProvider({ taskId, children }: { taskId: string; children: ReactNode }) {
+  const query = useListPrLinks(taskId, true);
+  return <PrLinksContext.Provider value={{ taskId, query }}>{children}</PrLinksContext.Provider>;
+}
+
+export function usePrLinks(taskId: string | undefined): PrLinksQuery {
+  const shared = useContext(PrLinksContext);
+  const reuse = shared !== null && shared.taskId === taskId;
+  const own = useListPrLinks(taskId, !reuse && taskId !== undefined);
+  return reuse ? shared.query : own;
+}
+
 export function PullRequestsSection({
   taskId,
   projectId,
@@ -31,12 +56,7 @@ export function PullRequestsSection({
   loading?: boolean;
 }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery(
-    async (rpc) => await rpc.call("listPrLinks", { taskId }),
-    ["tasks:changed", "prs:changed"],
-    [taskId],
-    { relevantTaskIds: [taskId] },
-  );
+  const query = usePrLinks(taskId);
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState("");
   const [role, setRole] = useState<PrLink["role"]>("delivers");
