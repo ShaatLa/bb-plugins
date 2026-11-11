@@ -15,7 +15,7 @@ import {
   readQuerySnapshot,
   writeQuerySnapshot,
 } from "./query-snapshot.js";
-import { getSharedTask, invalidateTaskDatasets } from "./task-dataset";
+import { forgetTaskReads, getSharedTask, invalidateTaskDatasets } from "./task-dataset";
 import { useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
@@ -24,6 +24,11 @@ import {
 } from "./signal-scheduler.js";
 
 const readFlights = new Map<string, Promise<unknown>>();
+// Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
+function forgetReads() {
+  readFlights.clear();
+  forgetTaskReads();
+}
 let rpcUsers = 0;
 const readMethods = new Set<string>([
   "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
@@ -48,8 +53,12 @@ export function useTasksRpc() {
     return {
       ...rpc,
       call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
-        if (!readMethods.has(method))
-          return (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+        if (!readMethods.has(method)) {
+          forgetReads();
+          const write = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+          void write.finally(forgetReads).catch(() => undefined);
+          return write;
+        }
         const key = JSON.stringify([method, args], (_key, value: unknown) =>
           value && typeof value === "object" && !Array.isArray(value)
             ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
@@ -369,23 +378,21 @@ export function useTasksQuery<T>(
     };
   }, [scheduler]);
   useRealtime("tasks:changed", (payload) => {
+    forgetReads();
     invalidateTaskDatasets();
     scheduler.push("tasks:changed", payload);
   });
   useRealtime("projects:changed", (payload) => {
+    forgetReads();
     invalidateTaskDatasets();
     scheduler.push("projects:changed", payload);
   });
-  useRealtime("comments:changed", (payload) =>
-    scheduler.push("comments:changed", payload),
-  );
-  useRealtime("threads:changed", (payload) =>
-    scheduler.push("threads:changed", payload),
-  );
-  useRealtime("prs:changed", (payload) => scheduler.push("prs:changed", payload));
-  useRealtime("locks:changed", (payload) => scheduler.push("locks:changed", payload));
-  useRealtime("badge:changed", (payload) => scheduler.push("badge:changed", payload));
-  useRealtime("schedules:changed", (payload) => scheduler.push("schedules:changed", payload));
+  useRealtime("comments:changed", (payload) => { forgetReads(); scheduler.push("comments:changed", payload); });
+  useRealtime("threads:changed", (payload) => { forgetReads(); scheduler.push("threads:changed", payload); });
+  useRealtime("prs:changed", (payload) => { forgetReads(); scheduler.push("prs:changed", payload); });
+  useRealtime("locks:changed", (payload) => { forgetReads(); scheduler.push("locks:changed", payload); });
+  useRealtime("badge:changed", (payload) => { forgetReads(); scheduler.push("badge:changed", payload); });
+  useRealtime("schedules:changed", (payload) => { forgetReads(); scheduler.push("schedules:changed", payload); });
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
   return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
 }

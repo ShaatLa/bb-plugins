@@ -9,6 +9,9 @@ interface Flight { promise: Promise<Task[]>; listeners: Set<Publish>; latest?: T
 const flights = new Map<string, Flight>();
 const taskReads = new Map<string, Promise<Task | null>>();
 
+/** Drop shared task reads so a read issued after a change never joins one issued before it. */
+export function forgetTaskReads() { taskReads.clear(); }
+
 export function getSharedTask(rpc: TasksRpc, taskId: string): Promise<Task | null> {
   const existing = taskReads.get(taskId);
   if (existing) return existing;

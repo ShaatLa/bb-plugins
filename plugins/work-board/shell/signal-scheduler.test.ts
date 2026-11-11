@@ -28,6 +28,7 @@ function setup(
 ) {
   let timer: (() => void) | null = null;
   let delay = -1;
+  let timersSet = 0;
   let hidden = false;
   const counts = { refetch: 0, refetchAfterFetch: 0 };
   const patched: TaskSignal[][] = [];
@@ -39,6 +40,7 @@ function setup(
     setTimer: (callback, delayMs) => {
       timer = callback;
       delay = delayMs;
+      timersSet += 1;
       return () => {
         timer = null;
       };
@@ -60,7 +62,7 @@ function setup(
   const setHidden = (value: boolean) => {
     hidden = value;
   };
-  return { scheduler, counts, patched, fireTimer, setHidden, getDelay: () => delay };
+  return { scheduler, counts, patched, fireTimer, setHidden, getDelay: () => delay, getTimersSet: () => timersSet };
 }
 
 describe("task signal scheduler", () => {
@@ -80,6 +82,15 @@ describe("task signal scheduler", () => {
     expect(getDelay()).toBe(0);
     fireTimer();
     expect(counts.refetch).toBe(2);
+  });
+
+  it("keeps the first sidebar flush scheduled while events keep arriving", () => {
+    const { scheduler, counts, fireTimer, getTimersSet } = setup({ signalDelayMs: () => 1500 });
+    // A steady stream must not keep rescheduling (debouncing) the 1.5 s flush.
+    for (let index = 0; index < 10; index++) scheduler.push("threads:changed", { taskId: `t-${index}` });
+    expect(getTimersSet()).toBe(1);
+    fireTimer();
+    expect(counts.refetch).toBe(1);
   });
   it("patches one batch per burst of signals for the same task", async () => {
     const { scheduler, counts, patched, fireTimer } = setup({

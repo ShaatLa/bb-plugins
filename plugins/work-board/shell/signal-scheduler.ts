@@ -60,6 +60,7 @@ export function createTaskSignalScheduler(
 ): TaskSignalScheduler {
   let pending = new Map<string, TaskSignal>();
   let cancelTimer: (() => void) | null = null;
+  let timerDelay = SIGNAL_BATCH_MS;
   let inFlight = 0;
   let refetchQueued = false;
   let latestFetch: Promise<void> = Promise.resolve();
@@ -112,8 +113,10 @@ export function createTaskSignalScheduler(
       pending.set(`${channel}\n${taskId ?? ""}`, { channel, taskId });
       const delay = host.signalDelayMs === undefined ? SIGNAL_BATCH_MS
         : Math.min(...[...pending.values()].map((signal) => host.signalDelayMs!(signal.channel)));
-      if (cancelTimer !== null && delay === SIGNAL_BATCH_MS) return;
+      // Throttle, not debounce: a steady event stream must not postpone a scheduled flush forever.
+      if (cancelTimer !== null && delay >= timerDelay) return;
       clearTimer();
+      timerDelay = delay;
       cancelTimer = host.setTimer(flush, delay);
     },
     flush,

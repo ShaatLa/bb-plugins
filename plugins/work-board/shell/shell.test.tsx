@@ -212,6 +212,20 @@ describe("startup screen", () => {
     await first.findByText(project.name);
     second.lifecycle.unmount();
   });
+
+  it("does not let a read started after a change join one started before it", async () => {
+    let resolveProjects!: (value: { projects: (typeof project)[] }) => void;
+    const projects = new Promise<{ projects: (typeof project)[] }>((resolve) => { resolveProjects = resolve; });
+    let reads = 0;
+    const rpc = seededRpc({ listProjects: () => { reads++; return projects; } });
+    const first = renderSlot(navigationRegistration, { subPath: "" }, { rpc });
+    expect(reads).toBe(1);
+    await first.emitRealtime("projects:changed", { projectId: PROJECT_ID });
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc });
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    resolveProjects({ projects: [project] });
+    second.lifecycle.unmount();
+  });
   const rpc = seededRpc({
     listProjects: () => ({ projects: [project, { ...project, id: OTHER_PROJECT_ID, name: "Other project", prefix: "OTH" }] }),
     listLabels: () => ({ labels: [] }),
