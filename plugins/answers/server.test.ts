@@ -531,6 +531,35 @@ describe('ingestion driver',()=>{
   const item=db.prepare("SELECT status,interim,answer,read_at,wait_children FROM items").get();
   expect(item).toEqual(deferredExpected ? {status:'deferred',interim:'Research started, I will report',answer:null,read_at:null,wait_children:'["k"]'} : expect.objectContaining({status:'answered',answer:'Research started, I will report',wait_children:null}));
  });
+ it('waits for a later wave of children, then answers the question with the final report',async()=>{
+  const {harness,db,driver}=driverSetup();
+  const wake=(seq:number,child:string,turn:string,text:string)=>[
+   {seq,type:'client/turn/requested',createdAt:seq*100,data:{initiator:'system',requestId:'w'+seq,input:[{type:'text',text:`[bb system] @thread:${child} completed: ok`}]}},
+   {seq:seq+1,type:'turn/started',scope:{turnId:turn},data:{}},
+   {seq:seq+2,type:'turn/input/accepted',scope:{turnId:turn},data:{clientRequestId:'w'+seq}},
+   {seq:seq+3,type:'item/completed',scope:{turnId:turn},data:{item:{type:'agentMessage',text}}},
+   {seq:seq+4,type:'turn/completed',createdAt:seq*100+50,scope:{turnId:turn},data:{status:'completed'}},
+  ];
+  let shown:any[]=[], kids:any[]=[];
+  harness.sdk.stub('threads.events.list',async(args:any)=>args.order==='desc' ? [...shown].reverse() : shown.filter(e=>e.seq>Number(args.afterSeq ?? 0)));
+  harness.sdk.stub('threads.list',async(args:any)=>args.parentThreadId==='t' ? kids.map(k=>makeThreadResponse({parentThreadId:'t',...k} as any)) : []);
+  await driver.schedule('t');
+  shown=[
+   {seq:1,type:'client/turn/requested',createdAt:1000,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'Optimize the plugin'}]}},
+   {seq:2,type:'turn/started',scope:{turnId:'u'},data:{}},
+   {seq:3,type:'turn/input/accepted',scope:{turnId:'u'},data:{clientRequestId:'r'}},
+   {seq:4,type:'item/completed',scope:{turnId:'u'},data:{item:{type:'agentMessage',text:'Research started, I will report'}}},
+   {seq:5,type:'turn/completed',scope:{turnId:'u'},data:{status:'completed'}},
+  ];
+  kids=[{id:'thr_kida',createdAt:2000,status:'active'}]; await driver.schedule('t');
+  const mine=()=>db.prepare("SELECT status,answer,wait_children FROM items WHERE kind='mine'").get();
+  expect(mine()).toMatchObject({status:'deferred',wait_children:'["thr_kida"]'});
+  shown=[...shown,...wake(10,'thr_kida','v','Research done, fixes started')]; kids=[{id:'thr_kida',createdAt:2000,status:'idle'},{id:'thr_kidb',createdAt:3000,status:'active'}]; await driver.schedule('t');
+  expect(mine()).toMatchObject({status:'deferred',wait_children:'["thr_kidb"]'});
+  shown=[...shown,...wake(20,'thr_kidb','x','Optimization shipped')]; kids=[{id:'thr_kidb',createdAt:3000,status:'idle'}]; await driver.schedule('t');
+  expect(mine()).toMatchObject({status:'answered',answer:'Optimization shipped',wait_children:null});
+  expect(db.prepare("SELECT answer FROM items WHERE kind='update'").all()).toEqual([{answer:'Research done, fixes started'}]);
+ });
  it('skips archived and unchanged tracked threads using reconcile metadata',async()=>{
   const {harness,db,driver}=driverSetup();
   const eventThreads:string[]=[];

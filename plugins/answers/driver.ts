@@ -1,6 +1,6 @@
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
-import { applyEvents, RELEVANT, type Event } from './ingest';
+import { applyEvents, QUIET_SQL, RELEVANT, type Event } from './ingest';
 
 const notFound = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
@@ -102,6 +102,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       if (result.events.length < result.size) break;
     }
     if (before && !signal.aborted) await autoDefer(id,[...answeredTurns()].filter(x=>!before.has(x)));
+    if (!signal.aborted) changed = await settleWaits(id,live.has(id)) || changed;
     if (!signal.aborted) db.prepare('UPDATE threads_state SET ingested_thread_updated_at=? WHERE thread_id=? AND coalesce(ingested_thread_updated_at,0)<?').run(thread.updatedAt,id,thread.updatedAt);
     } finally { if (changed) invalidate(); }
   }
@@ -109,14 +110,33 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   async function autoDefer(id: string, items: string[]) {
     if (!items.length) return;
     try {
-      const kids = await bb.sdk.threads.list({parentThreadId:id,includeHidden:true,limit:200,signal});
-      const running = kids.filter(t=>!t.archivedAt && !t.deletedAt && ['active','pending','starting','stopping'].includes(t.status));
+      const running = await runningChildren(id);
       for (const item of items) {
         const since = (db.prepare('SELECT created_at FROM items WHERE id=?').get(item) as {created_at:number}).created_at;
         const waits = running.filter(t=>t.createdAt>=since).map(t=>t.id);
         if (waits.length) db.prepare("UPDATE items SET status='deferred',interim=answer,interim_seq=answer_seq,answer=NULL,answer_seq=NULL,answer_source=NULL,answered_at=NULL,read_at=NULL,likely_interim=0,notify_state=0,wait_children=?,updated_at=? WHERE id=? AND status='answered' AND answer_source='turn'").run(JSON.stringify(waits),Date.now(),item);
       }
     } catch (e) { if (signal.aborted) throw e; bb.log.warn(`Answers auto-defer: ${String(e)}`); }
+  }
+  const runningChildren = async (id: string) => (await bb.sdk.threads.list({parentThreadId:id,includeHidden:true,limit:200,signal})).filter(t=>!t.archivedAt && !t.deletedAt && ['active','pending','starting','stopping'].includes(t.status));
+  // The last awaited child reported. Delegation often comes in waves (research, then fixes): children started since the
+  // question still run, so keep waiting for them; otherwise the latest report answers the question (oldest question first).
+  async function settleWaits(id: string, isLive: boolean) {
+    const items = db.prepare("SELECT id,created_at FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children='[]' ORDER BY created_at, question_seq").all(id) as {id:string;created_at:number}[];
+    if (!items.length) return false;
+    let running: Awaited<ReturnType<typeof runningChildren>>;
+    try { running = await runningChildren(id); } catch (e) { if (signal.aborted) throw e; bb.log.warn(`Answers auto-defer: ${String(e)}`); return false; }
+    let answered = false;
+    db.transaction(() => { for (const item of items) {
+      const waits = running.filter(t=>t.createdAt>=item.created_at).map(t=>t.id);
+      const report = !waits.length && !answered ? db.prepare("SELECT id,answer,answer_seq,created_at FROM items WHERE thread_id=? AND kind='update' AND trigger_kind='system' AND created_at>=? ORDER BY created_at DESC, answer_seq DESC LIMIT 1").get(id,item.created_at) as {id:string;answer:string;answer_seq:number|null;created_at:number}|undefined : undefined;
+      if (report) {
+        db.prepare("UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='agent',failed_at=NULL,answered_at=?,notify_state=?,read_at=NULL,wait_children=NULL,updated_at=? WHERE id=?").run(report.answer,report.answer_seq,report.created_at,Number(isLive),Date.now(),item.id);
+        db.prepare(`UPDATE items SET read_at=? WHERE id=? AND ${QUIET_SQL}`).run(Date.now(),item.id);
+        db.prepare('DELETE FROM items WHERE id=?').run(report.id); answered = true;
+      } else db.prepare('UPDATE items SET wait_children=? WHERE id=?').run(waits.length ? JSON.stringify(waits) : null,item.id);
+    } })();
+    return true;
   }
   async function attempt(id: string, listed?: Thread) {
     try {
