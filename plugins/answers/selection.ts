@@ -15,8 +15,14 @@ export function selectionMarkdown(range: Range, body: HTMLElement) {
     let fragment: Node = clipped.cloneContents();
     let ancestor = clipped.commonAncestorContainer;
     if (ancestor.nodeType !== Node.ELEMENT_NODE) ancestor = ancestor.parentNode!;
+    // Only the nearest list level is kept: outer levels of a nested list would quote as '- - text', and a bullet around
+    // text from a single item is noise (an ordered item keeps its number).
+    let inItem = false, listed = false;
     while (ancestor && ancestor !== body) {
-      if (ancestor instanceof HTMLElement && /^(STRONG|B|EM|I|A|CODE|PRE|LI|OL|UL|BLOCKQUOTE|H[1-6])$/.test(ancestor.tagName)) {
+      const tag = ancestor instanceof HTMLElement ? ancestor.tagName : '';
+      const skip = /^(LI|OL|UL)$/.test(tag) && (listed || (tag === 'LI' && ancestor.parentElement?.tagName !== 'OL') || (tag === 'UL' && inItem));
+      if (tag === 'LI') inItem = true; else if (tag === 'OL' || tag === 'UL') listed = true;
+      if (!skip && ancestor instanceof HTMLElement && /^(STRONG|B|EM|I|A|CODE|PRE|LI|OL|UL|BLOCKQUOTE|H[1-6])$/.test(ancestor.tagName)) {
         const wrapper = ancestor.cloneNode(false) as HTMLElement;
         if (wrapper.tagName === 'OL') {
           const li = clipped.startContainer.nodeType === Node.ELEMENT_NODE ? clipped.startContainer as Element : clipped.startContainer.parentElement;

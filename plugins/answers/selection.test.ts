@@ -15,6 +15,15 @@ describe('selection snapshots', () => {
     const { body, range } = selected('<ol start="4"><li>first</li><li>second</li></ol>', 'li:nth-child(2)', 1, 5);
     expect(selectionMarkdown(range, body)).toBe('5.  econ');
   });
+  it('quotes text from one nested bullet without list markers, and a multi-item selection as one list level', () => {
+    document.body.innerHTML = '<main><ul><li>outer<ul><li><strong>Bold</strong> inner text</li><li>next item</li></ul></li></ul></main>';
+    const body = document.querySelector('main')!, [first, second] = Array.from(body.querySelectorAll('li li'));
+    const bold = first.querySelector('strong')!.firstChild!, rest = first.lastChild!, next = second.firstChild!;
+    const one = document.createRange(); one.setStart(bold, 0); one.setEnd(rest, 6);
+    expect(selectionMarkdown(one, body)).toBe('**Bold** inner');
+    const two = document.createRange(); two.setStart(rest, 1); two.setEnd(next, 4);
+    expect(selectionMarkdown(two, body)).toMatch(/^- +inner text\n- +next$/);
+  });
   it('drops renderer chrome and falls back when conversion is empty', () => {
     const { body, range } = selected('<div>text<button>Copy</button><svg>icon</svg><i aria-hidden="true">hidden</i></div>', 'div');
     range.selectNodeContents(body); expect(selectionMarkdown(range, body)).toBe('text');
