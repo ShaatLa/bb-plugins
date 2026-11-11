@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSdk } from "@get-bb/plugin-sdk/app";
-import { useWorkBoardRpc } from "../../shell/host.js";
+import { useRpc, useSdk } from "@get-bb/plugin-sdk/app";
 import type { DelegationRpcContract } from "../../delegate/contract";
 import { errorMessage } from "../../shared/errors";
 import { Button } from "@/components/ui/button";
@@ -11,7 +10,7 @@ import { storeDefaultThread, useDefaultThread } from "./thread-preference";
 
 export function ExistingThreadDialog({ taskId, projectId, onClose, assignOnly = false }: { taskId: string; projectId: string; onClose: () => void; assignOnly?: boolean }) {
   const sdk = useSdk();
-  const rpc = useWorkBoardRpc<DelegationRpcContract>();
+  const rpc = useRpc<DelegationRpcContract>();
   type Threads = Awaited<ReturnType<typeof sdk.threads.list>>;
   const [threads, setThreads] = useState<Threads>([]);
   const [offset, setOffset] = useState(0);

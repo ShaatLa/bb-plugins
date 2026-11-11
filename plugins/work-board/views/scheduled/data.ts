@@ -1,13 +1,12 @@
 import { useMemo } from "react";
-import { useSdk } from "@get-bb/plugin-sdk/app";
-import { useWorkBoardRpc } from "../../shell/host.js";
+import { useRpc, useSdk } from "@get-bb/plugin-sdk/app";
 import type { Task } from "../../shared/contract.js";
 import type { ScheduledRpcContract } from "../../shared/scheduled.js";
 import { useTasksQuery, type QueryPublish } from "../../shell/data.js";
 import type { InvalidationChannel } from "../../shell/signal-scheduler.js";
 
 export function useScheduledRpc() {
-  return useWorkBoardRpc<ScheduledRpcContract>();
+  return useRpc<ScheduledRpcContract>();
 }
 export type ScheduledRpc = ReturnType<typeof useScheduledRpc>;
 

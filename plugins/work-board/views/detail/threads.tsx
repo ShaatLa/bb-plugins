@@ -1,7 +1,6 @@
 import { migrateBrowserPreferences } from "../../shell/migrate-preferences.js";
 import { useState } from "react";
-import { UrlLink, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { useWorkBoardRpc } from "../../shell/host.js";
+import { UrlLink, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
 import type {
   Preset,
@@ -174,7 +173,7 @@ function PresetDispatchControl({
   align = "end",
   className,
 }: DispatchControlProps) {
-  const rpc = useWorkBoardRpc<DelegationRpcContract>();
+  const rpc = useRpc<DelegationRpcContract>();
   const tasksRpc = useTasksRpc();
   const [dispatching, setDispatching] = useState(false);
   const [lastPresetId, setLastPresetId] = useState(loadLastPresetId);
@@ -293,7 +292,7 @@ export function DispatchControl(props: DispatchControlProps) {
   const defaultThread = useDefaultThread(props.projectId);
   const attachedThread = props.threads[0];
   const navigate = useBbNavigate();
-  const rpc = useWorkBoardRpc<DelegationRpcContract>();
+  const rpc = useRpc<DelegationRpcContract>();
   const dispatch = async () => {
     if (attachedThread) { navigate.toThread(attachedThread.threadId); return; }
     if (!defaultThread) { setChoosingThread(true); return; }
