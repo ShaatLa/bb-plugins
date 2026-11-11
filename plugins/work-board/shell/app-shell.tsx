@@ -20,6 +20,7 @@ import { startupRoute } from "./startup-route.js";
 import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
 import { DetailView } from "../views/detail/index.js";
+import { useTaskScrollResume } from "../views/detail/scroll-resume.js";
 import { NewTaskDialog } from "../views/manage/new-task-dialog.js";
 import { NewProjectDialog } from "../views/manage/new-project-dialog.js";
 import { ManagePanel } from "../views/manage/manage-panel.js";
@@ -123,6 +124,8 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (!isRoot) storeLastRoute(subPath);
   }, [isRoot, subPath]);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useTaskScrollResume(contentRef, route.kind === "task" && !opening ? route.taskKey : null);
   const tasksNavigation = useTasksNavigation();
   const resolvedSubPath = tasksRouteToSubPath(route);
   useEffect(() => {
@@ -252,7 +255,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
           onNavigate={navigation.go}
           onNewTask={() => setNewTaskOpen(true)}
         />
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
           {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "manage" ? (
             <EmptyState
               icon="ListTodo"
