@@ -399,7 +399,7 @@ it('offers interim actions and retry', async () => {
 it('offers quick replies on agent questions in the Questions section', async () => {
   const reply = vi.fn(() => ({ delivery: 'sent' }));
   const slot = await questionsSetup({ reply }, { options: ['Yes', 'No'], recommended: 'Yes', recommendReason: 'Cheaper' });
-  expect(slot.getByText('Recommended: Cheaper')).toBeTruthy();
+  expect(slot.getByText('Cheaper')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
 });
