@@ -126,12 +126,9 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
 }
 // A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
-export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item[]; autoRead: boolean; reveal?: string | null; children: (item: Item) => ReactNode }) {
-  const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
-  const [open, setOpen] = useState(false), row = useRef<HTMLLIElement>(null), last = items.at(-1)!, unread = items.filter(isUnread);
+export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
+  const [open, setOpen] = useState(false), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
-  // Seen collapsed, the whole group is read; expanded, each card reads itself.
-  useReadOnView(row, autoRead && !open && unread.length > 0, () => void rpc.call('markRead', { ids: unread.map(item => item.id) }).then(() => refresh(), () => {}));
   const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it.
   return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
@@ -139,7 +136,6 @@ export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item
       <button type="button" aria-expanded={open} aria-label={`${items.length} agent updates`} onClick={() => setOpen(!open)} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
         <Icon name="ListTodo" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">Agent updates</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span>
         <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
-        {unread.length > 0 && <span className="size-1.5 shrink-0 rounded-full bg-foreground/70" aria-label="Unread" />}
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
@@ -208,7 +204,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
-  const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || last.kind === 'update') && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
+  const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || (last.kind === 'update' && last.asks)) && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
   useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
@@ -289,7 +285,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
     {result.data && <>
       {!cursor && !items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group, part, updates }) => { const item = group[0], card = (member: Item) => <ItemCard item={member} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} />; return <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && group.some(member => member.id === firstUnread.current) && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}{updates ? <UpdateGroup items={group} autoRead={chronological && view === 'all'}>{card}</UpdateGroup> : card(item)}</Fragment>; })}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group, part, updates }) => { const item = group[0], card = (member: Item) => <ItemCard item={member} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} />; return <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && group.some(member => member.id === firstUnread.current) && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}{updates ? <UpdateGroup items={group}>{card}</UpdateGroup> : card(item)}</Fragment>; })}</ul>
       {!chronological && more}
     </>}
   </>;

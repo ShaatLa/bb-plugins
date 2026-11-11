@@ -97,12 +97,12 @@ describe('updates',()=>{
   [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
-  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:null,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
  });
  it('marks an update that asks the owner, and pushes only that one when live',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'a',system),start(2,'x'),accept(3,'a','x'),message(4,'Merge it now?','x'),done(5,'completed','x'),req(6,'b',system),start(7,'y'),accept(8,'b','y'),message(9,'Merged.','y'),done(10,'completed','y')],'p',100,true,true);
-  expect(updates(db).map(u=>[u.answer,u.asks,u.notify_state])).toEqual([['Merge it now?',1,1],['Merged.',0,0]]);
+  expect(updates(db).map(u=>[u.answer,u.asks,u.notify_state])).toEqual([['Merge it now?',1,1],['Merged.',0,0]]); expect(updates(db).map(u=>u.read_at===null)).toEqual([true,false]);
   const replay=setup(); applyEvents(replay,'t',[req(1,'a',system),start(2,'x'),accept(3,'a','x'),message(4,'Merge it now?','x'),done(5,'completed','x')]);
   expect(updates(replay).map(u=>[u.asks,u.notify_state])).toEqual([[1,0]]);
  });

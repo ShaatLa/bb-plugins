@@ -82,4 +82,6 @@ CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind 
   `CREATE INDEX items_thread_activity ON items(thread_id, coalesce(answered_at,created_at), id);`,
   // Updates that ask nothing collapse into one group and are never pushed; existing rows stay 0 (SQL cannot run asksOwner).
   `ALTER TABLE items ADD COLUMN asks INTEGER NOT NULL DEFAULT 0;            -- 'update': the agent seemingly asks the owner something`,
+  // Updates that ask nothing carry no read state: they are read on arrival.
+  `UPDATE items SET read_at=coalesce(answered_at,created_at) WHERE kind='update' AND asks=0 AND read_at IS NULL;`,
 ];

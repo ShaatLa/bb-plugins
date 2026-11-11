@@ -167,17 +167,6 @@ describe('reply pools and inbox',()=>{
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20000),note:'x'.repeat(12000)}])).toThrow('32,000');
  });
- it('counts unread quiet updates once per thread in contacts, counts and the badge; an asking update counts on its own',async()=>{
-  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
-  for (const [id,asks] of [['ans_u1',0],['ans_u2',0],['ans_u3',0]] as const) db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,asks,created_at,updated_at) VALUES (?,'update','t','answered','','Report',?,1,1)").run(id,asks);
-  seed(db,'ans_a','mine'); db.prepare("UPDATE items SET status='answered',answer='Answer' WHERE id='ans_a'").run();
-  expect((await call('recipients')).recipients[0].unread).toBe(2);
-  expect(await call('counts')).toMatchObject({unread:2,inbox:2});
-  db.prepare("UPDATE items SET asks=1 WHERE id='ans_u3'").run();
-  expect(await call('counts')).toMatchObject({unread:3,inbox:3});
-  expect((await call('list',{view:'all'})).items.find((i:any)=>i.id==='ans_u3').asks).toBe(true);
-  expect((await call('markThreadRead',{threadId:'t'})).count).toBe(4); expect((await call('counts')).inbox).toBe(0);
- });
  it('counts an update as unread in contacts and views, never as waiting or saved, and refuses replies to it',async()=>{
   const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,answer_seq,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_u','update','t','answered','[bb system] done','Report',5,'system','thr_c',1,1)").run();
