@@ -465,7 +465,7 @@ it('does not re-render the history cards while typing in the composer or when th
   await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').toContain('Hello'));
   expect(cards.renders).toBe(settled);
 });
-it('polls the queue only while a row is scheduled', async () => {
+it('polls the queue every 5 s while a row is scheduled, else every 30 s', async () => {
   let visible = true;
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
   const draft: any = { id:'q1', threadId:'thr_one', content:[], sendAt:null, updatedAt:1 };
@@ -481,8 +481,10 @@ it('polls the queue only while a row is scheduled', async () => {
     act(() => { visible = true; document.dispatchEvent(new Event('visibilitychange')); });
     await act(async () => {}); await act(async () => {});
     const idle = queue.mock.calls.length;
-    await act(async () => { vi.advanceTimersByTime(60000); });
+    await act(async () => { vi.advanceTimersByTime(29000); });
     expect(queue.mock.calls.length).toBe(idle);
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(queue.mock.calls.length).toBe(idle + 1);
     queue.mockImplementation(async () => [{ ...draft, sendAt: Date.now() + 600000 }]);
     act(() => { visible = false; document.dispatchEvent(new Event('visibilitychange')); });
     act(() => { visible = true; document.dispatchEvent(new Event('visibilitychange')); });

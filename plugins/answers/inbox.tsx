@@ -249,9 +249,10 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   useEffect(() => () => clearTimeout(settle.current), []);
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
   useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
-  // Only a scheduled row changes without an event (its due time and "in Nm" label), so only then does the queue poll.
+  // A scheduled row needs the 5 s tick (its due time and "in Nm" label); other rows only change when bb's chat sends or
+  // deletes them, which queuedWork may not reflect, so they get a slow 30 s check.
   const scheduledQueue = queue.some(row => !!row.sendAt && row.sendAt > Date.now());
-  useEffect(() => { if (!selected || !visible || !scheduledQueue) return; const timer = setInterval(() => setQueueVersion(n => n + 1), 5000); return () => clearInterval(timer); }, [selected, visible, scheduledQueue]);
+  useEffect(() => { if (!selected || !visible || !queue.length) return; const timer = setInterval(() => setQueueVersion(n => n + 1), scheduledQueue ? 5000 : 30000); return () => clearInterval(timer); }, [selected, visible, queue.length > 0, scheduledQueue]);
   const openThread = sidebarThreads.find(t => t.id === selected);
   const working = openThread ? statusOf(openThread).isWorking : false;
   useEffect(() => { if (!selected) { setContext(null); return; } if (!visible) return; let active = true; const read = () => { void sdk.threads.context({ threadId: selected }).then(value => { if (active) setContext(value); }).catch(() => { if (active) setContext(null); }); }; read(); const timer = working ? setInterval(read, 30000) : undefined; return () => { active = false; clearInterval(timer); }; }, [sdk, selected, visible, working]);
