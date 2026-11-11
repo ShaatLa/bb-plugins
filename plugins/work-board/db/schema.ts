@@ -409,6 +409,12 @@ const MIGRATIONS = [
         '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.resolvedAt',CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
     WHERE project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
   END;`,
+  `ALTER TABLE projects ADD COLUMN workflow_policy TEXT`,
+  `CREATE TABLE legacy_done_tasks (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
+   INSERT INTO legacy_done_tasks SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id
+   WHERE t.status = CASE WHEN json_type(p.workflow_policy, '$.doneStatus') IS NULL THEN 'done' ELSE json_extract(p.workflow_policy, '$.doneStatus') END;
+   CREATE TRIGGER legacy_done_tasks_leave AFTER UPDATE OF status ON tasks
+   WHEN OLD.status != NEW.status BEGIN DELETE FROM legacy_done_tasks WHERE task_id=NEW.id; END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

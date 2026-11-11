@@ -157,6 +157,13 @@ describe("AttachmentTracks", () => {
 });
 
 describe("activity feed entries", () => {
+  it("renders outcome evidence", () => {
+    const entry = { ...comment("agent"), evidence: { kind: "outcome" as const }, body: "Completed without a PR" };
+    const view = render(<EvidenceSection comments={[entry]} />);
+    expect(view.getByText("outcome")).toBeDefined();
+    expect(view.getByText("Completed without a PR")).toBeDefined();
+  });
+
   it("shows the latest 15 evidence records and reveals older history without losing superseded markers", () => {
     const comments: DisplayComment[] = Array.from({ length: 40 }, (_, index) => ({
       ...comment("agent"),

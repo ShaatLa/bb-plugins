@@ -1,3 +1,4 @@
+import { workflowPolicySchema } from "../shared/workflow-policy";
 import { isUtf8 } from "node:buffer";
 import {
   mkdtemp,
@@ -824,7 +825,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(13);
+  expect(manifest.version).toBe(14);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -853,23 +854,25 @@ it("round-trips owner execution and requester by ID in the latest format and def
 });
 
 
-it("round-trips configurable project statuses, their order and custom task stages in v9", async () => {
+it("round-trips configurable project statuses, their order and custom task stages in v10", async () => {
   const source = await seed();
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
-  source.store.tasks.updateProject(source.project.id, { statuses, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
+  const workflowPolicy = workflowPolicySchema.parse({ bugfixStatus: "repair" });
+  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(13);
+  expect(manifest.version).toBe(14);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getProject(source.project.id)?.statuses).toEqual(statuses);
+  expect(target.store.tasks.getProject(source.project.id)?.workflowPolicy).toEqual(workflowPolicy);
   expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   expect(target.store.tasks.getTask(source.task.id)?.status).toBe("in_testing");
   expect(target.bb.storage.database().prepare("SELECT task_id FROM task_activity_history WHERE task_id=?").get(source.task.id)).toBeDefined();
@@ -964,7 +967,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(13);
+    expect(manifest.version).toBe(14);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();

@@ -1,5 +1,6 @@
 import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
+import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -63,7 +64,6 @@ import { scheduledCliCommands } from "../scheduled/cli";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
-const ACTIVE_THREAD_STATUSES = new Set(["starting", "working"]);
 const DEFAULT_PROJECT_COLOR = "blue";
 const DEFAULT_LABEL_COLOR = "gray";
 
@@ -1798,6 +1798,7 @@ export function registerTasksCli(
             },
           ],
           options: {
+            "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
             "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
@@ -1855,8 +1856,16 @@ export function registerTasksCli(
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
                 try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
-              } else if (input.options.machine) throw new CliError("--machine requires --statuses-file");
+              } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
+              let workflowPolicy;
+              if (input.options["workflow-policy-file"]) {
+                const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
+                const text = await readTextOption(bb, ctx, hostId, undefined, input.options["workflow-policy-file"]);
+                try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
+                catch { throw new CliError("Invalid workflow policy file"); }
+              }
               const changes = {
+                workflowPolicy,
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
@@ -1874,6 +1883,7 @@ export function registerTasksCli(
                 changes.name === undefined &&
                 changes.color === undefined &&
                 changes.folderId === undefined &&
+                changes.workflowPolicy === undefined &&
                 changes.statuses === undefined &&
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
@@ -1895,6 +1905,7 @@ export function registerTasksCli(
                 changes.name !== undefined ||
                 changes.color !== undefined ||
                 changes.folderId !== undefined ||
+                changes.workflowPolicy !== undefined ||
                 changes.statuses !== undefined ||
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
@@ -1917,6 +1928,7 @@ export function registerTasksCli(
               const updated = store.transaction(() =>
                 store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
+                  workflowPolicy: updateInput?.workflowPolicy,
                   statuses: updateInput?.statuses,
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
@@ -2389,6 +2401,7 @@ export function registerTasksCli(
               description:
                 "Keep only these workflow statuses; repeat the flag or pass a comma-separated list",
             },
+            "stale-status": { type: "boolean", description: "Only tasks with stale status diagnostics based on recorded observations" },
             "exclude-status": {
               type: "string",
               placeholder: "status-id",
@@ -2514,6 +2527,7 @@ export function registerTasksCli(
                         : undefined,
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
+                    staleStatus: input.options["stale-status"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2523,6 +2537,7 @@ export function registerTasksCli(
                 ),
               );
               const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
+              const flags = new Map(metadata.map((row) => [row.taskId, row.staleStatusFlags]));
               const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
               const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
@@ -2532,23 +2547,14 @@ export function registerTasksCli(
               );
               const tasks = [];
               for (const task of result.tasks) {
-                const threadResult =
-                  tasksRpcContract.listTaskThreads.output.parse(
-                    await domain.listTaskThreads(
-                      tasksRpcContract.listTaskThreads.input.parse({
-                        taskId: task.id,
-                      }),
-                    ),
-                  );
                 tasks.push({
                   ...task,
                   labels: task.labelIds.map(
                     (id) => labelById.get(id)?.name ?? id,
                   ),
-                  agentsWorking: threadResult.taskThreads.filter((thread) =>
-                    ACTIVE_THREAD_STATUSES.has(thread.liveStatus),
-                  ).length,
+                  agentsWorking: metadata.find((row) => row.taskId === task.id)?.taskThreads.length ?? 0,
                   threadHealth: health.get(task.id),
+                  staleStatusFlags: flags.get(task.id) ?? [],
                   blockedBy: blockedBy.get(task.id) ?? [],
                   advisories: advisories.get(task.id) ?? [],
                 });
@@ -2570,6 +2576,7 @@ export function registerTasksCli(
                   "TITLE",
                   "LABELS",
                   "AGENTS",
+                  "STALE STATUS",
                   "BLOCKED BY",
                   "ADVISORIES",
                 ],
@@ -2582,6 +2589,7 @@ export function registerTasksCli(
                   task.title,
                   task.labels.join(", ") || "-",
                   task.agentsWorking,
+                  task.staleStatusFlags.join(", ") || "-",
                   task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
                   task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
                 ]),
@@ -2672,6 +2680,7 @@ export function registerTasksCli(
                   attachments,
                   taskThreads,
                   threadHealth,
+                  staleStatusFlags: cardMeta.staleStatusFlags,
                   activity,
                   advisories: cardMeta.advisories ?? [],
                   dependencies,

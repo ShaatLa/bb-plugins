@@ -989,6 +989,7 @@ export function registerHandlers(
         priorities: input.priorities,
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
+        staleStatus: input.staleStatus,
         parentTaskId: input.parentTaskId,
         type: input.type,
         executionTarget: input.executionTarget,
@@ -999,8 +1000,10 @@ export function registerHandlers(
         cursor: input.cursor,
         allowStaleCursor: input.allowStaleCursor,
       });
+      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
       return {
         tasks: apiTasks(store, page.tasks),
+        staleStatusFlags: page.tasks.map((task) => ({ taskId: task.id, flags: flags.get(task.id) ?? [] })),
         nextCursor: page.nextCursor,
       };
     },
@@ -1224,6 +1227,7 @@ export function registerHandlers(
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
+      const flags = store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const blockedBy = dependencies.blockers(ids);
@@ -1235,6 +1239,7 @@ export function registerHandlers(
         return {
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
+          staleStatusFlags: flags.get(taskId) ?? [],
           activity: scopedActivity.get(taskId),
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],

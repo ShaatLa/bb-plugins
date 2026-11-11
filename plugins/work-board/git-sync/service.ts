@@ -2,7 +2,9 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { environmentPullRequests } from "./environment-prs";
 import type { TasksApiStore } from "../api";
 import type { tasksRpcContract } from "../shared/contract";
-import { publishProjectsChanged } from "../api";
+import { publishProjectsChanged, publishTasksChanged } from "../api";
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import {
   gitSyncConfigSchema,
   repositorySchema,
@@ -325,6 +327,24 @@ export function createGitSyncService(
               publishProjectsChanged(bb, projectId);
             }
           });
+          if (snapshot.state === "open" || snapshot.state === "draft") {
+            const latestProject = store.tasks.getProject(projectId);
+            if (latestProject && current()) {
+              const policy = getWorkflowPolicy(latestProject);
+              const statuses = latestProject.statuses ?? DEFAULT_TASK_STATUSES;
+              const target = statuses.findIndex((status) => status.id === policy.reviewStatus);
+              for (const attached of data.linksForProject(projectId)) {
+                if (!current()) break;
+                if (prIdentity(attached) !== prIdentity(snapshot) || attached.excluded || !attached.confirmed || attached.role !== "delivers") continue;
+                const task = store.tasks.getTask(attached.taskId);
+                if (!task || task.projectId !== projectId || task.archivedAt || !policy.earlyStatuses.includes(task.status) ||
+                    [policy.bugfixStatus, policy.doneStatus, "canceled"].includes(task.status) ||
+                    target < 0 || statuses.findIndex((status) => status.id === task.status) >= target) continue;
+                store.tasks.updateTask(task.id, { status: policy.reviewStatus! });
+                publishTasksChanged(bb, task.id, projectId);
+              }
+            }
+          }
           refreshed.add(prIdentity(link));
           refreshed.add(prIdentity(snapshot));
           if (snapshot.headSha !== previous.snapshot?.headSha || snapshot.baseSha !== previous.snapshot?.baseSha) filesChanged = true;

@@ -1,3 +1,4 @@
+import { workflowPolicySchema } from "./workflow-policy.js";
 import { taskAdvisorySchema } from "./task-advisories";
 import { taskActivitySchema } from "./task-activity.js";
 import { storageMethods } from "./storage";
@@ -93,8 +94,10 @@ export const EVIDENCE_KINDS = [
   "merge",
   "deploy",
   "exemption",
+  "outcome",
 ] as const;
 export const evidenceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("outcome"), recordedByThread: evidenceThreadSchema.nullable().optional() }).strict(),
   z
     .object({
       kind: z.literal("review"),
@@ -147,6 +150,7 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("deploy"),
       recordedByThread: evidenceThreadSchema.nullable().optional(),
+      pr: z.number().int().positive().optional(),
       merge: shaSchema,
       run: nonBlankStringSchema,
       env: z.enum(["development", "production"]),
@@ -297,6 +301,7 @@ export const projectSchema = z
     name: z.string(),
     prefix: projectPrefixSchema,
     nextTaskNumber: z.number().int().positive(),
+    workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
@@ -556,6 +561,7 @@ const updateProjectInputSchema = z
   .object({
     projectId: idSchema,
     name: nonBlankStringSchema.optional(),
+    workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
@@ -567,6 +573,7 @@ const updateProjectInputSchema = z
   .strict()
   .refine(
     (input) =>
+      input.workflowPolicy !== undefined ||
       input.statuses !== undefined ||
       input.autoArchiveAfterDays !== undefined ||
       input.staleIdleMinutes !== undefined ||
@@ -906,6 +913,7 @@ export const tasksRpcContract = {
         priorities: z.array(taskPrioritySchema).optional(),
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
+        staleStatus: z.boolean().default(false),
         includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
@@ -926,6 +934,7 @@ export const tasksRpcContract = {
     output: z
       .object({
         tasks: z.array(taskSchema),
+        staleStatusFlags: z.array(z.object({ taskId: idSchema, flags: z.array(z.string()) }).strict()).default([]),
         nextCursor: z.string().nullable(),
       })
       .strict(),
@@ -1029,6 +1038,7 @@ export const tasksRpcContract = {
       blockedBy: z.array(dependencyTaskSchema).optional(),
       advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
+      staleStatusFlags: z.array(z.string()).default([]),
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {
