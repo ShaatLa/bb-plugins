@@ -84,6 +84,18 @@ it('groups consecutive questions with a shared answer', async () => {
   await slot.findByText('Shared answer'); expect(slot.getAllByText('Shared answer')).toHaveLength(1);
   expect(document.querySelectorAll('[data-history-ids]')).toHaveLength(1);
 });
+it('shows an update as the agent message under a caption naming the finished child, without an owner bubble', async () => {
+  const child = { id:'thr_child', title:'Child task', projectId:'pr_one', parentThreadId:'thr_one', parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const update = { ...base, id:'ans_upd', kind:'update' as const, question:'[bb system] @thread:thr_child completed: ok', questionSeq:null, answer:'Child report', answerSeq:7, trigger:{ kind:'system' as const, sourceId:'thr_child' } };
+  const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), sidebarThreads: { threads:[child], projects:[] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Child report');
+  const card = document.querySelector('[data-history-ids="ans_upd"]')!, caption = card.querySelector('[data-update-caption]')!;
+  expect(caption.textContent).toMatch(/^After Child task finished · /);
+  expect(within(caption as HTMLElement).getByRole('link', { name:'Child task' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_child');
+  expect(slot.queryByText(/bb system/)).toBeNull();
+  expect(within(card as HTMLElement).queryByRole('button', { name:'Reply' })).toBeNull();
+});
 it('shows Reply only on agent questions and keeps open ones out of the conversation', async () => {
   const open = { ...base, id:'ans_open', kind:'for_me' as const, status:'open' as const, question:'Still open?', answer:null, answerSeq:null, options:['Yes'] };
   const agentQuestion = { ...open, id:'ans_agent', status:'replied' as const, question:'Choose?', answer:'Yes' };

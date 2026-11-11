@@ -1,5 +1,5 @@
 import { taskKeyRegex } from './task-links';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago } from './inbox';
@@ -98,7 +98,7 @@ function ReadTicks({ at }: { at: number }) {
   const label = `Read ${new Date(at).toLocaleString()}`;
   return <svg role="img" aria-label={label} viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"><title>{label}</title><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></svg>;
 }
-export const isUnread = (item: Item) => item.dismissedAt === null && item.readAt === null && item.snoozedUntil === null && ((item.kind === 'mine' && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open') || (item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') && item.failedAt !== null));
+export const isUnread = (item: Item) => item.dismissedAt === null && item.readAt === null && item.snoozedUntil === null && (((item.kind === 'mine' || item.kind === 'update') && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open') || (item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') && item.failedAt !== null));
 const SAVED_FLASH = 'bb-plugin-answers:saved-flash';
 const PROJECT_CHOICE = 'bb-plugin-answers:task-project';
 export function useReadUndo() {
@@ -108,6 +108,15 @@ export function useReadUndo() {
   const record = (result: { batch: string | null; count: number }) => { if (result.batch && result.count) { setUndo({ batch: result.batch, count: result.count }); setExpired(false); } };
   const line = undo && <p role="status" className="px-4 py-2 text-xs">{expired ? 'Undo expired' : `Marked ${undo.count} read`} · <Button variant="ghost" size="sm" onClick={async () => { const result = await rpc.call('undoRead', { batch: undo.batch }); if (result.count) setUndo(null); else setExpired(true); refresh(); }}>Undo</Button></p>;
   return { record, line };
+}
+// An update has no owner message; a caption names what started its turn: a finished child, another thread, or a plugin.
+function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
+  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null;
+  const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId;
+  const link = source && <UrlLink href={`${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/threads/${encodeURIComponent(source)}`}>{thread?.displayTitle ?? thread?.title ?? source}</UrlLink>;
+  const caption = !source ? null : trigger?.kind === 'system' ? <>After {link} finished</> : trigger?.kind === 'agent' ? <>Message from {link}</> : trigger?.kind === 'plugin' ? source : null;
+  if (!caption && !time) return null;
+  return <div data-update-caption className="flex min-w-0 items-center gap-1 px-2 text-xs text-muted-foreground">{caption && <span className="min-w-0 truncate">{caption}</span>}{caption && time && ' · '}{time}</div>;
 }
 export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean }) {
   const rpc = useRpc<AnswersRpcContract>();
@@ -168,7 +177,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-8 px-0' });
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
-  const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && last.kind === 'mine' && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
+  const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || last.kind === 'update') && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
   useReadOnView(card, autoRead && unread, () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
@@ -192,7 +201,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
     </div>}
@@ -218,7 +227,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
         </div>}
       </div>
-      {item.kind !== 'saved' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
+      {item.kind !== 'saved' && item.kind !== 'update' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>}
       {chat && item.status !== 'answered' && <span className="ml-1 inline-flex items-center text-xs">{status}</span>}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}

@@ -38,6 +38,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       db.prepare("DELETE FROM items WHERE thread_id=? AND kind!='saved'").run(id);
       db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM request_aliases WHERE thread_id=?').run(id);
+      db.prepare('DELETE FROM request_triggers WHERE thread_id=?').run(id);
+      db.prepare('DELETE FROM turn_updates WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM threads_state WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(id);
       db.prepare('UPDATE items SET thread_deleted=1,updated_at=? WHERE thread_id=?').run(Date.now(),id);

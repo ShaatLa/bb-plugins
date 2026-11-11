@@ -156,6 +156,17 @@ describe('reply pools and inbox',()=>{
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20000),note:'x'.repeat(12000)}])).toThrow('32,000');
  });
+ it('counts an update as unread in contacts and views, never as waiting or saved, and refuses replies to it',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,answer_seq,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_u','update','t','answered','[bb system] done','Report',5,'system','thr_c',1,1)").run();
+  expect(await call('counts')).toMatchObject({unread:1,waiting:0,inbox:1});
+  expect((await call('recipients')).recipients[0]).toMatchObject({threadId:'t',unread:1,preview:'Report'});
+  expect((await call('list',{view:'unread'})).items[0]).toMatchObject({kind:'update',trigger:{kind:'system',sourceId:'thr_c'}});
+  for (const view of ['waiting','saved']) expect((await call('list',{view})).items).toHaveLength(0);
+  expect((await call('list',{view:'all'})).items).toHaveLength(1);
+  await expect(call('reply',{id:'ans_u',text:'ok'})).rejects.toThrow('cannot receive replies');
+  await call('markThreadRead',{threadId:'t'}); expect((await call('counts')).inbox).toBe(0);
+ });
  it('groups unread recipients, orders them, keeps selected, and reads only inbox kinds',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b'); seed(db,'ans_c','for_me','b'); seed(db,'ans_wait','mine','b'); seed(db,'ans_save','saved','b');
   db.prepare("UPDATE items SET status='answered',answer=?,updated_at=10 WHERE id='ans_a'").run('x'.repeat(200));

@@ -10,7 +10,7 @@ import { registerCli } from './cli';
 import { createNotifier } from './notify';
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer. When a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Use answers_ask to ask the user a question, including decisions that block your work; end the turn after asking; the reply arrives as a user message quoting it. Decisions about a specific Work Board task belong on that task. Options: 1–6 unique, ≤200 chars, optional recommended + reason.";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer will come later (e.g. delegated), call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, and put the answer in your final message. Ask anything that needs the user's decision with answers_ask: questions left in chat text never reach their Questions. End the turn after asking; the reply arrives as a user message quoting it. Decisions about a specific Work Board task belong on that task. Options: 1–6 unique, ≤200 chars, optional recommended + reason.";
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
@@ -56,7 +56,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   function counts(): Counts {
     return db.prepare(`SELECT
-      count(CASE WHEN kind='mine' AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
+      count(CASE WHEN kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
@@ -88,7 +88,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.created_at}|${last.id}` : null};
@@ -208,7 +208,7 @@ export default function plugin(bb: BbPluginApi) {
         FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL}
         GROUP BY thread_id ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
       ) SELECT grouped.*,chosen.project_id,
-        CASE WHEN ${chosenAttention} AND chosen.kind='mine' AND chosen.status='answered' THEN chosen.answer
+        CASE WHEN ${chosenAttention} AND chosen.kind IN ('mine','update') AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
              WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
         FROM grouped JOIN items chosen ON chosen.id=(
@@ -297,7 +297,7 @@ export default function plugin(bb: BbPluginApi) {
       const p=inputs.reply.parse(raw), threadId=get(p.id).thread_id as string;
       return guarded(threadId,async()=>{
         const item=get(p.id);
-        if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
+        if (item.thread_deleted || item.kind==='saved' || item.kind==='update') throw new Error('item cannot receive replies');
         if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
         const result=await deliver(threadId,buildReplyMessage([{quote:item.question,note:p.text}]),p.attachments,p.send);
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);

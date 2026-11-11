@@ -84,3 +84,47 @@ describe('0.3 attention lifecycle',()=>{
   expect(row(db)).toMatchObject({answer_source:'agent',likely_interim:0});
  });
 });
+
+describe('updates',()=>{
+ const updates=(db:Database.Database)=>db.prepare("SELECT * FROM items WHERE kind='update'").all() as any[];
+ const count=(db:Database.Database,table:string)=>(db.prepare(`SELECT count(*) n FROM ${table}`).get() as {n:number}).n;
+ const text=(t:string)=>[{type:'text',text:t}];
+ const system={initiator:'system',input:text('[bb system] @thread:thr_child-1 completed: done')};
+ it.each([
+  [system,'system','thr_child-1'],
+  [{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')},'agent','thr_s'],
+  [{originPluginId:'delivery-dashboard',input:text('**CI Dashboard** Deploy')},'plugin','delivery-dashboard'],
+ ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:null,notify_state:1,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ it('keeps the trigger across a retry, falls back to other, and pushes only live events',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'a',{initiator:'agent',senderThreadId:'thr_s'}),req(2,'b',{initiator:'system',retryOfRequestId:'a'}),start(3),accept(4,'b'),message(5),done(6),start(7,'y'),message(8,'no trigger seen','y'),done(9,'completed','y')]);
+  expect(updates(db).map(u=>[u.trigger_kind,u.trigger_source,u.notify_state])).toEqual([['agent','thr_s',0],['other',null,0]]);
+ });
+ it('adds nothing when the turn answered the owner: own question, steer-in, answers_resolve',()=>{
+  const db=setup();
+  applyEvents(db,'t',[req(1),start(),accept(),message(),done()]);
+  applyEvents(db,'t',[req(6,'s',system),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
+  applyEvents(db,'t',[req(13,'d'),start(14,'z'),accept(15,'d','z'),done(16,'completed','z')]); db.prepare("UPDATE items SET status='deferred' WHERE request_id='d'").run();
+  applyEvents(db,'t',[req(17,'s2',system),start(18,'w'),accept(19,'s2','w')]); db.prepare("UPDATE items SET resolve_turn_id='w' WHERE request_id='d'").run();
+  applyEvents(db,'t',[message(20,'resolved','w'),done(21,'completed','w')]);
+  expect(updates(db)).toHaveLength(0); expect(rows(db).map(r=>r.answer)).toEqual(['answer','steered','resolved']);
+ });
+ it.each(['failed','interrupted'])('adds nothing for a %s turn and cleans its bookkeeping',status=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),message(),done(5,status)]);
+  expect(updates(db)).toHaveLength(0); expect(count(db,'turn_updates')).toBe(0);
+ });
+ it('adds nothing for an empty final message or an agent-spawned thread',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),done(4)]);
+  applyEvents(db,'u',[req(1,'s',system),start(),accept(3,'s'),message(),done()],null,0,false);
+  expect(updates(db)).toHaveLength(0); expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ it('is idempotent on re-ingest, also from a reset cursor',()=>{
+  const db=setup(), page=[req(1,'s',system),start(),accept(3,'s'),message(),done()];
+  expect(applyEvents(db,'t',page)).toBe(true); expect(applyEvents(db,'t',page)).toBe(false);
+  db.prepare('UPDATE threads_state SET last_seq=0').run(); applyEvents(db,'t',page);
+  expect(updates(db)).toHaveLength(1);
+ });
+});
