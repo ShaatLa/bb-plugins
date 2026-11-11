@@ -569,8 +569,9 @@ function renderQuestions(AnswersPanel: (props: { threadId?: string }) => any, th
   const rows: Record<string, unknown[]> = { thr_a: [userQuestion('thr_a', 'First?', 3)], thr_b: [userQuestion('thr_b', 'Second?', 1)] };
   const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, threadId: 'thr_c', threadTitle: 'Third thread', question: 'Pick one?', answer: null, createdAt: 2 };
   const list = vi.fn(({ view }: { view: string }) => ({ items: view === 'for_me' ? [ask] : [], nextCursor: null }));
-  return renderSlot({ component: () => <AnswersPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
-    sdk: { threads: { interactions: { list: ({ threadId }: { threadId: string }) => Promise.resolve(rows[threadId] ?? []) } } }, sidebarThreads: { threads: [pendingThread('thr_a', 'Alpha thread'), pendingThread('thr_b', 'Beta thread')], projects: [{ id: 'pr_one', name: 'Project one' }] } } as any);
+  const interactions = vi.fn(({ threadId }: { threadId: string }) => Promise.resolve(rows[threadId] ?? []));
+  return Object.assign(renderSlot({ component: () => <AnswersPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
+    sdk: { threads: { interactions: { list: interactions }, stop: () => Promise.resolve({}) } }, sidebarThreads: { threads: [pendingThread('thr_a', 'Alpha thread'), pendingThread('thr_b', 'Beta thread')], projects: [{ id: 'pr_one', name: 'Project one' }] } } as any), { interactions });
 }
 it('stacks pending questions from every thread, oldest first, and switches back to chats', async () => {
   const { AnswersPanel } = await import('./app');
@@ -641,4 +642,40 @@ describe('thread composer banner', () => {
     const text = card.textContent!; expect(text.indexOf('Choose?')).toBeLessThan(text.indexOf('Newer?'));
     expect(within(card).getAllByRole('button', { name: /^B/ })[0]!.className).not.toBe(within(card).getAllByRole('button', { name: /^A/ })[0]!.className);
   });
+});
+it('does not read the global For me list in a thread tab', async () => {
+  const { list } = await setup();
+  expect(list.mock.calls.some(call => (call as any[])[0]?.view === 'for_me')).toBe(false);
+});
+it('marks an item read without re-fetching the list, which the server invalidation already refreshes', async () => {
+  const { slot, list, markRead } = await setup();
+  const before = list.mock.calls.length;
+  fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));
+  await waitFor(() => expect(markRead).toHaveBeenCalled());
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(list.mock.calls.length).toBe(before);
+});
+it('fetches each pending thread once for the Questions section and refetches only the thread it answered', async () => {
+  const { AnswersPanel } = await import('./app');
+  localStorage.setItem('bb-plugin-answers:page:questions', 'true');
+  const slot = renderQuestions(AnswersPanel);
+  await slot.findAllByText('Second?'); await slot.findAllByText('First?');
+  expect(slot.interactions).toHaveBeenCalledTimes(2);
+  fireEvent.click(within(slot.getAllByRole('region', { name: 'Beta thread' })[0]!).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(slot.interactions).toHaveBeenCalledTimes(3));
+  expect(slot.interactions).toHaveBeenLastCalledWith({ threadId: 'thr_b' });
+});
+it('stops refetching an older thread-tab page once it has loaded', async () => {
+  const { AnswersPanel } = await import('./app');
+  const list = vi.fn((input: any) => input.cursor ? { items: [], nextCursor: null } : { items: [item], nextCursor: '1|ans_older' });
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  await slot.findByText('What changed?');
+  fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '1|ans_older' })));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const before = list.mock.calls.length;
+  await slot.experimental_invalidateRpc(['answers:items']);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  // Only the newest page refetches; the loaded older page is no longer re-fetched on every tick.
+  expect(list.mock.calls.slice(before).map(call => (call as any[])[0].cursor)).toEqual([undefined]);
 });

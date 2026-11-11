@@ -171,7 +171,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AnswersRpcContract>();
-  // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
+  // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const group = members?.length ? members : [item], last = group.at(-1)!;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null);
@@ -213,7 +213,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   const [error, setError] = useState('');
   async function act(write: () => Promise<unknown>) {
     setError('');
-    try { await write(); refresh(); } catch (cause) { setError(message(cause)); }
+    try { await write(); } catch (cause) { setError(message(cause)); }
   }
   async function reply(options?: SendOptions, quick?: string) {
     if (sending.current || !(quick ?? text).trim()) return;
@@ -303,7 +303,10 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
 }
 
 function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string; orphans?: Item[][] }) {
-  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId, order: 'activity' as const } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
+  // A thread tab's older pages freeze once loaded, as HistoryPage does, so they stop refetching on every tick.
+  const [settled, setSettled] = useState(false);
+  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId, order: 'activity' as const } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 }, enabled: !threadId || !cursor || !settled });
+  useEffect(() => { if (threadId && cursor && result.data) setSettled(true); }, [threadId, cursor, result.data]);
   const [next, setNext] = useState(false);
   const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
@@ -385,8 +388,6 @@ function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value
 
 export function AnswersPanel({ threadId }: { threadId?: string }) {
   const rpc = useRpc<AnswersRpcContract>();
-  // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
-  const { refresh } = experimental_useRpcRefresh();
   const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
   const view = !threadId ? 'inbox' : stored === 'pinned' ? 'saved' : stored === 'for_me' ? 'unread' : stored; // Pinned merged into Saved
@@ -403,8 +404,9 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   // The selection is stored during this render, before the Chats view mounts and reads it; the section switch follows.
   const [linked] = useState(() => { const id = threadId ? null : linkedThread(); if (!id) return null; try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } const url = new URL(window.location.href); url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); return id; });
   useEffect(() => { if (linked) setQuestions(false); }, [linked]);
-  const pendingRows = usePendingInteractionRows(threadId ? [] : threads);
-  const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 } });
+  const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
+  // The Questions section is page-only, so a thread tab never reads the global list.
+  const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
   const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
@@ -419,7 +421,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
           : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', false], ['Questions', true]] as const).map(([label, on]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={questions === on} onClick={() => setQuestions(on)}>{label}{on && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
         <span className="flex-1" />
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
-        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
+        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
       </div>
       {list && !questions && <div className="flex gap-2">
         <input aria-label="Search answers" type="search" placeholder={view === 'saved' ? 'Search saved' : 'Search history'} maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
@@ -427,7 +429,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{threadId && <> · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></>}</p>}
-    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
@@ -435,7 +437,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
 
 type Sidebar = ReturnType<typeof experimental_useSidebarThreads>;
 // Every pending question in one stack, oldest first: bb's blocking forms (one card per thread) and open agent questions.
-function QuestionsSection({ threads, projects, rows, items, loading, onOpen }: { threads: Sidebar['threads']; projects: Sidebar['projects']; rows: ReturnType<typeof usePendingInteractionRows>; items: Item[]; loading: boolean; onOpen: (threadId: string) => void }) {
+function QuestionsSection({ threads, projects, rows, settle, items, loading, onOpen }: { threads: Sidebar['threads']; projects: Sidebar['projects']; rows: ReturnType<typeof usePendingInteractionRows>['rows']; settle: (threadId: string, rowId: string) => void; items: Item[]; loading: boolean; onOpen: (threadId: string) => void }) {
   const providers = experimental_useProviders().providers;
   const entries = [...threads.flatMap(thread => rows[thread.id]?.length ? [{ key: thread.id, threadId: thread.id, at: Math.min(...rows[thread.id]!.map(row => row.createdAt)), item: null as Item | null }] : []), ...items.map(item => ({ key: item.id, threadId: item.threadId, at: item.createdAt, item }))].sort((a, b) => a.at - b.at);
   if (!entries.length) return loading ? null : <div className="min-h-0 flex-1 overflow-auto"><EmptyState icon={emptyCopy.for_me[0]} title={emptyCopy.for_me[1]}>{emptyCopy.for_me[2]}</EmptyState></div>;
@@ -443,7 +445,7 @@ function QuestionsSection({ threads, projects, rows, items, loading, onOpen }: {
     const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, title = thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
     return <section key={entry.key} aria-label={title} className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
       <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={answersThreadHref(entry.threadId)} className="shrink-0 text-xs" onClick={event => { event.preventDefault(); onOpen(entry.threadId); }}>Open thread</UrlLink></header>
-      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Answers', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked />}
+      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Answers', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked shared={rows[entry.threadId]} onAnswered={rowId => settle(entry.threadId, rowId)} />}
     </section>;
   })}</div></div>;
 }

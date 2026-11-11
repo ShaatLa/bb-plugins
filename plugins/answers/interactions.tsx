@@ -7,30 +7,38 @@ type Question = Extract<Row['payload'], { kind: 'user_question' }>['questions'][
 type Answer = { selected: string[]; freeText?: string };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+const pendingOf = (list: Row[]) => list.filter(row => row.status === 'pending' || row.status === 'resolving');
 // Pending bb interactions per thread, refetched whenever a sidebar thread's pending flag or status changes.
+// The Questions section shares these rows with its cards, so each thread is fetched once; settle drops an answered row and refetches its thread.
 export function usePendingInteractionRows(threads: readonly { id: string; hasPendingInteraction: boolean; status?: string }[]) {
   const sdk = useSdk(), [rows, setRows] = useState<Record<string, Row[]>>({});
   const key = threads.filter(thread => thread.hasPendingInteraction).map(thread => `${thread.id}:${thread.status}`).join(' ');
   useEffect(() => {
     let live = true;
-    void Promise.all(threads.filter(thread => thread.hasPendingInteraction).map(async thread => [thread.id, (await sdk.threads.interactions.list({ threadId: thread.id })).filter(row => row.status === 'pending' || row.status === 'resolving')] as const)).then(found => { if (live) setRows(Object.fromEntries(found)); }).catch(() => {});
+    void Promise.all(threads.filter(thread => thread.hasPendingInteraction).map(async thread => [thread.id, pendingOf(await sdk.threads.interactions.list({ threadId: thread.id }))] as const)).then(found => { if (live) setRows(Object.fromEntries(found)); }).catch(() => {});
     return () => { live = false; };
   }, [sdk, key]);
-  return rows;
+  const settle = (threadId: string, rowId: string) => {
+    setRows(old => ({ ...old, [threadId]: (old[threadId] ?? []).filter(row => row.id !== rowId) }));
+    void sdk.threads.interactions.list({ threadId }).then(list => setRows(old => ({ ...old, [threadId]: pendingOf(list) }))).catch(() => {});
+  };
+  return { rows, settle };
 }
 
-export function PendingInteractions({ threadId, projectId, pending, status, stacked = false }: { threadId: string; projectId?: string | null; pending: boolean; status?: string; stacked?: boolean }) {
+export function PendingInteractions({ threadId, projectId, pending, status, stacked = false, shared, onAnswered }: { threadId: string; projectId?: string | null; pending: boolean; status?: string; stacked?: boolean; shared?: Row[]; onAnswered?: (rowId: string) => void }) {
   const sdk = useSdk(), { refresh } = experimental_useRpcRefresh();
-  const [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [version, setVersion] = useState(0);
+  const [own, setOwn] = useState<Row[]>([]), [error, setError] = useState(''), [version, setVersion] = useState(0);
+  // With shared rows (the Questions section) this card does not fetch; the owner settles them through onAnswered.
+  const rows = shared ?? own;
   useEffect(() => {
-    if (!pending) { setRows([]); setError(''); return; }
+    if (shared || !pending) { setOwn([]); setError(''); return; }
     let live = true;
-    void sdk.threads.interactions.list({ threadId }).then(value => { if (live) { setRows(value.filter(row => row.status === 'pending' || row.status === 'resolving')); setError(''); } }).catch(e => { if (live) setError(errorText(e)); });
+    void sdk.threads.interactions.list({ threadId }).then(value => { if (live) { setOwn(pendingOf(value)); setError(''); } }).catch(e => { if (live) setError(errorText(e)); });
     return () => { live = false; };
-  }, [sdk, threadId, pending, status, version]);
+  }, [sdk, threadId, pending, status, version, !!shared]);
   async function act(row: Row, action: () => Promise<unknown>) {
     setError('');
-    try { await action(); setRows(current => current.filter(item => item.id !== row.id)); refresh(); setVersion(v => v + 1); }
+    try { await action(); setOwn(current => current.filter(item => item.id !== row.id)); refresh(); setVersion(v => v + 1); onAnswered?.(row.id); }
     catch (e) { setError(errorText(e)); }
   }
   if (!pending && !error) return null;
