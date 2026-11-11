@@ -17,11 +17,21 @@ function pickView(slot: { getByRole: (...args: any[]) => HTMLElement }, label: s
   fireEvent.click(slot.getByRole('button', { name: /^View:/ }));
   fireEvent.click(slot.getByRole('menuitemradio', { name: new RegExp(`^${label}`) }));
 }
+// The page's Questions section with one open agent question.
+async function questionsSetup(overrides: Record<string, (...args: any[]) => any> = {}, extra: Partial<Item> = {}) {
+  localStorage.setItem('bb-plugin-answers:page:questions', 'true');
+  const app = await loadPluginApp(() => import('./app'));
+  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, ...extra };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: (input: unknown) => ({ items: (input as { view: string }).view === 'for_me' ? [ask] : [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 0 }), ...overrides } });
+  await slot.findByText('Choose?');
+  return slot;
+}
 async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const app = await loadPluginApp(() => import('./app'));
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
-  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
+  const { AnswersPanel } = await import('./app');
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
   pickView(slot, 'History');
   await slot.findByText(overrides.list ? /Quoted passage|What changed\?/ : 'What changed?');
   return { app, slot, list, markRead };
@@ -40,18 +50,21 @@ describe('Answers app', () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));
     const { slot } = await setup({ list: () => ({ items: [item, waiting], nextCursor: null }), setDismissed });
-    fireEvent.click(slot.getAllByRole('button', { name: 'More' })[1]!);
+    fireEvent.click(slot.getAllByRole('button', { name: 'More' })[0]!);
     expect(slot.getAllByRole('menuitem', { name: 'Stop waiting' })).toHaveLength(1);
     expect(slot.queryByRole('button', { name: 'Done' })).toBeNull();
     fireEvent.click(slot.getByRole('menuitem', { name: 'Stop waiting' }));
     await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_wait', dismissed: true }));
   });
-  it('keeps the selected view after the page is unmounted', async () => {
-    const first = await setup();
-    pickView(first.slot, 'Awaiting answer');
-    first.slot.unmount();
-    const again = renderSlot(first.app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
-    expect(again.getByRole('button', { name: 'View: Awaiting answer' })).toBeTruthy();
+  it('keeps the selected page section after the page is unmounted', async () => {
+    const app = await loadPluginApp(() => import('./app'));
+    const rpc = { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) };
+    const first = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc });
+    expect(first.queryByRole('button', { name: /^View:/ })).toBeNull();
+    fireEvent.click(first.getByRole('button', { name: 'Questions' }));
+    first.unmount();
+    const again = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc });
+    expect(again.getByRole('button', { name: 'Questions' }).getAttribute('aria-pressed')).toBe('true');
     again.unmount();
   });
   it('reopens the page side panel tab the user left open', async () => {
@@ -69,8 +82,7 @@ describe('Answers app', () => {
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
     expect(app.messageActions.find(action => action.id === 'save')).toMatchObject({ title: 'Save to Answers' });
     expect(slot.getByText('The answer')).toBeTruthy();
-    expect(slot.getByRole('button', { name: 'Reply' })).toBeTruthy();
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', limit: 50 }));
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', threadId: 'thr_one', limit: 50 }));
     pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
@@ -79,13 +91,13 @@ describe('Answers app', () => {
     fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));
     await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: ['ans_one'] }));
     expect(slot.getByRole('link', { name: 'Open in chat' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_one?msg=20');
-    pickView(slot, 'Inbox'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
-    await waitFor(() => expect(markRead).toHaveBeenCalledWith({ all: true }));
+    pickView(slot, 'Unread'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
+    await waitFor(() => expect(markRead).toHaveBeenCalledWith({ all: true, threadId: 'thr_one' }));
   });
   it('disables replies while sending and reports queued delivery', async () => {
     let resolve!: (value: { delivery: string }) => void;
     const reply = vi.fn(() => new Promise(done => { resolve = done; }));
-    const { slot } = await setup({ reply });
+    const slot = await questionsSetup({ reply });
     fireEvent.click(slot.getByRole('button', { name: 'Reply' }));
     change(slot.getByRole('textbox', { name: 'Reply text' }), { target: { value: 'More details please' } });
     fireEvent.click(slot.getByRole('button', { name: 'Send reply' }));
@@ -98,7 +110,7 @@ describe('Answers app', () => {
   });
   it('preserves a failed reply and never automatically retries', async () => {
     const reply = vi.fn(() => { throw new Error('Connection lost'); });
-    const { slot } = await setup({ reply });
+    const slot = await questionsSetup({ reply });
     fireEvent.click(slot.getByRole('button', { name: 'Reply' }));
     const text = slot.getByRole('textbox', { name: 'Reply text' }) as HTMLTextAreaElement;
     change(text, { target: { value: 'My reply' } });
@@ -112,7 +124,7 @@ describe('Answers app', () => {
 it('loads the next cursor and refreshes through the items tag', async () => {
   const list = vi.fn((input: { cursor?: string }) => input.cursor ? { items: [{ ...item, id: 'ans_two', question: 'Next question' }], nextCursor: null } : { items: [item], nextCursor: '1|ans_one' });
   const { slot } = await setup({ list });
-  fireEvent.click(slot.getByRole('button', { name: 'Load more' }));
+  fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
   expect(await slot.findByText('Next question')).toBeTruthy();
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '1|ans_one' }));
   const calls = list.mock.calls.length;
@@ -238,7 +250,7 @@ it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
   fireEvent.mouseUp(body);
   const text = slot.getByRole('textbox', { name: 'Quote reply text' });
-  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: /^View:/ }) });
+  if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Chats' }) });
   expect(slot.queryByRole('dialog')).toBeNull();
 });
 it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure => {
@@ -343,21 +355,25 @@ it('uses the attention predicate for failed, snoozed and dismissed items', async
   expect(isUnread({ ...item, snoozedUntil: Date.now() + 1000 })).toBe(false);
   expect(isUnread({ ...item, dismissedAt: 1 })).toBe(false);
 });
-it('offers quick replies, interim actions and retry', async () => {
-  const reply = vi.fn(() => ({ delivery: 'sent' })), keepWaiting = vi.fn(() => ({ ok: true })), retryTurn = vi.fn(() => ({ ok: true }));
-  const { slot } = await setup({ list: () => ({ items: [{ ...item, id: 'ans_ask', kind: 'for_me', status: 'open', question: 'Choose?', answer: null, options: ['Yes', 'No'], recommended: 'Yes', recommendReason: 'Cheaper' }, { ...item, likelyInterim: true }, { ...item, id: 'ans_fail', question: 'Failed question?', status: 'waiting', answer: null, failedAt: 1 }], nextCursor: null }), reply, keepWaiting, retryTurn });
-  expect(slot.getByText('Recommended: Cheaper')).toBeTruthy();
-  fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
-  await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
+it('offers interim actions and retry', async () => {
+  const keepWaiting = vi.fn(() => ({ ok: true })), retryTurn = vi.fn(() => ({ ok: true }));
+  const { slot } = await setup({ list: () => ({ items: [{ ...item, likelyInterim: true }, { ...item, id: 'ans_fail', question: 'Failed question?', status: 'waiting', answer: null, failedAt: 1 }], nextCursor: null }), keepWaiting, retryTurn });
   fireEvent.click(slot.getByRole('button', { name: 'Keep waiting' }));
   await waitFor(() => expect(keepWaiting).toHaveBeenCalledWith({ id: item.id }));
   fireEvent.click(slot.getByRole('button', { name: 'Retry' }));
   await waitFor(() => expect(retryTurn).toHaveBeenCalledWith({ id: 'ans_fail' }));
 });
+it('offers quick replies on agent questions in the Questions section', async () => {
+  const reply = vi.fn(() => ({ delivery: 'sent' }));
+  const slot = await questionsSetup({ reply }, { options: ['Yes', 'No'], recommended: 'Yes', recommendReason: 'Cheaper' });
+  expect(slot.getByText('Recommended: Cheaper')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
+  await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
+});
 it('shows undo after bulk read and calls undoRead', async () => {
   const undoRead = vi.fn(() => ({ ok: true, count: 2 }));
   const { slot } = await setup({ markRead: () => ({ ok: true, batch: 'batch-one', count: 2 }), undoRead });
-  pickView(slot, 'Inbox'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
+  pickView(slot, 'Unread'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
   expect(await slot.findByText(/Marked 2 read/)).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'Undo' }));
   await waitFor(() => expect(undoRead).toHaveBeenCalledWith({ batch: 'batch-one' }));
@@ -523,10 +539,11 @@ function renderQuestions(AnswersPanel: (props: { threadId?: string }) => any, th
   return renderSlot({ component: () => <AnswersPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
     sdk: { threads: { interactions: { list: ({ threadId }: { threadId: string }) => Promise.resolve(rows[threadId] ?? []) } } }, sidebarThreads: { threads: [pendingThread('thr_a', 'Alpha thread'), pendingThread('thr_b', 'Beta thread')], projects: [{ id: 'pr_one', name: 'Project one' }] } } as any);
 }
-it('stacks pending questions from every thread, oldest first, and toggles back to the view', async () => {
+it('stacks pending questions from every thread, oldest first, and switches back to chats', async () => {
   const { AnswersPanel } = await import('./app');
   const slot = renderQuestions(AnswersPanel);
-  const toggle = slot.getByRole('button', { name: 'Questions' });
+  const toggle = slot.getByRole('button', { name: /^Questions/ }), chats = slot.getByRole('button', { name: 'Chats' });
+  expect(chats.getAttribute('aria-pressed')).toBe('true');
   expect(await within(toggle).findByLabelText('3 pending')).toBeTruthy();
   fireEvent.click(toggle);
   expect(toggle.getAttribute('aria-pressed')).toBe('true');
@@ -539,23 +556,21 @@ it('stacks pending questions from every thread, oldest first, and toggles back t
   expect(within(cards[0]!).getByTitle('codex')).toBeTruthy();
   expect(within(cards[1]!).getByRole('button', { name: 'Reply' })).toBeTruthy();
   expect(slot.queryByRole('listbox', { name: 'Recipients' })).toBeNull();
-  fireEvent.click(toggle);
+  fireEvent.click(chats);
   expect(toggle.getAttribute('aria-pressed')).toBe('false');
   expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(slot.queryByText('Second?')).toBeNull();
 });
-it('shows every thread\'s questions in the thread tab too', async () => {
+it('keeps the thread tab on its views, without the Questions section', async () => {
   const { AnswersPanel } = await import('./app');
   const slot = renderQuestions(AnswersPanel, 'thr_one');
-  fireEvent.click(slot.getByRole('button', { name: 'Questions' }));
-  await slot.findAllByText('Second?'); await slot.findByText('Pick one?');
-  expect(slot.getAllByText('First?').length).toBeGreaterThan(0);
+  expect(slot.getByRole('button', { name: /^View:/ })).toBeTruthy();
+  expect(slot.queryByRole('button', { name: /^Questions/ })).toBeNull();
 });
 it('opens the Questions section for a stored Asked of you view and shows the empty state', async () => {
   localStorage.setItem('bb-plugin-answers:page:view', JSON.stringify('for_me'));
   const { AnswersPanel } = await import('./app');
   const slot = renderSlot({ component: () => <AnswersPanel /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
   expect(slot.getByRole('button', { name: 'Questions' }).getAttribute('aria-pressed')).toBe('true');
-  expect(slot.getByRole('button', { name: 'View: Inbox' })).toBeTruthy();
   expect(await slot.findByText('No questions for you')).toBeTruthy();
 });

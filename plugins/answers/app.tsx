@@ -253,8 +253,9 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
 type ViewOption = { value: View | 'inbox'; label: string; hint: string; icon: IconName };
 // The views as tasks: what is new, what I am waiting for, what I owe, what I kept, everything.
 // Removal candidate (review 2026-11): unused in day-to-day work so far (the view picker beyond Inbox); keep until a usage review decides.
-const viewOptions = (thread: boolean): ViewOption[] => [
-  thread ? { value: 'unread', label: 'Unread', hint: 'New answers and questions for you in this thread', icon: 'Mail' } : { value: 'inbox', label: 'Inbox', hint: 'New answers and questions for you, by thread', icon: 'Mail' },
+// The thread tab's views; the page only switches between chats and the Questions section.
+const viewOptions: ViewOption[] = [
+  { value: 'unread', label: 'Unread', hint: 'New answers in this thread', icon: 'Mail' },
   { value: 'waiting', label: 'Awaiting answer', hint: 'Your questions agents have not answered yet', icon: 'Clock' },
   { value: 'saved', label: 'Saved', hint: 'Answers you saved or pinned', icon: 'Star' },
   { value: 'all', label: 'History', hint: 'Every question and answer, searchable', icon: 'LayoutList' },
@@ -311,15 +312,15 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const { refresh } = experimental_useRpcRefresh();
   const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
-  const view = stored === 'pinned' ? 'saved' : stored === 'for_me' ? (threadId ? 'unread' : 'inbox') : stored; // Pinned merged into Saved
+  const view = !threadId ? 'inbox' : stored === 'pinned' ? 'saved' : stored === 'for_me' ? 'unread' : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [searchQuery, setSearchQuery] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
   const bbChat = useSettings().values?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
-  // The Questions section replaces the body; a stored 'Asked of you' view (now removed) opens it.
+  // Page only: the Questions section replaces the chats; a stored 'Asked of you' view (now removed) opens it.
   const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
-  const pendingRows = usePendingInteractionRows(threads);
+  const pendingRows = usePendingInteractionRows(threadId ? [] : threads);
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 } });
   const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
   const [error, setError] = useState('');
@@ -330,9 +331,10 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-3 py-2">
       <div className="flex items-center gap-1">
-        <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={value => { setView(value); setQuestions(false); }} />
+        {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
+          // Markup of bb's Preview/Source switch.
+          : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', false], ['Questions', true]] as const).map(([label, on]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={questions === on} onClick={() => setQuestions(on)}>{label}{on && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
         <span className="flex-1" />
-        <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions{questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
         {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
       </div>
@@ -341,7 +343,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
         {!threadId && <select aria-label="Project" className="max-w-40 rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
       </div>}
     </div>
-    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => { setView('saved'); setQuestions(false); }}>Show in Saved</Button></p>}
+    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{threadId && <> · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></>}</p>}
     {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} items={forMe.data?.items ?? []} loading={!forMe.data} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
