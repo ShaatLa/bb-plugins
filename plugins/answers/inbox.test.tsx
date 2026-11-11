@@ -9,9 +9,9 @@ import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context } }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -128,6 +128,15 @@ it('collapses consecutive quiet updates into one group with a preview of the lat
   expect(await slot.findByText('First report')).toBeTruthy(); expect(slot.getByText('Second report')).toBeTruthy(); expect(toggle.getAttribute('aria-expanded')).toBe('true');
   fireEvent.click(slot.getByRole('button', { name:'Collapse agent updates' }));
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
+});
+it('names a plugin that started an update by its name and icon, not its id', async () => {
+  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI** deploy', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
+  const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), plugins: { list: async () => ({ plugins:[{ id:'delivery-dashboard', name:'CI Dashboard', icon:'Activity' }] }) } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Deployed');
+  const caption = document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]') as HTMLElement;
+  await waitFor(() => expect(caption.textContent).toContain('CI Dashboard'));
+  expect(caption.textContent).not.toContain('delivery-dashboard');
 });
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });

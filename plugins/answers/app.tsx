@@ -1,7 +1,7 @@
 import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
@@ -110,16 +110,34 @@ export function useReadUndo() {
   const line = undo && <p role="status" className="px-4 py-2 text-xs">{expired ? 'Undo expired' : `Marked ${undo.count} read`} · <Button variant="ghost" size="sm" onClick={async () => { const result = await rpc.call('undoRead', { batch: undo.batch }); if (result.count) setUndo(null); else setExpired(true); refresh(); }}>Undo</Button></p>;
   return { record, line };
 }
+// Installed plugins' names and branding icons, listed once per page load: references to a plugin show those, not its id.
+type PluginBrand = { id: string; name: string; icon: string | null };
+let pluginBrands: Promise<PluginBrand[]> | null = null;
+export function usePluginBrands(enabled = true) {
+  const sdk = useSdk(), [brands, setBrands] = useState<PluginBrand[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    (pluginBrands ??= sdk.plugins.list().then(r => r.plugins.map(p => ({ id: p.id, name: p.name ?? p.id, icon: p.icon ?? null })), () => { pluginBrands = null; return []; })).then(list => { if (live) setBrands(list); });
+    return () => { live = false; };
+  }, [enabled]);
+  return brands;
+}
+export function usePluginBrand(id: string | null) {
+  const brands = usePluginBrands(!!id);
+  return id ? brands.find(brand => brand.id === id) ?? null : null;
+}
 // An update has no owner message; bb's own row for what started its turn names it: a finished child or another thread
 // (bb's "… finished" and "Message from" rows, same classes and icons), or a plugin. bb's quote of the trigger is left out.
 function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
-  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null;
+  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
   const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId, title = thread?.displayTitle ?? thread?.title ?? trigger?.sourceTitle ?? source ?? '';
   const href = source ? `${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/threads/${encodeURIComponent(source)}` : '';
   const mention = source ? { kind: 'thread' as const, threadId: source, label: title, ...(projectId ? { projectId } : {}) } : null, look = mention && experimental_describePromptMention(mention);
-  const [icon, body]: [IconName, ReactNode] | [null, null] = !source ? [null, null]
+  const [icon, body]: [IconName | null, ReactNode] = !source ? [null, null]
     : trigger?.kind === 'system' ? ['CircleCheck', <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink><span className="shrink-0 whitespace-pre text-muted-foreground"> finished</span></>]
     : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
+    : trigger?.kind === 'plugin' && brand ? [null, <span className="flex min-w-0 items-center gap-2"><PluginIcon pluginId={brand.id} icon={brand.icon} className="size-4 shrink-0" /><span className="min-w-0 truncate whitespace-pre text-muted-foreground">{brand.name}</span></span>]
     : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? ['Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground">{source}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{body && <span className="inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap">{body}</span>}{time && <span className="shrink-0 text-xs text-muted-foreground">{body && '· '}{time}</span>}</div>;
