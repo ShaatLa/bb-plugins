@@ -2,7 +2,7 @@ import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -34,6 +34,7 @@ export default function plugin(bb: BbPluginApi) {
     invTimer = setTimeout(() => { invTimer = undefined; if (invPending) { invPending = false; invalidate(); } },150); invTimer.unref();
   };
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
+  const queueStamps = new Map<string,number>(); // per thread, bumped by bb's queue events below
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
   const driver = createDriver(bb,db,() => {invalidate(); onAttention();});
@@ -275,6 +276,7 @@ export default function plugin(bb: BbPluginApi) {
       const plain=(text:string)=>unquote(text).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview((r.preview ?? '') as string)).slice(0,160)};})};
     },
+    queueStamp(raw:z.infer<typeof inputs.queueStamp>) {return {stamp:queueStamps.get(inputs.queueStamp.parse(raw).threadId) ?? 0};},
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
     async pools(raw:z.infer<typeof inputs.pools>) {
       inputs.pools.parse(raw);
@@ -395,6 +397,9 @@ export default function plugin(bb: BbPluginApi) {
   registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   // Children (agent-spawned) store nothing, so their event streams are never fetched; the payload carries the thread, so no threads.get either.
   bb.events.on('experimental_thread.events',({thread})=>thread.parentThreadId ? undefined : driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
+  // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row
+  // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
+  for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
   const hasItems = (id: string) => !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
   bb.events.on('thread.archived',({thread})=>{db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(thread.id); if (hasItems(thread.id)) invalidate();});

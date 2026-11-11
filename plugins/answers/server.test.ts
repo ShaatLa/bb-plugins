@@ -185,6 +185,13 @@ describe('server',()=>{
   expect(count()).toBe(0);
   await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})}); expect(count()).toBe(1);
  });
+ it('bumps the queue stamp of a thread on bb queue events',async()=>{
+  const {harness}=setup(); const stamp=async(threadId:string)=>((await harness.behavior.callRpc('queueStamp',{threadId})) as any).stamp;
+  expect(await stamp('thr_q')).toBe(0);
+  for(const ev of ['message.queued','message.dispatched','message.cancelled']) await harness.behavior.emitThreadEvent(ev as any,{entry:{id:'q1',threadId:'thr_q'}} as any);
+  expect(await stamp('thr_q')).toBe(3); expect(await stamp('thr_other')).toBe(0);
+  expect(harness.inspection.experimental_rpcInvalidations.length).toBe(3);
+ });
  it('provides list/read/status CLI commands',async()=>{
   const {harness,db}=setup(); seed(db,'ans_one','mine'); db.prepare("UPDATE items SET status='answered'").run();
   const list=await harness.behavior.runCli(['list','--json']); expect(list.exitCode).toBe(0); expect(JSON.parse(list.stdout).items).toHaveLength(1);

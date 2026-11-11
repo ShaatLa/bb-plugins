@@ -248,7 +248,9 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   }
   useEffect(() => () => clearTimeout(settle.current), []);
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
-  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
+  // The server bumps this stamp on bb's queue events, so rows queued from bb's chat or by agents show up at once.
+  const queueStamp = useQuery({ contract: rpcContract, method: 'queueStamp', input: { threadId: selected ?? 'thr_none' }, enabled: !!selected }).data?.stamp;
+  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(rows); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, queueStamp, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
   // A scheduled row needs the 5 s tick (its due time and "in Nm" label); other rows only change when bb's chat sends or
   // deletes them, which queuedWork may not reflect, so they get a slow 30 s check.
   const scheduledQueue = queue.some(row => !!row.sendAt && row.sendAt > Date.now());

@@ -1,6 +1,6 @@
 import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools';
+export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools', QUEUE_TAG = 'answers:queue';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
 const threadId = z.string().min(1).max(200), time = z.number().int().nonnegative();
 export const itemAttachmentSchema = z.object({ type:z.enum(['localImage','localFile']), path:z.string(), name:z.string().optional(), mimeType:z.string().optional(), sizeBytes:z.number().optional(), hostId:z.string().optional(), sourceProjectId:z.string().optional() });
@@ -25,7 +25,7 @@ export const inputs = {
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
  workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
- recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
+ recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(), queueStamp:z.object({threadId}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),attachments:attachments.optional(),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
  poolSend:z.object({threadId,ids:z.array(poolIdSchema).min(1).optional(),send:sendOptionsSchema.optional()}).strict(), quoteReply:z.object({threadId,quote,text:z.string().max(8000),itemId:idSchema.optional(),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(),
@@ -43,7 +43,7 @@ export const rpcContract=defineRpcContract({
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
- markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
+ markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, queueStamp:{tags:()=>[QUEUE_TAG],input:inputs.queueStamp,output:z.object({stamp:z.number()})}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
  poolSend:{input:inputs.poolSend,output:z.object({delivery:z.enum(['sent','queued']),sent:time,keptEdited:time})}, quoteReply:{input:inputs.quoteReply,output:z.object({delivery:z.enum(['sent','queued'])})},
  list:{tags:()=>[ITEMS_TAG],input:inputs.list,output:z.object({items:z.array(itemSchema),nextCursor:z.string().nullable()})}, counts:{tags:()=>[COUNTS_TAG],input:inputs.counts,output:z.object({unread:time,waiting:time,forMe:time,inbox:time})},
