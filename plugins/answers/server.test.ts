@@ -44,6 +44,17 @@ describe('server',()=>{
   expect(rpcContract.list.tags).toBeDefined(); expect(rpcContract.counts.tags).toBeDefined();
   expect(INSTRUCTIONS.length).toBeLessThanOrEqual(600);
  });
+ it('orders a conversation by latest activity, so a late answer pages in at its answer time',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_q','mine'); seed(db,'ans_u','update'); seed(db,'ans_n');
+  db.prepare("UPDATE items SET status='answered',answer='late',answered_at=30 WHERE id='ans_q'").run();
+  db.prepare("UPDATE items SET created_at=20 WHERE id='ans_u'").run(); db.prepare("UPDATE items SET created_at=10 WHERE id='ans_n'").run();
+  const first=await harness.behavior.callRpc('list',{view:'all',threadId:'t',order:'activity',limit:2}) as any;
+  expect(first.items.map((i:any)=>i.id)).toEqual(['ans_q','ans_u']); expect(first.items[0]).toMatchObject({createdAt:1,answeredAt:30}); expect(first.nextCursor).toBe('20|ans_u');
+  const next=await harness.behavior.callRpc('list',{view:'all',threadId:'t',order:'activity',limit:2,cursor:first.nextCursor}) as any;
+  expect(next.items.map((i:any)=>i.id)).toEqual(['ans_n']); expect(next.nextCursor).toBeNull();
+  expect((await harness.behavior.callRpc('list',{view:'all',threadId:'t'}) as any).items.map((i:any)=>i.id)).toEqual(['ans_u','ans_n','ans_q']);
+ });
  it('lists with filters, stable pagination, titles, counts and orthogonal flags',async()=>{
   const {harness,db}=setup();
   harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'Thread title'})]);

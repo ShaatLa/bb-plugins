@@ -84,6 +84,39 @@ it('groups consecutive questions with a shared answer', async () => {
   await slot.findByText('Shared answer'); expect(slot.getAllByText('Shared answer')).toHaveLength(1);
   expect(document.querySelectorAll('[data-history-ids]')).toHaveLength(1);
 });
+// 11:01 deferred question, 11:24 child update, 11:30 the answer.
+const asked = Date.now() - 3600000, minute = 60000;
+const late = { ...base, id:'ans_q', question:'Deferred question', interim:'Working on it', answer:'Final answer', createdAt:asked, answeredAt:asked + 29 * minute };
+const between = { ...base, id:'ans_upd', kind:'update' as const, question:'', questionSeq:null, answer:'Child report', createdAt:asked + 23 * minute, answeredAt:asked + 23 * minute };
+const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+it('splits a late answer from its question when an update arrived in between', async () => {
+  const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Final answer');
+  const question = document.querySelector('[data-history-ids="ans_q"]')!, update = document.querySelector('[data-history-ids="ans_upd"]')!, answer = document.querySelector('[data-history-ids="ans_q:answer"]')!;
+  expect(before(question, update) && before(update, answer)).toBe(true);
+  expect(question.textContent).toContain('Working on it'); expect(question.textContent).not.toContain('Final answer');
+  expect(within(answer as HTMLElement).queryByText('Working on it')).toBeNull();
+  fireEvent.click(within(question as HTMLElement).getByRole('button', { name:'Answered below' }));
+  await waitFor(() => expect(answer.hasAttribute('data-flash')).toBe(true));
+  fireEvent.click(within(answer as HTMLElement).getByRole('button', { name:'Deferred question' }));
+  await waitFor(() => expect(question.hasAttribute('data-flash')).toBe(true));
+  expect(within(answer as HTMLElement).getByRole('button', { name:'More' })).toBeTruthy(); expect(within(question as HTMLElement).queryByRole('button', { name:'More' })).toBeNull();
+});
+it('keeps an immediately answered question paired', async () => {
+  const quick = { ...late, interim:null, answeredAt:asked + minute };
+  const { slot, recipients } = setup({ list: () => ({ items:[between, quick], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Final answer');
+  expect(document.querySelector('[data-history-ids="ans_q"]')!.textContent).toContain('Final answer');
+  expect(document.querySelector('[data-history-ids="ans_q:answer"]')).toBeNull(); expect(slot.queryByText('Answered below')).toBeNull();
+});
+it('shows only the quoted answer while its question is beyond the loaded window, and the question once loaded', async () => {
+  const { slot, recipients } = setup({ list: input => input.cursor ? { items:[], nextCursor:null } : { items:[late, between], nextCursor:`${between.createdAt}|ans_upd` } }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Final answer');
+  expect(document.querySelector('[data-history-ids="ans_q"]')).toBeNull();
+  expect(within(document.querySelector('[data-history-ids="ans_q:answer"]') as HTMLElement).getByRole('button', { name:'Deferred question' })).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name:'Load earlier' }));
+  await waitFor(() => expect(document.querySelector('[data-history-ids="ans_q"]')).not.toBeNull());
+});
 it('shows an update as the agent message under a caption naming the finished child, without an owner bubble', async () => {
   const child = { id:'thr_child', title:'Child task', projectId:'pr_one', parentThreadId:'thr_one', parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const update = { ...base, id:'ans_upd', kind:'update' as const, question:'[bb system] @thread:thr_child completed: ok', questionSeq:null, answer:'Child report', answerSeq:7, trigger:{ kind:'system' as const, sourceId:'thr_child' } };

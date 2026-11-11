@@ -78,4 +78,6 @@ CREATE INDEX items_notify_pending ON items(notify_state) WHERE notify_state=1;`,
 ALTER TABLE items ADD COLUMN trigger_source TEXT;                         -- 'update': child / sender thread id or plugin id
 CREATE TABLE request_triggers (thread_id TEXT NOT NULL, request_id TEXT NOT NULL, kind TEXT NOT NULL, source_id TEXT, text TEXT NOT NULL, PRIMARY KEY (thread_id, request_id));
 CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind TEXT, source_id TEXT, question TEXT NOT NULL DEFAULT '', answer TEXT, answer_seq INTEGER, PRIMARY KEY (thread_id, turn_id));`,
+  // Conversation order (list order:'activity'): an item sits at its latest activity, the answer time when answered.
+  `CREATE INDEX items_thread_activity ON items(thread_id, coalesce(answered_at,created_at), id);`,
 ];
