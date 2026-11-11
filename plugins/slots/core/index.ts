@@ -73,7 +73,7 @@ export function statusSnapshot(state: State, ctx: Context, hostId?: string): Sta
     }))),
     gates: Object.fromEntries(hosts.map(host => [host, Object.hasOwn(state.hosts, host) ? state.hosts[host].gate : emptyGate()])),
     ports: state.ports.filter(p => hostId === undefined || p.hostId === hostId),
-    audit: logSince(state, { hostId }),
+    audit: logSince(state, { hostId }).filter(e => e.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15),
   });
 }
 
