@@ -2,7 +2,7 @@ import {
   createFakePluginHost,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createStore } from "../api";
 import type { TaskThreadLiveStatus } from "../db";
 import { registerLifecycle } from ".";
@@ -178,6 +178,61 @@ describe("task thread lifecycle", () => {
     await fixture.harness.dispose();
   });
 
+  it("records a repeated failure once per task and publishes comments only when written", async () => {
+    const fixture = trackedThreadFixture("working", "active");
+    const second = fixture.store.tasks.createTask({
+      projectId: fixture.store.tasks.getTask(fixture.taskId)!.projectId,
+      title: "Second",
+    });
+    fixture.store.tasks.upsertTaskThread({
+      taskId: second.id, threadId: "thr_worker", presetName: "Attached",
+      title: "Lifecycle worker", liveStatus: "working",
+    });
+    await registerLifecycle(fixture.bb, fixture.store);
+    const emit = (type: "thread.failed" | "thread.active", status: "error" | "active") =>
+      fixture.harness.emitThreadEvent(type, {
+        thread: makeThreadResponse({ id: "thr_worker", title: "Lifecycle worker", status }),
+        ...(type === "thread.failed" ? { error: "boom" } : {}),
+      } as never);
+    const failedCount = (taskId: string) =>
+      fixture.store.tasks.listComments(taskId).filter((c) => c.body.endsWith("failed · thr_worker")).length;
+
+    for (let i = 0; i < 5; i++) {
+      await emit("thread.failed", "error");
+      await emit("thread.active", "active");
+    }
+
+    expect(failedCount(fixture.taskId)).toBe(1);
+    expect(failedCount(second.id)).toBe(1);
+    const comments = fixture.harness.realtimeSignals.filter((s) => s.channel === "comments:changed");
+    expect(comments).toHaveLength(2); // first failure only, one per task
+    const threads = fixture.harness.realtimeSignals.filter((s) => s.channel === "threads:changed");
+    expect(threads).toHaveLength(2 * 10); // every visible status flip still publishes
+    await fixture.harness.dispose();
+  });
+
+  it("logs one reconcile warning per sweep with a count", async () => {
+    const host = createFakePluginHost({
+      pluginId: "work-board",
+      sdk: { threads: { get: async () => { throw new Error("stale API handle"); } } },
+    });
+    const store = createStore(host.bb);
+    const project = store.tasks.createProject({ name: "P", prefix: "TASK", color: "blue" });
+    for (let i = 0; i < 6; i++) {
+      const task = store.tasks.createTask({ projectId: project.id, title: `T${i}` });
+      store.tasks.upsertTaskThread({
+        taskId: task.id, threadId: `thr_other${i}`, presetName: "P", title: "O", liveStatus: "working",
+      });
+    }
+    const warn = vi.spyOn(host.bb.log, "warn");
+
+    await registerLifecycle(host.bb, store);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("Could not reconcile 6 task thread(s): stale API handle");
+    await host.harness.dispose();
+  });
+
   it("reconciles a stale non-terminal row on load", async () => {
     const fixture = trackedThreadFixture("starting", "idle");
 
@@ -191,7 +246,6 @@ describe("task thread lifecycle", () => {
     ).toBe("idle");
     expect(fixture.harness.realtimeSignals).toEqual([
       { channel: "threads:changed", payload: { taskId: fixture.taskId } },
-      { channel: "comments:changed", payload: { taskId: fixture.taskId } },
     ]);
 
     await fixture.harness.dispose();

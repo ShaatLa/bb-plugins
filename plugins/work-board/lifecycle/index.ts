@@ -68,20 +68,29 @@ function transitionThread(
     return;
   }
 
+  let commented = false;
   store.transaction(() => {
     store.tasks.updateTaskThreadStatus(thread.id, liveStatus);
     if (liveStatus === "completed" || liveStatus === "failed") {
+      const body = statusCommentBody(thread, liveStatus);
+      // A flapping thread (failed -> working -> failed) must not repeat the same note.
+      const seen = bb.storage.database().prepare<[string, string, string], { one: number }>(
+        `SELECT 1 AS one FROM comments
+         WHERE task_id=? AND thread_id=? AND kind='system' AND body=? LIMIT 1`,
+      ).get(thread.taskId, thread.threadId, body);
+      if (seen) return;
       createSystemComment(store.tasks, {
         taskId: thread.taskId,
         presetName: thread.presetName,
         threadId: thread.threadId,
-        body: statusCommentBody(thread, liveStatus),
+        body,
       });
+      commented = true;
     }
   });
 
   publishThreadsChanged(bb, thread.taskId);
-  publishCommentsChanged(bb, thread.taskId);
+  if (commented) publishCommentsChanged(bb, thread.taskId);
 }
 
 function transitionTrackedThread(
@@ -99,7 +108,7 @@ async function reconcileTrackedThread(
   bb: BbPluginApi,
   store: TasksApiStore,
   trackedThreads: TaskThread[],
-): Promise<void> {
+): Promise<string | undefined> {
   const trackedThread = trackedThreads[0]!;
   try {
     const thread = await bb.sdk.threads.get({
@@ -120,11 +129,7 @@ async function reconcileTrackedThread(
         await reconcileTaskThreads(bb, store.tasks, link.taskId);
       return;
     }
-    bb.log.warn(
-      `Could not reconcile task thread ${trackedThread.threadId}: ${errorMessage(
-        error,
-      )}`,
-    );
+    return errorMessage(error);
   }
 }
 
@@ -141,11 +146,17 @@ async function reconcileTrackedThreads(
     groups.set(link.threadId, group);
   }
   const queue = [...groups.values()];
+  const failures = new Map<string, number>();
   const worker = async () => {
-    for (let next = queue.shift(); next; next = queue.shift())
-      await reconcileTrackedThread(bb, store, next);
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const failure = await reconcileTrackedThread(bb, store, next);
+      if (failure) failures.set(failure, (failures.get(failure) ?? 0) + 1);
+    }
   };
   await Promise.all(Array.from({ length: RECONCILE_CONCURRENCY }, worker));
+  // One line per distinct error per sweep: an outage fails every thread alike.
+  for (const [message, count] of failures)
+    bb.log.warn(`Could not reconcile ${count} task thread(s): ${message}`);
 }
 
 export async function registerLifecycle(
