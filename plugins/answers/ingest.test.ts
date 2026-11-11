@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, cap, failRequest, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, failRequest, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -97,8 +97,14 @@ describe('updates',()=>{
   [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
-  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:null,notify_state:1,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:77,read_at:null,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ it('marks an update that asks the owner, and pushes only that one when live',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'a',system),start(2,'x'),accept(3,'a','x'),message(4,'Merge it now?','x'),done(5,'completed','x'),req(6,'b',system),start(7,'y'),accept(8,'b','y'),message(9,'Merged.','y'),done(10,'completed','y')],'p',100,true,true);
+  expect(updates(db).map(u=>[u.answer,u.asks,u.notify_state])).toEqual([['Merge it now?',1,1],['Merged.',0,0]]);
+  const replay=setup(); applyEvents(replay,'t',[req(1,'a',system),start(2,'x'),accept(3,'a','x'),message(4,'Merge it now?','x'),done(5,'completed','x')]);
+  expect(updates(replay).map(u=>[u.asks,u.notify_state])).toEqual([[1,0]]);
  });
  it('still counts owner messages that open with a task link or a checkbox as questions',()=>{
   for (const t of ['[ANV-12](/plugins/work-board/work-board/task/ANV-12) ok?','[x] done','[]']) {const db=setup(); applyEvents(db,'t',[req(1,'r',{input:text(t)})]); expect(rows(db).map(r=>r.kind)).toEqual(['mine']);}
@@ -131,4 +137,12 @@ describe('updates',()=>{
   db.prepare('UPDATE threads_state SET last_seq=0').run(); applyEvents(db,'t',page);
   expect(updates(db)).toHaveLength(1);
  });
+});
+
+describe('asksOwner',()=>{
+ it.each([
+  ['Should I merge it?',true],['Мержить? Жду ответа.',true],['Готово. Мержить?',true],['Ship it (or wait?)',true],['**Merge now?**',true],['Ready?\n\nDetails below.',true],['Готово？',true],
+  ['Done. See https://ci.example/run?id=4 for logs.',false],['Opened [the run](https://x.dev/r?id=1).',false],['Ran `git status?` fine.',false],
+  ['Logs:\n```\nok? yes\n```\nAll green.',false],['> Can you merge?\n\nMerged as asked.',false],['Use ?query=1 in the URL.',false],['Готово, всё смёржено.',false],
+ ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
 });
