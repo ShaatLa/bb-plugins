@@ -365,7 +365,7 @@ function TaskDetail({
       ),
     ["tasks:changed"],
     [task.id, task.type],
-    // shortcut: a subtask created elsewhere only shows up on the next refresh (create events carry the new id only).
+    // A new subtask is announced on its parent too (publishTasksChanged), so the parent id covers creations elsewhere.
     { relevantTaskIds: [task.id, ...subtaskIdsRef.current] },
   );
   subtaskIdsRef.current = (subtasks.data ?? []).map((subtask) => subtask.id);

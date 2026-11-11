@@ -156,3 +156,15 @@ it("links related tasks symmetrically without blocking, and round-trips them in 
   reversed.records.find(record => record.task.id === higher)!.related = [lower];
   expect(() => validateArchive(reversed)).toThrow(/Invalid related task/);
 });
+
+it("announces a subtask change on its parent and epic so their pages refresh", async () => {
+  const h = setup(), api = registerHandlers(h.bb, h.store);
+  const epic = h.store.tasks.createTask({ projectId: h.project.id, title: "Epic", type: "epic" });
+  const subtask = h.store.tasks.createTask({ projectId: h.project.id, title: "Child", parentTaskId: h.a.id });
+  const epicChild = h.store.tasks.createTask({ projectId: h.project.id, title: "Epic child", epicId: epic.id });
+  h.harness.realtimeSignals.length = 0;
+  await api.updateTask({ taskId: subtask.id, status: "in_progress", authorName: "Owner" });
+  await api.updateTask({ taskId: epicChild.id, status: "in_progress", authorName: "Owner" });
+  const changed = h.harness.realtimeSignals.filter(signal => signal.channel === "tasks:changed").map(signal => (signal.payload as { taskId: string }).taskId);
+  expect(changed).toEqual(expect.arrayContaining([subtask.id, h.a.id, epicChild.id, epic.id]));
+});

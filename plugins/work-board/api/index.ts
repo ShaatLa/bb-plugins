@@ -209,6 +209,11 @@ export function publishTasksChanged(
     WHERE d.task_id=? OR d.blocking_task_id=?
   `).all(taskId, taskId, taskId);
   for (const neighbour of neighbours) bb.realtime.publish("tasks:changed", neighbour);
+  // Subtask lists on a parent's or epic's page listen for that parent, since a new child's ID is unknown there.
+  const family = bb.storage.database().prepare<[string], { parent: string | null; epic: string | null }>(
+    "SELECT parent_task_id AS parent, epic_id AS epic FROM tasks WHERE id=?",
+  ).get(taskId);
+  for (const id of new Set([family?.parent, family?.epic])) if (id) bb.realtime.publish("tasks:changed", { taskId: id, projectId });
 }
 
 export function publishProjectsChanged(
