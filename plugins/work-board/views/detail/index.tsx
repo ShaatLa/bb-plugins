@@ -1,5 +1,6 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
+import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
 import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
@@ -403,7 +404,7 @@ function TaskDetail({
     async query => query.call("listTaskDependencies", { taskId: task.id }),
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
   );
-  useActivityPoll(activity.refresh, activity.isFetching, !!threads.data?.length);
+  useActivityPoll(activity.refresh, activity.isFetching, !!activity.data?.activity?.attachedCount || !!activity.data?.taskThreads.some(isActiveThread));
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],

@@ -369,11 +369,11 @@ export function BoardView({ projectId }: BoardViewProps) {
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
-  const prSummaries = usePrSummaries(board.data?.tasks ?? []);
+  const prSummaries = usePrSummaries(board.data?.tasks ?? [], !board.isFetching && board.data !== undefined, projectId);
   const questionCounts = useQuestionCounts([
     ...(board.data?.tasks ?? []),
     ...(board.data?.subtasks ?? []),
-  ]);
+  ], !board.isFetching && board.data !== undefined, projectId);
   const subtasksByParent = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const child of board.data?.subtasks ?? []) {

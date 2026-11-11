@@ -1,7 +1,7 @@
 import type { TaskAdvisory } from "../../shared/task-advisories";
-import { useActivityPoll } from "../../shell/activity-poll";
+import { samePolledMetadata, useActivityPoll } from "../../shell/activity-poll";
 import { tasksRpcContract } from "../../shared/contract";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
 import { taskBatches } from "../../shell/task-batches";
 import {
@@ -147,12 +147,41 @@ async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRow
 
 export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]) {
   const ids = tasks.map((task) => task.id).sort();
+  const idsKey = ids.join();
+  const previousIds = useRef<{ projectId: string | null; ids: string[] } | null>(null);
   const query = useTasksQuery<Map<string, TaskRowMeta>>(
-    (rpc) => readListMeta(rpc, ids),
+    async (rpc) => {
+      const rows = await readListMeta(rpc, ids);
+      previousIds.current = { projectId, ids };
+      return rows;
+    },
     ["threads:changed", "tasks:changed", "prs:changed"],
-    [projectId, ids.join()],
-    { relevantTaskIds: ids, applySignals: patchListMeta },
+    [projectId],
+    { dataScope: projectId ?? "all", relevantTaskIds: ids, applySignals: patchListMeta },
   );
-  useActivityPoll(query.refresh, query.isFetching, !!query.data && [...query.data.values()].some((meta) => (meta.activity?.attachedCount ?? 0) > 0));
+  useEffect(() => {
+    if (query.isFetching || !query.data) return;
+    const previous = previousIds.current;
+    previousIds.current = { projectId, ids };
+    if (!previous || previous.projectId !== projectId) return;
+    const added = ids.filter((id) => !previous.ids.includes(id));
+    if (!added.length && previous.ids.length === ids.length) return;
+    void query.patch(async (rpc, current) => {
+      const next = new Map([...current].filter(([id]) => ids.includes(id)));
+      for (const [id, meta] of await readListMeta(rpc, added)) next.set(id, meta);
+      return next;
+    }).catch(() => query.refresh());
+  }, [projectId, idsKey, query.isFetching, query.data, query.patch]);
+  const activeIds = [...(query.data ?? new Map()).entries()]
+    .filter(([, meta]) => (meta.activity?.attachedCount ?? 0) > 0 || meta.activeThreads.length > 0)
+    .map(([id]) => id);
+  useActivityPoll(() => {
+    void query.patch(async (rpc, current) => {
+      const next = new Map(current);
+      for (const id of activeIds) next.delete(id);
+      for (const [id, meta] of await readListMeta(rpc, activeIds)) next.set(id, meta);
+      return samePolledMetadata([...next], [...current]) ? current : next;
+    }).catch(() => query.refresh());
+  }, query.isFetching, activeIds.length > 0);
   return query;
 }

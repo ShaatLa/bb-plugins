@@ -6,7 +6,7 @@ import {
 import { createStore, registerTasksApi } from "../api";
 import { tasksRpcContract } from "../shared/contract";
 import { rpcInput } from "../test-fixtures.js";
-import { fetchBoard, patchBoard } from "../views/board/board-data.js";
+import { fetchBoard, patchBoard, pollBoardMetadata, syncBoardMetadata } from "../views/board/board-data.js";
 import { listTasksQuery } from "../views/list/data.js";
 import { listAllTasks, patchTasks, type TasksRpc } from "./data.js";
 import { signalTaskIds, type TaskSignal } from "./signal-scheduler.js";
@@ -225,6 +225,60 @@ describe("patchBoard", () => {
     expect(callsTo("getTask")).toEqual([]);
     expect(callsTo("listTaskThreads")).toEqual([]);
     expect(callsTo("listTasks")).toEqual([]);
+  });
+
+  it("keeps the board object for thread-only signals handled by metadata", async () => {
+    const { store, project, rpc, callsTo, resetCalls } = setup();
+    const task = store.tasks.createTask({ projectId: project.id, title: "Worker" });
+    const current = await fetchBoard(rpc, project.id);
+    resetCalls();
+    expect(await patchBoard(rpc, project.id, current, [{ channel: "threads:changed", taskId: task.id }], false)).toBe(current);
+    expect(callsTo("getTask")).toHaveLength(0);
+    expect(callsTo("listTaskCardMeta")).toHaveLength(0);
+  });
+
+  it("falls back for a 150-card event without per-card reads", async () => {
+    const { project, rpc, callsTo } = setup();
+    const current = await fetchBoard(rpc, project.id);
+    const signals = Array.from({ length: 150 }, (_, index) => ({ channel: "tasks:changed" as const, taskId: `task-${index}` }));
+    expect(await patchBoard(rpc, project.id, current, signals)).toBeNull();
+    expect(callsTo("getTask")).toHaveLength(0);
+  });
+
+  it("polls only the live card and keeps unchanged metadata by reference", async () => {
+    const { store, project, rpc, callsTo, resetCalls } = setup();
+    const active = store.tasks.createTask({ projectId: project.id, title: "Active" });
+    const idle = store.tasks.createTask({ projectId: project.id, title: "Idle" });
+    store.tasks.upsertTaskThread({ taskId: active.id, threadId: "thr_active", title: "Worker", presetName: "Attached", liveStatus: "working" });
+    const initial = (await rpc.call("listTaskCardMeta", { taskIds: [active.id, idle.id] })).metadata;
+    resetCalls();
+    const quiet = initial.filter((row) => row.taskId === idle.id);
+    expect(await pollBoardMetadata(rpc, quiet)).toBe(quiet);
+    expect(callsTo("listTaskCardMeta")).toHaveLength(0);
+    for (let tick = 0; tick < 3; tick++) expect(await pollBoardMetadata(rpc, initial)).toBe(initial);
+    expect(callsTo("listTaskCardMeta")).toEqual([[active.id], [active.id], [active.id]]);
+    store.tasks.upsertTaskThread({ taskId: active.id, threadId: "thr_active", title: "Worker", presetName: "Attached", liveStatus: "idle" });
+    resetCalls();
+    const changed = await pollBoardMetadata(rpc, initial);
+    expect(changed).not.toBe(initial);
+    expect(changed.find((row) => row.taskId === idle.id)).toBe(initial.find((row) => row.taskId === idle.id));
+    resetCalls();
+    expect(await pollBoardMetadata(rpc, changed)).toBe(changed);
+    expect(callsTo("listTaskCardMeta")).toEqual([[active.id]]);
+  });
+
+  it("reads only a newly added card and removes archived metadata", async () => {
+    const { store, project, rpc, callsTo, resetCalls } = setup();
+    const existing = store.tasks.createTask({ projectId: project.id, title: "Existing" });
+    const current = (await rpc.call("listTaskCardMeta", { taskIds: [existing.id] })).metadata;
+    const added = store.tasks.createTask({ projectId: project.id, title: "Added" });
+    resetCalls();
+    const next = await syncBoardMetadata(rpc, current, [existing.id, added.id]);
+    expect(next.map((row) => row.taskId)).toEqual([existing.id, added.id]);
+    expect(callsTo("listTaskCardMeta")).toEqual([[added.id]]);
+    resetCalls();
+    expect((await syncBoardMetadata(rpc, next, [added.id])).map((row) => row.taskId)).toEqual([added.id]);
+    expect(callsTo("listTaskCardMeta")).toHaveLength(0);
   });
 });
 

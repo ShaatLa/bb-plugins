@@ -1,4 +1,5 @@
 import type { Task } from "../shared/contract";
+import { useEffect, useRef } from "react";
 import { taskBatches } from "../shell/task-batches";
 import { signalTaskIds } from "../shell/signal-scheduler";
 import { useTasksQuery, type TasksRpc } from "../shell/data";
@@ -8,13 +9,21 @@ async function readCounts(rpc: TasksRpc, ids: readonly string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("questionCounts", { taskIds })).counts);
   return new Map(rows.map((row) => [row.taskId, row.unanswered]));
 }
-export function useQuestionCounts(tasks: readonly Task[]) {
+export function useQuestionCounts(tasks: readonly Task[], enabled = true, projectId = tasks[0]?.projectId ?? "") {
   const taskIds = tasks.map((task) => task.id).sort();
-  return useTasksQuery(
-    (rpc) => readCounts(rpc, taskIds),
+  const idsKey = taskIds.join();
+  const previousIds = useRef<{ projectId: string; ids: string[] } | null>(null);
+  const query = useTasksQuery(
+    async (rpc) => {
+      const rows = await readCounts(rpc, taskIds);
+      previousIds.current = { projectId, ids: taskIds };
+      return rows;
+    },
     ["tasks:changed"],
-    [taskIds.join()],
+    [projectId],
     {
+      enabled,
+      dataScope: projectId,
       relevantTaskIds: taskIds,
       applySignals: async (rpc, current, signals) => {
         const changed = signalTaskIds(signals, "tasks:changed").filter((id) => taskIds.includes(id));
@@ -26,6 +35,20 @@ export function useQuestionCounts(tasks: readonly Task[]) {
       },
     },
   );
+  useEffect(() => {
+    if (!enabled || query.isFetching || !query.data) return;
+    const previous = previousIds.current;
+    previousIds.current = { projectId, ids: taskIds };
+    if (!previous || previous.projectId !== projectId) return;
+    const added = taskIds.filter((id) => !previous.ids.includes(id));
+    if (!added.length && previous.ids.length === taskIds.length) return;
+    void query.patch(async (rpc, current) => {
+      const next = new Map([...current].filter(([id]) => taskIds.includes(id)));
+      for (const [id, count] of await readCounts(rpc, added)) next.set(id, count);
+      return next;
+    }).catch(() => query.refresh());
+  }, [projectId, idsKey, enabled, query.isFetching, query.data, query.patch]);
+  return query;
 }
 
 export function QuestionCount({
