@@ -178,6 +178,15 @@ describe('reply pools and inbox',()=>{
   await expect(call('reply',{id:'ans_u',text:'ok'})).rejects.toThrow('cannot receive replies');
   await call('markThreadRead',{threadId:'t'}); expect((await call('counts')).inbox).toBe(0);
  });
+ it('the badge drops answers already read in bb, keeps open agent questions, and ignores deleted threads',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  seed(db,'ans_a','mine','a'); db.prepare("UPDATE items SET status='answered',answer='x',answered_at=5 WHERE id='ans_a'").run();
+  seed(db,'ans_q','for_me','a'); db.prepare("UPDATE items SET created_at=1 WHERE id='ans_q'").run();
+  seed(db,'ans_gone','mine','gone'); db.prepare("UPDATE items SET status='answered',answer='y',thread_deleted=1 WHERE id='ans_gone'").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,lastReadAt:10} as any)));
+  expect(await call('counts')).toMatchObject({inbox:1,unread:0,forMe:1});
+  expect(db.prepare("SELECT read_at FROM items WHERE id='ans_q'").get()).toEqual({read_at:null});
+ });
  it('groups unread recipients, orders them, keeps selected, and reads only inbox kinds',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b'); seed(db,'ans_c','for_me','b'); seed(db,'ans_wait','mine','b'); seed(db,'ans_save','saved','b');
   db.prepare("UPDATE items SET status='answered',answer=?,updated_at=10 WHERE id='ans_a'").run('x'.repeat(200));

@@ -52,7 +52,22 @@ export default function plugin(bb: BbPluginApi) {
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
-      FROM items WHERE dismissed_at IS NULL AND ${ACTIVE_THREAD_SQL}`).get() as Counts;
+      FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL}`).get() as Counts;
+  }
+  // bb has no "thread read" event, so the badge would keep counting answers already read in bb's chat until the Answers
+  // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
+  // Agent questions stay: reading the thread in bb does not answer them.
+  let bbReadSyncedAt = 0;
+  async function syncReadFromBb() {
+    if (Date.now() - bbReadSyncedAt < 15000) return; bbReadSyncedAt = Date.now();
+    const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND thread_deleted=0`);
+    if (!ids.length) return;
+    try {
+      const seen = db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`);
+      let n = 0;
+      for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) if (t.lastReadAt) n += seen.run(t.lastReadAt,t.id,t.lastReadAt).changes;
+      if (n) invalidate();
+    } catch (e) { bb.log.warn(`Answers read sync: ${String(e)}`); }
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
@@ -156,7 +171,7 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
   const handlers = {
-    list, counts,
+    list, async counts() { await syncReadFromBb(); return counts(); },
     undoRead(raw:z.infer<typeof inputs.undoRead>) {
       const p=inputs.undoRead.parse(raw),threads=threadsOf('read_batch=? AND read_at>=?',p.batch,Date.now()-600000),count=db.prepare('UPDATE items SET read_at=NULL,read_batch=NULL WHERE read_batch=? AND read_at>=?').run(p.batch,Date.now()-600000).changes;
       invalidate(); if (count) void syncBbRead(threads,false); return {ok:true as const,count};
@@ -222,7 +237,7 @@ export default function plugin(bb: BbPluginApi) {
       const projects=rows.length ? await bb.sdk.projects.list() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
-      const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND coalesce(answered_at,created_at)<=?`);
+      const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`);
       let seen=0;
       for (const r of rows) { const readAt=threadMap.get(r.thread_id)?.lastReadAt; if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
       if (seen) invalidate();
