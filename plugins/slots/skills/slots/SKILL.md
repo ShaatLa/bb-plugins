@@ -52,3 +52,5 @@ The optional load watch warns heuristically at checkout level when processes
 use many cores without a heavy slot; small runs do not need a slot.
 
 A heavy lease also covers the holder’s child threads; open browser-automation sessions in the family count as activity for idle notices. Transfer is the clean way to assign work.
+
+Status views return the newest 15 non-gate audit events, ordered by time and sequence descending. Disk logs and the 50-event state ring are unchanged.

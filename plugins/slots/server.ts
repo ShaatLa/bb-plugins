@@ -24,7 +24,7 @@ export interface Runtime {
   watchCollector?: Parameters<typeof createWatcher>[0]["collector"];
   realpath?: Parameters<typeof createWatcher>[0]["realpath"];
 }
-export type Invoke = (method: keyof RpcMethods, params: unknown) => Promise<Result<unknown>>;
+export type Invoke = (method: keyof RpcMethods, params: unknown, defaultHost?: boolean) => Promise<Result<unknown>>;
 
 export default function plugin(bb: BbPluginApi) { return register(bb); }
 export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}) {
@@ -125,10 +125,16 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const next = queue.then(() => { if (disposed) throw new Error("Slots unloaded"); return fn(); });
     queue = next.catch(() => {}); return next;
   }
+  class DeadlineError extends Error {}
+  async function deadline<T>(promise: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DeadlineError("SDK call timed out")), 10000); })]); }
+    finally { clearTimeout(timer); }
+  }
   async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
     try {
-      await bb.sdk.threads.send({ threadId: effect.threadId, mode: effect.queue ? "queue-if-active" : "auto", originPluginId: bb.pluginId,
-        input: [{ type: "text", text: formatNotification(effect), mentions: [] }] });
+      await deadline(bb.sdk.threads.send({ threadId: effect.threadId, mode: effect.queue ? "queue-if-active" : "auto", originPluginId: bb.pluginId,
+        input: [{ type: "text", text: formatNotification(effect), mentions: [] }] }));
     } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
   }
   async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {
@@ -151,7 +157,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     return change.result;
   }
   async function lookup(threadId: string) {
-    try { return await bb.sdk.threads.get({ threadId }); }
+    try { return await deadline(bb.sdk.threads.get({ threadId })); }
     catch (error) {
       const e = error as { status?: number; statusCode?: number; code?: string };
       if (e.status === 404 || e.statusCode === 404 || e.code === "not_found" || e.code === "not-found") return null;
@@ -169,7 +175,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   async function initialize() {
     if (initialized) return;
-    const config = await bb.sdk.system.config();
+    const config = await deadline(bb.sdk.system.config());
     if (!config.primaryHostId) throw new Error("Cannot resolve BB server host");
     localHostId = config.primaryHostId;
     dataDir = config.dataDir;
@@ -194,7 +200,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   async function localThread(threadId: string) {
     const thread = await checkThread(threadId);
     if (!thread) throw new Error("Thread is missing, archived or deleted");
-    const hostId = (thread.environmentId ? (await bb.sdk.environments.get({ environmentId: thread.environmentId })).hostId : null);
+    const hostId = (thread.environmentId ? (await deadline(bb.sdk.environments.get({ environmentId: thread.environmentId }))).hostId : null);
     if (hostId !== localHostId) throw new Error(`Slots v1 only supports the BB server host (${localHostId}); thread ${threadId} is on ${hostId ?? "an unknown host"}`);
     return thread;
   }
@@ -209,10 +215,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     settings = await getSettings();
     await transition({ type: "observer", hostId: localHostId, previousThreadId, previousEvents, previousEnded, title: target?.title ?? threadId });
   }
-  const invoke: Invoke = async (method, raw) => {
+  let hostName: { until: number; value: string | null } | undefined;
+  const invoke: Invoke = async (method, raw, defaultHost = false) => {
     const result = await serial<Result<unknown>>(async () => {
     await initialize(); settings = await getSettings();
-    const parsed = inputs[method].safeParse(raw);
+    const parsed = inputs[method].safeParse(defaultHost ? { ...(raw as object), hostId: (raw as Record<string, unknown>).hostId || localHostId } : raw);
     if (!parsed.success) return invalid(parsed.error.message);
     // Every surface uses the same validated dispatcher; caller host comes from the thread.
     const p = parsed.data as Record<string, any>;
@@ -276,7 +283,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (method !== "status" || !result.ok) return result;
     const snapshot = result.data as Omit<import("./contract.js").StatusView, "titles">;
     const ids = new Set([...snapshot.pools.flatMap(p => [...p.queue.map(r => r.threadId), ...p.leases.flatMap(l => [l.holderThreadId, l.ownerThreadId])]),
-      ...snapshot.ports.map(p => p.threadId), ...snapshot.audit.flatMap(e => e.threadId ? [e.threadId] : [])]);
+      ...snapshot.audit.flatMap(e => e.threadId ? [e.threadId] : [])]);
     const resolved = await Promise.all([...ids].map(async id => {
       let entry = titles.get(id);
       if (!entry || entry.until <= runtime.now()) {
@@ -287,7 +294,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       }
       return [id, await entry.value] as const;
     }));
-    const localHostName = await bb.sdk.hosts.get({ hostId: localHostId }).then(host => host.name).catch(() => null);
+    if (!hostName || hostName.until <= runtime.now()) {
+      const value = await deadline(bb.sdk.hosts.get({ hostId: localHostId })).then(host => host.name).catch(error => { if (error instanceof DeadlineError) throw error; return null; });
+      hostName = { until: runtime.now() + 300000, value };
+    }
+    const localHostName = hostName.value;
     return { ok: true, data: { ...snapshot, localHostName, titles: Object.fromEntries(resolved) } };
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
@@ -295,13 +306,12 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const agentMethods = (Object.keys(inputs) as (keyof RpcMethods)[]).filter(method => !["settingsRead", "settingsWrite"].includes(method));
   for (const method of agentMethods) {
     bb.agents.registerTool({ name: `slots_${method}`, description: `Slots ${method}. Returns immediately. Manager operations are unrestricted.`,
-      parameters: z.object(Object.fromEntries(Object.entries(inputs[method].shape).filter(([key]) => key !== "threadId"))),
+      parameters: z.object(Object.fromEntries(Object.entries(inputs[method].shape).filter(([key]) => key !== "threadId").map(([key, schema]) => [key, key === "hostId" ? schema.optional() : schema]))),
       async execute(params, ctx) {
         const p = params as Record<string, unknown>;
         const threadId = ctx.threadId;
         const needsThread = "threadId" in inputs[method].shape;
-        const config = await bb.sdk.system.config();
-        const result = await invoke(method, { ...p, ...(needsThread ? { threadId } : {}), ...("hostId" in inputs[method].shape && !p.hostId && !["status", "log"].includes(method) ? { hostId: config.primaryHostId } : {}) });
+        const result = await invoke(method, { ...p, ...(needsThread ? { threadId } : {}) }, "hostId" in inputs[method].shape && !["status", "log"].includes(method));
         return JSON.stringify(result);
       },
     });
@@ -346,8 +356,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
             const host = settingsFor(settings, l.hostId);
             return now - l.lastHeartbeatAt >= Math.min(60000, (host.leaseTtlMs - host.heartbeatIntervalMs) / 2);
           }).map(l => l.holderThreadId))) {
-            const thread = await lookup(id);
-            if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
+            try {
+              const thread = await lookup(id);
+              if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
+            } catch (error) { bb.log.warn(`Slots sampler lookup ${id} failed: ${String(error)}`); }
           }
           await transition({ type: "tick" }); lastTick = now;
           await store.prune(now);

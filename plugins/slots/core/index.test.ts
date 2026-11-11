@@ -239,6 +239,10 @@ describe("Slots deterministic engine", () => {
     expect(h.state.leases[0].lastHeartbeatAt).toBe(h.now);
     for (let i = 0; i < 55; i++) h.send({ type: "prioritize", requestId: h.state.requests[0].id, priority: "normal" });
     expect(h.state.audit).toHaveLength(50);
+    const audit = statusSnapshot(h.state, { now: h.now, settings: h.settings }).audit;
+    expect(audit).toHaveLength(15);
+    expect(audit.every(e => e.type !== "gate")).toBe(true);
+    expect(audit.map(e => e.seq)).toEqual([...audit.map(e => e.seq)].sort((a, b) => b - a));
     expect(logSince(h.state, { since: h.now, limit: 2 })).toHaveLength(2);
     expect(logSince(h.state, { since: h.now + 1 })).toEqual([]);
     expect(logSince(h.state, { limit: 0 })).toEqual([]);

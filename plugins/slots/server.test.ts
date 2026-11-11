@@ -270,7 +270,7 @@ it.each(["thread.archived", "thread.deleted"] as const)("clears and audits an en
   await h.harness.behavior.emitThreadEvent(event, { thread: h.threads.get("a")! });
   expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
   expect(h.send).not.toHaveBeenCalled();
-  expect((await h.view()).audit.at(-1)).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
+  expect((await h.view()).audit[0]).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
 });
 it("startup clears a dead configured observer", async () => {
   const h = await setup(undefined, undefined, { observerThreadId: "missing" });
@@ -282,6 +282,8 @@ it("returns the SDK machine display name and tolerates a failed name lookup", as
   const h = await setup();
   expect((await h.view()).localHostName).toBe("Work laptop");
   h.harness.sdk.stub("hosts.get", async () => { throw new Error("offline"); });
+  expect((await h.view()).localHostName).toBe("Work laptop");
+  h.advance(300001);
   expect((await h.view()).localHostName).toBeNull();
 });
 
@@ -558,4 +560,31 @@ it("retries a failed state save and remembers a loaded serialization", async () 
   await store.save('{"changed":true}');
   const restored = new DiskStore(h.path); await restored.load();
   expect(restored.lastSaved).toBe('{"changed":true}');
+});
+
+
+it("caches the host name and initializes before a host-requiring tool", async () => {
+  const h = await setup();
+  const get = vi.fn(async () => ({ ...makeHostResponse({ id: "local", name: "Work laptop" }), connectMachineId: null, threadStorageRootPath: null }));
+  h.harness.sdk.stub("hosts.get", get);
+  const result = JSON.parse(await h.harness.behavior.callAgentTool("slots_gate", {}, { threadId: "a" }) as string);
+  expect(result.ok).toBe(true);
+  for (let i = 0; i < 10; i++) await h.view();
+  expect(get).toHaveBeenCalledTimes(1);
+});
+
+it("times out a hung lookup without ending the lease or applying a late result", async () => {
+  const h = await setup(); await h.grant();
+  let finish!: (value: ReturnType<typeof makeThreadResponse>) => void;
+  h.harness.sdk.stub("threads.get", () => new Promise(resolve => { finish = resolve; }));
+  vi.useFakeTimers();
+  try {
+    const pending = h.invoke("release", { threadId: "a" });
+    await vi.advanceTimersByTimeAsync(10001);
+    expect(await pending).toMatchObject({ ok: false, error: { message: expect.stringContaining("timed out") } });
+    finish(makeThreadResponse({ id: "a", environmentId: "env" }));
+    await Promise.resolve();
+  } finally { vi.useRealTimers(); }
+  h.harness.sdk.stub("threads.get", async () => h.threads.get("a")!);
+  expect((await h.view()).pools[0].leases).toHaveLength(1);
 });
