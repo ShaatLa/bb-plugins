@@ -734,6 +734,70 @@ it("refreshes only PR subscribers after polling and leaves unrelated task indexe
   expect(summary.summaries).toMatchObject([{ taskId: f.task.id, total: 1, stale: false }]);
 });
 
+it("reads project links once and does not publish an observedAt-only refresh", async () => {
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "related", part: null });
+  const db = f.bb.storage.database();
+  const prepare = vi.spyOn(db, "prepare");
+  await f.service.syncProject(f.project.id);
+  const before = f.harness.realtimeSignals.length;
+  prepare.mockClear();
+  f.client.snapshot.mockImplementation(async () => ({ ...snapshot(), observedAt: new Date(Date.now() + 1000).toISOString() }));
+  await f.service.syncProject(f.project.id);
+  expect(f.harness.realtimeSignals.slice(before)).toEqual([]);
+  expect(prepare.mock.calls.filter(([sql]) => String(sql).includes("SELECT l.payload FROM task_pr_links l JOIN tasks t") && String(sql).includes("ORDER BY l.task_id, l.identity"))).toHaveLength(1);
+  f.client.snapshot.mockImplementation(async () => ({ ...snapshot(), ci: "failing" }));
+  await f.service.syncProject(f.project.id);
+  expect(f.harness.realtimeSignals.slice(before)).toContainEqual({ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } });
+});
+
+it("backs off failed PRs, advances to later PRs, and lets force retry immediately", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const number of [42, 43]) await f.service.handlers.linkPr({ taskId: f.task.id, url: `https://github.com/example/service/pull/${number}`, role: "related", part: null });
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 42) throw new Error("unavailable");
+    return snapshot(repository, number);
+  });
+  await f.service.syncProject(f.project.id);
+  expect(f.client.snapshot.mock.calls.map(([, number]) => number)).toEqual([42, 43]);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(f.client.snapshot.mock.calls.map(([, number]) => number)).toEqual([43]);
+  await f.service.syncProject(f.project.id, true);
+  expect(f.client.snapshot.mock.calls.map(([, number]) => number)).toContain(42);
+  f.client.snapshot.mockClear();
+  vi.setSystemTime(new Date("2026-11-11T12:05:00.000Z"));
+  await f.service.syncProject(f.project.id);
+  expect(f.client.snapshot.mock.calls.map(([, number]) => number)).not.toContain(42);
+  vi.setSystemTime(new Date("2026-11-11T12:15:00.000Z"));
+  await f.service.syncProject(f.project.id);
+  expect(f.client.snapshot.mock.calls.map(([, number]) => number)).toContain(42);
+});
+
+it("resumes with untouched PRs after a snapshot deadline", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const number of [42, 43, 44]) await f.service.handlers.linkPr({ taskId: f.task.id, url: `https://github.com/example/service/pull/${number}`, role: "related", part: null });
+  let hang = true;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 43 && hang) return new Promise<ReturnType<typeof snapshot>>(() => {});
+    return snapshot(repository, number);
+  });
+  const first = f.service.syncProject(f.project.id);
+  await vi.waitFor(() => expect(f.client.snapshot).toHaveBeenCalledTimes(2));
+  await vi.advanceTimersByTimeAsync(4 * 60_000);
+  expect((await first).errors[0]).toContain("timed out");
+  hang = false;
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(f.client.snapshot.mock.calls[0]?.[1]).toBe(44);
+});
+
 it("refreshes dependency advice when a predecessor PR changes without moving either task", async () => {
   const f = setup();
   const dependent = f.tasks.find(task => task.id !== f.task.id)!;

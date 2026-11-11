@@ -422,6 +422,8 @@ const MIGRATIONS = [
      CHECK (task_id < related_task_id)
    );
    CREATE INDEX idx_task_relations_related ON task_relations(related_task_id, task_id);`,
+  `ALTER TABLE git_pr_snapshots ADD COLUMN last_attempt_at INTEGER;
+   ALTER TABLE git_pr_snapshots ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
