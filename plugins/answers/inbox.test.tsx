@@ -91,7 +91,7 @@ it('shows an update as the agent message under a caption naming the finished chi
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Child report');
   const card = document.querySelector('[data-history-ids="ans_upd"]')!, caption = card.querySelector('[data-update-caption]')!;
-  expect(caption.textContent).toMatch(/^After Child task finished · /);
+  expect(caption.textContent).toMatch(/^Child task finished/);
   expect(within(caption as HTMLElement).getByRole('link', { name:'Child task' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_child');
   expect(slot.queryByText(/bb system/)).toBeNull();
   expect(within(card as HTMLElement).queryByRole('button', { name:'Reply' })).toBeNull();
