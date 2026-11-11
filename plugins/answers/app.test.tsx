@@ -271,8 +271,8 @@ it('reads the thread tab oldest first', async () => {
   expect(slot.queryByRole('button', { name: 'Reply' })).toBeNull();
   expect(slot.getByRole('list', { name: 'Answers' }).className).toContain('divide-y');
   expect(slot.getByRole('list', { name: 'Answers' }).closest('section')!.className).toContain('bg-background');
-  pickView(slot, 'Asked of you');
-  expect(slot.getByRole('button', { name: 'View: Asked of you' })).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: /^View:/ }));
+  expect(slot.queryByRole('menuitemradio', { name: /^Asked of you/ })).toBeNull();
 });
 it('adds selected chat text to the thread pool and opens My questions', async () => {
   const { experimental_makePanelController } = await import('@get-bb/plugin-sdk/testing');
@@ -441,10 +441,11 @@ it('embeds bb\u2019s chat for the selected conversation and marks it read', asyn
 });
 it('keeps Reply on agent questions in the thread side panel', async () => {
   const { AnswersPanel } = await import('./app');
-  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Pick one?', answer: null };
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [ask, item], nextCursor: null }) } });
+  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'replied' as const, question: 'Pick one?', answer: 'B' }, open = { ...ask, id: 'ans_open', status: 'open' as const, question: 'Still open?', answer: null };
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [open, ask, item], nextCursor: null }) } });
   await slot.findByText('Pick one?');
   expect(slot.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
+  expect(slot.queryByText('Still open?')).toBeNull();
 });
 
 it('pool note Enter sends its entry after saving; Shift+Enter does not', async () => {
@@ -511,4 +512,50 @@ it('reads file attachments only on download', async () => {
   expect(read).not.toHaveBeenCalled();
   fireEvent.click(link);
   await waitFor(() => expect(read).toHaveBeenCalledOnce());
+});
+
+const pendingThread = (id: string, title: string) => ({ id, title, displayTitle: title, projectId: 'pr_one', providerId: 'codex', parentThreadId: null, parentNotifications: 'all', archivedAt: null, pinnedAt: null, sectionId: null, isUnread: false, status: 'active', runtimeStatus: 'active', queuedWork: 'none', hasPendingInteraction: true, indicator: 'none', activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, environment: { id: 'env', path: '/x' } });
+const userQuestion = (threadId: string, prompt: string, createdAt: number) => ({ id: `i_${threadId}`, threadId, status: 'pending', createdAt, payload: { kind: 'user_question', questions: [{ id: 'q1', prompt, shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: false, options: [{ value: 'a', label: 'Alpha' }] }] } });
+function renderQuestions(AnswersPanel: (props: { threadId?: string }) => any, threadId?: string) {
+  const rows: Record<string, unknown[]> = { thr_a: [userQuestion('thr_a', 'First?', 3)], thr_b: [userQuestion('thr_b', 'Second?', 1)] };
+  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, threadId: 'thr_c', threadTitle: 'Third thread', question: 'Pick one?', answer: null, createdAt: 2 };
+  const list = vi.fn(({ view }: { view: string }) => ({ items: view === 'for_me' ? [ask] : [], nextCursor: null }));
+  return renderSlot({ component: () => <AnswersPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
+    sdk: { threads: { interactions: { list: ({ threadId }: { threadId: string }) => Promise.resolve(rows[threadId] ?? []) } } }, sidebarThreads: { threads: [pendingThread('thr_a', 'Alpha thread'), pendingThread('thr_b', 'Beta thread')], projects: [{ id: 'pr_one', name: 'Project one' }] } } as any);
+}
+it('stacks pending questions from every thread, oldest first, and toggles back to the view', async () => {
+  const { AnswersPanel } = await import('./app');
+  const slot = renderQuestions(AnswersPanel);
+  const toggle = slot.getByRole('button', { name: 'Questions' });
+  expect(await within(toggle).findByLabelText('3 pending')).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-pressed')).toBe('true');
+  expect(localStorage.getItem('bb-plugin-answers:page:questions')).toBe('true');
+  await slot.findAllByText('Second?'); await slot.findAllByText('First?'); await slot.findByText('Pick one?');
+  const cards = slot.getAllByRole('region').filter(node => node.className.includes('shadow-lift'));
+  expect(cards.map(card => card.getAttribute('aria-label'))).toEqual(['Beta thread', 'Third thread', 'Alpha thread']);
+  expect(within(cards[0]!).getByRole('link', { name: 'Open thread' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_b');
+  expect(within(cards[0]!).getByText(/Project one/)).toBeTruthy();
+  expect(within(cards[0]!).getByTitle('codex')).toBeTruthy();
+  expect(within(cards[1]!).getByRole('button', { name: 'Reply' })).toBeTruthy();
+  expect(slot.queryByRole('listbox', { name: 'Recipients' })).toBeNull();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
+  expect(slot.queryByText('Second?')).toBeNull();
+});
+it('shows every thread\'s questions in the thread tab too', async () => {
+  const { AnswersPanel } = await import('./app');
+  const slot = renderQuestions(AnswersPanel, 'thr_one');
+  fireEvent.click(slot.getByRole('button', { name: 'Questions' }));
+  await slot.findAllByText('Second?'); await slot.findByText('Pick one?');
+  expect(slot.getAllByText('First?').length).toBeGreaterThan(0);
+});
+it('opens the Questions section for a stored Asked of you view and shows the empty state', async () => {
+  localStorage.setItem('bb-plugin-answers:page:view', JSON.stringify('for_me'));
+  const { AnswersPanel } = await import('./app');
+  const slot = renderSlot({ component: () => <AnswersPanel /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  expect(slot.getByRole('button', { name: 'Questions' }).getAttribute('aria-pressed')).toBe('true');
+  expect(slot.getByRole('button', { name: 'View: Inbox' })).toBeTruthy();
+  expect(await slot.findByText('No questions for you')).toBeTruthy();
 });

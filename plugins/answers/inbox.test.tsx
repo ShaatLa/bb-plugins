@@ -84,14 +84,15 @@ it('groups consecutive questions with a shared answer', async () => {
   await slot.findByText('Shared answer'); expect(slot.getAllByText('Shared answer')).toHaveLength(1);
   expect(document.querySelectorAll('[data-history-ids]')).toHaveLength(1);
 });
-it('shows Reply only on agent questions in the conversation', async () => {
-  const agentQuestion = { ...base, id:'ans_agent', kind:'for_me' as const, status:'open' as const, question:'Choose?', answer:null, answerSeq:null, options:['Yes'] };
-  const { slot, recipients } = setup({ list: () => ({ items:[agentQuestion, base], nextCursor:null }) });
+it('shows Reply only on agent questions and keeps open ones out of the conversation', async () => {
+  const open = { ...base, id:'ans_open', kind:'for_me' as const, status:'open' as const, question:'Still open?', answer:null, answerSeq:null, options:['Yes'] };
+  const agentQuestion = { ...open, id:'ans_agent', status:'replied' as const, question:'Choose?', answer:'Yes' };
+  const { slot, recipients } = setup({ list: () => ({ items:[open, agentQuestion, base], nextCursor:null }) });
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Choose?');
   expect(within(document.querySelector('[data-history-ids="ans_one"]')!).queryByRole('button', { name:'Reply' })).toBeNull();
   expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
-  expect(slot.getByRole('button', { name:'Yes' })).toBeTruthy();
+  expect(slot.queryByText('Still open?')).toBeNull();
 });
 it('keeps the list and the previous conversation on screen while switching', async () => {
   let release!: () => void;
@@ -216,27 +217,34 @@ it('shows bb system notice icon and text for completed and failed children', asy
   expect(Array.from(notices).map(node => [node.getAttribute('title'), node.querySelector('[data-icon]')?.getAttribute('data-icon')])).toEqual([['Child 0 finished', 'CircleCheck'], ['Child 1 failed', 'CircleX']]);
   expect(slot.queryByText('[bb system] raw report')).toBeNull();
 });
-it('mounts pending questions above the hidden composer like bb', async () => {
-  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+it('leaves pending questions to the Questions section: no form in the chat, composer and footer stay', async () => {
+  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x', branchName:'main' } };
   const question = { id:'i1', threadId:'thr_one', status:'pending', payload:{ kind:'user_question', questions:[{ id:'q1', prompt:'Choose?', shortLabel:'Choice', required:true, multiSelect:false, allowFreeText:false, options:[{ value:'a', label:'Alpha' }] }] } };
-  const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[] }, interactions:{ list: () => Promise.resolve([question]) } }); fireEvent.click(await recipients.findByRole('option'));
-  const card = (await slot.findAllByText('Choose?'))[0]!.closest('[data-pending-question-card]')!;
-  const composer = slot.getByRole('textbox', { name:'Send message', hidden:true }).closest('form')!;
-  expect(card.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(composer.parentElement?.hidden).toBe(true);
-  expect(card.className).toContain('bg-surface-recessed');
-  expect(card.closest('[data-promptbox-shell]')).toBeTruthy();
+  const list = vi.fn(() => Promise.resolve([question]));
+  const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[] }, interactions:{ list } }); fireEvent.click(await recipients.findByRole('option'));
+  const composer = (await slot.findByRole('textbox', { name:'Send message' })).closest('form')!;
+  expect(composer.parentElement?.hidden).toBe(false);
+  expect(slot.getByText('main')).toBeTruthy();
+  expect(slot.queryByText('Choose?')).toBeNull();
+  expect(slot.container.querySelector('[data-pending-question-card]')).toBeNull();
 });
-it('shows a child interaction in the parent stack and opens its question inline', async () => {
+it('marks a contact whose thread waits for input', async () => {
+  const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const two = { ...one, threadId:'thr_two', threadTitle:'Two' };
+  const { recipients } = setup({ recipients:[one, two], sidebarThreads:{ threads:[{ ...idle, id:'thr_one', title:'One' }, { ...idle, id:'thr_two', title:'Two', hasPendingInteraction:false }], projects:[] }, interactions:{ list: () => Promise.resolve([]) } });
+  const [first, second] = await recipients.findAllByRole('option');
+  expect(within(first!).getByLabelText('Needs input').getAttribute('data-icon')).toBe('CircleQuestion');
+  expect(within(second!).queryByLabelText('Needs input')).toBeNull();
+});
+it('lists a child question in the parent stack as a link to the child thread, not an inline form', async () => {
   const parent = { id:'thr_one', title:'Parent', displayTitle:'Parent', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const child = { ...parent, id:'thr_child', title:'Child task', displayTitle:'Child task', parentThreadId:'thr_one', hasPendingInteraction:true };
   const question = { id:'i_child', threadId:'thr_child', status:'pending', payload:{ kind:'user_question', questions:[{ id:'q1', prompt:'Allow Codex to use bb?', shortLabel:'Choice', required:true, multiSelect:false, allowFreeText:false, options:[{ value:'a', label:'Yes' }] }] } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[parent, child], projects:[] }, interactions:{ list: ({ threadId }: { threadId: string }) => Promise.resolve(threadId === 'thr_child' ? [question] : []) } }); fireEvent.click(await recipients.findByRole('option'));
-  const row = await slot.findByRole('button', { name:/Child task: Allow Codex to use bb\?/ });
+  const row = await slot.findByRole('link', { name:/Child task: Allow Codex to use bb\?/ });
   expect(row.closest('[data-promptbox-shell]')).toBeTruthy();
-  fireEvent.click(row);
-  expect(await slot.findByText('Open child thread')).toBeTruthy();
-  expect((await slot.findAllByText('Allow Codex to use bb?')).length).toBeGreaterThan(0);
+  expect(row.getAttribute('href')).toBe('/projects/pr_one/threads/thr_child');
+  expect(slot.container.querySelector('[data-question-form]')).toBeNull();
 });
 it('renews the edit hold lease while the queued message is being edited', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };

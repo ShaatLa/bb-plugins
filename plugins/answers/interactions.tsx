@@ -7,6 +7,18 @@ type Question = Extract<Row['payload'], { kind: 'user_question' }>['questions'][
 type Answer = { selected: string[]; freeText?: string };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+// Pending bb interactions per thread, refetched whenever a sidebar thread's pending flag or status changes.
+export function usePendingInteractionRows(threads: readonly { id: string; hasPendingInteraction: boolean; status?: string }[]) {
+  const sdk = useSdk(), [rows, setRows] = useState<Record<string, Row[]>>({});
+  const key = threads.filter(thread => thread.hasPendingInteraction).map(thread => `${thread.id}:${thread.status}`).join(' ');
+  useEffect(() => {
+    let live = true;
+    void Promise.all(threads.filter(thread => thread.hasPendingInteraction).map(async thread => [thread.id, (await sdk.threads.interactions.list({ threadId: thread.id })).filter(row => row.status === 'pending' || row.status === 'resolving')] as const)).then(found => { if (live) setRows(Object.fromEntries(found)); }).catch(() => {});
+    return () => { live = false; };
+  }, [sdk, key]);
+  return rows;
+}
+
 export function PendingInteractions({ threadId, projectId, pending, status, stacked = false }: { threadId: string; projectId?: string | null; pending: boolean; status?: string; stacked?: boolean }) {
   const sdk = useSdk(), { refresh } = experimental_useRpcRefresh();
   const [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [version, setVersion] = useState(0);
@@ -61,7 +73,8 @@ function QuestionForm({ questions, onSubmit, onCancel }: { questions: Question[]
   }
   function action(name: string) { if (name === 'cancel') { void cancel(); return true; } if (busy) return false; if (name === 'previous' && index > 0) setIndex(index - 1); else if (name === 'next' && index < questions.length - 1) setIndex(index + 1); else if (name === 'submit') void submit(); else return false; root.current?.focus(); return true; }
   const handlers = useRef({ choice, action }); handlers.current = { choice, action };
-  useEffect(() => { const a = host.registerChoiceHandler(n => handlers.current.choice(n)), b = host.registerActionHandler(n => handlers.current.action(n)); return () => { a(); b(); }; }, [host]);
+  // Several forms can share a page (the Questions section); host shortcuts act only on the focused one.
+  useEffect(() => { const a = host.registerChoiceHandler(n => root.current?.contains(document.activeElement) ? handlers.current.choice(n) : false), b = host.registerActionHandler(n => root.current?.contains(document.activeElement) ? handlers.current.action(n) : false); return () => { a(); b(); }; }, [host]);
   if (!question) return null;
   // bb binds option shortcuts only inside its thread pane; on the Answers page the form numbers options itself, as bb's default 1-9 does.
   const key = (n: number) => host.shortcuts.get(String(n))?.label ?? (host.shortcuts.size === 0 && n < 9 ? String(n + 1) : undefined);

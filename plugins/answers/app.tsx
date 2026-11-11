@@ -1,8 +1,9 @@
 import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
-import { Inbox, Pools } from './inbox';
+import { Inbox, Pools, Avatar, ago } from './inbox';
+import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
@@ -13,7 +14,7 @@ import { parseInlineComments } from './inline-comments';
 const emptyCopy: Record<View, [IconName, string, string]> = {
   unread: ['MailOpen', 'All caught up', 'New answers will show up here.'],
   waiting: ['Clock', 'Nothing waiting', 'Questions still waiting for an answer show up here.'],
-  for_me: ['MessageQuestion', 'No questions for you', 'When an agent asks you something without blocking, it shows up here.'],
+  for_me: ['MessageQuestion', 'No questions for you', 'When an agent asks you something, it shows up here.'],
   pinned: ['Pin', 'Nothing pinned', 'Pin an answer to keep it at hand.'],
   saved: ['Star', 'Nothing saved', 'Use “Save to Answers” on any chat message to keep it here.'],
   all: ['MessageQuestion', 'No answers yet', 'Your questions and the agents’ answers show up here.'],
@@ -227,20 +228,21 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   </li>;
 }
 
-function Page({ threadId, view, projectId, query, questions, cursor }: { threadId?: string; view: View; projectId?: string; query: string; questions?: boolean; cursor?: string }) {
-  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(questions ? { questions } : {}), ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
+function Page({ threadId, view, projectId, query, cursor }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string }) {
+  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
   const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
   const chronological = !!threadId, nextCursor = result.data?.nextCursor;
-  const items = result.data ? (chronological ? [...result.data.items].reverse() : result.data.items) : [];
+  // Open agent questions live in the Questions section; the thread feed shows them once replied.
+  const items = result.data ? (chronological ? [...result.data.items].reverse().filter(item => item.kind !== 'for_me' || item.status !== 'open') : result.data.items) : [];
   if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
-  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query, questions }} cursor={nextCursor} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
+  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
-      {!cursor && !result.data.items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
+      {!cursor && !items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
       <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{items.map(item => <Fragment key={item.id}>{chronological && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
       {!chronological && more}
@@ -254,7 +256,6 @@ type ViewOption = { value: View | 'inbox'; label: string; hint: string; icon: Ic
 const viewOptions = (thread: boolean): ViewOption[] => [
   thread ? { value: 'unread', label: 'Unread', hint: 'New answers and questions for you in this thread', icon: 'Mail' } : { value: 'inbox', label: 'Inbox', hint: 'New answers and questions for you, by thread', icon: 'Mail' },
   { value: 'waiting', label: 'Awaiting answer', hint: 'Your questions agents have not answered yet', icon: 'Clock' },
-  { value: 'for_me', label: 'Asked of you', hint: 'Agent questions you have not replied to', icon: 'MessageQuestion' },
   { value: 'saved', label: 'Saved', hint: 'Answers you saved or pinned', icon: 'Star' },
   { value: 'all', label: 'History', hint: 'Every question and answer, searchable', icon: 'LayoutList' },
 ];
@@ -308,15 +309,19 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
-  const { projects } = experimental_useSidebarThreads();
+  const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
-  const view = stored === 'pinned' ? 'saved' : stored; // Pinned merged into Saved
+  const view = stored === 'pinned' ? 'saved' : stored === 'for_me' ? (threadId ? 'unread' : 'inbox') : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [searchQuery, setSearchQuery] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
   const bbChat = useSettings().values?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
-  const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', false);
+  // The Questions section replaces the body; a stored 'Asked of you' view (now removed) opens it.
+  const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
+  const pendingRows = usePendingInteractionRows(threads);
+  const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 } });
+  const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
   useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Answers' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);
@@ -325,22 +330,37 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-3 py-2">
       <div className="flex items-center gap-1">
-        <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={setView} />
+        <ViewPicker options={viewOptions(!!threadId)} value={view} onChange={value => { setView(value); setQuestions(false); }} />
         <span className="flex-1" />
-        {/* Removal candidate (review 2026-11): the Questions filter is unused so far; keep until a usage review decides. */}
-        {view !== 'for_me' && <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions only" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions</Button>}
+        <Button size="sm" variant="ghost" className={`h-7 gap-1.5 px-2 text-xs ${questions ? 'bg-state-active text-foreground' : 'text-muted-foreground'}`} aria-pressed={questions} aria-label="Questions" onClick={() => setQuestions(!questions)}><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Questions{questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
-        {(view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
+        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); refresh(); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
       </div>
-      {list && <div className="flex gap-2">
+      {list && !questions && <div className="flex gap-2">
         <input aria-label="Search answers" type="search" placeholder={view === 'saved' ? 'Search saved' : 'Search history'} maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
         {!threadId && <select aria-label="Project" className="max-w-40 rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
       </div>}
     </div>
-    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></p>}
-    {view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox questions={questions} onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId, questions])} {...{ threadId, view, questions }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved} · <Button size="sm" variant="ghost" onClick={() => { setView('saved'); setQuestions(false); }}>Show in Saved</Button></p>}
+    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} items={forMe.data?.items ?? []} loading={!forMe.data} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
+}
+
+
+type Sidebar = ReturnType<typeof experimental_useSidebarThreads>;
+// Every pending question in one stack, oldest first: bb's blocking forms (one card per thread) and open agent questions.
+function QuestionsSection({ threads, projects, rows, items, loading }: { threads: Sidebar['threads']; projects: Sidebar['projects']; rows: ReturnType<typeof usePendingInteractionRows>; items: Item[]; loading: boolean }) {
+  const providers = experimental_useProviders().providers;
+  const entries = [...threads.flatMap(thread => rows[thread.id]?.length ? [{ key: thread.id, threadId: thread.id, at: Math.min(...rows[thread.id]!.map(row => row.createdAt)), item: null as Item | null }] : []), ...items.map(item => ({ key: item.id, threadId: item.threadId, at: item.createdAt, item }))].sort((a, b) => a.at - b.at);
+  if (!entries.length) return loading ? null : <div className="min-h-0 flex-1 overflow-auto"><EmptyState icon={emptyCopy.for_me[0]} title={emptyCopy.for_me[1]}>{emptyCopy.for_me[2]}</EmptyState></div>;
+  return <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3"><div className="mx-auto max-w-3xl space-y-3">{entries.map(entry => {
+    const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, title = thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
+    return <section key={entry.key} aria-label={title} className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
+      <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={`${projectId ? `/projects/${projectId}` : ''}/threads/${entry.threadId}`} className="shrink-0 text-xs">Open thread</UrlLink></header>
+      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked />}
+    </section>;
+  })}</div></div>;
 }
 
 const PANEL_KEY = 'bb-plugin-answers:page-panel-tab';

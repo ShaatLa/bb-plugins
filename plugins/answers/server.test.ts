@@ -163,8 +163,9 @@ describe('reply pools and inbox',()=>{
   const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
   expect(await call('counts')).toMatchObject({inbox:3});
   const recipients=(await call('recipients')).recipients;
-  expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['b',2,20],['a',1,10]]);
-  expect(recipients[1].preview).toHaveLength(160);
+  // Open agent questions count on the nav badge but not on the contact.
+  expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['a',1,10],['b',0,20]]);
+  expect(recipients[0].preview).toHaveLength(160);
   await call('markThreadRead',{threadId:'b'});
   expect((await call('counts')).inbox).toBe(1);
   expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a','b']);
@@ -181,9 +182,9 @@ describe('reply pools and inbox',()=>{
   harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,title:id.toUpperCase(),projectId:id==='b'?'p2':'p1'})));
   harness.sdk.stub('projects.list',async()=>[{id:'p1',name:'One'},{id:'p2',name:'Two'}] as any);
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
-    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,lastAt:30,preview:'B question?'},
     {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
-    {threadId:'c',threadTitle:'C',projectId:'p1',projectName:'One',unread:1,lastAt:5,preview:'Question'},
+    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:0,lastAt:30,preview:'Question'},
+    {threadId:'c',threadTitle:'C',projectId:'p1',projectName:'One',unread:0,lastAt:5,preview:'Question'},
   ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
@@ -272,14 +273,15 @@ describe('reply pools and inbox',()=>{
   expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
- it('filters recipients and lists to questions, counting agent questions',async()=>{
+ it('keeps open agent questions out of contact unread counts and drops the old questions filter',async()=>{
   const {harness,db}=setup();
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
-  const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,'a',1,1)");
-  add.run('ans_q','mine','a','answered','Ready?'); add.run('ans_n','mine','b','answered','Do it'); add.run('ans_f','for_me','c','open','Pick one');
-  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','c']);
-  expect((await call('recipients',{})).recipients).toHaveLength(3);
-  expect((await call('list',{view:'all',questions:true})).items.map((i:any)=>i.id).sort()).toEqual(['ans_f','ans_q']);
+  const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,?,1,1)");
+  add.run('ans_q','mine','a','answered','Ready?','a'); add.run('ans_f','for_me','c','open','Pick one',null); add.run('ans_r','for_me','d','replied','Pick two','B');
+  expect((await call('recipients',{})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',0],['d',0]]);
+  expect((await call('counts',{})).inbox).toBe(2);
+  await expect(call('recipients',{questions:true})).rejects.toBeDefined();
+  await expect(call('list',{view:'all',questions:true})).rejects.toBeDefined();
  });
  it('sends free pool messages without a quote and refuses an empty pool',async()=>{
   expect(buildReplyMessage([{quote:'q',note:'reply'},{quote:'',note:'extra'},{quote:'',note:'  '}])).toBe('> q\n\nreply\n\nextra');
@@ -487,9 +489,8 @@ describe('0.3 server attention',()=>{
   expect((await call('counts')).inbox).toBe(2);
   expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_ask','ans_fail']);
   const recipients=(await call('recipients')).recipients;
-  expect(recipients).toHaveLength(4); expect(recipients.slice(0,2).every((r:any)=>r.unread===1)).toBe(true);
+  expect(recipients).toHaveLength(4); expect(recipients.map((r:any)=>r.unread)).toEqual([1,0,0,0]);
   expect(recipients.find((r:any)=>r.threadId==='failed').preview).toBe('Turn failed: Question');
-  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['asked','sleep']);
   const batch=await call('markRead',{all:true}); expect(batch.count).toBe(2);
   expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:2});
   const threadBatch=await call('markThreadRead',{threadId:'failed'}); expect(threadBatch.count).toBe(1);

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { PendingInteractions } from './interactions';
 
-const host = vi.hoisted(() => ({ bound: true }));
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: host.bound ? new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]) : new Map(), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: () => () => {}, registerActionHandler: () => () => {} }) }));
+const host = vi.hoisted(() => ({ bound: true, choices: [] as ((n: number) => boolean)[] }));
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: host.bound ? new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]) : new Map(), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: (handler: (n: number) => boolean) => { host.choices.push(handler); return () => { host.choices.splice(host.choices.indexOf(handler), 1); }; }, registerActionHandler: () => () => {} }) }));
 
 afterEach(() => { cleanup(); host.bound = true; });
 const question = (overrides = {}) => ({ id: 'i1', threadId: 'thr_one', status: 'pending', payload: { kind: 'user_question', questions: [{ id: 'q1', prompt: 'Choose?', shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha', description: 'First' }, { value: 'b', label: 'Beta', description: 'Second' }] }] }, ...overrides });
@@ -75,4 +75,16 @@ it('numbers options and takes digit keys itself where bb binds no shortcuts (the
   expect(Array.from(form.querySelectorAll('kbd')).map(k => k.textContent)).toEqual(['1', '2', '3']);
   fireEvent.keyDown(form, { key: '2' });
   await waitFor(() => expect(form.querySelectorAll('[aria-pressed=true]').length).toBe(1));
+});
+it('lets host shortcuts act only on the focused form when several share a page', async () => {
+  const list = vi.fn(async ({ threadId }: { threadId: string }) => [question({ id: `i_${threadId}`, threadId })]);
+  const slot = renderSlot({ component: () => <><PendingInteractions threadId="thr_a" pending /><PendingInteractions threadId="thr_b" pending /></> }, {}, { sdk: { threads: { interactions: { list, resolve: vi.fn() }, stop: vi.fn() } } } as any);
+  await waitFor(() => expect(slot.container.querySelectorAll('[data-question-form]')).toHaveLength(2));
+  const [first, second] = Array.from(slot.container.querySelectorAll<HTMLElement>('[data-question-form]'));
+  const press = () => { let handled = 0; act(() => { handled = host.choices.filter(handler => handler(0)).length; }); return handled; };
+  expect(press()).toBe(0);
+  second!.focus();
+  expect(press()).toBe(1);
+  await waitFor(() => expect(second!.querySelector('button[aria-pressed="true"]')).toBeTruthy());
+  expect(first!.querySelector('button[aria-pressed="true"]')).toBeNull();
 });

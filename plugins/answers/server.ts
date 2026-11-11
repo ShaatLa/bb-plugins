@@ -4,7 +4,7 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
-import { cap, QUESTION_SQL, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
+import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
@@ -75,8 +75,6 @@ export default function plugin(bb: BbPluginApi) {
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
     }
-    // Agent questions to the user count as questions too.
-    if (p.questions) where.push(`(kind='for_me' OR ${QUESTION_SQL})`);
     if (p.query) {where.push("(instr(lower(question),lower(?))>0 OR instr(lower(coalesce(answer,'')),lower(?))>0)"); args.push(p.query,p.query);}
     if (p.cursor) {const [at,id]=p.cursor.split('|'); where.push('(created_at<? OR (created_at=? AND id<?))'); args.push(Number(at),Number(at),id);}
     const limit = p.limit ?? 50;
@@ -201,19 +199,21 @@ export default function plugin(bb: BbPluginApi) {
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
       const p=inputs.recipients.parse(raw);
-      const chosenAttention=ATTENTION_SQL.replace('thread_id NOT IN','chosen.thread_id NOT IN');
+      // Open agent questions live in the Questions section, not in a contact's unread number.
+      const contactAttention = `(${ATTENTION_SQL}) AND NOT (kind='for_me' AND status='open')`;
+      const chosenAttention=contactAttention.replace('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
-        SELECT thread_id,sum(CASE WHEN ${ATTENTION_SQL} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
-        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
+        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
+        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL}
         GROUP BY thread_id ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
       ) SELECT grouped.*,chosen.project_id,
         CASE WHEN ${chosenAttention} AND chosen.kind='mine' AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
              WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
         FROM grouped JOIN items chosen ON chosen.id=(
-          SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0 ${p.questions ? `AND (kind='for_me' OR ${QUESTION_SQL})` : ''}
-          ORDER BY CASE WHEN ${ATTENTION_SQL.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
+          SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
+          ORDER BY CASE WHEN ${contactAttention.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
         )`).all(p.selected ?? '') as Row[];
       if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
