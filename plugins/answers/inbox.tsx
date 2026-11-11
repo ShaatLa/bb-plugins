@@ -355,6 +355,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const shown = pages === NO_PAGES ? loaded.pages : pages.slice(0, depth);
   const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loaded.pages, depth]);
   const historyGroups = useMemo(() => conversation(groupItems(items), !!shown.at(-1)?.nextCursor).entries, [items, pages, loaded.pages, depth]);
+  // A loaded window of only quiet updates collapses to a single row; reach back (up to 5 pages) to the last real exchange.
+  useEffect(() => { if (selected && shown.length === depth && depth < 5 && shown.at(-1)?.nextCursor && !historyGroups.some(entry => !entry.updates && !quietUpdate(entry))) setDepth(d => d + 1); }, [historyGroups]);
   useEffect(() => { if (!selected || !pages.length) return; const questions = [...pages.flatMap(page => page.items)].filter(item => item.threadId === selected); setOptimistic(old => { const remaining = [...questions], matched = new Set<number>(); for (const b of [...old].reverse()) { if (b.threadId !== selected) continue; const index = remaining.findIndex(item => !b.seenIds.includes(item.id) && item.question.trim() === b.text); if (index >= 0) { remaining.splice(index, 1); matched.add(b.id); } } return matched.size ? old.filter(b => !matched.has(b.id)) : old; }); }, [selected, pages]);
   if (position.current.fresh && pages.length) mark.current = items.find(isUnread)?.id ?? null;
   const openUnread = recipients?.recipients.find(r => r.threadId === selected)?.unread ?? 0;

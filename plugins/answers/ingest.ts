@@ -10,8 +10,10 @@ export const ATTENTION_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_t
 // An update seemingly asks the owner something when a '?' ends a phrase outside code, links, URLs and quotes ('?query=' does not).
 export function asksOwner(text: string) {
  const prose = text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g,' ').replace(/`[^`\n]*`/g,' ').replace(/^[ \t]*>.*$/gm,' ').replace(/\]\([^)\s]*\)/g,'] ').replace(/\b(?:https?|ftp):\/\/\S+|\bwww\.\S+/gi,' ');
- return /[?？](?=[\s)\]»"'”’*_!]|$)/.test(prose);
+ return /[?？](?=[\s)\]»"'”’*_!]|$)/.test(prose) || HANDOFF_RE.test(prose);
 }
+// Work handed to the owner with no '?': "ANV-1 готова к вашей проверке", "снова у вас", "ready for your review".
+const HANDOFF_RE = /готов[аоы]? к ваш(?:ей|ему|им) (?:проверк|приёмк|приемк|ревью|решени|оценк)|(?:снова|теперь) у вас(?![а-яё])|жд[ёе]т ваш|ждут ваш|жд[ёе]т вас(?![а-яё])|нужн[оаы]? ваш|на вашей стороне|поставил вас|перев[её]л[аи]? (?:её |его |их )?на вас|ready for your (?:review|acceptance|approval|decision)|waiting (?:for|on) you|needs your (?:review|approval|decision|input)|over to you/i;
 export const INTERIM_RE = /делегир|доложу|сообщу, когда|отпишусь|вернусь с (ответом|результат)|как (только )?(будет|закончит)|жду (результат|ответ|завершени)|delegat|will report back|i'll (get back|report|follow up)|once (it|they|the \w+) (finish|complete)|waiting (for|on) (the )?(child|sub-?agent|thread|result)/i;
 // One failed attempt can arrive twice (live turn.failed hook, then the persisted rejection); record it once.
 export function failRequest(db: Database.Database, threadId:string, requestId:string, at:number, live:boolean, onlyNew=false) {

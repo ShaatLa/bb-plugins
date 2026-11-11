@@ -134,6 +134,10 @@ it('collapses consecutive quiet updates into one group with a preview of the lat
   fireEvent.click(slot.getByRole('button', { name:'Collapse background updates' }));
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
 });
+it('loads earlier pages by itself while the loaded window holds only quiet updates', async () => {
+  const { recipients, list } = setup({ list: input => input.cursor ? { items:[base], nextCursor:null } : { items:[quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:'1|ans_u1' } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(list.mock.calls.some(([input]: any[]) => input.cursor === '1|ans_u1')).toBe(true));
+});
 it('names a plugin that started an update by its name and icon, not its id', async () => {
   const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI** deploy', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), plugins: { list: async () => ({ plugins:[{ id:'delivery-dashboard', name:'CI Dashboard', icon:'Activity' }] }) } });
