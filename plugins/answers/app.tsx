@@ -191,7 +191,6 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
     : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
-  const isQuestion = item.kind === 'mine' && /[?？]/.test(item.question);
   // bb's own working spinner while the answer is pending; a failed turn shows its own notice instead.
   const status = item.status === 'waiting' && item.failedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center"><ThreadStatusGlyph indicator="runtime" size="compact" /><span className="sr-only">waiting</span></span> : item.status;
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
@@ -209,7 +208,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="px-2"><button type="button" title="Go to the question" className="block w-full cursor-pointer border-l-2 border-border-seam pl-2 text-left text-sm text-muted-foreground" onClick={() => onJump?.(last.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{group.map(member => member.question).filter(Boolean).join('\n')}</span></button></div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
-      {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
+      {chat && <div className="flex items-center gap-2 text-xs text-muted-foreground">{time}</div>}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
