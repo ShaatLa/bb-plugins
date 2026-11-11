@@ -94,6 +94,12 @@ const asked = Date.now() - 3600000, minute = 60000;
 const late = { ...base, id:'ans_q', question:'Deferred question', interim:'Working on it', answer:'Final answer', createdAt:asked, answeredAt:asked + 29 * minute };
 const between = { ...base, id:'ans_upd', kind:'update' as const, question:'', questionSeq:null, answer:'Child report', createdAt:asked + 23 * minute, answeredAt:asked + 23 * minute };
 const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+it('shows a question and its steer deferred by one turn together, with the interim reply once', async () => {
+  const mate = (id: string, question: string, n: number) => ({ ...base, id, question, questionSeq:n, status:'deferred' as const, turnId:'u', answer:null, answerSeq:null, answeredAt:null, interim:'Looking into it', interimSeq:9, createdAt:asked + n * minute });
+  const { slot, recipients } = setup({ list: () => ({ items:[mate('ans_s', 'Also check files', 2), mate('ans_q', 'It crashes', 1)], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('It crashes'); expect(slot.getByText('Also check files')).toBeTruthy();
+  expect(slot.getAllByText('Looking into it')).toHaveLength(1);
+});
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final answer');

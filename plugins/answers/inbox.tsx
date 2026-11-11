@@ -21,7 +21,7 @@ function readScrolls(): Record<string, Scroll> { try { const value = JSON.parse(
 const COMPOSE_KEY = 'bb-plugin-answers:page:compose';
 type ComposeDraft = { text: string; files: Attachment[] };
 function composeDrafts(): Record<string, ComposeDraft> { try { return JSON.parse(localStorage.getItem(COMPOSE_KEY) ?? '{}'); } catch { return {}; } }
-export function groupItems(items: Item[]) { const groups: Item[][] = []; for (const item of items) { const last = groups.at(-1)?.at(-1); if (item.kind === 'mine' && item.turnId && item.answerSeq !== null && last?.kind === 'mine' && last.turnId === item.turnId && last.answerSeq === item.answerSeq) groups.at(-1)!.push(item); else groups.push([item]); } return groups; }
+export function groupItems(items: Item[]) { const groups: Item[][] = []; for (const item of items) { const last = groups.at(-1)?.at(-1); if (item.kind === 'mine' && item.turnId && (item.answerSeq ?? item.interimSeq) !== null && last?.kind === 'mine' && last.turnId === item.turnId && last.status === item.status && (last.answerSeq ?? last.interimSeq) === (item.answerSeq ?? item.interimSeq)) groups.at(-1)!.push(item); else groups.push([item]); } return groups; }
 export const activityAt = (item: Item) => item.answeredAt ?? item.createdAt;
 // updates: a run of consecutive agent updates that ask nothing, shown as one collapsed group (UpdateGroup in app.tsx).
 export type Entry = { group: Item[]; part?: 'question' | 'answer'; updates?: true };

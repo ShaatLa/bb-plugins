@@ -112,6 +112,17 @@ describe('server',()=>{
   const id=await call('answers_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});
  });
+ it('defers and resolves the owner messages of one turn together, so its reply is not an answer to one and an interim to another',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_q','mine','t'); seed(db,'ans_steer','mine','t'); seed(db,'ans_other','mine','t');
+  db.prepare("UPDATE items SET turn_id='u',question_seq=CASE id WHEN 'ans_q' THEN 1 ELSE 2 END WHERE id IN ('ans_q','ans_steer')").run();
+  db.prepare("UPDATE items SET turn_id='v',question_seq=0 WHERE id='ans_other'").run();
+  const call=(name:string,p:object)=>harness.behavior.callAgentTool(name,p,{threadId:'t',projectId:'p'});
+  await call('answers_defer',{id:'ans_steer'});
+  expect(db.prepare("SELECT id,status FROM items ORDER BY id").all()).toEqual([{id:'ans_other',status:'waiting'},{id:'ans_q',status:'deferred'},{id:'ans_steer',status:'deferred'}]);
+  db.prepare("UPDATE threads_state SET active_turn_id='w' WHERE thread_id='t'").run();
+  await call('answers_resolve',{id:'ans_q'});
+  expect(db.prepare("SELECT id,resolve_turn_id FROM items ORDER BY id").all()).toEqual([{id:'ans_other',resolve_turn_id:null},{id:'ans_q',resolve_turn_id:'w'},{id:'ans_steer',resolve_turn_id:'w'}]);
+ });
  it('rejects concurrent and second for_me replies, exposing queued delivery',async()=>{
   const gate=deferred<{ok:true;delivery:'queued'}>(); const entered=deferred<void>();
   const send=vi.fn(async(_args:unknown)=>{entered.resolve(); return gate.promise;});

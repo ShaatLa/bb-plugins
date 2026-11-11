@@ -385,11 +385,14 @@ export default function plugin(bb: BbPluginApi) {
           const params=p as {id?:string;note?:string};
           const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;
           if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine' || !['waiting','deferred'].includes(item.status)) throw new Error('pending question not found in calling thread');
-          if (method==='defer') commit("UPDATE items SET status='deferred',note=?,wait_children=NULL,updated_at=? WHERE id=?",params.note ?? null,now,item.id);
+          // The owner's messages one turn handles (a question and the steers added to it) are deferred and resolved together,
+          // so the turn's reply is not an answer to one and an interim to another.
+          const mates="(id=? OR (thread_id=? AND kind='mine' AND turn_id IS NOT NULL AND turn_id=? AND steer_seq IS NULL AND status IN ('waiting','deferred')))";
+          if (method==='defer') commit(`UPDATE items SET status='deferred',note=?,wait_children=NULL,updated_at=? WHERE ${mates}`,params.note ?? null,now,item.id,ctx.threadId,item.turn_id ?? null);
           else {
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null};
             if (!state?.active_turn_id) throw new Error('no active turn');
-            commit('UPDATE items SET resolve_turn_id=?,candidate=NULL,candidate_seq=NULL,updated_at=? WHERE id=?',state.active_turn_id,now,item.id);
+            commit(`UPDATE items SET resolve_turn_id=?,candidate=NULL,candidate_seq=NULL,updated_at=? WHERE ${mates}`,state.active_turn_id,now,item.id,ctx.threadId,item.turn_id ?? null);
           }
           return item.id as string;
         });
