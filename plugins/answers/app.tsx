@@ -10,6 +10,7 @@ import { EmptyState, useTransientText, type IconName } from './empty';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { parseInlineComments } from './inline-comments';
+import { TASK_TAB, TaskTab, useTaskLinkPreview } from './task-tab';
 
 const emptyCopy: Record<View, [IconName, string, string]> = {
   unread: ['MailOpen', 'All caught up', 'New answers will show up here.'],
@@ -399,13 +400,16 @@ export function useRememberedPagePanel() {
 
 function AnswersPage() {
   useRememberedPagePanel();
-  return <AnswersPanel />;
+  const root = useRef<HTMLDivElement>(null);
+  useTaskLinkPreview(root);
+  return <div ref={root} className="h-full"><AnswersPanel /></div>;
 }
 
 export default definePluginApp(app => {
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: AnswersPage, experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: AnswersPanel });
   app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <Pools /> });
+  app.slots.experimental_tab({ ...TASK_TAB, title: 'Task', icon: 'ListTodo', component: TaskTab });
   app.slots.messageAction({ id: 'pool', title: 'Add to reply pool', icon: 'Sent', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.poolAdd.input.parse({ threadId, quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq });
     const response = await fetch('/api/v1/plugins/answers/rpc/poolAdd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });

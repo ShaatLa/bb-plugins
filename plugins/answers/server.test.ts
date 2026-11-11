@@ -570,6 +570,18 @@ describe('0.3 server attention',()=>{
   rpc.mockImplementation(async()=>{throw new Error('missing');});
   expect(await harness.behavior.callRpc('workBoardProjects',{})).toEqual({available:false,projects:[]});
  });
+ it('previews a Work Board task, and reports not found and unavailable',async()=>{
+  const {harness}=setup();
+  const task={id:'t1',projectId:'p',number:1,key:'TASK-1',title:'Ship it',description:'**Body**',status:'in_progress',priority:'high',updatedAt:'2026-11-10T10:00:00.000Z',labelIds:['l1'],dueDate:null,extra:{future:true}};
+  const rpc=vi.fn(async(args:any)=>args.method==='getTaskByKey' ? {task:args.input.taskKey==='TASK-1' ? task : null} : args.method==='listProjects' ? {projects:[{id:'p',name:'Project',prefix:'TASK'}]} : {labels:[{id:'l1',projectId:'p',name:'ui',color:'#f00'},{id:'l2',projectId:'p',name:'other',color:'#0f0'}]});
+  harness.sdk.stub('plugins.callRpc',rpc as any);
+  expect(await harness.behavior.callRpc('workBoardTask',{taskKey:'TASK-1'})).toEqual({available:true,task:{key:'TASK-1',title:'Ship it',status:'in_progress',statusLabel:'In Progress',priority:'high',projectName:'Project',labels:[{name:'ui',color:'#f00'}],description:'**Body**',updatedAt:'2026-11-10T10:00:00.000Z'}});
+  expect(rpc).toHaveBeenCalledWith(expect.objectContaining({pluginId:'work-board',method:'getTaskByKey',input:{taskKey:'TASK-1'}}));
+  expect(await harness.behavior.callRpc('workBoardTask',{taskKey:'TASK-2'})).toEqual({available:true,task:null});
+  await expect(harness.behavior.callRpc('workBoardTask',{taskKey:'not a key'})).rejects.toThrow();
+  rpc.mockImplementation(async()=>{throw new Error('missing');});
+  expect(await harness.behavior.callRpc('workBoardTask',{taskKey:'TASK-1'})).toEqual({available:false,task:null});
+ });
 });
 
 it('sends only selected pool IDs and keeps other entries', async () => {
