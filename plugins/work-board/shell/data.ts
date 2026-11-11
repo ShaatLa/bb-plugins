@@ -446,33 +446,67 @@ export function useSidebarSummary() {
   );
 }
 
+const MENTION_DEBOUNCE_MS = 150;
+
+interface MentionBurst {
+  promise: Promise<MentionItem[]>;
+  resolve: (result: Promise<MentionItem[]>) => void;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 export function useMentionItems() {
   const rpc = useTasksRpc();
+  const newest = useRef<Promise<MentionItem[]>>(Promise.resolve([]));
+  const burst = useRef<MentionBurst | null>(null);
   return useCallback(
-    async (query: string): Promise<MentionItem[]> => {
+    (query: string): Promise<MentionItem[]> => {
       const trimmed = query.trim();
-      const [taskResult, threadResult] = await Promise.all([
-        rpc.call("listTasks", {
-          ...(trimmed ? { search: trimmed } : {}),
-          limit: 8,
-        }),
-        rpc
-          .call("searchThreads", { query: trimmed, limit: 5 })
-          .catch(() => ({ threads: [] })),
-      ]);
-      return [
-        ...taskResult.tasks.slice(0, 8).map((task) => ({
-          type: "task" as const,
-          id: task.id,
-          key: task.key,
-          title: task.title,
-        })),
-        ...threadResult.threads.map((thread) => ({
-          type: "thread" as const,
-          id: thread.id,
-          title: thread.title,
-        })),
-      ];
+      const search = (): Promise<MentionItem[]> => {
+        const run: Promise<MentionItem[]> = Promise.all([
+          rpc.call("listTasks", {
+            ...(trimmed ? { search: trimmed } : {}),
+            limit: 8,
+          }),
+          rpc
+            .call("searchThreads", { query: trimmed, limit: 5 })
+            .catch(() => ({ threads: [] })),
+        ]).then(([taskResult, threadResult]) => {
+          // A slower, older response hands off to the newest search instead of overwriting it.
+          if (run !== newest.current) return newest.current;
+          return [
+            ...taskResult.tasks.slice(0, 8).map((task) => ({
+              type: "task" as const,
+              id: task.id,
+              key: task.key,
+              title: task.title,
+            })),
+            ...threadResult.threads.map((thread) => ({
+              type: "thread" as const,
+              id: thread.id,
+              title: thread.title,
+            })),
+          ];
+        });
+        newest.current = run;
+        return run;
+      };
+      // Keystrokes within one debounce window share a promise, so superseded callers still resolve.
+      if (!burst.current) {
+        let resolve!: MentionBurst["resolve"];
+        const promise = new Promise<MentionItem[]>((done) => {
+          resolve = done;
+        });
+        burst.current = { promise, resolve };
+      }
+      const current = burst.current;
+      clearTimeout(current.timer);
+      const flush = () => {
+        burst.current = null;
+        current.resolve(search());
+      };
+      if (trimmed) current.timer = setTimeout(flush, MENTION_DEBOUNCE_MS);
+      else flush();
+      return current.promise;
     },
     [rpc],
   );
