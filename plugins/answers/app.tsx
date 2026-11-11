@@ -142,7 +142,9 @@ export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item
         {unread.length > 0 && <span className="size-1.5 shrink-0 rounded-full bg-foreground/70" aria-label="Unread" />}
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
-      {open ? <ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul> : <p className="truncate border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
+      {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
+        {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
+        <button type="button" aria-label="Collapse agent updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="truncate border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
     </div>
   </li>;
 }

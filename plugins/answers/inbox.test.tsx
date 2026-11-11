@@ -126,6 +126,8 @@ it('collapses consecutive quiet updates into one group with a preview of the lat
   expect(slot.getByText('Third report')).toBeTruthy(); expect(slot.queryByText('First report')).toBeNull();
   fireEvent.click(toggle);
   expect(await slot.findByText('First report')).toBeTruthy(); expect(slot.getByText('Second report')).toBeTruthy(); expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.click(slot.getByRole('button', { name:'Collapse agent updates' }));
+  expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
 });
 it('keeps an update that asks the owner as a full message that splits the run', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[quiet(5, 'Five'), quiet(4, 'Four'), quiet(3, 'Merge now?', true), quiet(2, 'Two'), quiet(1, 'One')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
