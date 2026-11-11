@@ -87,12 +87,16 @@ export default function plugin(bb: BbPluginApi) {
     const titles = new Map<string,string>();
     const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
     if (ids.length) for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) titles.set(t.id,t.title ?? t.id);
+    // Update captions name the child or sender thread; one that left the sidebar (archived) is looked up by id.
+    const sources = [...new Set(rows.filter(r=>r.trigger_kind==='system' || r.trigger_kind==='agent').map(r=>r.trigger_source as string|null).filter((id):id is string=>!!id && !titles.has(id)))];
+    if (sources.length) for (const t of await bb.sdk.threads.list({threadIds:sources,includeHidden:true,limit:200})) titles.set(t.id,t.title ?? t.id);
+    await Promise.all(sources.filter(id=>!titles.has(id)).map(id=>bb.sdk.threads.get({threadId:id}).then(t=>{titles.set(id,t.title ?? id);},()=>{})));
     const names = new Map<string,string>();
     if (rows.some(r=>r.project_id)) for (const p of await bb.sdk.projects.list()) names.set(p.id,p.name);
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};

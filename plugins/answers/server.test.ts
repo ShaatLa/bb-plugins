@@ -172,7 +172,7 @@ describe('reply pools and inbox',()=>{
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,answer_seq,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_u','update','t','answered','[bb system] done','Report',5,'system','thr_c',1,1)").run();
   expect(await call('counts')).toMatchObject({unread:1,waiting:0,inbox:1});
   expect((await call('recipients')).recipients[0]).toMatchObject({threadId:'t',unread:1,preview:'Report'});
-  expect((await call('list',{view:'unread'})).items[0]).toMatchObject({kind:'update',trigger:{kind:'system',sourceId:'thr_c'}});
+  expect((await call('list',{view:'unread'})).items[0]).toMatchObject({kind:'update',trigger:{kind:'system',sourceId:'thr_c',sourceTitle:'Thread title'}});
   for (const view of ['waiting','saved']) expect((await call('list',{view})).items).toHaveLength(0);
   expect((await call('list',{view:'all'})).items).toHaveLength(1);
   await expect(call('reply',{id:'ans_u',text:'ok'})).rejects.toThrow('cannot receive replies');
