@@ -6,6 +6,7 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.5.0 cuts steady-state work: state.json is written and `slots.changed` published only when state changes; queued `acquire` polls read-only status and renews its use every max(30 s, TTL/3); the sidebar coalesces events, polls every 30 s only as a fallback, and Settings saves numbers on blur or Enter; status returns the newest 15 events; SDK calls have a 10 s deadline.
 Version 0.4.8 counts gate readings up to 10% early, so sampler jitter no longer doubles the wait after a grant.
 Version 0.4.7 fixes the sidebar status failing while a plain request’s lease is held.
 Version 0.4.6 releases a granted lease when `release` gets its request ID.
