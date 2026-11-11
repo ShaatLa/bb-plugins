@@ -140,8 +140,8 @@ describe("ciState", () => {
         { id: 9, name: "CI complete", head_sha: A, status: "in_progress", conclusion: null, html_url: null, started_at: iso(T0 + 1000), completed_at: null, app: { id: 15368, slug: "github-actions" } },
       ] },
       [`/repos/o/r/commits/${A}/statuses?per_page=100&page=1`]: [{ context: "Wiz", state: "success", target_url: null }],
-      "/repos/o/r/branches/main/protection/required_status_checks": { contexts: ["CI complete"], checks: [] },
-      "/repos/o/r/rules/branches/main?per_page=100&page=1": [],
+      // Like simple-life-app/anvil: no classic protection (404), required checks come from a ruleset.
+      "/repos/o/r/rules/branches/main?per_page=100&page=1": [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "CI complete" }] } }],
       [`/repos/o/r/actions/runs?head_sha=${A}&per_page=100`]: { workflow_runs: [{ id: 3, workflow_id: 1, name: "CI", head_sha: A, head_branch: "x", event: "pull_request", status: "in_progress", conclusion: null, html_url: "https://github.com/o/r/actions/runs/3", created_at: iso(T0), head_repository: { id: 1 } }] },
       "/repos/o/r/issues/7/events?per_page=100&page=1": [{ event: "ready_for_review", created_at: iso(T0 - 5000) }, { event: "labeled", created_at: iso(T0) }, { event: "ready_for_review", created_at: iso(T0 - 1000) }],
     };

@@ -241,7 +241,12 @@ export function createGithubClient(options: {
     const existing = branchRequirements.get(key);
     if (existing && existing.expires > Date.now()) return existing.value;
     const value = Promise.all([
-      optional(`/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`),
+      // 404 means no classic protection or no required checks there (rulesets may still require some); only 401/403 is unknown.
+      request(`/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`).catch((error: unknown) => {
+        if (error instanceof GithubError && error.status === 404) return { contexts: [], checks: [] };
+        if (error instanceof GithubError && [401, 403].includes(error.status)) return null;
+        throw error;
+      }),
       optionalPages(`/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`),
     ]).then(([protection, rules]) => ({ protection, rules }));
     branchRequirements.set(key, { expires: Date.now() + 30_000, value });
