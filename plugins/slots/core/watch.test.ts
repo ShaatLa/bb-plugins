@@ -58,6 +58,21 @@ it("bounds short-interval history and restores old state without new fields", ()
   expect(h.state.hosts.h.watch!.subjects['/repo'].intervals.length).toBeLessThanOrEqual(10);
   expect(stateSchema.parse(initialState())).toEqual(initialState());
 });
+it("retains absent subjects only through their alert cooldown across restore and membership changes", () => {
+  const h = setup(); h.usage(0,120000);
+  h.usage(120000,240000,0,{subjects:[]});
+  expect(h.state.hosts.h.watch!.subjects['/repo'].intervals).toEqual([]);
+  expect(stateSchema.parse(JSON.parse(JSON.stringify(h.state)))).toEqual(h.state);
+  h.send({type:'restored'},240000);
+  h.usage(240000,360000);
+  expect(notices(h.usage(360000,480000))).toHaveLength(0);
+  h.usage(480000,600000,4,{subjects:[{key:'/repo',threadIds:['b'],cores:4}]});
+  expect(h.state.hosts.h.watch!.subjects['/repo'].intervals).toEqual([]);
+  h.usage(600000,1920000,0,{subjects:[]});
+  expect(h.state.hosts.h.watch!.subjects['/repo']).toBeUndefined();
+  h.usage(1920000,2040000);
+  expect(notices(h.usage(2040000,2160000))).toHaveLength(2);
+});
 it("idle uses conservative unknown load, resets on busy/invalid/membership, re-arms and never messages holder", () => {
   const h=setup(); h.lease();
   for(let t=0;t<600000;t+=120000) h.usage(t,t+120000,0.3,{unknownCores:0.3});
