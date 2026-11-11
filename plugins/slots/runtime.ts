@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { loadavg, platform } from "node:os";
 import { createServer } from "node:net";
-import type { AuditEvent, State } from "./contract.js";
+import type { AuditEvent } from "./contract.js";
 
 export function parseMemoryPressure(text: string): number {
   const match = text.match(/System-wide memory free percentage:\s*(\d+(?:\.\d+)?)%/);
@@ -56,15 +56,17 @@ export function parseSince(value: string, now: number): number {
   return at;
 }
 export class DiskStore {
+  lastSaved?: string;
   constructor(readonly dir: string) {}
   async load(): Promise<unknown | undefined> {
-    try { return JSON.parse(await readFile(join(this.dir, "state.json"), "utf8")); }
+    try { const text = await readFile(join(this.dir, "state.json"), "utf8"); const state = JSON.parse(text); this.lastSaved = JSON.stringify(state); return state; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   }
-  async save(state: State) {
+  async save(serialized: string) {
     await mkdir(this.dir, { recursive: true });
-    await writeFile(join(this.dir, "state.json.tmp"), JSON.stringify(state), { mode: 0o600 });
+    await writeFile(join(this.dir, "state.json.tmp"), serialized, { mode: 0o600 });
     await rename(join(this.dir, "state.json.tmp"), join(this.dir, "state.json"));
+    this.lastSaved = serialized;
   }
   async loadConfig(): Promise<unknown | undefined> {
     try { return JSON.parse(await readFile(join(this.dir, "config.json"), "utf8")); }

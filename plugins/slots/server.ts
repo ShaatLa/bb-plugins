@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
-import { apply, initialState, portCandidates, statusSnapshot, validateSettings } from "./core/index.js";
+import { apply, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
@@ -83,6 +83,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     explicit = next;
     settings = await getSettings();
     if (initialized) await transition({ type: "restored" });
+    bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
   }
   function formView(): SettingsFormView {
     return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
@@ -134,7 +135,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     if (input.type === "threadEnded") titles.delete(input.threadId);
     const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
     if (!change.result.ok) return change.result;
-    await store.save(change.state);
+    const serialized = JSON.stringify(change.state);
+    const changed = serialized !== store.lastSaved;
+    if (changed) await store.save(serialized);
     state = change.state;
     for (const effect of change.effects) {
       if (effect.type === "audit") await store.audit(effect.event);
@@ -144,7 +147,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         } else await sendNotification(effect);
       }
     }
-    bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
+    if (changed) bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
     return change.result;
   }
   async function lookup(threadId: string) {
@@ -339,7 +342,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         await initialize(); settings = await getSettings();
         const now = runtime.now();
         if (now - lastTick >= 15000) {
-          for (const id of new Set(state.leases.map(l => l.holderThreadId))) {
+          for (const id of new Set(state.leases.filter(l => {
+            const host = settingsFor(settings, l.hostId);
+            return now - l.lastHeartbeatAt >= Math.min(60000, (host.leaseTtlMs - host.heartbeatIntervalMs) / 2);
+          }).map(l => l.holderThreadId))) {
             const thread = await lookup(id);
             if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
           }

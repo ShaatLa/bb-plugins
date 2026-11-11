@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeHostResponse, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -534,4 +534,28 @@ it("watcher initialization errors leave the loop running for recovery", async ()
 it("formats structured notifications as short readable Markdown", () => {
   expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("**Machine Slots** · `Idle heavy slot`\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
   expect(formatNotification({ title: "Slot granted", lines: [] })).not.toContain("[Slots]");
+});
+
+it("deduplicates restored state and publishes settings-only changes", async () => {
+  const h = await setup(); await h.view();
+  const save = vi.spyOn(h.runtime.store, "save");
+  const before = h.harness.inspection.realtimeSignals.length;
+  await h.configure({ loadMax: 10 });
+  expect(h.harness.inspection.realtimeSignals.length).toBeGreaterThan(before);
+  expect(save).not.toHaveBeenCalled();
+  await h.invoke("gate", { threadId: "a", hostId: "local" });
+  expect(save).toHaveBeenCalled();
+});
+
+it("retries a failed state save and remembers a loaded serialization", async () => {
+  const h = await setup(); await h.view();
+  const store = h.runtime.store;
+  const saved = store.lastSaved;
+  await mkdir(join(h.path, "state.json.tmp"));
+  await expect(store.save('{"changed":true}')).rejects.toThrow();
+  expect(store.lastSaved).toBe(saved);
+  await rm(join(h.path, "state.json.tmp"), { recursive: true });
+  await store.save('{"changed":true}');
+  const restored = new DiskStore(h.path); await restored.load();
+  expect(restored.lastSaved).toBe('{"changed":true}');
 });
