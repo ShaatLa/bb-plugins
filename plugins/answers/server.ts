@@ -11,8 +11,6 @@ import { createNotifier } from './notify';
 import { inlineCommentPreview } from './inline-comments';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn; the reply arrives as a user message quoting it. Options: 1–6 unique, ≤200 chars, optional recommended + reason. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
-// Work Board's DEFAULT_TASK_STATUSES (shared/statuses.ts), used when a project has no custom statuses.
-const DEFAULT_TASK_STATUSES=[['backlog','Backlog'],['todo','Todo'],['in_progress','In Progress'],['in_review','In Review'],['done','Done'],['canceled','Canceled']].map(([id,name])=>({id:id!,name:name!}));
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
@@ -196,22 +194,6 @@ export default function plugin(bb: BbPluginApi) {
       const outputSchema=z.object({projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))});
       try {const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'listProjects',input:{},outputSchema})); return {available:true,projects:result.projects};}
       catch {return {available:false,projects:[]};}
-    },
-    // Only the fields the preview uses are validated; z.object drops whatever else Work Board returns.
-    async workBoardTask(raw:z.infer<typeof inputs.workBoardTask>) {
-      const p=inputs.workBoardTask.parse(raw), call=<T,>(method:string,input:Record<string,string>,outputSchema:z.ZodType<T>)=>bb.sdk.plugins.callRpc({pluginId:'work-board',method,input,outputSchema}).then(r=>outputSchema.parse(r));
-      const taskSchema=z.object({projectId:z.string(),key:z.string(),title:z.string(),description:z.string(),status:z.string(),priority:z.string(),updatedAt:z.string(),labelIds:z.array(z.string()).default([])});
-      let task:z.infer<typeof taskSchema>|null;
-      try {task=(await call('getTaskByKey',{taskKey:p.taskKey},z.object({task:taskSchema.nullable()}))).task;}
-      catch {return {available:false,task:null};}
-      if (!task) return {available:true,task:null};
-      // Project name, status names and labels are extras: the preview still shows when these calls fail.
-      const [projects,labels]=await Promise.all([
-        call('listProjects',{},z.object({projects:z.array(z.object({id:z.string(),name:z.string(),statuses:z.array(z.object({id:z.string(),name:z.string()})).optional()}))})).then(r=>r.projects,()=>[]),
-        call('listLabels',{projectId:task.projectId},z.object({labels:z.array(z.object({id:z.string(),name:z.string(),color:z.string()}))})).then(r=>r.labels,()=>[]),
-      ]);
-      const project=projects.find(x=>x.id===task.projectId);
-      return {available:true,task:{key:task.key,title:task.title,status:task.status,statusLabel:(project?.statuses ?? DEFAULT_TASK_STATUSES).find(s=>s.id===task.status)?.name ?? task.status.replaceAll('_',' '),priority:task.priority,projectName:project?.name ?? null,labels:labels.filter(l=>task.labelIds.includes(l.id)).map(({name,color})=>({name,color})),description:task.description.length>20000 ? task.description.slice(0,19999)+'…' : task.description,updatedAt:task.updatedAt}};
     },
     async createTask(raw:z.infer<typeof inputs.createTask>) {
       const p=inputs.createTask.parse(raw),item=get(p.id);

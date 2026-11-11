@@ -1,6 +1,5 @@
 import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { TASK_KEY_PATTERN } from './task-links';
 export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
 const threadId = z.string().min(1).max(200), time = z.number().int().nonnegative();
@@ -20,15 +19,12 @@ export const sendOptionsSchema = z.object({mode:z.enum(['queue','steer','draft']
 export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote:poolQuote,quoteSeq:time.nullable(),itemId:idSchema.nullable(),note:z.string().max(8000),attachments:z.array(attachmentSchema),revision:time,createdAt:time,updatedAt:time});
 export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
-// A read-only Work Board task for the page's Task tab; status and priority stay strings so new Work Board values still show.
-export const taskPreviewSchema = z.object({key:z.string(),title:z.string(),status:z.string(),statusLabel:z.string(),priority:z.string(),projectName:z.string().nullable(),labels:z.array(z.object({name:z.string(),color:z.string()})),description:z.string(),updatedAt:z.string()});
-export type TaskPreview = z.infer<typeof taskPreviewSchema>;
 const bulkRead=z.object({ok:z.literal(true),batch:z.string().nullable(),count:time});
 export const inputs = {
  undoRead:z.object({batch:z.string().min(1)}).strict(),
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
- workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(), workBoardTask:z.object({taskKey:z.string().regex(TASK_KEY_PATTERN)}).strict(),
+ workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
  recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),attachments:attachments.optional(),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
@@ -46,7 +42,6 @@ export const rpcContract=defineRpcContract({
  setPreferences:{input:inputs.setPreferences,output:z.object({ok:z.literal(true)})},
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
- workBoardTask:{input:inputs.workBoardTask,output:z.object({available:z.boolean(),task:taskPreviewSchema.nullable()})},
  recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
