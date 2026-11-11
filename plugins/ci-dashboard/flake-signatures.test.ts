@@ -252,6 +252,11 @@ describe("artifact attribution", () => {
     expect(t.downloads).toEqual(["/repos/o/r/actions/artifacts/7/zip"]);
     expect(classifyJobs(jobs, { flakeRules: t.config().rules, flakeHash: t.config().hash }).find((c) => c.job.jobName === "Integration tests")).toMatchObject({ class: "flake", evidence: "FLAKE-1: Error: socket hang up" });
   });
+  it("downloads at most the 5 newest matching artifacts of an attempt", async () => {
+    const t = artifactSetup(Array.from({ length: 7 }, (_, i) => ({ id: 10 + i, name: `test-results-${i}`, created_at: at(5) })));
+    await fetchAttemptJobs(t.request, "o/r", t.context(1), t.logs, t.scan());
+    expect(t.downloads).toEqual([10, 11, 12, 13, 14].map((id) => `/repos/o/r/actions/artifacts/${id}/zip`));
+  });
   it("does not attribute when two failures of the attempt would otherwise be real", async () => {
     const t = artifactSetup();
     const jobs = await fetchAttemptJobs(t.request, "o/r", t.context(2), t.logs, t.scan());
@@ -410,6 +415,14 @@ describe("re-scan of stored jobs", () => {
     const classified = classifyJobs(stored(store), {});
     expect(classified.find((c) => c.job.jobId === 2)).toMatchObject({ class: "runner_loss" });
     expect(classified.find((c) => c.job.jobId === 1)).toMatchObject({ class: "real", reason: "build or setup failed" });
+  });
+  it("attempts of one run are separate sibling groups: each lone failure owns the artifact of its own attempt", async () => {
+    const times = (m: number) => ({ createdAt: at(m), startedAt: at(m + 1), completedAt: at(m + 2) });
+    const store = storeWith(real(1, times(1)), real(2, { runId: 1, attempt: 2, jobName: "Integration", ...times(10) }));
+    const listing = vi.fn(async (_path: string) => ({ body: { artifacts: [{ id: 9, name: "test-results-a", size_in_bytes: 10, expired: false, created_at: at(2) }, { id: 10, name: "test-results-b", size_in_bytes: 10, expired: false, created_at: at(11) }] }, hasNext: false }));
+    const backfill = createBackfill({ store, request: listing, fetchText: logging(() => false), fetchArtifact: async () => ARTIFACT_ZIP, maxPerStep: 10 });
+    await backfill.step(signal(), { ...config(SOCKET), ...flakeSettings(SOCKET, "test-results-*") });
+    expect(stored(store).map((j) => j.signature?.source)).toEqual(["artifact", "artifact"]);
   });
   it("with a tight budget every step stores some re-scanned attempts instead of refetching logs forever", async () => {
     const store = storeWith(...[1, 2, 3, 4, 5].map((n) => real(n, { createdAt: at(n), startedAt: at(n), completedAt: at(n) })));

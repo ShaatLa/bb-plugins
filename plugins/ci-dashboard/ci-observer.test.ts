@@ -380,6 +380,22 @@ describe("deployments", () => {
     await deploymentEvents({ request: capped.request, repository: REPO, state, since, now, maxStatuses: 3 });
     expect(capped.paths.filter((path) => path.includes("/statuses"))).toHaveLength(3);
   });
+  it("rechecks a deployment without a final status every 10 minutes after its first hour and gives up after a day", async () => {
+    const state = emptyRepoState(), hour = 3_600_000;
+    const github = api([row(1, new Date(now - 2 * hour).toISOString())], { 1: [{ state: "in_progress", created_at: "2026-11-06T09:00:00Z" }] });
+    const asked = async (at: number) => { github.paths.length = 0; await deploymentEvents({ request: github.request, repository: REPO, state, since, now: at }); return github.paths.filter((path) => path.includes("/statuses")).length; };
+    expect(await asked(now)).toBe(1);
+    expect(await asked(now + 5 * 60_000)).toBe(0);
+    expect(await asked(now + 11 * 60_000)).toBe(1);
+    // Still not final a day after creation: remembered as settled, never asked again.
+    expect(await asked(now + 23 * hour)).toBe(1);
+    expect(state.deploys["1"]).toBe(now + 23 * hour);
+    expect(await asked(now + 24 * hour)).toBe(0);
+    // Within the first hour every loop asks.
+    const young = emptyRepoState(), fresh = api([row(2, new Date(now - 30 * 60_000).toISOString())], {});
+    for (const at of [now, now + 60_000]) await deploymentEvents({ request: fresh.request, repository: REPO, state: young, since, now: at });
+    expect(fresh.paths.filter((path) => path.includes("/statuses"))).toHaveLength(2);
+  });
   it("forgets deployments older than the window", async () => {
     const state = { ...emptyRepoState(), deploys: { "1": since - 1, "2": since + 1 } };
     await deploymentEvents({ request: api([], {}).request, repository: REPO, state, since, now });

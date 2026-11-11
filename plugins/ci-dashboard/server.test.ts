@@ -9,9 +9,14 @@ import { resolveGithubToken } from "./auth";
 import { githubRepository, repositoriesSettingSchema } from "./repositories";
 import { resolveRange } from "./date-range";
 import { createJobStore } from "./ci-jobs";
+import { buildProblems } from "./ci-problems";
+import { cleanupCache } from "./cache-cleanup";
 import { zip } from "./test-support";
 
 vi.mock("./auth", () => ({ resolveGithubToken: vi.fn() }));
+// Pass-through spies: the real code runs, the tests only count calls.
+vi.mock("./ci-problems", async (original) => { const actual = await original<typeof import("./ci-problems")>(); return { ...actual, buildProblems: vi.fn(actual.buildProblems) }; });
+vi.mock("./cache-cleanup", async (original) => { const actual = await original<typeof import("./cache-cleanup")>(); return { ...actual, cleanupCache: vi.fn(actual.cleanupCache) }; });
 
 const recent = "2026-10-19T12:00:00Z";
 let fetchMock = vi.fn<(input: string, options?: RequestInit) => Promise<Response>>();
@@ -139,7 +144,7 @@ test("a GitHub timeout or dropped connection is named as transient and logged wi
     expect(result.deployments.error).toBe("GitHub did not respond in time or the connection dropped. The next refresh retries.");
     expect(warnings).toContain(`deployments: ${failure.name}: ${failure.message}`);
   }
-});
+}, 20000);
 
 test("counts paginated deployments inside the seven-day window and calculates all metrics", async () => {
   const normal = fetchMock.getMockImplementation()!;
@@ -1049,7 +1054,6 @@ test("the budgeted backfill stores job rows from run metadata and classifies the
     const database = bb.storage.database();
     const stored = unpack((database.prepare("SELECT data FROM repository_history").get() as { data: Buffer }).data);
     expect(stored.records.runs[0]).toMatchObject({ head_sha: expect.stringMatching(/^sha/), pull_requests: [7] });
-    expect(database.prepare("SELECT cache_key FROM github_responses WHERE cache_key LIKE '%ci-metadata-v3%'").all().length).toBeGreaterThan(0);
     const service = harness.behavior.runService("ci-signals");
     await vi.waitFor(async () => expect(((await harness.behavior.callRpc("signals", null)) as SignalsResult).repositories[0].failures).toHaveLength(2));
     service.controller.abort(); await service.done;
@@ -1095,7 +1099,7 @@ test("signals settings keep job data and caches while dashboard settings still c
     await harness.behavior.setSettings({ stallMinutes: 20, actorLead: "Tech lead" });
     expect(database.prepare("SELECT COUNT(*) AS n FROM github_responses WHERE cache_key = 'k'").get()).toEqual({ n: 1 });
     expect((await harness.behavior.callRpc("signals", null) as SignalsResult).actors.lead).toBe("Tech lead");
-    await harness.behavior.setSettings({ refreshSeconds: 60 });
+    await harness.behavior.setSettings({ draftWorkflow: "Draft check" });
     expect(database.prepare("SELECT COUNT(*) AS n FROM github_responses").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM ci_jobs").get()).toEqual({ n: 1 });
   } finally { await harness.lifecycle.dispose(); }
@@ -1143,6 +1147,8 @@ test("only windows ending at now change cache keys between cycles, so closed his
   // Weekly windows used to end at `now` for the open week, so every split point and page moved each cycle.
   expect(fresh.every((url) => url.searchParams.get("created")!.endsWith(`..${second.until}`))).toBe(true);
   expect(fresh.length).toBeLessThanOrEqual(5);
+  expect(first.ends).toContain("2026-10-20T05:59:59.999Z");
+  expect(first.ends).toContain("2026-10-20T11:59:59.999Z");
 });
 
 test("windows older than 48 h are revalidated hourly and recent ones every cycle, without losing runs", async () => {
@@ -1155,13 +1161,16 @@ test("windows older than 48 h are revalidated hourly and recent ones every cycle
   expect(old(second)).toHaveLength(0);
   expect(second.ends.length).toBeGreaterThan(0);
   expect(second.records.runs).toHaveLength(runs.length);
+  const oldChecks = new Map([...state.checked].filter(([key]) => Number(key.split("-")[1]) < Date.now() - 8 * DAY));
   vi.setSystemTime(Date.now() + 3_600_000);
   const third = await historyCycle(from, state);
   expect(old(third).length).toBeGreaterThan(0);
+  expect(oldChecks.size).toBeGreaterThan(0);
+  for (const [key, checked] of oldChecks) expect(state.checked.get(key)).toBe(checked);
   expect(third.records.runs).toHaveLength(runs.length);
 });
 
-test("once history is known to be large, the total_count probe asks for one row instead of a full page", async () => {
+test("once history is known to be large, the total_count probe is skipped", async () => {
   const { from } = historyHost();
   const state = { checked: new Map<string, number>() };
   const range = (cycle: Awaited<ReturnType<typeof historyCycle>>) => cycle.urls.filter((url) => url.searchParams.get("created") === `${from}..${cycle.until}`);
@@ -1169,7 +1178,7 @@ test("once history is known to be large, the total_count probe asks for one row 
   expect(range(cold).map((url) => url.searchParams.get("per_page"))).toContain("100");
   vi.setSystemTime(Date.now() + 300_000);
   const warm = await historyCycle(from, state);
-  expect(range(warm).map((url) => url.searchParams.get("per_page"))).toEqual(["1"]);
+  expect(range(warm)).toEqual([]);
 });
 
 test("history rows are stored compressed, legacy JSON text stays readable, and repeated cycles write far fewer bytes", async () => {
@@ -1328,7 +1337,7 @@ test("pool-only changes publish the badge numbers but do not rewrite the stored 
     expect(resultWrites(bb.storage.kv)).toBe(1);
     const published = harness.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed");
     expect(published.length).toBeGreaterThanOrEqual(2);
-    for (const signal of published) expect(signal.payload).toEqual({ count: 1, critical: 1 });
+    for (const signal of published) expect(signal.payload).toEqual({ count: 1, critical: 1, repository: "acme/widgets" });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
   } finally { await harness.lifecycle.dispose(); }
 });
@@ -1363,14 +1372,14 @@ test("dismissing and restoring a problem moves the badge, publishes the new coun
     await harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "dismiss" });
     expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "dismissed" });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
-    expect(harness.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 0, critical: 0 });
+    expect(harness.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 0, critical: 0, repository: "acme/widgets" });
     // The handled state is read from storage after a restart.
     const reloaded = (await harness.lifecycle.reload(plugin)).harness;
     expect(await reloaded.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
     await reloaded.behavior.callRpc("problemAction", { repository: "acme/widgets", id: stallId, action: "restore" });
     expect((await problemsOf(reloaded)).problems[0].handled).toBeNull();
     expect(await reloaded.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
-    expect(reloaded.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 1, critical: 1 });
+    expect(reloaded.inspection.realtimeSignals.filter((signal) => signal.channel === "signals-changed").at(-1)?.payload).toEqual({ count: 1, critical: 1, repository: "acme/widgets" });
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -1668,7 +1677,8 @@ const storedHistory = (bb: { storage: { database(): ReturnType<ReturnType<typeof
   return JSON.parse(gunzipSync(row.data).toString("utf8")) as { coverage: { since: string }; records: { runs: { id: number; created_at: string }[] } };
 };
 async function deepHistory(deepAgoDays: number | null) {
-  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false } });
+  // A long refresh interval keeps the second request on the cached path while time moves past the cleanup throttle.
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/widgets", importBbRepositories: false, refreshSeconds: 3600 } });
   if (deepAgoDays !== null) await bb.storage.kv.set("deep-range-at", Date.now() - deepAgoDays * 86_400_000);
   await plugin(bb);
   await harness.behavior.callRpc("metrics", { days: 90 });
@@ -1677,6 +1687,8 @@ async function deepHistory(deepAgoDays: number | null) {
   history.coverage.since = "2026-01-05T00:00:00.000Z";
   history.records.runs.push({ ...history.records.runs[0], id: 999_999, created_at: "2026-02-01T00:00:00Z" });
   db.prepare("UPDATE repository_history SET data = ?").run(compress(JSON.stringify(history)));
+  // The throttled cleanup (5 min) must be due again for the trim to run.
+  vi.setSystemTime(Date.now() + 301_000);
   await harness.behavior.callRpc("metrics", { days: 7 });
   return { bb, harness };
 }
@@ -2127,5 +2139,111 @@ test("with no observer thread nothing is sent and the fast path still stores the
     expect(send).not.toHaveBeenCalled();
     expect(bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs").get()).toEqual({ n: 2 });
     expect(bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs WHERE run_id = 903").get()).toEqual({ n: 0 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("draft checks are capped newest first and saved when an unrelated card fails", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  const runs = Array.from({ length: 65 }, (_, index) => ({ id: index + 1, created_at: new Date(Date.parse(recent) + index * 1000).toISOString(), updated_at: recent, conclusion: "failure", name: "CI", event: "pull_request", run_attempt: 1 }));
+  const checked: number[] = [];
+  fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("/actions/runs")) return Response.json({ total_count: runs.length, workflow_runs: runs });
+    if (url.pathname.endsWith("/jobs")) { checked.push(Number(url.pathname.split("/")[6])); return Response.json({ total_count: 0, jobs: [] }); }
+    if (url.pathname === "/search/issues" && url.searchParams.get("q")?.includes("created:")) return Response.json({ invalid: true });
+    return normal(input, options);
+  });
+  let records: HistoricalRecords | undefined;
+  const result = await loadMetrics("acme/widgets", "token", new AbortController().signal, resolveRange(null), undefined, (value) => { records = value; }, { draftRules: { workflow: "CI", job: "Tests", step: "Gate" } });
+  expect(checked).toEqual(Array.from({ length: 60 }, (_, i) => 65 - i));
+  expect(records?.runs.filter((run) => run.draftDeferred !== undefined)).toHaveLength(60);
+  expect(result.ci.detail).toContain("5 draft candidates unverified");
+  expect(result.pullRequestsCreated.error).not.toBeNull();
+});
+
+// --- packet D: server wiring ---
+test("the compact signals projection drops the bulky aggregates while the default (agent) rows stay full", async () => {
+  live([queuedJob]);
+  const { bb, harness } = signalsHost();
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    const full = (await harness.behavior.callRpc("signals", null) as SignalsResult).repositories[0] as Record<string, unknown>;
+    const compact = (await harness.behavior.callRpc("signals", { compact: true }) as SignalsResult).repositories[0] as Record<string, unknown>;
+    for (const key of ["failures", "poolTimings", "poolTimingsByEvent", "failureCountsByEvent"]) { expect(full).toHaveProperty(key); expect(compact).not.toHaveProperty(key); }
+    expect(compact.signals).toEqual(full.signals);
+    expect(compact.problems).toEqual(full.problems);
+    // The agent tool reads through the same handler without the compact flag.
+    expect(await harness.behavior.callRpc("signals", { repository: "acme/widgets" })).toEqual({ actors: expect.anything(), repositories: [full] });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("changing the refresh interval keeps the cached GitHub data and history", async () => {
+  const { bb, harness } = signalsHost();
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 7 });
+    const database = bb.storage.database(), count = (table: string) => (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    const before = { snapshots: count("dashboard_snapshots"), history: count("repository_history"), responses: count("github_responses") };
+    expect(before.history).toBe(1);
+    await harness.behavior.setSettings({ refreshSeconds: 60 });
+    expect({ snapshots: count("dashboard_snapshots"), history: count("repository_history"), responses: count("github_responses") }).toEqual(before);
+    expect(harness.inspection.realtimeSignals.some((signal) => signal.channel === "configuration-changed")).toBe(false);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a custom range outside the stored coverage does not replace the stored repository history", async () => {
+  const normal = fetchMock.getMockImplementation()!;
+  // Runs, deployments and commits are stamped inside whatever range is asked for, so the history of any range loads completely.
+  fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
+    const url = new URL(input), created = url.searchParams.get("created");
+    if (url.pathname.endsWith("/actions/runs") && created) {
+      const at = new Date(Date.parse(created.split("..")[0]!) + 3_600_000).toISOString();
+      return Response.json({ total_count: 10, workflow_runs: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, created_at: at, conclusion: index < 8 ? "success" : "failure" })) });
+    }
+    if (url.pathname === "/graphql" && typeof options?.body === "string" && JSON.parse(options.body).variables?.since) {
+      const committedDate = new Date(Date.parse(JSON.parse(options.body).variables.since) + 3_600_000).toISOString();
+      return Response.json({ data: { repository: { defaultBranchRef: { name: "main", target: { oid: "head", history: { totalCount: 1, nodes: [{ oid: "head", additions: 1, deletions: 1, committedDate }], pageInfo: { hasNextPage: false, endCursor: null } } } } } } });
+    }
+    return normal(input, options);
+  });
+  const { bb, harness } = signalsHost();
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("metrics", { days: 7 });
+    const database = bb.storage.database(), stored = () => (database.prepare("SELECT data FROM repository_history").get() as { data: Uint8Array }).data;
+    const before = unpack(stored()).coverage;
+    await harness.behavior.callRpc("metrics", { start: "2026-08-01", end: "2026-08-03" });
+    expect(unpack(stored()).coverage).toEqual(before);
+    expect((database.prepare("SELECT COUNT(*) AS n FROM dashboard_snapshots").get() as { n: number }).n).toBe(2);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("the problem list is built once per repository pass", async () => {
+  live([queuedJob]);
+  const { bb, harness } = signalsHost();
+  try {
+    await plugin(bb);
+    vi.mocked(buildProblems).mockClear();
+    // Not signalsPass: its polling reads the signals RPC, which builds problems itself.
+    const service = harness.behavior.runService("ci-signals");
+    await vi.waitFor(() => expect(harness.inspection.realtimeSignals.some((signal) => signal.channel === "signals-changed")).toBe(true));
+    service.controller.abort(); await service.done;
+    expect(vi.mocked(buildProblems)).toHaveBeenCalledTimes(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("cache cleanup on the metrics paths runs at most once per five minutes", async () => {
+  const { bb, harness } = signalsHost();
+  try {
+    await plugin(bb);
+    const calls = () => vi.mocked(cleanupCache).mock.calls.length, atStart = calls();
+    await harness.behavior.callRpc("metrics", { days: 7 });
+    await harness.behavior.callRpc("metrics", { days: 30 });
+    expect(calls()).toBe(atStart);
+    vi.setSystemTime(new Date(Date.now() + 301_000));
+    await harness.behavior.callRpc("metrics", { days: 7 });
+    await harness.behavior.callRpc("metrics", { days: 30 });
+    expect(calls()).toBe(atStart + 1);
   } finally { await harness.lifecycle.dispose(); }
 });

@@ -18,10 +18,10 @@ function pullRequestNumbers(row: unknown) {
 export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["database"]>) {
   const pending = new Map<string, Promise<GitHubResponse>>();
   let inserts = 0;
-  return (configuration: string, token: string | undefined, signal: AbortSignal, ttl: number, force: boolean, canWrite: () => boolean): GitHubRequest => async (path, init) => {
-    if (init?.method && init.method !== "GET") return githubRequest(path, token, signal, init);
+  return (configuration: string, token: string | undefined, signal: AbortSignal, ttl: number, force: boolean, canWrite: () => boolean): GitHubRequest => async (path, init, options) => {
+    if (init?.method && init.method !== "GET") return githubRequest(path, token, signal, init, undefined, options);
     const key = JSON.stringify([path.includes("/actions/runs?") ? `${configuration}:ci-metadata-v3` : configuration, path]);
-    const row = database.prepare("SELECT data, checked_at, last_used_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number; last_used_at: number } | undefined;
+    const row = options?.volatile ? undefined : database.prepare("SELECT data, checked_at, last_used_at FROM github_responses WHERE cache_key = ?").get(key) as { data: string; checked_at: number; last_used_at: number } | undefined;
     // LRU order needs only coarse timestamps; a write per read is not worth it.
     if (row && Date.now() - row.last_used_at > 600_000) database.prepare("UPDATE github_responses SET last_used_at = ? WHERE cache_key = ?").run(Date.now(), key);
     let previous: GitHubResponse | undefined;
@@ -29,7 +29,7 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
       try { previous = responseSchema.parse(JSON.parse(row.data)); } catch { /* Invalid cache entries are refetched. */ }
     }
     const metadata = path.startsWith("/search/issues?") || path.includes("/statuses?");
-    if (!force && metadata && previous && row && Date.now() - row.checked_at >= 0 && Date.now() - row.checked_at < ttl) return previous;
+    if (!force && metadata && previous && row && Date.now() - row.checked_at >= 0 && Date.now() - row.checked_at < ttl * 2) return previous;
     if (pending.has(key)) return pending.get(key)!;
     const slim = (result: GitHubResponse): GitHubResponse => {
       // Workflow responses contain large unused nested objects; retain only metric inputs.
@@ -56,11 +56,11 @@ export function createGitHubCache(database: ReturnType<BbPluginApi["storage"]["d
       }
       return result;
     };
-    const operation = githubRequest(path, token, signal, init, previous).then((result) => {
+    const operation = githubRequest(path, token, signal, init, previous, options).then((result) => {
       // A 304 returns the stored body: it is already slim, so only the check time needs to be written.
       const unchanged = previous !== undefined && result.body === previous.body && result.hasNext === previous.hasNext;
       if (!unchanged) result = slim(result);
-      if (canWrite()) {
+      if (!options?.volatile && canWrite()) {
         if (!unchanged || database.prepare("UPDATE github_responses SET checked_at = ?, last_used_at = ? WHERE cache_key = ?").run(Date.now(), Date.now(), key).changes === 0) {
           database.prepare("INSERT INTO github_responses (cache_key, data, checked_at, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET data = excluded.data, checked_at = excluded.checked_at, last_used_at = excluded.last_used_at")
             .run(key, JSON.stringify(result), Date.now(), Date.now());

@@ -21,7 +21,7 @@ const timestamp = z.iso.datetime({ offset: true });
 export async function loadCardDetails(input: CardDetailsInput, token: string | undefined, signal: AbortSignal, rules?: DraftRules): Promise<CardDetails> {
   cardDetailsInput.parse(input);
   const checkedAt = new Date().toISOString();
-  const request = (path: string) => githubRequest(path, token, signal);
+  const request = (path: string) => githubRequest(path, token, signal, undefined, undefined, { interactive: true });
   const base = `https://github.com/${input.repository}`;
   if (input.kind === "ci") {
     if (Date.parse(input.since) < Date.parse(minimumDate()) || Date.parse(input.since) > Date.parse(input.until) || Date.parse(input.until) > Date.now()) throw new Error("Invalid statistics interval.");

@@ -95,12 +95,25 @@ export const repositorySignalsSchema = z.object({
   coverage: timestamp.nullable().optional(),
 });
 
-export const signalsOutputSchema = z.object({
+const fullSignalsOutputSchema = z.object({
   repositories: z.array(repositorySignalsSchema),
   actors: z.record(actorSchema, z.string()),
 });
-export type SignalsOutput = z.infer<typeof signalsOutputSchema>;
-export const signalsInputSchema = z.object({ repository: repositorySchema.optional(), since: timestamp.optional(), until: timestamp.optional() }).strict().nullable();
+export type SignalsOutput = z.infer<typeof fullSignalsOutputSchema>;
+export const signalsOutputSchema = z.object({
+  repositories: z.array(repositorySignalsSchema.partial({ failures: true, poolTimings: true, poolTimingsByEvent: true, failureCountsByEvent: true })),
+  actors: z.record(actorSchema, z.string()),
+}) as unknown as typeof fullSignalsOutputSchema;
+export function compactSignalsRow(row: z.infer<typeof repositorySignalsSchema>, now: number) {
+  const { failures, poolTimings, poolTimingsByEvent, failureCountsByEvent, ...rest } = row;
+  const resolved = row.signals.filter((signal) => !signal.open && now - Date.parse(signal.until ?? signal.since) <= 7 * 86400000)
+    .sort((a, b) => Date.parse(b.until ?? b.since) - Date.parse(a.until ?? a.since)).slice(0, 10);
+  return { ...rest, signals: [...row.signals.filter((signal) => signal.open), ...resolved] };
+}
+export const signalsInputSchema = z.object({ repository: repositorySchema.optional(), since: timestamp.optional(), until: timestamp.optional(),
+  /** UI projection: omits failures, poolTimings, poolTimingsByEvent and failureCountsByEvent, and keeps open signals plus the 10 newest resolved ones within 7 days */
+  compact: z.boolean().optional() }).strict().nullable();
+export type SignalsChanged = { repository?: string; count?: number; critical?: number };
 export const navigationBadgeOutputSchema = z.object({ count: z.number(), critical: z.number() });
 export const SIGNALS_CHANGED = "signals-changed";
 const problemId = z.string().min(1).max(300);

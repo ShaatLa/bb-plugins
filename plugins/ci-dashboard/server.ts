@@ -19,7 +19,7 @@ import { flakeSettings, flakeSignaturesSchema } from "./flake-signatures";
 import type { ClassifiedJob, JobRecord, PoolQueueState, RerunSummary, Signal } from "./ci-jobs-types";
 import { createIncidentTracker, detectStalls, fetchLiveJobs, finishedRuns, poolQueueStates } from "./ci-live";
 import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-signals";
-import { handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsOutput } from "./ci-signals-contract";
+import { compactSignalsRow, handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsChanged, type SignalsOutput } from "./ci-signals-contract";
 import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
 import { alertStreak, type CiInsights } from "./ci-insights";
 import { acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
@@ -49,7 +49,7 @@ export const ciRpcContract = defineRpcContract({ ci: { input: ciQuerySchema, out
 
 const actorName = z.string().trim().min(1).max(60);
 // Settings that feed cached GitHub data; the signals settings must not invalidate it.
-const dashboardSettingKeys = ["importBbRepositories", "repository", "draftWorkflow", "draftJob", "draftStep", "token", "refreshSeconds"] as const;
+const dashboardSettingKeys = ["importBbRepositories", "repository", "draftWorkflow", "draftJob", "draftStep", "token"] as const;
 
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -145,7 +145,11 @@ export default function plugin(bb: BbPluginApi) {
     deepTouched = true; lastDeepAt = Date.now();
     if (lastDeepAt - deepPersisted >= 3_600_000) { deepPersisted = lastDeepAt; void bb.storage.kv.set("deep-range-at", lastDeepAt).catch(() => {}); }
   }
+  let lastClean = 0;
   function clean(compact = false) {
+    // The normal metrics paths run this per request; once per 5 minutes is enough (startup, the hourly pass and the size caps are unaffected).
+    if (!compact && Date.now() - lastClean < 300_000) return;
+    lastClean = Date.now();
     if (compact) nextCleanup = Date.now() + 3_600_000;
     try {
       cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0, Date.now() - lastDeepAt >= deepIdleMs ? shallowFloor() : undefined);
@@ -310,7 +314,8 @@ export default function plugin(bb: BbPluginApi) {
       return metrics;
     }
     let start = Date.parse(range.since), finish = Date.parse(range.until);
-    if (source && start <= Date.parse(source.coverage.until) && finish >= Date.parse(source.coverage.since)) {
+    const overlaps = !!source && start <= Date.parse(source.coverage.until) && finish >= Date.parse(source.coverage.since);
+    if (source && overlaps) {
       start = Math.min(start, Date.parse(source.coverage.since));
       finish = Math.max(finish, Date.parse(source.coverage.until));
       if (Date.parse(range.since) >= Date.now() - 90 * 86_400_000) start = Math.max(start, Date.now() - 90 * 86_400_000);
@@ -323,7 +328,8 @@ export default function plugin(bb: BbPluginApi) {
     const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, reuse: source ? { coverage: source.coverage, checked: checks } : undefined, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`Dashboard metrics for ${repository}: ${message}`); } }).then((metrics) => {
       if (records && canWrite()) {
         const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
-        database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, compress(JSON.stringify(result)), Date.now());
+        // A range that does not touch the stored coverage is served from its own snapshot row; it must not replace the shared history.
+        if (!source || overlaps) database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, compress(JSON.stringify(result)), Date.now());
         // Range snapshots store only records covered by their own captions.
         onHistory({ ...records, deployments: records.deployments.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), runs: records.runs.filter((row) => Date.parse(row.created_at) >= Date.parse(range.since) && Date.parse(row.created_at) <= Date.parse(range.until)), commits: records.commits.filter((row) => Date.parse(row.committedDate) >= Date.parse(range.since) && Date.parse(row.committedDate) <= Date.parse(range.until)) });
       }
@@ -419,10 +425,13 @@ export default function plugin(bb: BbPluginApi) {
     return found;
   }
   // Same numbers for the navigationBadge RPC and the SIGNALS_CHANGED payload, so the badge needs no extra RPC. Handled problems do not count.
-  async function badgeCounts(values: Values) {
-    const open = (await Promise.all((await repositoryNames(values)).map(async (repo) => (await problemsOf(repo, runtimeFor(repo))).filter((problem) => !problem.handled)))).flat();
+  type Problems = Awaited<ReturnType<typeof problemsOf>>;
+  async function badgeCounts(values: Values, known?: string, problems?: Problems) {
+    const open = (await Promise.all((await repositoryNames(values)).map(async (repo) => (repo === known && problems ? problems : await problemsOf(repo, runtimeFor(repo))).filter((problem) => !problem.handled)))).flat();
     return { count: open.length, critical: open.filter((problem) => problem.severity === "critical").length };
   }
+  // One repository's change: the UI refetches only that row.
+  const changed = async (values: Values, repository: string, known?: Problems): Promise<SignalsChanged> => ({ ...await badgeCounts(values, repository, known), repository });
   // --- observer threads ---
   // Subscriptions and per-type start times are shared by all repositories; sent keys and the digest queue are per repository.
   let observerGlobal: ObserverGlobal | undefined;
@@ -459,7 +468,7 @@ export default function plugin(bb: BbPluginApi) {
       return observerGlobal;
     });
   }
-  async function observe(repo: string, rt: Runtime, values: Values, token: string | undefined, opened: Signal[], now: number, signal: AbortSignal) {
+  async function observe(repo: string, rt: Runtime, values: Values, token: string | undefined, opened: Signal[], now: number, signal: AbortSignal, problems: Problems) {
     const global = observerGlobal;
     if (!global || !Object.keys(global.threads).length) return;
     const enabled = enabledEvents(values), days = values.jobHistoryDays;
@@ -499,7 +508,7 @@ export default function plugin(bb: BbPluginApi) {
     if (enabled.loss && rt.analysis) confirmed.push(...runnerLossEvents(repo, rt.analysis.classified, rt.defaultBranch, values.runnerLossLimit));
     const accepted = acceptEvents(state, global, confirmed, config);
     // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_manage.
-    const openProblems = new Set((await problemsOf(repo, rt)).map((problem) => problem.id));
+    const openProblems = new Set(problems.map((problem) => problem.id));
     const artifacts = flakeSettings(values.flakeSignatures, values.flakeArtifacts).artifacts, rendered: Rendered[] = [];
     for (const event of accepted) {
       const tests = event.tests && rt.backfill ? await rt.backfill.run.failedTests(repo, event.tests.run, event.tests.jobs, artifacts, signal) : null;
@@ -533,7 +542,7 @@ export default function plugin(bb: BbPluginApi) {
     else {
       try { // 1. live pool state; the ETag map keeps unchanged pages free and is pruned to the paths seen in this poll.
         const used = new Map<string, GitHubResponse>();
-        const request: GitHubRequest = async (path, init) => { const response = await githubRequest(path, token, rt.signal, init, rt.etags.get(path)); used.set(path, response); return response; };
+        const request: GitHubRequest = async (path, init) => { const response = await githubRequest(path, token, rt.signal, init, rt.etags.get(path), { interactive: true }); used.set(path, response); return response; };
         const live = await fetchLiveJobs(request, repo, (raw, { run, attempt }) => normalizeJob(raw, {
           repository: repo, runId: run.id, attempt, workflowName: run.name ?? "", event: run.event ?? "", headBranch: run.head_branch ?? null, headSha: run.head_sha ?? "",
           pullRequests: (run.pull_requests ?? []).map((pr: number | { number: number }) => typeof pr === "number" ? pr : pr.number),
@@ -607,20 +616,23 @@ export default function plugin(bb: BbPluginApi) {
         if (text !== rt.persisted) { await bb.storage.kv.set(`incidents:${repo}`, rt.incidents); rt.persisted = text; }
       } catch (error) { fail("signals", error); }
     }
+    // The problem list is built once per pass and rebuilt only when the handled state below changes.
+    let problems = await problemsOf(repo, rt);
     // 4b. observer threads: classified events pushed to agents that watch CI.
-    try { await observe(repo, rt, values, token, opened, now, signal); }
+    try { await observe(repo, rt, values, token, opened, now, signal, problems); }
     catch (error) { signal.throwIfAborted(); logOnce(`CI observer for ${repo} failed: ${describe(error)}`); }
     // Handled entries of problems that closed are dropped, but only once the source of that kind of problem is known.
     try {
-      const handled = await loadHandled(repo, rt), open = new Set((await problemsOf(repo, rt)).map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
+      const handled = await loadHandled(repo, rt), open = new Set(problems.map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
       const stale = Object.keys(handled).filter((id) => !open.has(id) && (id.startsWith("run:") ? rt.alerts !== undefined : jobKnown));
-      if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); }
+      if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); problems = await problemsOf(repo, rt); }
       // A claim that outlives claimTimeoutHours with its problem still open is dropped (the claimant stalled or forgot to release).
-      const limit = values.claimTimeoutHours * 3_600_000, titles = new Map((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.title]));
+      const limit = values.claimTimeoutHours * 3_600_000, titles = new Map(problems.map((problem) => [problem.id, problem.title]));
       const expired = limit > 0 ? Object.entries(handled).filter(([id, entry]) => entry.state !== "dismissed" && titles.has(id) && now - Date.parse(entry.at) > limit).map(([id]) => id) : [];
       if (expired.length) {
         for (const id of expired) delete handled[id];
         await saveHandled(repo, rt);
+        problems = await problemsOf(repo, rt);
         for (const id of expired) await echoClaimDropped(values, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
       }
     } catch (error) { logOnce(`CI signals handled state for ${repo} not pruned: ${describe(error)}`); }
@@ -631,13 +643,13 @@ export default function plugin(bb: BbPluginApi) {
       window: { since: new Date(now - days * 86_400_000).toISOString(), until: nowIso }, ...(rt.analysis?.summary ?? zeroSummary(repo)),
       backfill: { remaining: status?.remaining ?? 0, failed: status?.failed ?? 0, pausedUntil: status?.pausedUntil ? new Date(status.pausedUntil).toISOString() : null, coveredSince: oldest } };
     const openIds = JSON.stringify((rt.incidents?.open ?? []).map((item) => item.id).sort());
-    const problemState = JSON.stringify((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.handled?.state]));
+    const problemState = JSON.stringify(problems.map((problem) => [problem.id, problem.handled?.state]));
     const signature = JSON.stringify([openIds, problemState, rt.pools.map((pool) => [pool.pool, pool.queued, pool.inProgress])]);
     // The stored view is only a restart fallback: pool counts alone do not justify a write.
     if (recompute || openIds !== rt.resultIds) {
       try { await bb.storage.kv.set(`result:${repo}`, rt.view); rt.resultIds = openIds; } catch (error) { logOnce(`CI signals result for ${repo} not persisted: ${describe(error)}`); }
     }
-    if (signature !== rt.signature) { rt.signature = signature; bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values).catch(() => ({}))); }
+    if (signature !== rt.signature) { rt.signature = signature; bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo, problems).catch((): SignalsChanged => ({ repository: repo }))); }
   }
   // Hourly: drop data of repositories that are no longer configured, enforce the job-data ceiling and log disk use when it moved.
   let nextRetain = 0, loggedTotal = -Infinity;
@@ -719,8 +731,10 @@ export default function plugin(bb: BbPluginApi) {
       if (input?.repository && !wanted.length) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
       return { actors: actorNames(values), repositories: await Promise.all(wanted.map(async (repo) => {
         const rt = runtimeFor(repo), incidents = await loadIncidents(repo, rt);
-        return { ...rangedView(rt, await readView(repo, rt, values.jobHistoryDays), input), signals: sortSignals([...(incidents?.open ?? []), ...(incidents?.recent ?? [])]),
+        const row = { ...rangedView(rt, await readView(repo, rt, values.jobHistoryDays), input), signals: sortSignals([...(incidents?.open ?? []), ...(incidents?.recent ?? [])]),
           problems: await problemsOf(repo, rt), projectId: projectIds.get(repo.toLowerCase()) ?? null };
+        // Only the UI asks for compact rows; agent views and inspect keep the full ones.
+        return input?.compact ? compactSignalsRow(row, Date.now()) as typeof row : row;
       })) };
     },
     async navigationBadge() { return badgeCounts(await settings.get()); },
@@ -732,7 +746,7 @@ export default function plugin(bb: BbPluginApi) {
         handled[id] = { state: "dismissed", by: "user", at: new Date().toISOString() };
       } else delete handled[id];
       await saveHandled(repo, rt);
-      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
       return { handled: rt.handled![id] ?? null };
     },
     async investigate({ repository, id, threadId }) {
@@ -759,7 +773,7 @@ export default function plugin(bb: BbPluginApi) {
       }
       (await loadHandled(repo, rt))[id] = { state: "investigating", threadId: target, by: "user", at: new Date().toISOString() };
       await saveHandled(repo, rt);
-      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
       return { threadId: target };
     },
     async cardDetails(input) {
@@ -796,7 +810,7 @@ export default function plugin(bb: BbPluginApi) {
       // Inside the stored coverage everything but the created-PR count is already local: one search instead of dozens of requests.
       const stored = readHistory(repository, configuration(values));
       const local = stored && Date.parse(stored.coverage.since) <= start && end <= Date.parse(stored.coverage.until) ? { metrics: stored.metrics, records: stored.records } : undefined;
-      return loadMetrics(repository, token, controller.signal, range, local, undefined, { draftRules: draftRules(values) });
+      return loadMetrics(repository, token, controller.signal, range, local, undefined, { draftRules: draftRules(values), request: (path, init, options) => githubRequest(path, token, controller.signal, init, undefined, { ...options, interactive: true }) });
     },
     metrics: (input) => input && "selection" in input ? metrics(input.selection, input.force) : metrics(input),
     async snapshot(input) {
@@ -920,7 +934,7 @@ export default function plugin(bb: BbPluginApi) {
       for (const id of ids) delete handled[id];
       await saveHandled(repo, rt);
       for (const id of ids) if (titles.has(id)) await echoClaimDropped(values, titles.get(id)!, id, why);
-      bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+      bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
     }
   }
   const PROBLEM_ACTIONS = ["take", "fix_pending", "release", "dismiss"] as const, OBSERVER_ACTIONS = ["subscribe", "unsubscribe", "replace", "list"] as const;
@@ -953,7 +967,7 @@ export default function plugin(bb: BbPluginApi) {
       handled[id] = { state: "fix_pending", ref, ...(keep ? { threadId: keep } : {}), by: "agent", at };
     }
     await saveHandled(repo, rt);
-    bb.realtime.publish(SIGNALS_CHANGED, await badgeCounts(values));
+    bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
     return { repository: repo, id, handled: rt.handled![id] ?? null };
   }
   async function manageObservers({ action, threadId }: z.infer<typeof manageInput> & { action: typeof OBSERVER_ACTIONS[number] }, ctx: { threadId: string }) {

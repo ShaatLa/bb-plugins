@@ -4,7 +4,7 @@ import { capOpenSignals } from "./cache-cleanup";
 import { classifyJobs } from "./ci-classify";
 import type { JobRecord, Signal } from "./ci-jobs-types";
 import { queueRemovalEvents } from "./ci-observer";
-import { createBackfill, createLogFetcher, createJobStore, fetchAttemptJobs, jobMigrations, logExcerpt } from "./ci-jobs";
+import { createArtifactFetcher, createBackfill, createLogFetcher, createJobStore, fetchAttemptJobs, jobMigrations, logExcerpt } from "./ci-jobs";
 import type { GitHubRequest } from "./metrics";
 import { finishedRuns } from "./ci-live";
 import { at, failed, fakeGithub, job, LOSS, REPO, runContext, syntheticRun, zip, SHA } from "./test-support";
@@ -91,6 +91,11 @@ test("log streaming stops at the first error and keeps 30 lines", async () => {
 const fresh = () => { const db = createFakePluginHost().bb.storage.database(); for (const sql of jobMigrations) db.prepare(sql).run(); return { db, store: createJobStore(db) }; };
 const rows = (db: ReturnType<typeof fresh>["db"]) => db.prepare("SELECT job_id, length(data) AS bytes FROM ci_jobs ORDER BY job_id").all() as { job_id: number; bytes: number }[];
 
+test("commit lookups use the (repository, head_sha) index", () => {
+  const { db } = fresh();
+  for (const sql of ["SELECT 1 FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' LIMIT 1", "SELECT DISTINCT json_extract(data, '$.jobName') FROM ci_jobs WHERE repository = ? AND head_sha = ? AND conclusion = 'success'"])
+    expect(JSON.stringify(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all("acme/widgets", "x"))).toContain("ci_jobs_head");
+});
 test("skipped jobs are not stored, yet an executed job repeated from the previous attempt is still carried", () => {
   const { db, store } = fresh();
   store.saveAttempt("acme/widgets", 1, 1, [job({ jobId: 1 }), job({ jobId: 2, jobName: "Lint", conclusion: "skipped", pool: null, labels: [] })], true);
@@ -223,6 +228,17 @@ test("failed test names come from the matching artifacts only, FAILED entries on
   expect(paths).toHaveLength(1);
   expect(await backfill.failedTests("o/r", { id: 2, attempt: 1 }, jobs, [], signal())).toBeNull();
   expect(await createBackfill({ store, request, fetchArtifact, budgetPerHour: 1 }).failedTests("o/r", { id: 3, attempt: 1 }, jobs, globs, signal())).toBeNull();
+});
+
+test("a failed log or artifact response is cancelled, not left open", async () => {
+  let cancelled = 0;
+  const body = () => new ReadableStream<Uint8Array>({ cancel() { cancelled++; } });
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, headers: new Headers(), body: body() })));
+  try {
+    await expect(createLogFetcher("token", signal())("/logs")).rejects.toThrow("Log fetch 500");
+    await expect(createArtifactFetcher("token", signal())("/zip", 10)).rejects.toThrow("Artifact fetch 500");
+    expect(cancelled).toBe(2);
+  } finally { vi.unstubAllGlobals(); }
 });
 
 test("logExcerpt keeps up to 30 lines before the first error and the error lines right after it", () => {
