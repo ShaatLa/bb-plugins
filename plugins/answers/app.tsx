@@ -126,7 +126,6 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
 }
 // A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
-const PREVIEW_RAIL = "relative my-1 pl-3 pr-2 before:pointer-events-none before:absolute before:bottom-1 before:left-1.5 before:top-0 before:w-px before:bg-border-seam before:content-['']";
 export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item[]; autoRead: boolean; reveal?: string | null; children: (item: Item) => ReactNode }) {
   const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const [open, setOpen] = useState(false), row = useRef<HTMLLIElement>(null), last = items.at(-1)!, unread = items.filter(isUnread);
@@ -134,14 +133,17 @@ export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item
   // Seen collapsed, the whole group is read; expanded, each card reads itself.
   useReadOnView(row, autoRead && !open && unread.length > 0, () => void rpc.call('markRead', { ids: unread.map(item => item.id) }).then(() => refresh(), () => {}));
   const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
-  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-5">
-    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2 text-left text-sm leading-5">
-      <Icon name="ListTodo" aria-hidden className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 truncate text-muted-foreground">{items.length} agent updates</span>
-      <time className="shrink-0 text-xs text-muted-foreground" dateTime={new Date(at).toISOString()}>· {age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
-      {unread.length > 0 && <span className="size-1.5 shrink-0 rounded-full bg-foreground/70" aria-label="Unread" />}
-      <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? '' : '-rotate-90'}`} />
-    </button>
-    {open ? <ul className="divide-y divide-border-seam">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul> : <div className={PREVIEW_RAIL}><p className="truncate pl-2 text-sm leading-relaxed text-muted-foreground">{preview}</p></div>}
+  // The stack-card look of "Active child threads", so the group stands out from the caption rows around it.
+  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
+    <div className="overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
+      <button type="button" aria-expanded={open} aria-label={`${items.length} agent updates`} onClick={() => setOpen(!open)} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
+        <Icon name="ListTodo" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">Agent updates</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span>
+        <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
+        {unread.length > 0 && <span className="size-1.5 shrink-0 rounded-full bg-foreground/70" aria-label="Unread" />}
+        <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
+      </button>
+      {open ? <ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul> : <p className="truncate border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
+    </div>
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
