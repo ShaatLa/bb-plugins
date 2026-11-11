@@ -619,6 +619,7 @@ function TaskDetail({
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenUrl={(url) => navigate.openUrl(url)}
           />
 
           <div className="mb-1 mt-3 flex items-center gap-1">

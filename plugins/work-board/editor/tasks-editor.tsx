@@ -205,6 +205,8 @@ interface TasksEditorProps {
   onAttachFiles?: (files: File[]) => void;
   mentionItems?: (query: string) => Promise<MentionItem[]>;
   onOpenThread?: (threadId: string) => void;
+  /** Opens an http(s) link from the content; returns whether it was handled. */
+  onOpenUrl?: (url: string) => boolean;
   onSubmit?: () => void;
   onEditorReady?: (editor: Editor) => void;
   className?: string;
@@ -220,6 +222,7 @@ export function TasksEditor({
   onAttachFiles,
   mentionItems,
   onOpenThread,
+  onOpenUrl,
   onSubmit,
   onEditorReady,
   className,
@@ -241,6 +244,8 @@ export function TasksEditor({
   mentionItemsRef.current = mentionItems;
   const openThreadRef = useRef(onOpenThread);
   openThreadRef.current = onOpenThread;
+  const openUrlRef = useRef(onOpenUrl);
+  openUrlRef.current = onOpenUrl;
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   const readyRef = useRef(onEditorReady);
@@ -344,6 +349,14 @@ export function TasksEditor({
       content: initialValueRef.current,
       autofocus: false,
       editorProps: {
+        // Editable content never follows anchors itself, so web links open through bb's browser preference.
+        handleClick(_view, _pos, event) {
+          if (event.button !== 0 || event.altKey || event.shiftKey) return false;
+          const href = (event.target as Element | null)?.closest?.("a[href]")?.getAttribute("href");
+          if (!href || !/^https?:\/\//i.test(href) || !openUrlRef.current) return false;
+          event.preventDefault();
+          return openUrlRef.current(href);
+        },
         handleKeyDown(_view, event) {
           if (!onSubmitRef.current || readOnly) return false;
           if (event.key !== "Enter") return false;
