@@ -150,7 +150,12 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
 
 3. Do the work. Post one substantive comment at each meaningful milestone,
    such as a completed investigation, an implementation ready for validation,
-   or a concrete blocker:
+   or a concrete blocker. Only the session responsible for the task (the
+   attached worker) comments on it; a sub-session you spawned reports to you,
+   its parent thread, never to the task, and you fold its result into your own
+   milestone comment. Keep a comment to the outcome, evidence and next step:
+   agent comments over 8 KB are refused, so attach a long report as a file
+   (`attachment add`, step 4) and comment a short summary that points to it:
 
    ```sh
    bb work-board comment ABC-12 --body "Implemented the change; focused validation now passes."
@@ -217,6 +222,7 @@ One task has one responsible worker session at a time; the board shows it as the
 - **Take.** When you start real work on a task you were not delegated from Work Board, `bb work-board attach KEY` first, then move it to the project's in-progress status (`bb work-board update KEY --status in_progress`, or the status the project's workflow names). Delegated sessions are already attached; still set the status when work actually starts.
 - **Hand off.** If you stop before the completion criteria (passing it to another session, or blocked on the owner), comment the exact state and next step, leave the status accurate, and `bb work-board detach KEY` unless you stay responsible. Do not leave a task attached to a session that will not continue it.
 - **Finish.** Set `done` or `in_review` per the completion criteria. No detach is needed: links stay as history.
+- **Sub-sessions** (reviewers, researchers, fix sessions you spawn) do not comment on, attach to, or change the status of the task; they reply to their parent thread, and the responsible session records the result on the task once. Every comment is kept forever and travels with Git snapshots, so many writers on one card make it slow to read and too large to export.
 - **Orchestrators** (a manager session that only delegates) do not attach themselves to the tasks they hand out. If a worker session disappears while its task is unfinished, Work Board attaches the worker's parent as **Parent thread** so the task stays accountable; a new worker attaching replaces it, and finishing the task (done or canceled) releases it automatically. Project-specific status rules (who moves a task to review, testing or done) belong to the project's own workflow docs and Work Board workflow policy, not to this skill.
 
 ## Link tasks in responses

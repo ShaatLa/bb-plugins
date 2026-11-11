@@ -499,11 +499,20 @@ interface CreateCommentInput {
   awaitDelivery: boolean;
 }
 
+/** Agent reports beyond this belong in an attachment; long comment logs bloat every task read and Git snapshot. */
+export const MAX_AGENT_COMMENT_BYTES = 8 * 1024;
+
 export async function createComment(
   bb: BbPluginApi,
   store: TasksApiStore,
   input: CreateCommentInput,
 ): Promise<StoredComment> {
+  const size = Buffer.byteLength(input.body, "utf8");
+  if (input.kind === "agent" && size > MAX_AGENT_COMMENT_BYTES)
+    throw new Error(
+      `Agent comments are limited to ${MAX_AGENT_COMMENT_BYTES / 1024} KB; this one is ${(size / 1024).toFixed(1)} KB. ` +
+        "Attach the full report with `bb work-board attachment add KEY --file report.md` and comment a short summary that points to it.",
+    );
   const comment = store.transaction(() =>
     store.tasks.createComment({
       taskId: input.taskId,
