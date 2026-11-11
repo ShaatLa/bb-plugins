@@ -415,6 +415,13 @@ const MIGRATIONS = [
    WHERE t.status = CASE WHEN json_type(p.workflow_policy, '$.doneStatus') IS NULL THEN 'done' ELSE json_extract(p.workflow_policy, '$.doneStatus') END;
    CREATE TRIGGER legacy_done_tasks_leave AFTER UPDATE OF status ON tasks
    WHEN OLD.status != NEW.status BEGIN DELETE FROM legacy_done_tasks WHERE task_id=NEW.id; END;`,
+  `CREATE TABLE task_relations (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     related_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     PRIMARY KEY (task_id, related_task_id),
+     CHECK (task_id < related_task_id)
+   );
+   CREATE INDEX idx_task_relations_related ON task_relations(related_task_id, task_id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

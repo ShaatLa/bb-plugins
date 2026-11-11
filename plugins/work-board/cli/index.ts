@@ -938,13 +938,26 @@ export function registerTasksCli(
             ].join("\n");
           }); },
         })])),
-        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done)", [["add KEY --blocked-by KEY", "Add a predecessor"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["list KEY", "Show both directions"]]),
+        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done) and related links", [["add KEY --blocked-by KEY", "Add a predecessor"], ["add KEY --relates-to KEY", "Link a related task (no blocking)"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["remove KEY --relates-to KEY", "Remove a related link"], ["list KEY", "Show blockers, dependents and related tasks"]]),
         ...Object.fromEntries((["add", "remove", "list"] as const).map(action => [`dependency ${action}`, cliCommand({
           summary: `${action} task dependencies; only Done satisfies a predecessor`,
           positionals: [KEY_POSITIONAL],
-          options: { json: JSON_OPTION, ...(action === "list" ? {} : { "blocked-by": { type: "string" as const, required: true as const, description: "Predecessor task key or ID (same project)" } }) },
+          options: { json: JSON_OPTION, ...(action === "list" ? {} : {
+            "blocked-by": { type: "string" as const, description: "Predecessor task key or ID (same project)" },
+            "relates-to": { type: "string" as const, description: "Related task key or ID (same project); never blocks" },
+          }) },
           run(input, ctx) { return guard(async () => {
             const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            if (action !== "list" && (input.options["blocked-by"] === undefined) === (input.options["relates-to"] === undefined))
+              throw new Error("Pass exactly one of --blocked-by or --relates-to");
+            if (action !== "list" && input.options["relates-to"] !== undefined) {
+              const other = await resolveTask(domain, String(input.options["relates-to"]));
+              const args = { taskId: task.id, relatedTaskId: other.id, authorName: taskAuthor(ctx) };
+              const result = action === "add"
+                ? await domain.addTaskRelation(tasksRpcContract.addTaskRelation.input.parse(args))
+                : await domain.removeTaskRelation(tasksRpcContract.removeTaskRelation.input.parse(args));
+              return input.options.json ? JSON.stringify(result) : `${task.key}: ${action === "add" ? "related to" : "no longer related to"} ${other.key}${result.changed ? "" : " (unchanged)"}`;
+            }
             if (action !== "list") {
               const blocker = await resolveTask(domain, String(input.options["blocked-by"]));
               const args = { taskId: task.id, blockingTaskId: blocker.id, authorName: taskAuthor(ctx) };
@@ -957,6 +970,7 @@ export function registerTasksCli(
             return input.options.json ? JSON.stringify(result) : [
               `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
               `Blocks: ${result.blocks.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
+              `Related: ${result.related.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
             ].join("\n");
           }); },
         })])),
@@ -2718,6 +2732,7 @@ export function registerTasksCli(
                   ["Status", task.status],
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
+                  ["Related", dependencies.related.map(other => `${other.key} (${other.status})`).join(", ") || "-"],
                   ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),
                   ["Priority", task.priority],
                   ["Due", task.dueDate ?? "-"],

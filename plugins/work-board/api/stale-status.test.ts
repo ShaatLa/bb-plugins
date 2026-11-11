@@ -50,7 +50,7 @@ it("grandfathers existing done comments only until the task leaves done", async 
   const task = store.tasks.createTask({ projectId: project.id, title: "Legacy", status: "done" });
   store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Agent", body: "Finished" });
   const db = bb.storage.database();
-  db.exec("DROP TRIGGER legacy_done_tasks_leave; DROP TABLE legacy_done_tasks; DELETE FROM schema_version WHERE version=(SELECT MAX(version) FROM schema_version)");
+  db.exec("DROP TRIGGER legacy_done_tasks_leave; DROP TABLE legacy_done_tasks; DELETE FROM schema_version WHERE version=24");
   initializeTasksSchema(db);
   expect(store.tasks.staleStatusFlags().has(task.id)).toBe(false);
   store.tasks.updateTask(task.id, { status: "todo" });

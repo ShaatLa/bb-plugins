@@ -35,6 +35,7 @@ export const archiveProjectSchema = z
       z.literal(12),
       z.literal(13),
       z.literal(14),
+      z.literal(15),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -54,6 +55,8 @@ export const archiveTaskSchema = z
     task: taskSchema,
     activityHistory: z.boolean().optional(),
     dependencies: z.array(idSchema).optional(),
+    /** v15: related tasks stored on the pair's smaller task ID. */
+    related: z.array(idSchema).optional(),
     pullRequests: z.array(prLinkSchema).optional(),
     comments: z.array(commentSchema),
     questions: z.array(questionSchema).default([]),
@@ -170,6 +173,11 @@ export function validateArchive(archive: ProjectArchive): void {
     if (manifest.version >= 12 && !record.dependencies) throw new Error("Archive v12 requires dependencies");
     if (manifest.version < 12 && record.dependencies !== undefined) throw new Error("Task dependencies require archive v12");
     unique(record.dependencies ?? [], "task dependency");
+    if (manifest.version >= 15 && !record.related) throw new Error("Archive v15 requires related tasks");
+    if (manifest.version < 15 && record.related?.length) throw new Error("Related tasks require archive v15");
+    unique(record.related ?? [], "related task");
+    for (const other of record.related ?? [])
+      if (other <= record.task.id || !taskIds.has(other)) throw new Error("Invalid related task in archive");
     for (const blocker of record.dependencies ?? []) {
       if (blocker === record.task.id || !taskIds.has(blocker)) throw new Error("Invalid task dependency in archive");
       incoming.set(record.task.id, (incoming.get(record.task.id) ?? 0) + 1);

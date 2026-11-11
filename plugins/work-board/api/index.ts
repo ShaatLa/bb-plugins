@@ -656,8 +656,26 @@ export function registerHandlers(
     }
     return { changed };
   }
+  function changeRelation(input: { taskId: string; relatedTaskId: string; authorName: string }, add: boolean) {
+    const changed = store.transaction(() => {
+      const changed = add ? dependencies.relate(input.taskId, input.relatedTaskId) : dependencies.unrelate(input.taskId, input.relatedTaskId);
+      if (changed) {
+        const task = store.tasks.getTask(input.taskId)!, other = store.tasks.getTask(input.relatedTaskId)!;
+        writeSystemComments(store, task.id, input.authorName, [`${add ? "Related task added" : "Related task removed"}: ${other.key} by ${input.authorName}`]);
+        writeSystemComments(store, other.id, input.authorName, [`${add ? "Related task added" : "Related task removed"}: ${task.key} by ${input.authorName}`]);
+      }
+      return changed;
+    });
+    if (changed) for (const id of [input.taskId, input.relatedTaskId]) {
+      publishTasksChanged(bb, id, store.tasks.getTask(id)!.projectId);
+      publishCommentsChanged(bb, id);
+    }
+    return { changed };
+  }
   return {
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
+    addTaskRelation: (input) => changeRelation(input, true),
+    removeTaskRelation: (input) => changeRelation(input, false),
     getStorageStatus: () => storageService(bb).status(),
     maintainStorage: ({ optimize }) => storageService(bb).run(optimize),
     addTaskDependency: (input) => changeDependency(input, true),
@@ -1050,8 +1068,10 @@ export function registerHandlers(
         );
         if (bb.storage.database().prepare<[], { found: number }>(`
           SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
-          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id LIMIT 1
-        `).get()) throw new Error("Remove dependencies outside the moving task family before changing projects");
+          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id
+          UNION ALL SELECT 1 FROM task_relations r JOIN tasks t ON t.id=r.task_id
+          JOIN tasks b ON b.id=r.related_task_id WHERE t.project_id<>b.project_id LIMIT 1
+        `).get()) throw new Error("Remove dependencies and related links outside the moving task family before changing projects");
         for (const { previousKey, task } of outcome.moved) {
           writeSystemComments(store, task.id, input.authorName, [
             `Moved from ${previousKey} to ${task.key} by ${input.authorName}`,

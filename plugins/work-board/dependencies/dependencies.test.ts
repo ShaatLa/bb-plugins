@@ -76,7 +76,7 @@ it("round-trips archive v12, rejects bad graphs, and preserves links on legacy i
   source.dependencies.add(source.b.id, source.a.id);
   const capture = captureProject(source.bb, source.store, source.project.id);
   const archive = { manifest: capture.manifest, records: capture.records.map(record => archiveTaskSchema.parse(record)) };
-  expect(archive.manifest.version).toBe(14);
+  expect(archive.manifest.version).toBe(15);
   const targetHost = createFakePluginHost({ pluginId: "work-board" });
   hosts.push(targetHost);
   const targetStore = createStore(targetHost.bb);
@@ -85,7 +85,7 @@ it("round-trips archive v12, rejects bad graphs, and preserves links on legacy i
   expect(target.dependencies.list(source.b.id).blockedBy[0]?.id).toBe(source.a.id);
   const legacy = structuredClone(archive);
   legacy.manifest.version = 11;
-  for (const record of legacy.records) delete record.dependencies;
+  for (const record of legacy.records) { delete record.dependencies; delete record.related; }
   restoreProject(target.bb, target.store, legacy, new Map(), true);
   expect(target.dependencies.list(source.b.id).blockedBy).toHaveLength(1);
   const changed = structuredClone(archive);
@@ -122,4 +122,37 @@ it("exposes CLI dependency management and warnings in show/list JSON and dispatc
   expect(prompt).toContain("Work and status changes are allowed");
   await run(["dependency", "remove", h.b.key, "--blocked-by", h.a.key, "--json"]);
   expect(h.dependencies.blockers([h.b.id]).size).toBe(0);
+});
+
+it("links related tasks symmetrically without blocking, and round-trips them in archive v15", async () => {
+  const h = setup(), api = registerHandlers(h.bb, h.store);
+  expect(await api.addTaskRelation({ taskId: h.b.id, relatedTaskId: h.a.id, authorName: "Owner" })).toEqual({ changed: true });
+  expect(await api.addTaskRelation({ taskId: h.a.id, relatedTaskId: h.b.id, authorName: "Owner" })).toEqual({ changed: false });
+  expect(h.dependencies.list(h.a.id)).toMatchObject({ blockedBy: [], blocks: [], related: [{ id: h.b.id }] });
+  expect(h.dependencies.list(h.b.id).related.map(task => task.id)).toEqual([h.a.id]);
+  expect(h.dependencies.blockers([h.a.id, h.b.id]).size).toBe(0);
+  expect(h.store.tasks.listComments(h.a.id).at(-1)?.body).toContain("Related task added");
+  expect(h.dependencies.related(h.a.id).map(task => task.id)).toEqual([h.b.id]);
+  expect(() => h.dependencies.relate(h.a.id, h.a.id)).toThrow(/itself/);
+  const other = h.store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red" });
+  const foreign = h.store.tasks.createTask({ projectId: other.id, title: "Elsewhere" });
+  expect(() => h.dependencies.relate(h.a.id, foreign.id)).toThrow(/same project/);
+  h.dependencies.relate(h.c.id, h.b.id);
+
+  const capture = captureProject(h.bb, h.store, h.project.id);
+  const archive = { manifest: capture.manifest, records: capture.records.map(record => archiveTaskSchema.parse(record)) };
+  validateArchive(archive);
+  const targetHost = createFakePluginHost({ pluginId: "work-board" });
+  hosts.push(targetHost);
+  const targetStore = createStore(targetHost.bb);
+  restoreProject(targetHost.bb, targetStore, archive, new Map(), false);
+  const target = createDependencyStore(targetHost.bb.storage.database(), targetStore.tasks);
+  expect(target.list(h.b.id).related.map(task => task.id).sort()).toEqual([h.a.id, h.c.id].sort());
+
+  expect(await api.removeTaskRelation({ taskId: h.a.id, relatedTaskId: h.b.id, authorName: "Owner" })).toEqual({ changed: true });
+  expect(h.dependencies.list(h.b.id).related.map(task => task.id)).toEqual([h.c.id]);
+  const reversed = structuredClone(archive);
+  const lower = [h.a.id, h.b.id].sort()[0]!, higher = [h.a.id, h.b.id].sort()[1]!;
+  reversed.records.find(record => record.task.id === higher)!.related = [lower];
+  expect(() => validateArchive(reversed)).toThrow(/Invalid related task/);
 });

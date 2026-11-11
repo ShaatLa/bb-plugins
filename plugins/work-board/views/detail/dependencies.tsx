@@ -11,7 +11,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Icon } from "@/components/ui/icon";
 
-function AddDependency({ task, direction, onSelect }: { task: Task; direction: "blockedBy" | "blocks"; onSelect: (id: string) => Promise<void> }) {
+type LinkKind = "blockedBy" | "blocks" | "related";
+const LINK_LABELS: Record<LinkKind, string> = { blockedBy: "Blocked by", blocks: "Blocks", related: "Related" };
+
+function AddDependency({ task, direction, onSelect }: { task: Task; direction: LinkKind; onSelect: (id: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
@@ -26,7 +29,7 @@ function AddDependency({ task, direction, onSelect }: { task: Task; direction: "
     [], [task.projectId, search], { enabled: open },
   );
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="outline" size="sm" className="h-6 px-2 text-2xs" aria-label={direction === "blockedBy" ? "+ Blocked by" : "+ Blocks"}><Icon name="Plus" className="size-3" />Add</Button></PopoverTrigger>
+    <PopoverTrigger asChild><Button variant="outline" size="sm" className="h-6 px-2 text-2xs" aria-label={`+ ${LINK_LABELS[direction]}`}><Icon name="Plus" className="size-3" />Add</Button></PopoverTrigger>
     <PopoverContent align="start" className="w-80 p-0">
       <Command shouldFilter={false}>
         <CommandInput placeholder="Search task key or title…" value={input} onValueChange={setInput} />
@@ -41,42 +44,45 @@ function AddDependency({ task, direction, onSelect }: { task: Task; direction: "
   </Popover>;
 }
 
-export function DependenciesSection({ task, onError, query }: { task: Task; onError: (message: string) => void; query: { data?: { blockedBy: DependencyTask[]; blocks: DependencyTask[] }; error: string | null; refresh: () => void } }) {
+export function DependenciesSection({ task, onError, query }: { task: Task; onError: (message: string) => void; query: { data?: { blockedBy: DependencyTask[]; blocks: DependencyTask[]; related: DependencyTask[] }; error: string | null; refresh: () => void } }) {
   const rpc = useTasksRpc();
   const { label: statusLabel } = useTaskStatuses(task.projectId);
   const navigation = useTasksNavigation();
   const [pending, setPending] = useState(false);
-  async function change(otherId: string, direction: "blockedBy" | "blocks", remove: boolean) {
+  async function change(otherId: string, direction: LinkKind, remove: boolean) {
     if (pending) return;
     setPending(true);
     try {
-      const input = direction === "blockedBy" ? { taskId: task.id, blockingTaskId: otherId } : { taskId: otherId, blockingTaskId: task.id };
-      await rpc.call(remove ? "removeTaskDependency" : "addTaskDependency", input);
+      if (direction === "related") await rpc.call(remove ? "removeTaskRelation" : "addTaskRelation", { taskId: task.id, relatedTaskId: otherId });
+      else {
+        const input = direction === "blockedBy" ? { taskId: task.id, blockingTaskId: otherId } : { taskId: otherId, blockingTaskId: task.id };
+        await rpc.call(remove ? "removeTaskDependency" : "addTaskDependency", input);
+      }
       await query.refresh();
     } catch (error) { onError(errorMessage(error)); }
     finally { setPending(false); }
   }
   const blockedBy = query.data?.blockedBy.filter(row => row.status !== "done");
-  function rows(items: DependencyTask[], direction: "blockedBy" | "blocks") {
+  function rows(items: DependencyTask[], direction: LinkKind) {
     return <div className="divide-y divide-border-hairline">{items.map(row => <div key={row.id} className="flex min-w-0 items-start gap-1 py-2 first:pt-1 last:pb-1">
       <button type="button" className="min-w-0 flex-1 text-left hover:underline" title={`${row.key} · ${row.title} (${statusLabel(row.status)})`} onClick={() => navigation.go({ kind: "task", taskKey: row.key })}>
         <span className="mb-0.5 flex items-center gap-1 text-2xs text-muted-foreground"><StatusIcon projectId={row.projectId} status={row.status} className="size-3" /><span className="truncate">{statusLabel(row.status)}</span></span>{" "}
         <span className="block truncate">{row.key} · {row.title}</span>
       </button>
-      {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : "blocking link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
+      {!task.archivedAt ? <Button variant="ghost" size="icon" className="size-5 shrink-0" disabled={pending} aria-label={`Remove ${direction === "blockedBy" ? "dependency on" : direction === "blocks" ? "blocking link to" : "related link to"} ${row.key}`} onClick={() => void change(row.id, direction, true)}><Icon name="X" className="size-3" /></Button> : null}
     </div>)}</div>;
   }
   return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="@container mb-6 mt-5 border-t border-border pt-6 text-xs">
     <div className="mb-1 flex flex-wrap items-center gap-2"><h3 className="font-medium">Dependencies</h3><DependencyWarning blockedBy={blockedBy} /></div>
     {blockedBy?.length ? <p className="mb-3 text-2xs text-muted-foreground">Waiting for predecessors to reach Done. Work is still allowed.</p> : null}
     {query.error ? <p role="status" className="text-warning">Could not load dependencies.</p> : null}
-    <div className="grid gap-4 @[36rem]:grid-cols-2">
-      {(["blockedBy", "blocks"] as const).map(direction => <div key={direction} className="min-w-0">
+    <div className="grid gap-4 @[36rem]:grid-cols-3">
+      {(["blockedBy", "blocks", "related"] as const).map(direction => <div key={direction} className="min-w-0">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <h4 className="text-2xs font-medium text-muted-foreground">{direction === "blockedBy" ? "Blocked by" : "Blocks"}</h4>
+          <h4 className="text-2xs font-medium text-muted-foreground">{LINK_LABELS[direction]}</h4>
           {!task.archivedAt ? <fieldset disabled={pending}><AddDependency task={task} direction={direction} onSelect={id => change(id, direction, false)} /></fieldset> : null}
         </div>
-        {query.data?.[direction].length ? rows(query.data[direction], direction) : query.data ? <p className="text-2xs text-muted-foreground">None</p> : null}
+        {query.data?.[direction]?.length ? rows(query.data[direction], direction) : query.data ? <p className="text-2xs text-muted-foreground">None</p> : null}
       </div>)}
     </div>
   </section>;

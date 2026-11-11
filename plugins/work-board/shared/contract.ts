@@ -346,6 +346,7 @@ export type DependencyTask = z.infer<typeof dependencyTaskSchema>;
 export const taskDependenciesSchema = z.object({
   blockedBy: z.array(dependencyTaskSchema),
   blocks: z.array(dependencyTaskSchema),
+  related: z.array(dependencyTaskSchema),
 }).strict();
 
 export const labelSchema = z
@@ -668,6 +669,14 @@ export const tasksRpcContract = {
   },
   removeTaskDependency: {
     input: z.object({ taskId: idSchema, blockingTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
+  addTaskRelation: {
+    input: z.object({ taskId: idSchema, relatedTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
+  removeTaskRelation: {
+    input: z.object({ taskId: idSchema, relatedTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
     output: z.object({ changed: z.boolean() }).strict(),
   },
   ...gitSyncMethods,
