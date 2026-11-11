@@ -459,3 +459,19 @@ it("starts independent worker lookups in parallel", async () => {
     await result;
   }
 });
+
+it("does not hand a finished task to the parent and releases a fallback parent when the task finishes", async () => {
+  const done = setup();
+  done.add("thr_worker", true);
+  done.store.tasks.updateTask(done.task.id, { status: "done" });
+  expect(await reconcileTaskThreads(done.bb, done.store.tasks, done.task.id)).toEqual([]);
+  expect(done.store.tasks.listComments(done.task.id).some((comment) => comment.body.includes("parent fallback"))).toBe(false);
+
+  const open = setup();
+  open.add("thr_worker", true);
+  expect(await reconcileTaskThreads(open.bb, open.store.tasks, open.task.id)).toMatchObject([{ threadId: "thr_parent", presetName: "Parent thread" }]);
+  open.store.tasks.updateTask(open.task.id, { status: "in_review" });
+  expect(open.store.tasks.listTaskThreads(open.task.id)).toHaveLength(1);
+  open.store.tasks.updateTask(open.task.id, { status: "canceled" });
+  expect(open.store.tasks.listTaskThreads(open.task.id)).toEqual([]);
+});

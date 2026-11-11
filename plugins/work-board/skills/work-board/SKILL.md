@@ -210,6 +210,15 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    bb work-board detach ABC-12 --thread thr_dead_predecessor
    ```
 
+### Taking, handing off and finishing a task
+
+One task has one responsible worker session at a time; the board shows it as the attached thread.
+
+- **Take.** When you start real work on a task you were not delegated from Work Board, `bb work-board attach KEY` first, then move it to the project's in-progress status (`bb work-board update KEY --status in_progress`, or the status the project's workflow names). Delegated sessions are already attached; still set the status when work actually starts.
+- **Hand off.** If you stop before the completion criteria (passing it to another session, or blocked on the owner), comment the exact state and next step, leave the status accurate, and `bb work-board detach KEY` unless you stay responsible. Do not leave a task attached to a session that will not continue it.
+- **Finish.** Set `done` or `in_review` per the completion criteria. No detach is needed: links stay as history.
+- **Orchestrators** (a manager session that only delegates) do not attach themselves to the tasks they hand out. If a worker session disappears while its task is unfinished, Work Board attaches the worker's parent as **Parent thread** so the task stays accountable; a new worker attaching replaces it, and finishing the task (done or canceled) releases it automatically. Project-specific status rules (who moves a task to review, testing or done) belong to the project's own workflow docs and Work Board workflow policy, not to this skill.
+
 ## Link tasks in responses
 
 When your reply to the person mentions a task, write the key as an inline

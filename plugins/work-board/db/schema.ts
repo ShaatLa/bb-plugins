@@ -424,6 +424,12 @@ const MIGRATIONS = [
    CREATE INDEX idx_task_relations_related ON task_relations(related_task_id, task_id);`,
   `ALTER TABLE git_pr_snapshots ADD COLUMN last_attempt_at INTEGER;
    ALTER TABLE git_pr_snapshots ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;`,
+  // Parent-fallback links only keep unfinished work accountable; finishing a task releases them on every path.
+  `DELETE FROM task_threads WHERE preset_name='Parent thread'
+     AND task_id IN (SELECT id FROM tasks WHERE status IN ('done','canceled'));
+   CREATE TRIGGER task_parent_fallback_release AFTER UPDATE OF status ON tasks
+   WHEN NEW.status IN ('done','canceled') AND OLD.status <> NEW.status
+   BEGIN DELETE FROM task_threads WHERE task_id=NEW.id AND preset_name='Parent thread'; END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
