@@ -277,6 +277,8 @@ export default function plugin(bb: BbPluginApi) {
       const plain=(text:string)=>unquote(text).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview((r.preview ?? '') as string)).slice(0,160)};})};
     },
+    // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs answers`.
+    logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Answers UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
     queueStamp(raw:z.infer<typeof inputs.queueStamp>) {return {stamp:queueStamps.get(inputs.queueStamp.parse(raw).threadId) ?? 0};},
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
     async pools(raw:z.infer<typeof inputs.pools>) {

@@ -691,3 +691,17 @@ it('shows a query error only once it outlasts a plugin restart', async () => {
     rerender({ error: new Error('still down') }); act(() => { vi.advanceTimersByTime(3000); }); expect(result.current?.message).toBe('still down');
   } finally { vi.useRealTimers(); }
 });
+
+it('catches a UI crash, shows its message and logs it to the plugin server', async () => {
+  const { render } = await import('@testing-library/react');
+  const { CrashGuard } = await import('./app');
+  const fetchMock = vi.fn(async () => new Response('{"ok":true,"result":{"ok":true}}'));
+  vi.stubGlobal('fetch', fetchMock); const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const Boom = () => { throw new Error('bad attachment'); };
+    const view = render(<CrashGuard where="page"><Boom /></CrashGuard>);
+    expect(view.getByRole('alert').textContent).toContain('Answers crashed: bad attachment');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/v1/plugins/answers/rpc/logClientError'); expect(JSON.parse(String(init.body))).toMatchObject({ where: 'page', message: 'bad attachment' });
+  } finally { vi.unstubAllGlobals(); quiet.mockRestore(); }
+});

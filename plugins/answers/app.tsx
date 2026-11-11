@@ -1,5 +1,5 @@
 import { taskKeyRegex } from './task-links';
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, Fragment, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
@@ -501,15 +501,36 @@ export function useRememberedPagePanel() {
   }, [open, selectedKey, tabs, panel]);
 }
 
+// bb's own crash screen shows no error, so the app catches its crashes: the message stays on screen with Try again, and
+// the stack goes to the plugin log.
+export class CrashGuard extends Component<{ where: string; children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    const body = { where: this.props.where, message: String(error?.message ?? error).slice(0, 2000), stack: `${error?.stack ?? ''}\n${info.componentStack ?? ''}`.slice(0, 8000) };
+    void fetch('/api/v1/plugins/answers/rpc/logClientError', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+  }
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return <div role="alert" className="m-3 space-y-2 rounded-lg border border-border bg-background p-3 text-sm">
+      <p className="font-medium text-destructive">Answers crashed: {error.message}</p>
+      <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Details</summary><pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap">{error.stack}</pre></details>
+      <Button size="sm" variant="ghost" onClick={() => this.setState({ error: null })}>Try again</Button>
+    </div>;
+  }
+}
+const guarded = <P extends object>(where: string, View: (props: P) => ReactNode) => (props: P) => <CrashGuard where={where}><View {...props} /></CrashGuard>;
+
 function AnswersPage() {
   useRememberedPagePanel();
   return <AnswersPanel />;
 }
 
 export default definePluginApp(app => {
-  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: AnswersPage, experimental_useBadge: useAnswersBadge });
-  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: AnswersPanel });
-  app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <Pools /> });
+  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
+  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
+  app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="pools"><Pools /></CrashGuard> });
   app.slots.messageAction({ id: 'pool', title: 'Add to reply pool', icon: 'Sent', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.poolAdd.input.parse({ threadId, quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq });
     const response = await fetch('/api/v1/plugins/answers/rpc/poolAdd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
@@ -518,8 +539,8 @@ export default definePluginApp(app => {
     rpcContract.poolAdd.output.parse(body.result);
     experimental_panel.openTab({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
   } });
-  app.slots.experimental_appOverlay({ id: 'chat-comment', component: ChatComment });
-  app.composer.customize({ id: 'questions', scopes: ['thread'], banners: [{ id: 'questions', chrome: 'card', component: ComposerQuestions }] });
+  app.slots.experimental_appOverlay({ id: 'chat-comment', component: guarded('comment', ChatComment) });
+  app.composer.customize({ id: 'questions', scopes: ['thread'], banners: [{ id: 'questions', chrome: 'card', component: guarded('composer banner', ComposerQuestions) }] });
   app.slots.messageAction({ id: 'comment', title: 'Comment', icon: 'MessageSquare', run({ selectedText, message, composer }) {
     if (!composer) throw new Error('The thread composer is unavailable on this surface');
     const selection = window.getSelection();
