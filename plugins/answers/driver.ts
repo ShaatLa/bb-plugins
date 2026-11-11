@@ -112,23 +112,25 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     try {
       const running = await runningChildren(id);
       for (const item of items) {
-        const since = (db.prepare('SELECT created_at FROM items WHERE id=?').get(item) as {created_at:number}).created_at;
-        const waits = running.filter(t=>t.createdAt>=since).map(t=>t.id);
-        if (waits.length) db.prepare("UPDATE items SET status='deferred',interim=answer,interim_seq=answer_seq,answer=NULL,answer_seq=NULL,answer_source=NULL,answered_at=NULL,read_at=NULL,likely_interim=0,notify_state=0,wait_children=?,updated_at=? WHERE id=? AND status='answered' AND answer_source='turn'").run(JSON.stringify(waits),Date.now(),item);
+        // Only children the answering turn started count, not ones a busy manager starts later for other work.
+        const {created_at:since,answered_at:until} = db.prepare('SELECT created_at,answered_at FROM items WHERE id=?').get(item) as {created_at:number;answered_at:number};
+        const waits = running.filter(t=>t.createdAt>=since && t.createdAt<=until).map(t=>t.id);
+        if (waits.length) db.prepare("UPDATE items SET status='deferred',interim=answer,interim_seq=answer_seq,answer=NULL,answer_seq=NULL,answer_source=NULL,answered_at=NULL,read_at=NULL,likely_interim=0,notify_state=0,wait_children=?,wait_windows=?,updated_at=? WHERE id=? AND status='answered' AND answer_source='turn'").run(JSON.stringify(waits),JSON.stringify([[since,until]]),Date.now(),item);
       }
     } catch (e) { if (signal.aborted) throw e; bb.log.warn(`Answers auto-defer: ${String(e)}`); }
   }
   const runningChildren = async (id: string) => (await bb.sdk.threads.list({parentThreadId:id,includeHidden:true,limit:200,signal})).filter(t=>!t.archivedAt && !t.deletedAt && ['active','pending','starting','stopping'].includes(t.status));
-  // The last awaited child reported. Delegation often comes in waves (research, then fixes): children started since the
-  // question still run, so keep waiting for them; otherwise the latest report answers the question (oldest question first).
+  // The last awaited child reported. Delegation often comes in waves (research, then fixes): children that the turns
+  // working on the question started (wait_windows) still run, so keep waiting for them; otherwise the latest report answers the question (oldest question first).
   async function settleWaits(id: string, isLive: boolean) {
-    const items = db.prepare("SELECT id,created_at FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children='[]' ORDER BY created_at, question_seq").all(id) as {id:string;created_at:number}[];
+    const items = db.prepare("SELECT id,created_at,wait_windows FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children='[]' ORDER BY created_at, question_seq").all(id) as {id:string;created_at:number;wait_windows:string|null}[];
     if (!items.length) return false;
     let running: Awaited<ReturnType<typeof runningChildren>>;
     try { running = await runningChildren(id); } catch (e) { if (signal.aborted) throw e; bb.log.warn(`Answers auto-defer: ${String(e)}`); return false; }
     let answered = false;
     db.transaction(() => { for (const item of items) {
-      const waits = running.filter(t=>t.createdAt>=item.created_at).map(t=>t.id);
+      const windows = JSON.parse(item.wait_windows ?? '[]') as [number,number][];
+      const waits = running.filter(t=>windows.some(([from,to])=>t.createdAt>=from && t.createdAt<=to)).map(t=>t.id);
       const report = !waits.length && !answered ? db.prepare("SELECT id,answer,answer_seq,created_at FROM items WHERE thread_id=? AND kind='update' AND trigger_kind='system' AND created_at>=? ORDER BY created_at DESC, answer_seq DESC LIMIT 1").get(id,item.created_at) as {id:string;answer:string;answer_seq:number|null;created_at:number}|undefined : undefined;
       if (report) {
         db.prepare("UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='agent',failed_at=NULL,answered_at=?,notify_state=?,read_at=NULL,wait_children=NULL,updated_at=? WHERE id=?").run(report.answer,report.answer_seq,report.created_at,Number(isLive),Date.now(),item.id);

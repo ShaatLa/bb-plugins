@@ -90,4 +90,8 @@ CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind 
 ALTER TABLE turn_updates ADD COLUMN busy INTEGER NOT NULL DEFAULT 0;`,
   // Auto-defer safety net: JSON string[] of child thread ids a deferred question still waits for (NULL: none).
   `ALTER TABLE items ADD COLUMN wait_children TEXT;`,
+  // Auto-defer scope: JSON [start,end][] of the turns working on the question (the answering turn and the turns its
+  // children woke); only children created inside them count. turn_updates.started_at: when the turn started.
+  `ALTER TABLE items ADD COLUMN wait_windows TEXT;
+ALTER TABLE turn_updates ADD COLUMN started_at INTEGER;`,
 ];

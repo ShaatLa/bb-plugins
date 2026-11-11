@@ -27,10 +27,11 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 
 /** Drops a finished child from every deferred item waiting for it; an emptied list ('[]') is settled by the driver, which
  * either waits for children started since (a later wave) or answers the question with the latest report. */
-function releaseChild(db: Database.Database, threadId: string, child: string) {
- for (const r of db.prepare("SELECT id,wait_children FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND wait_children<>'[]'").all(threadId) as {id:string;wait_children:string}[]) {
+/** The waking turn joins the question's work, so children it starts count as a later wave (see wait_windows). */
+function releaseChild(db: Database.Database, threadId: string, child: string, window: [number, number]) {
+ for (const r of db.prepare("SELECT id,wait_children,wait_windows FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND wait_children<>'[]'").all(threadId) as {id:string;wait_children:string;wait_windows:string|null}[]) {
   const all = JSON.parse(r.wait_children) as string[], ids = all.filter(id => id !== child);
-  if (ids.length !== all.length) db.prepare('UPDATE items SET wait_children=? WHERE id=?').run(JSON.stringify(ids),r.id);
+  if (ids.length !== all.length) db.prepare('UPDATE items SET wait_children=?,wait_windows=? WHERE id=?').run(JSON.stringify(ids),JSON.stringify([...JSON.parse(r.wait_windows ?? '[]'),window]),r.id);
  }
 }
 /** Apply an ascending page inside the caller's transaction; returns whether anything the UI shows changed. */
@@ -72,7 +73,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    failRequest(db,threadId,d.requestId,e.createdAt ?? now,live);
   } else if (e.type === 'turn/started' && turn && !d.parentToolCallId) {
    active=turn;
-   if (trackQuestions) hidden += db.prepare('INSERT OR IGNORE INTO turn_updates(thread_id,turn_id) VALUES (?,?)').run(threadId,turn).changes;
+   if (trackQuestions) hidden += db.prepare('INSERT OR IGNORE INTO turn_updates(thread_id,turn_id,started_at) VALUES (?,?,?)').run(threadId,turn,e.createdAt ?? now).changes;
    // A steer the previous turn never showed the agent is read by this one (bb hands queued input to the next turn).
    hidden += db.prepare("UPDATE items SET turn_id=?,steer_seq=NULL WHERE thread_id=? AND kind='mine' AND status='waiting' AND steer_seq IS NOT NULL").run(turn,threadId).changes;
   }
@@ -96,11 +97,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   } else if (e.type === 'turn/completed' && turn) {
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
-    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null}|undefined;
+    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null}|undefined;
     // Only an update that asks the owner something is pushed; the rest collapse into a quiet group.
     const asks = !!update?.answer && asksOwner(update.answer);
     // Safety net: a child's completion wakes a parent whose question was auto-deferred; see releaseChild.
-    if (update?.kind === 'system' && update.source_id) releaseChild(db,threadId,update.source_id);
+    if (update?.kind === 'system' && update.source_id) releaseChild(db,threadId,update.source_id,[update.started_at ?? e.createdAt ?? now,e.createdAt ?? now]);
     if (update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn))
      db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answer,answer_seq,answer_source,answered_at,read_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,'turn',?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|update|'+update.answer_seq).digest('hex'),threadId,projectId,update.question,update.answer,update.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),update.kind ?? 'other',update.source_id,e.createdAt ?? now,now);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='agent',failed_at=NULL,wait_children=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND resolve_turn_id=? AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
