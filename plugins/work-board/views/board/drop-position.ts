@@ -1,4 +1,5 @@
 import { type TaskStatus } from "../../shared/contract.js";
+import { type cardLayout } from "./card-window.js";
 
 export const BOARD_STATUSES = [
   "backlog",
@@ -43,6 +44,35 @@ export function dropIndexForPointer(
     if (pointerY > centerY) index += 1;
   }
   return index;
+}
+
+export function dropIndexForLayout(
+  layout: ReturnType<typeof cardLayout>,
+  pointerY: number,
+  draggedTaskId: string,
+): number {
+  const excluded = layout.indices.get(draggedTaskId) ?? layout.heights.length;
+  let low = 0;
+  let high = layout.heights.length - Number(excluded < layout.heights.length);
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const index = mid >= excluded ? mid + 1 : mid;
+    const center = layout.offsets[index]! + layout.heights[index]! / 2;
+    if (pointerY > center) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+export function updateDragState<T extends { x: number; y: number; overStatus: TaskStatus | null; dropIndex: number }>(
+  current: T | null,
+  next: T,
+  setDrag: (next: T) => void,
+): T {
+  if (current && current.x === next.x && current.y === next.y &&
+    current.overStatus === next.overStatus && current.dropIndex === next.dropIndex) return current;
+  setDrag(next);
+  return next;
 }
 
 export function applyBoardMove<T extends { id: string; status: TaskStatus }>(
