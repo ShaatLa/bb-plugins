@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { rangeInputSchema } from "./date-range";
 import { metricsSchema, repositorySchema } from "./metrics";
-import { actorSchema, poolStateSchema, problemSchema, repositorySignalsSchema, signalSchema, type SignalsOutput } from "./ci-signals-contract";
+import { actorSchema, laneTimingsSchema, poolStateSchema, problemSchema, repositorySignalsSchema, signalSchema, type SignalsOutput } from "./ci-signals-contract";
 import { inspectionSchema } from "./ci-inspect";
 import { jobRef, problemRefs, queueRef, runRef, REF_FORMS, whereRef } from "./ci-refs";
 import type { DashboardData } from "./server";
@@ -10,7 +10,8 @@ export const ciQuerySchema = z.object({
   repository: repositorySchema.optional().describe("Configured owner/repo; omit for all dashboard repositories."),
   selection: rangeInputSchema.default({ days: 7 }).describe("Preset days 1, 3, 7, 14, 30 or 90, or inclusive UTC start/end dates within the past year. One day means today from 00:00 UTC."),
   refresh: z.boolean().default(false).describe("False returns a local snapshot when available, including stale data with its timestamp. True forces a GitHub refresh; cold/large ranges may take time. Ignored by views other than summary."),
-  view: z.enum(["summary", "problems", "signals", "stall", "losses", "failures", "reruns"]).default("summary").describe("summary: run-level metrics plus open signals and runner pools. problems: only the open CI health problems with ids, handled state and refs (smallest; use it to find something to take with ci_dashboard_manage). Other views return only compact job-level rows from the local store, each with a ref for ref=...: signals (open signals: id, kind, severity, title, what, since, actor, ref), stall (live runner pool queues plus per pool queue wait and duration p50/p90, overall and by event), losses (runner loss tallies, mass cancels with run refs, recent loss job refs), failures (failed jobs: ref, run, name, class, event, at, queuePullRequest, plus counts by event), reruns (rows with run and queue refs). They ignore selection."),
+  view: z.enum(["summary", "problems", "signals", "stall", "losses", "failures", "reruns", "lanes"]).default("summary").describe("summary: run-level metrics plus open signals and runner pools. problems: only the open CI health problems with ids, handled state and refs (smallest; use it to find something to take with ci_dashboard_manage). Other views return only compact job-level rows from the local store, each with a ref for ref=...: signals (open signals: id, kind, severity, title, what, since, actor, ref), stall (live runner pool queues plus per pool queue wait and duration p50/p90, overall and by event), losses (runner loss tallies, mass cancels with run refs, recent loss job refs), failures (failed jobs: ref, run, name, class, event, at, queuePullRequest, plus counts by event), reruns (rows with run and queue refs). They ignore selection."),
+  event: z.string().optional().describe("For view=lanes: the run event of the pipeline; default the main pipeline."),
   ref: z.string().trim().min(1).max(300).optional().describe(`Drill down: pass a ref taken from any view or observer line to get one small inspection (summary, facts, related refs, next steps) built from the local store only. view, selection and refresh are then ignored. Refs: ${REF_FORMS.join("; ")}.`),
 }).strict();
 const openSignalSchema = signalSchema.pick({ id: true, kind: true, severity: true, title: true, since: true }).extend({ actor: actorSchema });
@@ -49,6 +50,7 @@ const summaryRow = metricsSchema.pick({ repository: true, updatedAt: true, range
 const sliceRow = repositorySignalsSchema.pick({ repository: true, updatedAt: true, error: true, window: true, backfill: true })
   .extend({ problems: z.array(agentProblemSchema).optional(), signals: z.array(compactSignalSchema).optional(), massCancels: z.array(agentMassCancel).optional(), recentLosses: z.array(z.string()).optional(),
     failures: z.array(agentFailureRow).optional(), reruns: z.array(agentRerunRow).optional(),
+    pipeline: laneTimingsSchema.shape.pipelines.element.pick({ workflow: true, event: true, runs: true }).nullable().optional(), wall: laneTimingsSchema.shape.pipelines.element.shape.wall.nullable().optional(), lanes: laneTimingsSchema.shape.pipelines.element.shape.lanes.optional(), otherPipelines: z.array(laneTimingsSchema.shape.pipelines.element.pick({ workflow: true, event: true, runs: true })).optional(), moreLanes: z.number().optional(),
     moreProblems: z.number().optional(), moreSignals: z.number().optional(), moreFailures: z.number().optional(), moreReruns: z.number().optional() })
   .extend(repositorySignalsSchema.pick({ live: true, runnerLosses: true, failureCounts: true, failureCountsByEvent: true, poolTimings: true, poolTimingsByEvent: true }).partial().shape);
 export const ciReportSchema = z.object({
@@ -60,8 +62,15 @@ export const ciOutputSchema = z.union([ciReportSchema, inspectionSchema]);
 export type CiQuery = z.infer<typeof ciQuerySchema>;
 
 const noBackfill = { remaining: 0, failed: 0, pausedUntil: null, coveredSince: null };
-export function ciSliceReport(signals: SignalsOutput, view: Exclude<CiQuery["view"], "summary">) {
+export function ciSliceReport(signals: SignalsOutput, view: Exclude<CiQuery["view"], "summary">, event?: string) {
   const slice = {
+    lanes: (r) => {
+      const pipelines = r.laneTimings?.pipelines ?? [], selected = pipelines.find((p) => !event || p.event === event);
+      const identity = ({ workflow, event, runs }: typeof pipelines[number]) => ({ workflow, event, runs });
+      const otherPipelines = pipelines.filter((p) => p !== selected).map(identity);
+      const base = { pipeline: selected ? identity(selected) : null, wall: selected?.wall ?? null, otherPipelines };
+      return { ...base, ...bounded("lanes", selected?.lanes ?? [], Math.max(0, 7000 - JSON.stringify(base).length)) };
+    },
     stall: (r) => ({ live: r.live, signals: r.signals.filter((s) => s.kind === "pool_stall").map(compact), poolTimings: r.poolTimings, poolTimingsByEvent: r.poolTimingsByEvent }),
     problems: (r) => bounded("problems", r.problems.map((p) => agentProblem(p, r)), 7000),
     // Bounded: open signals only, one compact row each; resolved history is in losses/failures.

@@ -29,7 +29,9 @@ export const ciInsightsSchema = z.object({
   total: z.number(), identified: z.number(), defaultBranch: z.string().nullable(),
   main: countsSchema.nullable(), pullRequests: countsSchema,
   alerts: z.array(alertSchema), timing: timingSchema,
-  workflows: z.array(countsSchema.extend({ id: z.number(), name: z.string(), timing: timingSchema, failureId: z.number().nullable() })),
+  workflows: z.array(countsSchema.extend({ id: z.number(), name: z.string(), timing: timingSchema, failureId: z.number().nullable(),
+    /** Per event (pull_request, merge_group, push…), main event first (see rankEvents); optional so stored snapshots still parse. */
+    events: z.array(z.object({ event: z.string(), total: z.number(), passed: z.number(), timing: timingSchema })).optional() })),
   slowRuns: z.array(z.object({ id: z.number(), name: z.string(), branch: z.string().nullable(), durationMs: z.number() })),
 });
 export type CiInsights = z.infer<typeof ciInsightsSchema>;
@@ -54,6 +56,22 @@ function timings(runs: Run[]) {
     medianMs: count ? (values[Math.floor((count - 1) / 2)] + values[Math.floor(count / 2)]) / 2 : null,
     p95Ms: count ? values[Math.ceil(count * 0.95) - 1] : null };
 }
+
+/**
+ * Main event first: the slowest per successful run (the full check) among events holding at least a tenth of the workflow's
+ * timed successful runs, so a rare long job (a nightly schedule) never leads; then the rest by the same mean.
+ */
+const rankEvents = <T extends { event: string }>(list: T[], timed: (item: T) => [count: number, totalMs: number]) => {
+  const all = list.reduce((sum, item) => sum + timed(item)[0], 0), mean = (item: T) => { const [count, ms] = timed(item); return count ? ms / count : 0; };
+  const major = (item: T) => Number(timed(item)[0] * 10 >= all);
+  return list.sort((a, b) => major(b) - major(a) || mean(b) - mean(a) || a.event.localeCompare(b.event));
+};
+/** Runs grouped by `event`; runs without one are skipped. */
+const byEvent = (runs: Run[]) => {
+  const groups = new Map<string, Run[]>();
+  for (const run of runs) if (run.event) { const list = groups.get(run.event); if (list) list.push(run); else groups.set(run.event, [run]); }
+  return [...groups];
+};
 
 /** The consecutive failed runs an alert counts, newest first (same grouping and filtering as summarizeCi). */
 export function alertStreak(runs: Run[], alert: Pick<CiInsights["alerts"][number], "workflowId" | "branch" | "runId">): Run[] {
@@ -91,7 +109,7 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
   }
   alerts.sort((a, b) => Number(b.kind === "main") - Number(a.kind === "main") || b.consecutive - a.consecutive || b.runId - a.runId);
   const workflows = [...groups].map(([id, rows]) => ({ id, name: rows[0].name ?? `Workflow ${id}`,
-    ...counts(rows), timing: timings(rows), failureId: rows.find((run) => !run.draftDeferred && failures.has(run.conclusion ?? ""))?.id ?? null,
+    ...counts(rows), timing: timings(rows), events: rankEvents(byEvent(rows).map(([event, list]) => ({ event, total: list.length, passed: counts(list).passed, timing: timings(list) })), (row) => [row.timing.count, row.timing.totalMs]), failureId: rows.find((run) => !run.draftDeferred && failures.has(run.conclusion ?? ""))?.id ?? null,
   })).sort((a, b) => b.failed - a.failed || b.total - a.total || a.id - b.id);
   return {
     draftPolicy: "job-evidence-v1", total: runs.length, identified: known.length, defaultBranch,
@@ -104,12 +122,14 @@ export function summarizeCi(runs: Run[], defaultBranch: string | null): CiInsigh
   };
 }
 
-/** One bucket of a history chart; `parts` (e.g. additions/deletions) must sum to `value`. */
-export type TrendPoint = { date: string; value: number | null; parts?: { key: string; value: number }[] };
+/** One bucket of a history chart; `parts` (e.g. additions/deletions) must sum to `value`; `count` is the sample size behind a sample-based value. */
+export type TrendPoint = { date: string; value: number | null; parts?: { key: string; value: number }[]; count?: number };
 export const RUN_TREND_KEYS = ["durationMedian", "durationP90", "runs", "failedRuns", "startDelay"] as const;
 export type RunTrends = Record<typeof RUN_TREND_KEYS[number], TrendPoint[]>;
-/** Run-based series of one workflow; `successMs` (total successful-run time) and `total` rank workflows. */
-export type WorkflowTrend = RunTrends & { id: number; name: string; total: number; successMs: number };
+/** Run-based series of one event within a workflow. */
+export type EventTrend = RunTrends & { event: string; total: number; successMs: number };
+/** Run-based series of one workflow; `successMs` (total successful-run time) and `total` rank workflows. `events[0]` is the main event. */
+export type WorkflowTrend = RunTrends & { id: number; name: string; total: number; successMs: number; events: EventTrend[] };
 export type Trends = Partial<RunTrends & Record<"commits" | "lines", TrendPoint[]>> & { workflows?: WorkflowTrend[] };
 /** Most workflows kept in a snapshot; the rest are tiny by the ranking below. */
 const MAX_TREND_WORKFLOWS = 20;
@@ -130,7 +150,10 @@ export function summarizeTrends(
   const dates = emptySeries().map((point) => point.date);
   const cells = <T,>(make: () => T) => dates.map(make);
   const series = (values: (number | null)[]): TrendPoint[] => dates.map((date, index) => ({ date, value: values[index]! }));
-  const stat = (lists: number[][], pick: (sorted: number[]) => number) => series(lists.map((list) => list.length ? pick([...list].sort((a, b) => a - b)) : null));
+  const stat = (lists: number[][], pick: (sorted: number[]) => number): TrendPoint[] => dates.map((date, index) => {
+    const list = lists[index]!;
+    return list.length ? { date, value: pick([...list].sort((a, b) => a - b)), count: list.length } : { date, value: null };
+  });
   const out: Trends = {};
   const runTrends = (list: Run[]): RunTrends => {
     const durations = cells(() => [] as number[]), delays = cells(() => [] as number[]);
@@ -157,9 +180,13 @@ export function summarizeTrends(
     Object.assign(out, runTrends(runs));
     // Pooled runs are dominated by whichever workflow runs most often, so also keep each workflow apart.
     const byWorkflow = new Map<number, Run[]>();
-    for (const run of runs) if (run.workflow_id !== undefined && bucket(run.created_at) >= 0) byWorkflow.set(run.workflow_id, [...(byWorkflow.get(run.workflow_id) ?? []), run]);
+    for (const run of runs) if (run.workflow_id !== undefined && bucket(run.created_at) >= 0) { const list = byWorkflow.get(run.workflow_id); if (list) list.push(run); else byWorkflow.set(run.workflow_id, [run]); }
+    const successMs = (list: Run[]) => list.reduce((sum, run) => sum + (run.conclusion === "success" ? duration(run) ?? 0 : 0), 0);
     out.workflows = [...byWorkflow].map(([id, list]) => ({ id, name: list.find((run) => run.name)?.name ?? `Workflow ${id}`, total: list.length,
-      successMs: list.reduce((sum, run) => sum + (run.conclusion === "success" ? duration(run) ?? 0 : 0), 0), ...runTrends(list) }))
+      successMs: successMs(list), ...runTrends(list),
+      // A workflow can run different things per event (light PR preflight, full merge-queue check): never mix them silently.
+      events: rankEvents(byEvent(list).map(([event, rows]): EventTrend => ({ event, total: rows.length, successMs: successMs(rows), ...runTrends(rows) })),
+        (row) => [row.durationMedian.reduce((sum, point) => sum + (point.count ?? 0), 0), row.successMs]) }))
       .sort((x, y) => y.successMs - x.successMs || y.total - x.total || x.id - y.id).slice(0, MAX_TREND_WORKFLOWS);
   }
   if (commits) {

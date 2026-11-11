@@ -13,7 +13,7 @@ import { createGitHubCache } from "./github-cache";
 import { capOpenSignals, cleanupCache, compress, decompress, deepDays, deepIdleMs, jobMaxBytes, purgeDeadResponses, shallowFloor, storageStats } from "./cache-cleanup";
 import { ciOutputSchema, ciQuerySchema, ciReportSchema, ciReport, ciSliceReport, type CiQuery } from "./agent-ci";
 import { inspect, relatedRefs, type InspectInput } from "./ci-inspect";
-import { classifyJobs, detectMassCancel, queueOnlyJobs, runnerLosses, summarizeReruns, timingSamples, type MassCancel, type TimingSample } from "./ci-classify";
+import { classifyJobs, detectMassCancel, laneTimings, queueOnlyJobs, runnerLosses, summarizeReruns, timingSamples, type MassCancel, type TimingSample } from "./ci-classify";
 import { createArtifactFetcher, createBackfill, createJobStore, createLogFetcher, jobMigrations, normalizeJob, type FlakeConfig } from "./ci-jobs";
 import { flakeSettings, flakeSignaturesSchema } from "./flake-signatures";
 import type { ClassifiedJob, JobRecord, PoolQueueState, RerunSummary, Signal } from "./ci-jobs-types";
@@ -118,8 +118,8 @@ export default function plugin(bb: BbPluginApi) {
   database.prepare("UPDATE github_responses SET last_used_at = checked_at WHERE last_used_at = 0").run();
   database.prepare("UPDATE repository_history SET last_used_at = ? WHERE last_used_at = 0").run(Date.now());
   try {
-    const purged = purgeDeadResponses(database);
-    if (purged) bb.log.info(`Purged ${purged} unreachable cached GitHub responses.`);
+    // Routine maintenance stays out of the log; only failures are worth a line.
+    purgeDeadResponses(database);
   } catch { bb.log.warn("Cache purge failed; a later cleanup will retry without interrupting metrics."); }
   const cachedRequest = createGitHubCache(database);
   const repositoryPending = new Map<string, Promise<Metrics>>();
@@ -148,12 +148,11 @@ export default function plugin(bb: BbPluginApi) {
   function clean(compact = false) {
     if (compact) nextCleanup = Date.now() + 3_600_000;
     try {
-      const result = cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0, Date.now() - lastDeepAt >= deepIdleMs ? shallowFloor() : undefined);
-      if (result.removed) bb.log.info(`Cache cleanup removed ${result.removed} entries; ${result.bytes} payload bytes retained.`);
+      cleanupCache(database, repositoryList?.names, compact && pending.size === 0 && repositoryPending.size === 0, Date.now() - lastDeepAt >= deepIdleMs ? shallowFloor() : undefined);
     } catch { bb.log.warn("Cache maintenance failed; a later cleanup will retry without interrupting metrics."); }
   }
   function currentTimings(result: DashboardData) {
-    return result.repositories.every((repo) => !repo.ciInsights || (repo.trends?.workflows && repo.ciInsights.timing.basis === "success" && repo.ciInsights.draftPolicy === "job-evidence-v1"));
+    return result.repositories.every((repo) => !repo.ciInsights || (repo.trends?.workflows?.every((workflow) => workflow.events) && repo.ciInsights.workflows.every((workflow) => workflow.events) && repo.ciInsights.timing.basis === "success" && repo.ciInsights.draftPolicy === "job-evidence-v1"));
   }
   function touchSnapshot(result: DashboardData, selection: string, config: string) {
     database.prepare("UPDATE dashboard_snapshots SET refreshed_at = ? WHERE selection = ? AND configuration = ?").run(Date.now(), selection, config);
@@ -306,7 +305,7 @@ export default function plugin(bb: BbPluginApi) {
       // One repository history serves every contained view; PR creation counts remain range-specific.
       // Cached loads only ever add draft classifications to the stored runs; rewrite the row only when one was added.
       const classified = () => source.records.runs.reduce((count, run) => count + (run.draftDeferred === undefined ? 0 : 1), 0), before = classified();
-      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, draftRules: draftRules(values), onProgress: progress });
+      const metrics = await loadMetrics(repository, token, controller.signal, asOf, { metrics: source.metrics, records: source.records }, undefined, { request, draftRules: draftRules(values), onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`Dashboard metrics for ${repository}: ${message}`); } });
       if (canWrite() && classified() !== before) database.prepare("UPDATE repository_history SET data = ? WHERE repository = ? AND configuration = ?").run(compress(JSON.stringify(source)), repository, config);
       return metrics;
     }
@@ -321,7 +320,7 @@ export default function plugin(bb: BbPluginApi) {
     let records: HistoricalRecords | undefined;
     const checks = windowChecks.get(key) ?? new Map<string, number>();
     windowChecks.set(key, checks);
-    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, reuse: source ? { coverage: source.coverage, checked: checks } : undefined, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`CI history for ${repository}: ${message}`); } }).then((metrics) => {
+    const operation = loadMetrics(repository, token, controller.signal, range, undefined, (value) => { records = value; }, { request, draftRules: draftRules(values), historyRange: coverage, previous: source?.records, partitionCi: true, reuse: source ? { coverage: source.coverage, checked: checks } : undefined, onProgress: progress, onWarning: (message) => { if (canWrite()) bb.log.warn(`Dashboard metrics for ${repository}: ${message}`); } }).then((metrics) => {
       if (records && canWrite()) {
         const result: RepositoryHistory = { metrics, records, coverage, checkedAt: Date.now(), projectName, authSource };
         database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO UPDATE SET data = excluded.data, last_used_at = excluded.last_used_at").run(repository, config, compress(JSON.stringify(result)), Date.now());
@@ -364,7 +363,7 @@ export default function plugin(bb: BbPluginApi) {
     /** Runs of the previous live poll, and those that left it since (fast path: fetched ahead of the history refresh). Run ids of each alert's failure streak, for observer verdicts. */
     liveRunIds?: Set<number>; finished: Set<number>; alertStreaks: Map<number, number[]>;
     backfill?: { key: string; enqueued: string; run: ReturnType<typeof createBackfill>; status: { processed: number; remaining: number; pausedUntil: number | null; failed: number } };
-    analysis?: { key: string; at: number; classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; queueOnly: Set<number>; samples: TimingSample[]; summary: ReturnType<typeof summarizeAnalysis> };
+    analysis?: { key: string; at: number; classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; queueOnly: Set<number>; samples: TimingSample[]; laneTimings: ReturnType<typeof laneTimings>; summary: ReturnType<typeof summarizeAnalysis> };
     incidents?: Incidents; persisted?: string; resultIds?: string; tracker: ReturnType<typeof createIncidentTracker>; view?: View; signature?: string;
   };
   const jobStore = createJobStore(database);
@@ -585,7 +584,7 @@ export default function plugin(bb: BbPluginApi) {
         attachPrHeads(jobs, classified);
         for (const group of massCancels) for (const c of group.jobs) c.job.massLoss = true;
         const queueOnly = queueOnlyJobs(jobs, classified), samples = timingSamples(jobs);
-        rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, queueOnly, samples, summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo, queueOnly, samples }) };
+        rt.analysis = { key: analysisKey, at: now, classified, reruns, massCancels, queueOnly, samples, laneTimings: laneTimings(jobs, now), summary: summarizeAnalysis({ classified, reruns, massCancels, losses: runnerLosses(classified), repository: repo, queueOnly, samples }) };
       } catch (error) { fail("analysis", error); }
     };
     if (recompute) analyze();
@@ -874,7 +873,9 @@ export default function plugin(bb: BbPluginApi) {
   async function readCi(input: CiQuery) {
     if (input.ref) return inspectRef(input.ref, input.repository);
     const signalsInput = input.repository ? { repository: input.repository } : null;
-    if (input.view !== "summary") return ciSliceReport(await handlers.signals(signalsInput), input.view);
+    // Lane timings are for agents only: read from the analysis on request instead of riding in every stored and UI view.
+    if (input.view === "lanes") { const signals = await handlers.signals(signalsInput); return ciSliceReport({ ...signals, repositories: signals.repositories.map((row) => ({ ...row, laneTimings: runtimeFor(row.repository).analysis?.laneTimings })) }, "lanes", input.event); }
+    if (input.view !== "summary") return ciSliceReport(await handlers.signals(signalsInput), input.view, input.event);
     resolveRange(input.selection);
     const snapshot = input.refresh ? null : await handlers.snapshot(input.selection);
     const data = snapshot ?? await metrics(input.selection, input.refresh);
@@ -890,7 +891,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   bb.agents.registerTool({
     name: "ci_dashboard_metrics",
-    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Also job-level signals: runner pool stalls, runner losses and mass cancels, reruns that still fail, flaky and transient failures. Failure and rerun rows carry the run event (pull_request, push, merge_group); merge_group failure rows add queuePullRequest and queueOnly (passes on the PR, fails only in the merge queue), and failureCountsByEvent splits the failure counts. view=stall gives the live runner pool queues plus per runner pool job counts and p50/p90 queue wait and duration in ms, overall (poolTimings) and by event (poolTimingsByEvent). Signals are deploy-agnostic: they come from run and job facts only, not from deployment tooling. view=summary (default) adds open signals and runner pool queues to the run-level report; view=problems returns only the open CI health problems with ids and handled state (smallest; use it before ci_dashboard_manage); view=signals|stall|losses|failures|reruns returns only that job-level slice with no run-level metrics. Index views are compact and give every row a ref (job:ID, run:ID:ATTEMPT, queue:RUN:ATTEMPT, pool:NAME, pr:N, sha:SHA, or a problem/signal id); to see more about one row call this tool again with ref=<that ref> (view, selection and refresh are then ignored): the answer is a few lines of summary, facts and related refs from the local store, with no log text, so walk index view -> ref -> related ref instead of asking for big dumps. Job-level data comes from a local store filled by a budgeted backfill of job history, so check backfill.remaining and backfill.coveredSince before concluding something did not happen. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh run-level data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. Never writes to GitHub: no deployments, reruns, cancellations or other writes are triggered.",
+    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Also job-level signals: runner pool stalls, runner losses and mass cancels, reruns that still fail, flaky and transient failures. Failure and rerun rows carry the run event (pull_request, push, merge_group); merge_group failure rows add queuePullRequest and queueOnly (passes on the PR, fails only in the merge queue), and failureCountsByEvent splits the failure counts. view=lanes gives seven UTC days of full-attempt wall and lane p50/p90 with sample counts; event selects a pipeline. view=stall gives the live runner pool queues plus per runner pool job counts and p50/p90 queue wait and duration in ms, overall (poolTimings) and by event (poolTimingsByEvent). Signals are deploy-agnostic: they come from run and job facts only, not from deployment tooling. view=summary (default) adds open signals and runner pool queues to the run-level report; view=problems returns only the open CI health problems with ids and handled state (smallest; use it before ci_dashboard_manage); view=signals|stall|losses|failures|reruns returns only that job-level slice with no run-level metrics. Index views are compact and give every row a ref (job:ID, run:ID:ATTEMPT, queue:RUN:ATTEMPT, pool:NAME, pr:N, sha:SHA, or a problem/signal id); to see more about one row call this tool again with ref=<that ref> (view, selection and refresh are then ignored): the answer is a few lines of summary, facts and related refs from the local store, with no log text, so walk index view -> ref -> related ref instead of asking for big dumps. Job-level data comes from a local store filled by a budgeted backfill of job history, so check backfill.remaining and backfill.coveredSince before concluding something did not happen. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh run-level data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. Never writes to GitHub: no deployments, reruns, cancellations or other writes are triggered.",
     parameters: ciQuerySchema,
     presentation: { label: { pending: "Reading CI Dashboard", completed: "Read CI Dashboard" } },
     async execute(input, { signal }) {

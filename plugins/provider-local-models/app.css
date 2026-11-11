@@ -1,15 +1,16 @@
-/* Local models have no quota: core usage rows tagged with U+2063 show ∞ instead of a bar and percent. */
-button[aria-label*="\2063:"] span.h-1 {
-  visibility: hidden;
+/* Local models have no quota: the usage row tagged with U+2063 shows only the model list,
+   spanning the full row and wrapping instead of being truncated to the label column. */
+button[aria-label*="\2063:"] > span:first-child {
+  height: auto;
 }
-button[aria-label*="\2063:"] span.text-right.tabular-nums:not([aria-hidden]) {
-  font-size: 0;
+button[aria-label*="\2063:"] > span:first-child > span:first-child {
+  grid-column: 1 / -1;
+  max-width: none;
+  overflow: visible;
+  white-space: normal;
 }
-button[aria-label*="\2063:"] span.text-right.tabular-nums:not([aria-hidden])::after {
-  content: "∞";
-  font-size: 11px;
+/* Bar, percent, reset time and the click-to-expand details mean nothing here. */
+button[aria-label*="\2063:"] > span:first-child > span:not(:first-child),
+button[aria-label*="\2063:"] > span:nth-child(2) {
+  display: none;
 }
-button[aria-label*="\2063:"] span.text-right.tabular-nums[aria-hidden] {
-  visibility: hidden;
-}
-

@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Local models",
-    "description": "Run BB threads on local OpenAI-compatible models (llama.cpp) through the installed Codex CLI, with unlimited usage.",
+    "description": "Run BB threads on local OpenAI-compatible models (llama.cpp) with a built-in agent loop and unlimited usage.",
     "branding": {
       "icon": "./icons/local-models.svg"
     },

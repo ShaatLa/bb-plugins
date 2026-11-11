@@ -16,6 +16,10 @@ type ChartSpec = {
   source?: "ci" | "commitActivity"; fixedMax?: number;
   /** Run-based series that can be narrowed to one workflow. */
   byWorkflow?: boolean;
+  /** Sample-based charts that default to the workflow's main event: pooling events mixes different pipelines. */
+  mainEvent?: boolean;
+  /** Tooltip sentence for the sample behind a bar; `runs` reads "merge_group runs" or "runs". */
+  sample?: (n: number, runs: string) => string;
   /** Components drawn as bars side by side within one column, left to right (their values sum to the point value). */
   parts?: Part[];
 };
@@ -25,11 +29,14 @@ const DEFAULT_PART = { latest: "bg-diff-added", other: "bg-diff-added/60 group-h
 export const CHARTS: Record<ChartKey, ChartSpec> = {
   passRate: { title: "CI pass rate over time", format: (value) => `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`, fixedMax: 100 },
   deployments: { title: "Deployment throughput", format: count },
-  durationMedian: { byWorkflow: true, title: "Median CI run duration", format: elapsed, source: "ci", note: "successful runs" },
-  durationP90: { byWorkflow: true, title: "CI run duration p90", format: elapsed, source: "ci", note: "successful runs" },
+  durationMedian: { byWorkflow: true, mainEvent: true, title: "Median CI run duration", format: elapsed, source: "ci", note: "successful runs",
+    sample: (n, runs) => `median of ${n} successful ${runs}; failed, cancelled and skipped runs excluded` },
+  durationP90: { byWorkflow: true, mainEvent: true, title: "CI run duration p90", format: elapsed, source: "ci", note: "successful runs",
+    sample: (n, runs) => `p90 of ${n} successful ${runs}; failed, cancelled and skipped runs excluded` },
   runs: { byWorkflow: true, title: "CI runs", format: count, source: "ci", },
   failedRuns: { byWorkflow: true, title: "Failed CI runs", format: count, source: "ci" },
-  startDelay: { byWorkflow: true, title: "Median wait before a run starts", format: elapsed, source: "ci", note: "first attempts" },
+  startDelay: { byWorkflow: true, title: "Median wait before a run starts", format: elapsed, source: "ci", note: "first attempts",
+    sample: (n, runs) => `median of ${n} first-attempt ${runs}` },
   commits: { title: "Commits to default branch", format: count, source: "commitActivity" },
   lines: { title: "Lines changed", format: count, source: "commitActivity", parts: [
     { key: "additions", sign: "+", word: "added", latest: "bg-diff-added", other: "bg-diff-added/60 group-hover:bg-diff-added/80" },
@@ -40,8 +47,8 @@ export const CHART_KEYS = Object.keys(CHARTS) as ChartKey[];
 /** Trend series that arrive with each `pending` source; used to keep the previous values while it refreshes. */
 export const trendKeysBySource = { ci: ["durationMedian", "durationP90", "runs", "failedRuns", "startDelay", "workflows"], commitActivity: ["commits", "lines"] } as const;
 const STORAGE_KEY = "ci-dashboard:history-charts";
-/** One card: the chart and, for run-based charts, the chosen workflow (undefined = the default workflow). */
-type Slot = { chart: ChartKey; workflow?: number | "all" };
+/** One card: the chart and, for run-based charts, the chosen workflow and event (undefined = the default; "all" = pooled). */
+type Slot = { chart: ChartKey; workflow?: number | "all"; event?: string };
 const DEFAULTS: [Slot, Slot] = [{ chart: "passRate" }, { chart: "deployments" }];
 
 function readSlots(): [Slot, Slot] {
@@ -49,8 +56,8 @@ function readSlots(): [Slot, Slot] {
     const saved: unknown = JSON.parse(globalThis.localStorage?.getItem(STORAGE_KEY) ?? "null");
     // Entries saved before workflow selection are plain chart keys.
     const slots = Array.isArray(saved) ? saved.map((entry): Slot | null => {
-      const { chart, workflow } = typeof entry === "string" ? { chart: entry, workflow: undefined } : entry ?? {};
-      return CHART_KEYS.includes(chart) ? { chart, ...(workflow === "all" || Number.isInteger(workflow) ? { workflow } : {}) } : null;
+      const { chart, workflow, event } = typeof entry === "string" ? { chart: entry, workflow: undefined, event: undefined } : entry ?? {};
+      return CHART_KEYS.includes(chart) ? { chart, ...(workflow === "all" || Number.isInteger(workflow) ? { workflow } : {}), ...(typeof event === "string" ? { event } : {}) } : null;
     }) : [];
     if (slots.length === 2 && slots[0] && slots[1] && slots[0].chart !== slots[1].chart) return [slots[0], slots[1]];
   } catch { /* unavailable or corrupt storage: use the defaults */ }
@@ -74,7 +81,7 @@ export function HistoryCharts({ repo, onSelect }: {
       return <div key={slot} aria-hidden={hidden || undefined} inert={hidden} className={`min-w-0 overflow-hidden transition-opacity duration-300 ease-in-out motion-reduce:transition-none ${hidden ? "hidden opacity-0 xl:block" : "opacity-100"}`}>
         {/* Keep shrinking labels from wrapping and increasing the row height. */}
         <div className="h-full xl:min-w-[calc((100cqw_-_0.75rem)/2)]">
-          <HistoryChart chart={slots[slot].chart} workflow={slots[slot].workflow} options={CHART_KEYS.filter((key) => key !== slots[1 - slot].chart)} selectLabel={slot === 0 ? "First chart" : "Second chart"}
+          <HistoryChart chart={slots[slot].chart} workflow={slots[slot].workflow} event={slots[slot].event} options={CHART_KEYS.filter((key) => key !== slots[1 - slot].chart)} selectLabel={slot === 0 ? "First chart" : "Second chart"}
             onChange={(change) => { const next = slots.map((current, index) => index === slot ? { ...current, ...change } : current) as [Slot, Slot]; setSlots(next); saveSlots(next); }}
             repo={repo} onSelect={onSelect} expanded={expanded === slot} onToggle={() => setExpanded((current) => current === slot ? null : slot)} />
         </div>
@@ -88,30 +95,34 @@ function pickWorkflow(workflows: NonNullable<NonNullable<Metrics["trends"]>["wor
   return choice === "all" ? null : workflows.find((entry) => entry.id === choice) ?? defaultWorkflow(workflows) ?? null;
 }
 
-/** Series plus the state to show while there is none (loading skeleton or a message). */
-function resolve(chart: ChartKey, repo: Metrics, choice: Slot["workflow"]): { series: TrendPoint[] | null; loading: boolean; message: string; workflows: { id: number; name: string }[]; selected: { id: number; name: string } | null } {
+/** Series plus the state to show while there is none (loading skeleton or a message). `events` is non-empty only when the selected workflow has several; `event` is then the shown one or "all". */
+function resolve(chart: ChartKey, repo: Metrics, choice: Slot["workflow"], eventChoice: Slot["event"]): { series: TrendPoint[] | null; loading: boolean; message: string; workflows: { id: number; name: string; events?: { event: string; total: number }[] }[]; selected: { id: number; name: string } | null; events: { event: string; total: number }[]; event: string } {
   const spec = CHARTS[chart];
   const metric = chart === "passRate" ? repo.ci : chart === "deployments" ? repo.deployments : null;
   if (metric) {
     const loading = metric.detail.startsWith("Loading");
-    return { series: metric.series, loading: !metric.series && !metric.error && !metric.seriesError && loading, workflows: [], selected: null,
+    return { series: metric.series, loading: !metric.series && !metric.error && !metric.seriesError && loading, workflows: [], selected: null, events: [], event: "all",
       message: metric.error || metric.seriesError || (loading ? metric.detail : "History is unavailable.") };
   }
   const workflows = spec.byWorkflow ? repo.trends?.workflows ?? [] : [];
   const selected = pickWorkflow(workflows, choice);
-  const series = (selected ? selected[chart as keyof RunTrends] : repo.trends?.[chart as "commits"]) ?? null;
+  // A single event (or a snapshot stored before events existed) is the workflow's own series.
+  const events = selected?.events && selected.events.length >= 2 ? selected.events : [];
+  const event = eventChoice !== undefined && (eventChoice === "all" || events.some((entry) => entry.event === eventChoice)) ? eventChoice : spec.mainEvent && events[0] ? events[0].event : "all";
+  const source = events.find((entry) => entry.event === event) ?? selected;
+  const series = (source ? source[chart as keyof RunTrends] : repo.trends?.[chart as "commits"]) ?? null;
   const error = spec.source === "ci" ? repo.ci.error || repo.ci.seriesError : repo.commitActivity.error;
-  return { series, loading: !series && !!repo.pending?.includes(spec.source!), message: error || "History is unavailable.", workflows, selected };
+  return { series, loading: !series && !!repo.pending?.includes(spec.source!), message: error || "History is unavailable.", workflows, selected, events, event };
 }
 
-export function HistoryChart({ chart, workflow, options, selectLabel, onChange, repo, onSelect, expanded, onToggle }: {
-  chart: ChartKey; workflow: Slot["workflow"]; options: ChartKey[]; selectLabel: string; onChange: (change: Partial<Slot>) => void;
+export function HistoryChart({ chart, workflow, event: eventChoice, options, selectLabel, onChange, repo, onSelect, expanded, onToggle }: {
+  chart: ChartKey; workflow: Slot["workflow"]; event: Slot["event"]; options: ChartKey[]; selectLabel: string; onChange: (change: Partial<Slot>) => void;
   repo: Metrics; onSelect: (since: string, until: string) => void; expanded: boolean; onToggle: () => void;
 }) {
   const headingId = useId();
-  const { title, format: formatValue, note, fixedMax, parts } = CHARTS[chart];
+  const { title, format: formatValue, note, fixedMax, parts, sample } = CHARTS[chart];
   const range = repo.range;
-  const { series: raw, loading, message, workflows, selected } = resolve(chart, repo, workflow);
+  const { series: raw, loading, message, workflows, selected, events, event } = resolve(chart, repo, workflow, eventChoice);
   const calendarDay = range.label === "today";
   const series = raw?.map((point, index) => calendarDay && Date.parse(range.since) + index * range.bucketMs > Date.parse(range.until)
     ? { date: point.date, value: null } : point);
@@ -122,6 +133,7 @@ export function HistoryChart({ chart, workflow, options, selectLabel, onChange, 
   const format = (point: TrendPoint) => point.value === null ? "—"
     : parts ? partValues(point)!.map(({ part, value }) => `${value.toLocaleString()} ${part.word}`).join(", ") : formatValue(point.value);
   const shortFormat = (point: TrendPoint) => parts && point.value ?  partValues(point)!.map(({ part, value }) => `${part.sign}${compact.format(value)}`).join(" ") : point.value === null ? "—" : formatValue(point.value);
+  const describe = (point: TrendPoint) => sample && point.count ? sample(point.count, `${event === "all" || !events.length ? "" : `${event} `}${point.count === 1 ? "run" : "runs"}`) : null;
   const dateLabel = (_date: string, index: number) => calendarDay
     ? new Date(Date.parse(range.since) + index * range.bucketMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
     // A bar is labelled with its start (each point's date is its end): a calendar-day bar reads as that day.
@@ -134,13 +146,23 @@ export function HistoryChart({ chart, workflow, options, selectLabel, onChange, 
           <ChevronSelect id={headingId} label={selectLabel} value={chart} onChange={(value) => onChange({ chart: value as ChartKey })} className="text-sm font-medium text-foreground hover:text-foreground/80">
             {options.map((key) => <option key={key} value={key}>{CHARTS[key].title}</option>)}
           </ChevronSelect>
-          <p className="mt-1 text-xs text-muted-foreground">{[range.bucketMs === 86_400_000 ? null : `${range.bucketMs / 3_600_000}-hour intervals`, note].filter(Boolean).join(" · ")}
+          <p className="mt-1 text-xs text-muted-foreground">{[range.bucketMs === 86_400_000 ? null : `${range.bucketMs / 3_600_000}-hour intervals`, note, events.length ? (event === "all" ? "all events" : event) : null].filter(Boolean).join(" · ")}
             {parts?.map((part) => <span key={part.key} className="ml-2 whitespace-nowrap"><span aria-hidden="true" className={`mr-1 inline-block size-2 rounded-sm align-baseline ${part.latest}`} />{part.word}</span>)}</p>
           {workflows.length > 0 && <div className="mt-1">
             <ChevronSelect label={`${selectLabel} workflow`} value={selected ? String(selected.id) : "all"} className="text-xs text-muted-foreground hover:text-foreground"
-              onChange={(value) => onChange({ workflow: value === "all" ? "all" : Number(value) })}>
+              onChange={(value) => {
+                const id = value === "all" ? "all" : Number(value), next = workflows.find((entry) => entry.id === id)?.events ?? [];
+                // The stored event only survives a workflow switch if the new workflow has it.
+                onChange({ workflow: id, ...(eventChoice === undefined || eventChoice === "all" || next.some((entry) => entry.event === eventChoice) ? {} : { event: undefined }) });
+              }}>
               <option value="all">All workflows</option>
               {workflows.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </ChevronSelect>
+          </div>}
+          {events.length > 0 && <div className="mt-1">
+            <ChevronSelect label={`${selectLabel} event`} value={event} className="text-xs text-muted-foreground hover:text-foreground" onChange={(value) => onChange({ event: value })}>
+              <option value="all">All events</option>
+              {events.map((entry) => <option key={entry.event} value={entry.event}>{entry.event} · {entry.total.toLocaleString()} {entry.total === 1 ? "run" : "runs"}</option>)}
             </ChevronSelect>
           </div>}
         </div>
@@ -156,11 +178,12 @@ export function HistoryChart({ chart, workflow, options, selectLabel, onChange, 
             const until = new Date(Math.min(Date.parse(range.until), Date.parse(point.date) - (index === series.length - 1 ? 0 : 1))).toISOString();
             const upcoming = Date.parse(since) > Date.parse(range.until);
             return <button key={point.date} type="button" aria-haspopup="dialog" disabled={upcoming}
-              aria-label={`${title} · ${dateLabel(point.date, index)} · ${format(point)} · ${upcoming ? "Upcoming interval" : "Show statistics"}`}
+              aria-label={`${title} · ${dateLabel(point.date, index)} · ${format(point)} · ${describe(point) ? `${describe(point)} · ` : ""}${upcoming ? "Upcoming interval" : "Show statistics"}`}
               onClick={(event) => { event.currentTarget.focus(); onSelect(since, until); }}
               className="group flex min-w-0 cursor-pointer flex-col items-center justify-end rounded-t-md hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50"
-              title={upcoming ? "Upcoming interval" : `Interval ${new Date(since).toUTCString()} – ${new Date(until).toUTCString()}: ${format(point)}`}>
-              <span className="mb-2 text-xs tabular-nums text-muted-foreground">{shortFormat(point)}</span>
+              title={upcoming ? "Upcoming interval" : `Interval ${new Date(since).toUTCString()} – ${new Date(until).toUTCString()}: ${format(point)}${describe(point) ? ` (${describe(point)})` : ""}`}>
+              <span className="mb-2 flex flex-col items-center text-xs tabular-nums text-muted-foreground">{shortFormat(point)}
+                {point.count !== undefined && <span className="text-[10px] leading-3">n {point.count.toLocaleString()}</span>}</span>
               <span className="flex h-32 w-full items-end">
                 {/* Parts are bars side by side from the axis; a plain series is a single green part. */}
                 <span className="flex h-full w-full items-end gap-0.5">
@@ -188,11 +211,12 @@ export function HistoryChart({ chart, workflow, options, selectLabel, onChange, 
 function ChevronSelect({ id, label, value, onChange, className, children }: {
   id?: string; label: string; value: string; onChange: (value: string) => void; className: string; children: ReactNode;
 }) {
-  return <span className="relative inline-flex max-w-full items-center">
+  // Padding on both sides of the hover background; the negative margin keeps the text aligned with the lines below.
+  return <span className="relative -ml-1 inline-flex max-w-full items-center">
     <select id={id} aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} style={{ fieldSizing: "content" } as CSSProperties}
-      className={`max-w-full cursor-pointer appearance-none truncate rounded-sm bg-transparent py-0.5 pr-5 outline-none hover:bg-state-hover focus-visible:bg-state-hover ${className}`}>
+      className={`max-w-full cursor-pointer appearance-none truncate rounded-sm bg-transparent py-0.5 pl-1 pr-6 outline-none hover:bg-state-hover focus-visible:bg-state-hover ${className}`}>
       {children}
     </select>
-    <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 ${chevronClass}`} />
+    <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 ${chevronClass}`} />
   </span>;
 }
