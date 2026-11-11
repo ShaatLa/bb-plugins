@@ -353,6 +353,19 @@ it('sends the snapshot to its original recipient after switching recipients', as
   await waitFor(() => expect(quoteReply).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', text: 'Immediate note' }));
   await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
 });
+it('shows a sent quote reply in the conversation at once, before the thread events are ingested', async () => {
+  const quoteReply = vi.fn(() => ({ delivery: 'sent' }));
+  const { slot } = await inboxSetup({ quoteReply });
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 10, bottom: 50, width: 30, height: 10 }] });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Quick note' } });
+  fireEvent.click(slot.getByRole('button', { name: 'Send' }));
+  const bubble = await waitFor(() => slot.getAllByRole('status').find(node => /Quick note/.test(node.textContent ?? ''))!);
+  expect(bubble.textContent).toContain('The answer');
+});
 it('renders stacked pools and preserves notes on uncertain delivery', async () => {
   const { Pools } = await import('./inbox');
   await loadPluginApp(() => import('./app'));

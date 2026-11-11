@@ -8,6 +8,8 @@ import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
+import { buildReplyMessage } from './reply-message';
+export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn; the reply arrives as a user message quoting it. Options: 1–6 unique, ≤200 chars, optional recommended + reason. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
@@ -20,16 +22,6 @@ const toolInputs = {
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
 type Row = Record<string, any>;
-export function buildReplyMessage(entries: readonly {quote:string;note:string}[]): string {
-  const message = entries.filter(({quote,note}) => quote || note.trim()).map(({quote,note}) => {
-    if (quote.length > 20000) throw new Error('Quote exceeds 20,000 characters');
-    if (!quote) return note;
-    const quoted = quote.split('\n').map(line=>line ? '> '+line : '>').join('\n');
-    return quoted + (note ? '\n\n'+note : '');
-  }).join('\n\n');
-  if (message.length > 32000) throw new Error('Message exceeds 32,000 characters — split the pool');
-  return message;
-}
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db,migrations);

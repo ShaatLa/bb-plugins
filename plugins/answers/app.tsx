@@ -305,7 +305,7 @@ const viewOptions: ViewOption[] = [
 // Thread mentions and Markdown links (the composer stores task chips as links) render through bb as a whole.
 const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9]+)(?![\w/])/g;
 const MENTION = /(@thread:thr_[A-Za-z0-9]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
-function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string[] }) {
+export function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string[] }) {
   const parsed = parseInlineComments(text);
   return <div className="space-y-2">{parsed.comments.map((entry, index) => <div key={index}>
     {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3">{entry.passage}</div></div>}
