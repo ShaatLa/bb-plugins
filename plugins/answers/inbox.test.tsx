@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
+const cards = vi.hoisted(() => ({ renders: 0 }));
+vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
 import { Inbox } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
@@ -448,4 +450,15 @@ it('does not poll usage while auto usage is hidden', async () => {
   vi.useFakeTimers();
   try { await act(async () => { vi.advanceTimersByTime(600000); }); expect(usageLimits).not.toHaveBeenCalled(); }
   finally { vi.useRealTimers(); slot.unmount(); }
+});
+it('does not re-render the history cards while typing in the composer or when the sidebar updates', async () => {
+  const items = ['one', 'two', 'three'].map((name, i) => ({ ...base, id:`ans_${name}`, question:`Question ${name}`, answer:`Answer ${name}`, createdAt:1000 + i, answeredAt:1000 + i }));
+  const { slot, recipients } = setup({ list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Answer three'); await waitFor(() => expect(slot.getAllByRole('textbox', { name:'Send message' })).toHaveLength(1));
+  const editor = slot.getByRole('textbox', { name:'Send message' });
+  await act(async () => { await new Promise(done => setTimeout(done, 50)); });
+  const settled = cards.renders; expect(settled).toBeGreaterThanOrEqual(3);
+  for (const value of ['H', 'He', 'Hel', 'Hell', 'Hello']) change(editor, { target:{ value } });
+  await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').toContain('Hello'));
+  expect(cards.renders).toBe(settled);
 });

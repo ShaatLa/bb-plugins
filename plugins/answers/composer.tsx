@@ -6,6 +6,7 @@ import { Button } from './components/ui/button';
 
 // Local previews for images uploaded in this session; after a reload the chip falls back to the file name.
 const previews = new Map<string, string>();
+const dropPreview = (path: string) => { const url = previews.get(path); if (url) { URL.revokeObjectURL(url); previews.delete(path); } };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 // datetime-local value for the next whole hour, in local time.
 function nextHour() { const at = new Date(Date.now() + 3600e3); at.setMinutes(0, 0, 0); return new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
@@ -29,6 +30,10 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
+  // Free a preview's blob once its attachment leaves the box (removed, sent and cleared) or the box unmounts.
+  const shown = useRef(attachments);
+  useEffect(() => { const keep = new Set(attachments.map(file => file.path)); for (const file of shown.current) if (!keep.has(file.path)) dropPreview(file.path); shown.current = attachments; }, [attachments]);
+  useEffect(() => () => shown.current.forEach(file => dropPreview(file.path)), []);
   useEffect(() => {
     if (!editMode) return;
     let active = true; const urls: string[] = [];
@@ -60,7 +65,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     for (const file of files) {
       try {
         const uploaded = await sdk.projects.attachments.upload({ projectId, clientFile: file, ...(file.type ? { mimeType: file.type } : {}) });
-        if (uploaded.type === 'localImage') previews.set(uploaded.path, URL.createObjectURL(file));
+        if (uploaded.type === 'localImage') { dropPreview(uploaded.path); previews.set(uploaded.path, URL.createObjectURL(file)); }
         const { type, path, name, mimeType, sizeBytes, sourceProjectId } = uploaded;
         onAttachments(old => [...old, { type, path, name, ...(mimeType ? { mimeType } : {}), ...(sizeBytes ? { sizeBytes } : {}), ...(sourceProjectId ? { sourceProjectId } : {}) }]);
       } catch (e) { setError(`${file.name}: ${errorText(e)}`); }
