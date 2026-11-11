@@ -15,7 +15,7 @@ import {
   type TasksNavigation,
   type TasksRoute,
 } from "./routes.js";
-import { loadLastProjectId, storeLastProjectId, loadViewMode, storeViewMode } from "./view-preference.js";
+import { loadLastProjectId, loadLastRoute, storeLastProjectId, storeLastRoute, loadViewMode, storeViewMode } from "./view-preference.js";
 import { startupRoute } from "./startup-route.js";
 import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
@@ -110,10 +110,19 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
   const isRoot = subPath === "" || subPath === "/";
   const settings = useTasksQuery((rpc) => isRoot ? rpc.call("getBoardPreferences", null) : Promise.resolve(DEFAULT_BOARD_PREFERENCES), ["projects:changed"], [isRoot]);
-  const opening = isRoot && (projects.data === undefined || (projects.data.length > 0 && settings.data === undefined && settings.error === null));
-  const route = isRoot
-    ? startupRoute(settings.data?.defaultScreen, projects.data ?? [], loadLastProjectId())
-    : resolveRoute(parseTasksRoute(subPath));
+  const remembered = isRoot ? loadLastRoute() : null;
+  const rememberedRoute = remembered ? parseTasksRoute(remembered) : null;
+  // A remembered project that was deleted meanwhile falls back to the default screen.
+  const resumable = rememberedRoute !== null && (rememberedRoute.kind !== "project" || projects.data?.some(({ id }) => id === rememberedRoute.projectId) === true);
+  const opening = isRoot && (projects.data === undefined || (!resumable && projects.data.length > 0 && settings.data === undefined && settings.error === null));
+  const route = !isRoot
+    ? resolveRoute(parseTasksRoute(subPath))
+    : resumable
+      ? resolveRoute(rememberedRoute)
+      : startupRoute(settings.data?.defaultScreen, projects.data ?? [], loadLastProjectId());
+  useEffect(() => {
+    if (!isRoot) storeLastRoute(subPath);
+  }, [isRoot, subPath]);
   const tasksNavigation = useTasksNavigation();
   const resolvedSubPath = tasksRouteToSubPath(route);
   useEffect(() => {
