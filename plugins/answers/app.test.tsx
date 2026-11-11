@@ -208,7 +208,7 @@ it('shows a double check on a read answer and a dot on an unread one', async () 
   expect(slot.getByRole('img', { name: /^Read / })).toBeTruthy();
   expect(slot.getAllByLabelText('Unread')).toHaveLength(1);
 });
-it('snapshots a quote draft through focus and refresh; Add to pool opens the pool tab', async () => {
+it('snapshots a quote draft through focus and refresh; Add to reply pool opens the pool tab', async () => {
   const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
   const { slot } = await inboxSetup({ poolAdd });
   const body = slot.getByText('The answer').closest('[data-agent-body]')!;
@@ -221,8 +221,10 @@ it('snapshots a quote draft through focus and refresh; Add to pool opens the poo
   fireEvent.focus(text); change(text, { target: { value: 'Snapshot note' } });
   await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
   expect(text.textContent).toBe('Snapshot note');
-  fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Add to pool' }) });
-  fireEvent.click(slot.getByRole('button', { name: 'Add to pool' }));
+  const dialog = within(slot.getByRole('dialog', { name: 'Quote reply' }));
+  fireEvent.blur(text, { relatedTarget: dialog.getByRole('button', { name: 'More send options' }) });
+  fireEvent.click(dialog.getByRole('button', { name: 'More send options' }));
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Add to reply pool' }));
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, itemId: item.id, quote: 'The answer', quoteSeq: 20, note: 'Snapshot note' }));
   await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
 });
@@ -324,8 +326,11 @@ it('adds a chat comment to the thread reply pool', async () => {
   const slot = renderSlot({ component: () => { composer = useComposer(); return <Overlay />; } }, {}, { composer: { text: '', scope: { kind: 'thread', threadId: item.threadId } }, rpc: { poolAdd }, sdk: { threads: { send } } } as any);
   const context = { threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant' as const, text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Quoted part', composer, experimental_panel: {} as any };
   act(() => { void app.messageActions.find(action => action.id === 'comment')!.run(context); });
+  expect((slot.getByRole('button', { name: 'Send comment' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((slot.getByRole('button', { name: 'More send options' }) as HTMLButtonElement).disabled).toBe(false);
   change(slot.getByRole('textbox', { name: 'Comment text' }), { target: { value: 'Pool note' } });
-  fireEvent.click(slot.getByRole('button', { name: 'Add to pool' }));
+  fireEvent.click(slot.getByRole('button', { name: 'More send options' }));
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Add to reply pool' }));
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, quote: 'Quoted part', quoteSeq: 20, note: 'Pool note' }));
   await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
   expect(send).not.toHaveBeenCalled();

@@ -16,7 +16,7 @@ type Props = {
   // Uploads go to the recipient thread's project; without one, attaching is off.
   projectId: string | null | undefined;
   onSend: (options?: SendOptions) => void; sendDisabled?: boolean; pending?: boolean;
-  actions?: ReactNode; autoFocus?: boolean; placeholder?: string;
+  actions?: ReactNode; onPool?: () => void; autoFocus?: boolean; placeholder?: string;
   onBlur?: () => void;
   // The Inbox composer keeps edits made during a send; other boxes clear on success, so they lock while sending.
   editableWhilePending?: boolean;
@@ -25,7 +25,7 @@ type Props = {
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
@@ -88,7 +88,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       <div className={`absolute bottom-1 right-[var(--mic-r)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
-        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool}><Icon name="ArrowUp" aria-hidden /></SendButton>}
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}
@@ -99,18 +99,20 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
  * bb's split send button: the main part queues; the menu steers, saves a draft held in the
  * thread's queue, or schedules. Children are the main part's content (an icon or a label).
  */
-export function SendButton({ label, disabled, onSend, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
+export function SendButton({ label, disabled, onSend, onPool, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; onPool?: () => void; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
   const [menu, setMenu] = useState(false), [later, setLater] = useState<string | null>(null), [error, setError] = useState('');
   const close = () => { setMenu(false); setLater(null); setError(''); };
   const item = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
     <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onClick={() => onSend()}>{children}</Button>
-    <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>
+    <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled && !onPool} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>
     {menu && <div role="menu" className={`absolute right-0 z-20 w-56 rounded-lg border border-border bg-background p-1 shadow-lg ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
       {later === null ? <>
-        <button type="button" role="menuitem" className={item} onClick={() => { close(); onSend({ mode: 'steer' }); }}><Icon name="CornerDownRight" aria-hidden className="size-4 text-muted-foreground" />Steer</button>
-        <button type="button" role="menuitem" className={item} onClick={() => { close(); onSend({ mode: 'draft' }); }}><Icon name="EditFile" aria-hidden className="size-4 text-muted-foreground" />Save draft</button>
-        <button type="button" role="menuitem" className={item} onClick={() => setLater(nextHour())}><Icon name="TimeSchedule" aria-hidden className="size-4 text-muted-foreground" />Send later…</button>
+        {/* Adding to the pool needs no text, so it stays available while sending is blocked. */}
+        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'steer' }); }}><Icon name="CornerDownRight" aria-hidden className="size-4 text-muted-foreground" />Steer</button>
+        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'draft' }); }}><Icon name="EditFile" aria-hidden className="size-4 text-muted-foreground" />Save draft</button>
+        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => setLater(nextHour())}><Icon name="TimeSchedule" aria-hidden className="size-4 text-muted-foreground" />Send later…</button>
+        {onPool && <button type="button" role="menuitem" className={item} onClick={() => { close(); onPool(); }}><Icon name="ListEnd" aria-hidden className="size-4 text-muted-foreground" />Add to reply pool</button>}
       </> : <div className="space-y-2 p-1.5">
         <input type="datetime-local" aria-label="Send at" autoFocus className="w-full rounded-md border border-border-seam bg-transparent px-2 py-1 text-sm" value={later} onChange={event => setLater(event.target.value)} />
         {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
