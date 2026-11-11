@@ -25,7 +25,14 @@ type Row = Record<string, any>;
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db,migrations);
-  const invalidate = () => bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
+  // Leading call goes out at once; calls inside the next 150 ms collapse into one trailing invalidate, so bursts cause one client refetch.
+  let invTimer: ReturnType<typeof setTimeout> | undefined, invPending = false, invOff = false;
+  const invalidate = (): void => {
+    if (invOff) return;
+    if (invTimer) { invPending = true; return; }
+    bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
+    invTimer = setTimeout(() => { invTimer = undefined; if (invPending) { invPending = false; invalidate(); } },150); invTimer.unref();
+  };
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
@@ -368,14 +375,16 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
   registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
-  bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
+  // Children (agent-spawned) store nothing, so their event streams are never fetched; the payload carries the thread, so no threads.get either.
+  bb.events.on('experimental_thread.events',({thread})=>thread.parentThreadId ? undefined : driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
-  bb.events.on('thread.archived',({thread})=>{db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(thread.id); invalidate();});
-  bb.events.on('thread.unarchived',({thread})=>{db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(thread.id); invalidate();});
+  const hasItems = (id: string) => !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
+  bb.events.on('thread.archived',({thread})=>{db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(thread.id); if (hasItems(thread.id)) invalidate();});
+  bb.events.on('thread.unarchived',({thread})=>{db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(thread.id); if (hasItems(thread.id)) invalidate();});
   bb.events.on('turn.failed',event=>{
     if (!event.inputAccepted && failRequest(db,event.threadId,event.requestId,Date.now(),true,true)) {invalidate(); onAttention();}
   });
   wakeDue();
   const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
-  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose();});
+  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
 }

@@ -15,7 +15,7 @@ type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'p
 export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void) {
   const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
-  const scheduled = new Map<string, { dirty: boolean; promise: Promise<void> }>();
+  const scheduled = new Map<string, { dirty: boolean; listed?: Thread; promise: Promise<void> }>();
   const retries = new Map<string, { delay: number; timer?: ReturnType<typeof setTimeout> }>();
   const controller = new AbortController();
   const signal = controller.signal;
@@ -34,6 +34,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     return result;
   }
   function remove(id: string) {
+    const hadItems = !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
     db.transaction(() => {
       db.prepare("DELETE FROM items WHERE thread_id=? AND kind!='saved'").run(id);
       db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
@@ -46,7 +47,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     })();
     live.delete(id);
     const retry = retries.get(id); if (retry?.timer) clearTimeout(retry.timer); retries.delete(id);
-    invalidate();
+    if (hadItems) invalidate();
   }
   async function page(id: string, cursor: number | undefined, order: 'asc' | 'desc', initial: number) {
     let size = initial;
@@ -71,6 +72,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     try { thread = listed ?? await bb.sdk.threads.get({threadId:id,signal}); projectId = thread.projectId; questions = !thread.parentThreadId; }
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
     let changed = false;
+    // Agent-spawned children store nothing: skip their events, keep only the row withThread needs.
+    if (!questions) { db.prepare('INSERT OR IGNORE INTO threads_state(thread_id,last_seq,updated_at) VALUES (?,0,?)').run(id,Date.now()); return; }
     try {
     if (!state || (state.last_seq === 0 && state.last_error)) {
       const events: Event[] = [];
@@ -95,7 +98,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       }
       if (result.events.length < result.size) break;
     }
-    if (!signal.aborted) db.prepare('UPDATE threads_state SET ingested_thread_updated_at=max(coalesce(ingested_thread_updated_at,0),?) WHERE thread_id=?').run(thread.updatedAt,id);
+    if (!signal.aborted) db.prepare('UPDATE threads_state SET ingested_thread_updated_at=? WHERE thread_id=? AND coalesce(ingested_thread_updated_at,0)<?').run(thread.updatedAt,id,thread.updatedAt);
     } finally { if (changed) invalidate(); }
   }
   async function attempt(id: string, listed?: Thread) {
@@ -117,10 +120,10 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   }
   function schedule(id: string, listed?: Thread) {
     const existing = scheduled.get(id);
-    if (existing) {existing.dirty=true; return existing.promise;}
-    const entry = {dirty:false,promise:Promise.resolve()};
+    if (existing) {existing.dirty=true; if (listed) existing.listed=listed; return existing.promise;}
+    const entry: { dirty: boolean; listed?: Thread; promise: Promise<void> } = {dirty:false,listed,promise:Promise.resolve()};
     entry.promise = locked(id,async () => {
-      do {entry.dirty=false; await attempt(id,listed); listed=undefined;} while (entry.dirty && !signal.aborted);
+      do {entry.dirty=false; const l=entry.listed; entry.listed=undefined; await attempt(id,l);} while (entry.dirty && !signal.aborted);
     }).finally(() => scheduled.delete(id));
     scheduled.set(id,entry); return entry.promise;
   }
@@ -134,7 +137,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         for (const t of found) db.prepare(t.archivedAt ? 'INSERT OR IGNORE INTO archived_threads VALUES (?)' : 'DELETE FROM archived_threads WHERE thread_id=?').run(t.id);
         await Promise.all(tracked.slice(i,i+200).map(async row => {
           const id=row.thread_id, thread=known.get(id);
-          if (thread?.archivedAt) return;
+          if (thread?.archivedAt || thread?.parentThreadId) return;
           if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at) return;
           if (!thread) {
             try {await bb.sdk.threads.get({threadId:id,signal});}
@@ -147,7 +150,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     // shortcut: discovery covers 1,000 visible recent threads; other threads enter on their next event.
     for (let offset=0;offset<1000 && !signal.aborted;offset+=200) {
       const threads = await bb.sdk.threads.list({limit:200,offset,signal});
-      await Promise.all(threads.filter(t=>!t.archivedAt && t.updatedAt>=Date.now()-48*3600000 && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=?').get(t.id)).map(t=>schedule(t.id,t).catch(()=>{})));
+      await Promise.all(threads.filter(t=>!t.archivedAt && !t.parentThreadId && t.updatedAt>=Date.now()-48*3600000 && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=?').get(t.id)).map(t=>schedule(t.id,t).catch(()=>{})));
       if (threads.length<200) break;
     }
   }

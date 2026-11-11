@@ -133,8 +133,37 @@ describe('server',()=>{
   await harness.behavior.callRpc('reply',{id:'ans_one',text:'yes'}); expect(seen.at(-1)).toBe('replied');
   await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'t'});
   await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
-  expect(seen.at(-1)).toBe('deleted');
+  await vi.waitFor(()=>expect(seen.at(-1)).toBe('deleted')); // the burst collapses into one trailing invalidate
   expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
+ });
+ it('coalesces a burst of invalidations into a leading and one trailing call',async()=>{
+  const {harness}=setup();
+  for(const q of ['a','b','c']) await harness.behavior.callAgentTool('answers_ask',{question:q},{threadId:'t'});
+  const n=harness.inspection.experimental_rpcInvalidations.length;
+  expect(n).toBe(1); await vi.waitFor(()=>expect(harness.inspection.experimental_rpcInvalidations.length).toBe(2));
+ });
+ it('ignores child threads in the events hook, but their tools still work',async()=>{
+  const {harness,db}=setup(); const list=vi.fn(async()=>[]);
+  harness.sdk.stub('threads.events.list',list as any);
+  harness.sdk.stub('threads.get',async({threadId}:any)=>makeThreadResponse({id:threadId,projectId:'p',parentThreadId:'parent'} as any));
+  await harness.behavior.emitThreadEvent('experimental_thread.events',{thread:makeThreadResponse({id:'kid',parentThreadId:'parent'} as any),sequence:5} as any);
+  expect(db.prepare("SELECT 1 FROM threads_state WHERE thread_id='kid'").get()).toBeUndefined();
+  const id=await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'kid'});
+  expect(db.prepare("SELECT kind FROM items WHERE thread_id='kid'").all()).toEqual([{kind:'for_me'}]); expect(id).toBeTruthy();
+  expect(list).not.toHaveBeenCalled();
+ });
+ it('passes the hook payload thread to the driver (no threads.get)',async()=>{
+  const {harness}=setup();
+  await harness.behavior.emitThreadEvent('experimental_thread.events',{thread:makeThreadResponse({id:'top'}),sequence:5} as any);
+  await vi.waitFor(()=>expect(harness.inspection.sdk.callsTo('threads.events.list').length).toBeGreaterThan(0));
+  expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
+ });
+ it('does not invalidate when an empty thread is archived, unarchived or deleted',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','for_me','a');
+  const count=()=>harness.inspection.experimental_rpcInvalidations.length;
+  for(const ev of ['thread.archived','thread.unarchived','thread.deleted']) await harness.behavior.emitThreadEvent(ev as any,{thread:makeThreadResponse({id:'empty'})});
+  expect(count()).toBe(0);
+  await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})}); expect(count()).toBe(1);
  });
  it('provides list/read/status CLI commands',async()=>{
   const {harness,db}=setup(); seed(db,'ans_one','mine'); db.prepare("UPDATE items SET status='answered'").run();
