@@ -169,7 +169,7 @@ test("handles a missing pool snapshot", async () => {
   expect(await slot.findByText("No pools available.")).toBeTruthy();
 });
 
-test("refreshes via realtime and button, polls while visible, preserves stale data and cleans up", async () => {
+test("refreshes via debounced realtime and button, polls as a fallback, preserves stale data and cleans up", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(at + 3_600_000);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -179,32 +179,87 @@ test("refreshes via realtime and button, polls while visible, preserves stale da
   await act(async () => { vi.advanceTimersByTime(4000); });
   expect(slot.getByText("Updated 4s ago")).toBeTruthy();
   await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(status).toHaveBeenCalledTimes(1);
+  await act(async () => { vi.advanceTimersByTime(250); });
   expect(status).toHaveBeenCalledTimes(2);
   await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Refresh" })); });
   expect(status).toHaveBeenCalledTimes(3);
   visibility.mockReturnValue("hidden");
   await act(async () => { vi.advanceTimersByTime(30_000); });
   await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { vi.advanceTimersByTime(1000); });
   expect(status).toHaveBeenCalledTimes(3);
   visibility.mockReturnValue("visible");
   status.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(status).toHaveBeenCalledTimes(4);
   expect(slot.getByRole("alert").textContent).toContain("Showing the last successful status.");
   expect(slot.getByText("Run end-to-end suite")).toBeTruthy();
-  await act(async () => { vi.advanceTimersByTime(10_000); });
+  await act(async () => { vi.advanceTimersByTime(30_000); });
   expect(status).toHaveBeenCalledTimes(5);
   expect(slot.queryByRole("alert")).toBeNull();
-  slot.lifecycle.unmount();
-  await act(async () => { vi.advanceTimersByTime(30_000); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { vi.advanceTimersByTime(5_000); });
+  expect(status).toHaveBeenCalledTimes(5);
   await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  slot.lifecycle.unmount();
+  await act(async () => { vi.advanceTimersByTime(60_000); document.dispatchEvent(new Event("visibilitychange")); });
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { vi.advanceTimersByTime(60_000); });
   expect(status).toHaveBeenCalledTimes(5);
 });
 
+test("the poll is skipped when a refresh completed in the last 10 seconds", async () => {
+  vi.useFakeTimers();
+  const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
+  const slot = render(status);
+  await act(async () => {});
+  await act(async () => { vi.advanceTimersByTime(25_000); });
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { vi.advanceTimersByTime(250); });
+  await act(async () => { vi.advanceTimersByTime(5_000); });
+  expect(status).toHaveBeenCalledTimes(2);
+});
+
+test("event refreshes stay silent and a burst of events makes one status call", async () => {
+  vi.useFakeTimers();
+  const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
+  const slot = render(status);
+  await act(async () => {});
+  const button = slot.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
+  let resolve!: (value: unknown) => void;
+  status.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  for (let i = 0; i < 5; i++) await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(status).toHaveBeenCalledTimes(1);
+  await act(async () => { vi.advanceTimersByTime(250); });
+  expect(status).toHaveBeenCalledTimes(2);
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-busy")).toBe("false");
+  await act(async () => { resolve({ ok: true, data: fixture }); });
+  expect(button.getAttribute("aria-busy")).toBe("false");
+  expect(status).toHaveBeenCalledTimes(2);
+});
+
+test("continuous events still refresh at least once per second", async () => {
+  vi.useFakeTimers();
+  const status = vi.fn().mockReturnValue({ ok: true, data: fixture });
+  const slot = render(status);
+  await act(async () => {});
+  for (let i = 0; i < 12; i++) {
+    await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+    await act(async () => { vi.advanceTimersByTime(100); });
+  }
+  expect(status.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(status.mock.calls.length).toBeLessThanOrEqual(3);
+});
+
 test("realtime received during a request fetches a fresh snapshot when it completes", async () => {
+  vi.useFakeTimers();
   let resolve!: (value: unknown) => void;
   const status = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done; })).mockReturnValue({ ok: true, data: fixture });
   const slot = render(status);
   await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { vi.advanceTimersByTime(250); });
+  expect(status).toHaveBeenCalledTimes(1);
   await act(async () => { resolve({ ok: true, data: fixture }); });
   expect(status).toHaveBeenCalledTimes(2);
 });
@@ -305,6 +360,7 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
   write.mockClear();
   const heavy = slot.getByRole("spinbutton", { name: "Heavy jobs capacity" });
   fireEvent.change(heavy, { target: { value: "19" } });
+  fireEvent.blur(heavy);
   expect(write).not.toHaveBeenCalled();
   expect((heavy as HTMLInputElement).value).toBe("4");
   await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Reset Heavy jobs capacity to default" })); });
@@ -314,6 +370,67 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
   await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Choose thread…" })); });
   await act(async () => { fireEvent.click(slot.getByRole("button", { name: /Manager session/ })); });
   expect(write).toHaveBeenLastCalledWith({ values: { observerThreadId: "manager" } });
-  await act(async () => { fireEvent.change(slot.getByRole("spinbutton", { name: "From port" }), { target: { value: "42000" } }); });
+  const from = slot.getByRole("spinbutton", { name: "From port" });
+  fireEvent.change(from, { target: { value: "42000" } });
+  await act(async () => { fireEvent.keyDown(from, { key: "Enter" }); });
   expect(slot.getByRole("alert").textContent).toBe("Invalid port range");
+});
+
+function settingsSlot(extra: Record<string, unknown> = {}) {
+  const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
+    gateIntervalSeconds: 15, leaseTtlMinutes: 30, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn",
+    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
+    watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
+  const read = vi.fn(() => ({ ok: true, data: { cores: 18, heavyDefault: 4, values } }));
+  const write = vi.fn((input: unknown) => ({ ok: true, data: { cores: 18, heavyDefault: 4, values: { ...values, ...(input as { values: object }).values } } }));
+  const slot = renderSlot(app.settingsSections[0], {}, { rpc: { settingsRead: read, settingsWrite: write, status: () => ({ ok: true, data: fixture }), ...extra } });
+  return { slot, read, write };
+}
+
+test("numeric settings commit once on blur or Enter, not per keystroke", async () => {
+  const { slot, write } = settingsSlot();
+  const input = (await slot.findByRole("spinbutton", { name: "Window (seconds)" })) as HTMLInputElement;
+  for (const text of ["1", "15", "150"]) fireEvent.change(input, { target: { value: text } });
+  expect(input.value).toBe("150");
+  expect(write).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.blur(input); });
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(write).toHaveBeenLastCalledWith({ values: { watchWindowSeconds: 150 } });
+  await act(async () => { fireEvent.blur(input); });
+  expect(write).toHaveBeenCalledTimes(1);
+  fireEvent.change(input, { target: { value: "200" } });
+  await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write).toHaveBeenLastCalledWith({ values: { watchWindowSeconds: 200 } });
+  fireEvent.change(input, { target: { value: "" } });
+  await act(async () => { fireEvent.blur(input); });
+  expect(write).toHaveBeenCalledTimes(2);
+});
+
+test("the settings form does not run the 1 s clock", async () => {
+  const interval = vi.spyOn(globalThis, "setInterval");
+  const { slot } = settingsSlot();
+  await slot.findByRole("region", { name: "Slots" });
+  expect(interval.mock.calls.map(call => call[1])).not.toContain(1000);
+});
+
+test("settings refetch is debounced, single-flight and deferred while hidden", async () => {
+  vi.useFakeTimers();
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const { slot, read } = settingsSlot();
+  await act(async () => {});
+  expect(read).toHaveBeenCalledTimes(1);
+  for (let i = 0; i < 5; i++) await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  expect(read).toHaveBeenCalledTimes(1);
+  await act(async () => { vi.advanceTimersByTime(250); });
+  expect(read).toHaveBeenCalledTimes(2);
+  visibility.mockReturnValue("hidden");
+  await slot.behavior.emitRealtime(SLOTS_CHANGED, { at });
+  await act(async () => { vi.advanceTimersByTime(5000); });
+  expect(read).toHaveBeenCalledTimes(2);
+  visibility.mockReturnValue("visible");
+  await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(read).toHaveBeenCalledTimes(3);
+  await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(read).toHaveBeenCalledTimes(3);
 });
