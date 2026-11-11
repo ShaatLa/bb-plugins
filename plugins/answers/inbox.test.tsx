@@ -120,13 +120,13 @@ it('shows only the quoted answer while its question is beyond the loaded window,
 const quiet = (n: number, answer: string, asks = false) => ({ ...between, id:`ans_u${n}`, answer, asks, createdAt:asked + n * minute, answeredAt:asked + n * minute });
 it('collapses consecutive quiet updates into one group with a preview of the latest, and expands it on click', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[quiet(3, 'Third **report**'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
-  const toggle = await slot.findByRole('button', { name:/3 agent updates/ });
+  const toggle = await slot.findByRole('button', { name:/3 background updates/ });
   expect(document.querySelectorAll('[data-update-group]')).toHaveLength(1); expect(toggle.getAttribute('aria-expanded')).toBe('false');
   expect(document.querySelector('[data-history-ids="ans_u1 ans_u2 ans_u3"]')).not.toBeNull();
   expect(slot.getByText('Third report')).toBeTruthy(); expect(slot.queryByText('First report')).toBeNull();
   fireEvent.click(toggle);
   expect(await slot.findByText('First report')).toBeTruthy(); expect(slot.getByText('Second report')).toBeTruthy(); expect(toggle.getAttribute('aria-expanded')).toBe('true');
-  fireEvent.click(slot.getByRole('button', { name:'Collapse agent updates' }));
+  fireEvent.click(slot.getByRole('button', { name:'Collapse background updates' }));
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText('First report')).toBeNull();
 });
 it('names a plugin that started an update by its name and icon, not its id', async () => {
@@ -141,12 +141,12 @@ it('names a plugin that started an update by its name and icon, not its id', asy
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });
   const first = setup({ list }); fireEvent.click(await first.recipients.findByRole('option'));
-  fireEvent.click(await first.slot.findByRole('button', { name:/3 agent updates/ }));
+  fireEvent.click(await first.slot.findByRole('button', { name:/3 background updates/ }));
   expect(await first.slot.findByText('First report')).toBeTruthy();
   first.slot.unmount?.(); cleanup();
   const again = setup({ list }); fireEvent.click(await again.recipients.findByRole('option'));
   expect(await again.slot.findByText('First report')).toBeTruthy();
-  expect((await again.slot.findByRole('button', { name:/3 agent updates/ })).getAttribute('aria-expanded')).toBe('true');
+  expect((await again.slot.findByRole('button', { name:/3 background updates/ })).getAttribute('aria-expanded')).toBe('true');
 });
 it('keeps an update that asks the owner as a full message that splits the run', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[quiet(5, 'Five'), quiet(4, 'Four'), quiet(3, 'Merge now?', true), quiet(2, 'Two'), quiet(1, 'One')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
