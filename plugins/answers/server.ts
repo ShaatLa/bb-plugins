@@ -134,7 +134,8 @@ export default function plugin(bb: BbPluginApi) {
   function markRead(raw: z.infer<typeof inputs.markRead>) {
     const p=inputs.markRead.parse(raw), now=Date.now();
     if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`,now,...p.ids);
-    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL}${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
+    // Reading does not answer an open agent question; it stays counted until answered.
+    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
   // Reads made in Answers' UI also clear bb's own unread mark on a thread once nothing there is left unread here,
@@ -235,8 +236,8 @@ export default function plugin(bb: BbPluginApi) {
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
       const p=inputs.recipients.parse(raw);
-      // Open agent questions live in the Questions section, not in a contact's unread number.
-      const contactAttention = `(${ATTENTION_SQL}) AND NOT (kind='for_me' AND status='open')`;
+      // A contact's number counts its open agent questions too (shown above its composer), so contacts add up to the badge.
+      const contactAttention = ATTENTION_SQL;
       const chosenAttention=contactAttention.replace('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (

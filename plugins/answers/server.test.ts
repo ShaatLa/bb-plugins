@@ -40,7 +40,7 @@ describe('server',()=>{
  it('clears bb\'s unread mark when a thread has nothing left unread in Answers, and restores it on undo',async()=>{
   const {harness,db}=setup(), read=vi.fn(async(_a:unknown)=>({})), unread=vi.fn(async(_a:unknown)=>({}));
   harness.sdk.stub('threads.markRead',read as any); harness.sdk.stub('threads.markUnread',unread as any);
-  seed(db,'ans_x','for_me','t'); seed(db,'ans_y','for_me','t'); seed(db,'ans_z','for_me','u');
+  seed(db,'ans_x','for_me','t'); seed(db,'ans_y','for_me','t'); seed(db,'ans_z','for_me','u'); db.prepare("UPDATE items SET kind='mine',status='answered',answer='a'").run();
   await harness.behavior.callRpc('markRead',{ids:['ans_x']}); expect(read).not.toHaveBeenCalled();
   await harness.behavior.callRpc('markRead',{ids:['ans_y']}); expect(read).toHaveBeenCalledWith({threadId:'t'});
   const all=await harness.behavior.callRpc('markRead',{all:true}) as any; expect(read).toHaveBeenLastCalledWith({threadId:'u'});
@@ -258,13 +258,13 @@ describe('reply pools and inbox',()=>{
   const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
   expect(await call('counts')).toMatchObject({inbox:3});
   const recipients=(await call('recipients')).recipients;
-  // Open agent questions count on the nav badge but not on the contact.
-  expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['a',1,10],['b',0,20]]);
-  expect(recipients[0].preview).toHaveLength(160);
-  await call('markThreadRead',{threadId:'b'});
-  expect((await call('counts')).inbox).toBe(1);
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a','b']);
-  expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
+  // Open agent questions count on the contact too, so contacts add up to the nav badge.
+  expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['b',2,20],['a',1,10]]);
+  expect(recipients[1].preview).toHaveLength(160);
+  // Reading a thread does not answer its open questions; they stay counted.
+  await call('markThreadRead',{threadId:'a'});
+  expect((await call('counts')).inbox).toBe(2);
+  expect((await call('recipients')).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['b',2],['a',0]]);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
  });
  it('keeps recipient output across threads and projects',async()=>{
@@ -277,8 +277,8 @@ describe('reply pools and inbox',()=>{
   harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,title:id.toUpperCase(),projectId:id==='b'?'p2':'p1'})));
   harness.sdk.stub('projects.list',async()=>[{id:'p1',name:'One'},{id:'p2',name:'Two'}] as any);
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
+    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,lastAt:30,preview:'B question?'},
     {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
-    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:0,lastAt:30,preview:'Question'},
   ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
@@ -367,14 +367,14 @@ describe('reply pools and inbox',()=>{
   expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
- it('keeps open agent questions out of contact unread counts and drops the old questions filter',async()=>{
+ it('counts an opened contact\'s open agent questions and drops the old questions filter',async()=>{
   const {harness,db}=setup();
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
   const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,?,1,1)");
   add.run('ans_q','mine','a','answered','Ready?','a'); add.run('ans_f','for_me','c','open','Pick one',null); add.run('ans_r','for_me','d','replied','Pick two','B');
   // Threads that only asked the owner something are no contacts (they live in Questions), unless opened.
   expect((await call('recipients',{})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1]]);
-  expect((await call('recipients',{selected:'c'})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',0]]);
+  expect((await call('recipients',{selected:'c'})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',1]]);
   expect((await call('counts',{})).inbox).toBe(2);
   await expect(call('recipients',{questions:true})).rejects.toBeDefined();
   await expect(call('list',{view:'all',questions:true})).rejects.toBeDefined();
@@ -645,8 +645,9 @@ describe('0.3 server attention',()=>{
   const recipients=(await call('recipients')).recipients;
   expect(recipients).toHaveLength(2); expect(recipients.map((r:any)=>r.unread)).toEqual([1,0]);
   expect(recipients.find((r:any)=>r.threadId==='failed').preview).toBe('Turn failed: Question');
-  const batch=await call('markRead',{all:true}); expect(batch.count).toBe(2);
-  expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:2});
+  // The open agent question stays until answered.
+  const batch=await call('markRead',{all:true}); expect(batch.count).toBe(1);
+  expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:1});
   const threadBatch=await call('markThreadRead',{threadId:'failed'}); expect(threadBatch.count).toBe(1);
   db.prepare('UPDATE items SET read_at=? WHERE read_batch=?').run(Date.now()-600001,threadBatch.batch);
   expect((await call('undoRead',{batch:threadBatch.batch})).count).toBe(0);
