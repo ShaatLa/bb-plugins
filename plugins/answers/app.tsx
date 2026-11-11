@@ -1,5 +1,6 @@
 import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
@@ -149,7 +150,16 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
   const group = members?.length ? members : [item], last = group.at(-1)!;
-  const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | null>(null);
+  const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null);
+  // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
+  const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const place = () => { const r = moreButton.current?.getBoundingClientRect(); if (r) setMenuAt(r.top > 240 ? { left: r.left, bottom: window.innerHeight - r.top + 4 } : { left: r.left, top: r.bottom + 4 }); };
+    const close = (event: Event) => { if (!menuBox.current?.contains(event.target as Node)) setMenu(null); };
+    place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); setMenuAt(null); };
+  }, [menu]);
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const [expanded, setExpanded] = useState(false);
   const question = useRef<HTMLDivElement>(null);
@@ -246,16 +256,16 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       {item.kind === 'for_me' && replyButton}
       {item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
-      <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
-        <Button size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
-        {menu && <div role="menu" aria-label="Item actions" className="absolute bottom-full left-0 z-20 mb-1 w-48 rounded-lg border border-border bg-background p-1 shadow-lg">
+      <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && !menuBox.current?.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
+        <Button ref={moreButton} size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
+        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); moreButton.current?.focus(); } }}>
           {menu === 'main' ? <>
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setPinned', { id: last.id, pinned: !item.pinned })); }}>{item.pinned ? 'Remove from Saved' : 'Save'}</button>}
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('snooze')}>Remind later</button>}
             {item.kind !== 'saved' && workBoard?.available && <button type="button" role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('task')}>Create task</button>}
             {dismiss && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setDismissed', { id: last.id, dismissed: true })); }}>{dismiss[0]}</button>}
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
-        </div>}
+        </div>, document.body)}
       </div>
       {item.kind !== 'for_me' && replyButton}
       {/* Only the running glyph says something; raw statuses ('open', 'replied', 'deferred') told the owner nothing. */}
