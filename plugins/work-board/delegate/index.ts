@@ -1,3 +1,7 @@
+import { dispatchMarker } from "../activity/dispatch.js";
+import { createDependencyStore } from "../dependencies/store";
+import type { DependencyTask } from "../shared/contract";
+import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -55,6 +59,7 @@ class DelegationError extends Error {
 }
 
 interface SeedPromptInput {
+  blockedBy?: readonly DependencyTask[];
   questions?: readonly TaskQuestion[];
   task: Task;
   project: Project;
@@ -105,7 +110,7 @@ function formatComments(comments: readonly Comment[]): string {
 
 export function buildSeedPrompt(input: SeedPromptInput): string {
   const sections = [
-    `# ${input.task.key} · ${input.task.title}`,
+    `${dispatchMarker(input.task.id)}\n# ${input.task.key} · ${input.task.title}`,
     markdownSection(
       "Description",
       input.task.description.trim() || "No description provided.",
@@ -128,12 +133,13 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
     ),
     markdownSection("Attachments", formatAttachments(input.attachments)),
     markdownSection("Recent comments", formatComments(input.recentComments)),
+    ...(input.blockedBy?.length ? [markdownSection("Dependency warning", `This task is blocked by unfinished predecessors:\n${input.blockedBy.map(task => `- ${task.key} · ${task.title} (${task.status})`).join("\n")}\nOnly Done satisfies a dependency. Work and status changes are allowed, but respect this ordering and report any blocker. Recheck with bb work-board dependency list ${input.task.key}.`)] : []),
     ...(input.questions?.length
       ? [markdownSection("Questions", JSON.stringify(input.questions, null, 2))]
       : []),
     markdownSection(
       "Report-back contract",
-      `You are working on task ${input.task.key}. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
+      `You are working on task ${input.task.key}. Activity for this dispatch is tracked automatically; no activity start/stop commands are required. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
     ),
   ];
 
@@ -215,7 +221,7 @@ type SpawnEnvironment = Parameters<
   BbPluginApi["sdk"]["threads"]["spawn"]
 >[0]["environment"];
 
-async function presetSpawnEnvironment(
+export async function presetSpawnEnvironment(
   bb: BbPluginApi,
   preset: Preset,
 ): Promise<SpawnEnvironment> {
@@ -329,9 +335,17 @@ export function handlers(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): PluginRpcHandlers<typeof delegationRpcContract> {
+  const dispatchableTask = (taskId: string) => {
+    const task = requireTask(store.tasks, taskId);
+    const source = bb.storage.database().prepare<[string], { role: string; started_at: string | null }>("SELECT role, started_at FROM task_scheduled_sources WHERE task_id=?").get(taskId);
+    // Generic dispatch must not bypass scheduled reservation/acceptance or start a template itself.
+    if (source && (source.role === "template" || source.started_at === null))
+      throw new Error("Use Scheduled run-now or its queued-run controls; templates and pending occurrences cannot be dispatched directly");
+    return task;
+  };
   return {
     async delegateToThread(input) {
-      const task = requireTask(store.tasks, input.taskId);
+      const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       if (task.executionTarget === "owner")
         throw new Error("Owner actions cannot be dispatched to an agent");
@@ -348,6 +362,7 @@ export function handlers(
       }
       const comments = store.tasks.listComments(task.id);
       const prompt = buildSeedPrompt({
+        blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,
@@ -361,7 +376,7 @@ export function handlers(
         presetInstructions: "",
         extraInstructions: input.extraInstructions,
       });
-      await bb.sdk.threads.send({
+      const delivery = await bb.sdk.threads.send({
         threadId: thread.id,
         mode: "queue-if-active",
         input: [{ type: "text", text: prompt, mentions: [] }],
@@ -387,13 +402,15 @@ export function handlers(
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
       });
+      if (delivery?.delivery === "queued")
+        activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
       publishThreadsChanged(bb, task.id);
       publishTasksChanged(bb, task.id, task.projectId);
       publishCommentsChanged(bb, task.id);
       return { threadId: thread.id };
     },
     async delegate(input) {
-      const task = requireTask(store.tasks, input.taskId);
+      const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       if (task.executionTarget === "owner")
         throw new Error("Owner actions cannot be dispatched to an agent");
@@ -411,6 +428,7 @@ export function handlers(
         permissionMode: preset.permissionMode,
       });
       const prompt = buildSeedPrompt({
+        blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
         task,
         project,
@@ -501,7 +519,7 @@ export function handlers(
     },
 
     async taskThreadsAttach(input) {
-      const task = requireTask(store.tasks, input.taskId);
+      const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       if (task.executionTarget === "owner")
         throw new Error("Owner actions cannot be dispatched to an agent");

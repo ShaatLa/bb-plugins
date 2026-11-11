@@ -4,6 +4,7 @@ import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
 import { reconcileTaskThreads } from "./thread-links";
+import { attachNamedTaskThread } from "./discovery";
 
 const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
 
@@ -25,14 +26,17 @@ function liveStatusFromThread(thread: SdkThread): TaskThreadLiveStatus {
   }
 }
 
-function trackedThreads(store: TasksApiStore): TaskThread[] {
-  const tracked: TaskThread[] = [];
-  for (const task of store.tasks.listTasks()) {
-    for (const thread of store.tasks.listTaskThreads(task.id)) {
-      tracked.push(thread);
-    }
-  }
-  return tracked;
+function trackedThreads(bb: BbPluginApi, store: TasksApiStore): TaskThread[] {
+  // Completed scheduled results keep provenance, not perpetual startup SDK reads.
+  const ids = bb.storage.database().prepare<[], { id: string }>(`SELECT t.id FROM tasks t
+    WHERE EXISTS (SELECT 1 FROM task_threads tt WHERE tt.task_id=t.id)
+      AND NOT EXISTS (SELECT 1 FROM task_scheduled_sources ss WHERE ss.task_id=t.id AND
+        (ss.role='template' OR ss.started_at IS NULL OR t.status IN ('done','canceled')))`
+  ).all().map(row => row.id);
+  const links: TaskThread[] = [];
+  for (let offset = 0; offset < ids.length; offset += 500)
+    links.push(...store.tasks.listTaskThreadsForTasks(ids.slice(offset, offset + 500)));
+  return links;
 }
 
 function statusCommentBody(
@@ -94,20 +98,26 @@ function transitionTrackedThread(
 async function reconcileTrackedThread(
   bb: BbPluginApi,
   store: TasksApiStore,
-  trackedThread: TaskThread,
+  trackedThreads: TaskThread[],
 ): Promise<void> {
+  const trackedThread = trackedThreads[0]!;
   try {
     const thread = await bb.sdk.threads.get({
       threadId: trackedThread.threadId,
     });
-    if (thread.archivedAt != null || thread.deletedAt != null) {
-      await reconcileTaskThreads(bb, store.tasks, trackedThread.taskId, thread);
-    } else {
-      transitionThread(bb, store, trackedThread, liveStatusFromThread(thread));
+    for (const link of trackedThreads) {
+      const current = store.tasks.getTaskThread(link.id);
+      if (!current || current.updatedAt !== link.updatedAt || current.liveStatus !== link.liveStatus) continue;
+      if (thread.archivedAt != null || thread.deletedAt != null) {
+        await reconcileTaskThreads(bb, store.tasks, link.taskId, thread);
+      } else {
+        transitionThread(bb, store, link, liveStatusFromThread(thread));
+      }
     }
   } catch (error) {
     if (sdkErrorCode(error) === "thread_not_found") {
-      await reconcileTaskThreads(bb, store.tasks, trackedThread.taskId);
+      for (const link of trackedThreads)
+        await reconcileTaskThreads(bb, store.tasks, link.taskId);
       return;
     }
     bb.log.warn(
@@ -124,8 +134,13 @@ async function reconcileTrackedThreads(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): Promise<void> {
-  // Each thread is fetched once per link today; bound the fan-out so startup does not flood bb.
-  const queue = trackedThreads(store);
+  const groups = new Map<string, TaskThread[]>();
+  for (const link of trackedThreads(bb, store)) {
+    const group = groups.get(link.threadId) ?? [];
+    group.push(link);
+    groups.set(link.threadId, group);
+  }
+  const queue = [...groups.values()];
   const worker = async () => {
     for (let next = queue.shift(); next; next = queue.shift())
       await reconcileTrackedThread(bb, store, next);
@@ -138,9 +153,11 @@ export async function registerLifecycle(
   store: TasksApiStore,
 ): Promise<void> {
   bb.events.on("thread.created", ({ thread }) => {
+    attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, liveStatusFromThread(thread));
   });
   bb.events.on("thread.active", ({ thread }) => {
+    attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, "working");
   });
   bb.events.on("thread.idle", ({ thread }) => {

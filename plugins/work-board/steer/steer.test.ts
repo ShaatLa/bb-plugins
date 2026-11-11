@@ -88,12 +88,15 @@ describe("comment notification delivery", () => {
       [
         {
           threadId: "thr_second",
+          originPluginId: "work-board",
           input: [
             {
               type: "text",
               text:
-                "New comment on task PLUG-1 from Sawyer: Please include the regression test.\n\n" +
-                "Treat this as updated context for your work on this task; reply via bb work-board comment PLUG-1 when relevant.",
+                "**Work Board** · `New comment`\n" +
+                "- Task: [PLUG-1](/plugins/work-board/work-board/task/PLUG-1)\n" +
+                "- From: Sawyer\n\nPlease include the regression test.\n\n" +
+                "Treat this as updated context for your work on this task; reply via `bb work-board comment PLUG-1` when relevant.",
               mentions: [],
             },
           ],

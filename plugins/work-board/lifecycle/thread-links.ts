@@ -6,7 +6,7 @@ import { errorMessage } from "../shared/errors";
 type SdkThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
 const pending = new WeakMap<TasksStore, Map<string, Promise<TaskThread[]>>>();
 
-export function threadUnavailable(thread: SdkThread): boolean {
+export function threadUnavailable(thread: Pick<SdkThread, "archivedAt" | "deletedAt" | "originKind" | "originPluginId" | "visibility">): boolean {
   return (
     thread.archivedAt != null ||
     thread.deletedAt != null ||
@@ -14,7 +14,7 @@ export function threadUnavailable(thread: SdkThread): boolean {
   );
 }
 
-export function threadLiveStatus(thread: SdkThread): TaskThreadLiveStatus {
+export function threadLiveStatus(thread: Pick<SdkThread, "status">): TaskThreadLiveStatus {
   if (thread.status === "error") return "failed";
   if (thread.status === "pending" || thread.status === "starting")
     return "starting";

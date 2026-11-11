@@ -7,9 +7,10 @@ import {
   experimental_useFixedTabTarget,
   type ExperimentalThreadTabProps,
   useBbNavigate,
-  useRealtime,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
+import { useWorkBoardRealtime as useRealtime } from "../../shell/host.js";
+import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -415,9 +416,11 @@ function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
 
 export function TaskEmbedPanel(props: ExperimentalThreadTabProps) {
   return (
-    <TasksRefreshProvider>
-      <TaskStatusesProvider><TaskEmbedPanelContent key={props.threadId} {...props} /></TaskStatusesProvider>
-    </TasksRefreshProvider>
+    <DialogScope className="relative h-full min-h-0">
+      <TasksRefreshProvider>
+        <TaskStatusesProvider><TaskEmbedPanelContent key={props.threadId} {...props} /></TaskStatusesProvider>
+      </TasksRefreshProvider>
+    </DialogScope>
   );
 }
 

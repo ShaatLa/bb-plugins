@@ -1,6 +1,7 @@
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { configure } from "@testing-library/react";
 import { resetTaskDatasetCachesForTest } from "./shell/task-dataset";
+import { resetQuerySnapshotStateForTest } from "./shell/query-snapshot";
 import { beforeEach } from "vitest";
 
 if (typeof window !== "undefined") installTestPluginRuntime();
@@ -36,5 +37,6 @@ beforeEach(() => {
   // Thread panel routes are remembered per app session; each test starts fresh.
   if (typeof sessionStorage !== "undefined") sessionStorage.clear();
   resetTaskDatasetCachesForTest();
+  resetQuerySnapshotStateForTest();
   if (typeof window !== "undefined") window.localStorage.clear();
 });

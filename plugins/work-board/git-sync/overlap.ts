@@ -17,21 +17,32 @@ export function matchesGlob(pattern: string, path: string): boolean {
 }
 
 type Entry = { taskId: string; taskKey: string; link: PrLink; snapshot: PrSnapshot };
-export function evaluateOverlaps(entries: Entry[], taskId: string, rules: NonNullable<GitSyncConfig["overlapRules"]>): Overlap[] {
+export function prepareOverlaps(entries: Entry[], rules: NonNullable<GitSyncConfig["overlapRules"]>) {
+  // Shared snapshots must prepare file sets only once across task comparisons.
+  const snapshots = new Map<PrSnapshot, { paths: Set<string>; added: string[][] }>();
+  const prepared = entries.map(entry => {
+    let files = snapshots.get(entry.snapshot);
+    if (!files) {
+      const items = entry.snapshot.files?.entries ?? [];
+      files = {
+        paths: new Set(items.flatMap(file => [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])])),
+        added: rules.map(rule => rule.match === "added" ? items.filter(file => ["added", "renamed"].includes(file.status) && matchesGlob(rule.pattern, file.filename)).map(file => file.filename) : []),
+      };
+      snapshots.set(entry.snapshot, files);
+    }
+    return { ...entry, files };
+  });
+  return (taskId: string): Overlap[] => {
   const results: Overlap[] = [];
-  for (const left of entries.filter(entry => entry.taskId === taskId)) for (const right of entries) {
+  for (const left of prepared.filter(entry => entry.taskId === taskId)) for (const right of prepared) {
     if (right.taskId === taskId || left.link.repository !== right.link.repository || prIdentity(left.link) === prIdentity(right.link)) continue;
-    const leftFiles = left.snapshot.files?.entries ?? [], rightFiles = right.snapshot.files?.entries ?? [];
-    const paths = (files: typeof leftFiles) => new Set(files.flatMap(file => [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])]));
-    const rightPaths = paths(rightFiles);
-    const shared = [...paths(leftFiles)].filter(path => rightPaths.has(path)).sort();
+    const shared = [...left.files.paths].filter(path => right.files.paths.has(path)).sort();
     const base = { pr: { repository: left.link.repository, number: left.link.number }, otherTaskKey: right.taskKey, otherPr: { repository: right.link.repository, number: right.link.number } };
-    for (const rule of rules) {
+    for (const [index, rule] of rules.entries()) {
       let files: string[];
       if (rule.match === "changed") files = shared.filter(path => matchesGlob(rule.pattern, path));
       else {
-        const added = (items: typeof leftFiles) => items.filter(file => ["added", "renamed"].includes(file.status) && matchesGlob(rule.pattern, file.filename)).map(file => file.filename);
-        const a = added(leftFiles), b = added(rightFiles);
+        const a = left.files.added[index]!, b = right.files.added[index]!;
         files = a.length && b.length ? [...new Set([...a, ...b])].sort() : [];
       }
       if (files.length) results.push({ ...base, rule, files });
@@ -39,4 +50,9 @@ export function evaluateOverlaps(entries: Entry[], taskId: string, rules: NonNul
     if (shared.length) results.push({ ...base, rule: null, files: shared });
   }
   return results;
+  };
+}
+
+export function evaluateOverlaps(entries: Entry[], taskId: string, rules: NonNullable<GitSyncConfig["overlapRules"]>): Overlap[] {
+  return prepareOverlaps(entries, rules)(taskId);
 }

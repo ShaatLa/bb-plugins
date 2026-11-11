@@ -1,5 +1,8 @@
-import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
+import { TaskAdvisories } from "../../components/task-advisories";
 import { displayName } from "../../shared/display-name.js";
+import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
+import { TaskActivityIndicator } from "../../components/task-activity";
+import { DependencyWarning } from "../../components/dependency-warning";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
   useEffect,
@@ -13,7 +16,6 @@ import {
   type Label,
   type Task,
   type TaskStatus,
-  type TaskThread,
 } from "../../shared/contract.js";
 import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
@@ -81,23 +83,6 @@ interface DragState {
   width: number;
   overStatus: TaskStatus | null;
   dropIndex: number;
-}
-
-function WorkingAgentsChip({ threads }: { threads: TaskThread[] }) {
-  if (threads.length === 0) return null;
-  return (
-    <span className="flex min-w-0 items-center gap-1 font-medium text-success">
-      <span
-        aria-hidden
-        className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
-      />
-      <span className="truncate">
-        {threads.length === 1
-          ? threads[0]!.presetName
-          : `${threads.length} agents`}
-      </span>
-    </span>
-  );
 }
 
 interface TaskCardProps {
@@ -200,7 +185,9 @@ function TaskCard({
                 Epic
               </span>
             ) : null}
-            <WorkingAgentsChip threads={meta.workingThreads} />
+            <TaskActivityIndicator activity={meta.activity} failureMarker={!!meta.threadHealth?.failed.length} />
+            <DependencyWarning blockedBy={meta.blockedBy} />
+            <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
           {childQuestions > 0 && !ghost ? (
@@ -374,8 +361,9 @@ export function BoardView({ projectId }: BoardViewProps) {
   const labelsById = useMemo(() => new Map((labelQuery.data ?? []).map((label) => [label.id, label])), [labelQuery.data]);
   const metaByTaskId = useMemo(() => {
     const map = new Map(board.data?.metaByTaskId);
+    if (metadata.data) for (const [id, value] of map) map.set(id, { ...value, activity: undefined });
     for (const row of metadata.data ?? []) map.set(row.taskId, {
-      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, advisories: row.advisories, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
     });
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);
@@ -784,7 +772,6 @@ export function BoardView({ projectId }: BoardViewProps) {
         )}
       />
       {board.error ? <p role="alert" className="px-4 pt-1 text-xs text-destructive">Couldn't finish updating the board. <Button size="sm" variant="ghost" onClick={board.refresh}>Retry</Button></p> : null}
-      {board.isFetching || metadata.isFetching || labelQuery.isFetching ? <p role="status" className="px-4 pt-1 text-xs text-muted-foreground">Updating board…</p> : null}
       {filters.unansweredOnly && questionCounts.error ? (
         <p role="alert" className="px-4 py-2 text-sm text-destructive">
           Couldn't load question counts.{" "}

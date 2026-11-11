@@ -1,6 +1,6 @@
 import { classifyDraft, draftCandidate, type DraftRules } from "./draft-deferrals";
 import { z } from "zod";
-import { ciInsightsSchema, ciRunSchema, summarizeCi } from "./ci-insights";
+import { ciInsightsSchema, ciRunSchema, summarizeCi, summarizeTrends } from "./ci-insights";
 import { rangeSchema, resolveRange, type DateRange } from "./date-range";
 import { commitActivitySchema, commitRowSchema, loadCommitActivity, summarizeCommitActivity } from "./commit-activity";
 
@@ -9,6 +9,8 @@ export const repositorySchema = z.string().max(200).regex(
   "Use a GitHub repository in owner/repo format",
 );
 const seriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable() }));
+/** A history chart series; `parts` splits `value` into components charted side by side (e.g. additions and deletions). */
+const trendSeriesSchema = z.array(z.object({ date: z.iso.datetime(), value: z.number().nonnegative().nullable(), parts: z.array(z.object({ key: z.string(), value: z.number().nonnegative() })).optional(), count: z.number().int().nonnegative().optional() }));
 const metricSchema = z.object({
   value: z.number().nonnegative().nullable(),
   detail: z.string(),
@@ -26,12 +28,29 @@ export const metricsSchema = z.object({
   updatedAt: z.string(),
   range: rangeSchema,
   pending: z.array(z.string()).optional(),
+  /** CI run-history listing progress while `ci` is pending; absent otherwise (older snapshots omit it). */
+  loading: z.object({ runs: z.number().int().nonnegative(), done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).nullable().optional(),
   deployments: metricSchema,
   pullRequests: metricSchema,
   pullRequestsCreated: metricSchema,
   commitActivity: commitActivitySchema,
   ci: metricSchema,
   ciInsights: ciInsightsSchema.nullable().optional(),
+  /** Extra history charts; optional so stored snapshots still parse, and each series appears once its source (CI runs or commits) has loaded. */
+  trends: z.object({
+    durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema,
+    startDelay: trendSeriesSchema, commits: trendSeriesSchema, lines: trendSeriesSchema,
+    /** The run-based series again per workflow (only workflows with runs in range), so one busy workflow cannot swamp the rest. */
+    workflows: z.array(z.object({
+      id: z.number().int().positive(), name: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
+      durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      /** The same series per event (main event first); optional so stored snapshots still parse. */
+      events: z.array(z.object({
+        event: z.string(), total: z.number().int().nonnegative(), successMs: z.number().nonnegative(),
+        durationMedian: trendSeriesSchema, durationP90: trendSeriesSchema, runs: trendSeriesSchema, failedRuns: trendSeriesSchema, startDelay: trendSeriesSchema,
+      })).optional(),
+    })),
+  }).partial().optional(),
   ciOutcomes: z.record(z.string(), z.number().int().nonnegative()).nullable(),
   reviewQueue: z.object({
     total: z.number().int().nonnegative().nullable(),
@@ -50,7 +69,7 @@ export const metricsProgressSchema = z.object({
 
 const countSchema = z.object({ total_count: z.number().int().nonnegative() });
 const searchSchema = countSchema.extend({ incomplete_results: z.boolean() });
-const deploymentsSchema = z.array(z.object({ created_at: timestampSchema }));
+const deploymentsSchema = z.array(z.object({ created_at: timestampSchema, environment: z.string().optional(), ref: z.string().optional(), sha: z.string().optional() }));
 const runSchema = ciRunSchema;
 const runsSchema = z.object({ workflow_runs: z.array(runSchema) });
 const productionRowsSchema = z.array(z.object({ id: z.number().int().positive(), environment: z.string(), production_environment: z.boolean(), ref: z.string(), created_at: timestampSchema }));
@@ -113,7 +132,10 @@ export type LoadOptions = {
   draftRules?: DraftRules; request?: GitHubRequest; historyRange?: DateRange; previous?: HistoricalRecords;
   localOnly?: boolean; partitionCi?: boolean; onProgress?: (metrics: Metrics) => void;
   onWarning?: (message: string) => void;
+  /** Previous complete coverage plus per-window verification times, so old windows can skip the network. */
+  reuse?: { coverage: Pick<DateRange, "since" | "until">; checked: Map<string, number> };
 };
+const day = 86_400_000;
 export async function loadMetrics(repository: string, token: string | undefined, signal: AbortSignal, range: DateRange = resolveRange(null), cached?: { metrics: Metrics; records: HistoricalRecords }, onHistory?: (records: HistoricalRecords) => void, options: LoadOptions = {}): Promise<Metrics> {
   repositorySchema.parse(repository);
   const now = new Date();
@@ -126,13 +148,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
   const historyStart = Date.parse(historyRange.since), historyEnd = Date.parse(historyRange.until);
   const calendarDay = range.label === "today";
   const days = calendarDay ? 1 : Math.max(1, end - cutoff) / 86_400_000;
-  const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - cutoff) / range.bucketMs);
+  // Buckets that tile a day (or are whole days) start at UTC midnight, so a "6 Nov" bar is that calendar day; the first and last may be partial.
+  const anchor = (range.bucketMs <= day ? day % range.bucketMs : range.bucketMs % day) === 0 ? cutoff - (cutoff - Math.floor(cutoff / day) * day) % range.bucketMs : cutoff;
+  const bucketCount = calendarDay ? 6 : Math.ceil(Math.max(1, end - anchor) / range.bucketMs);
   const emptySeries = () => Array.from({ length: bucketCount }, (_, i) => ({
-    date: new Date(calendarDay ? cutoff + (i + 1) * range.bucketMs : Math.min(end, cutoff + (i + 1) * range.bucketMs)).toISOString(), value: 0,
+    date: new Date(calendarDay ? cutoff + (i + 1) * range.bucketMs : Math.min(end, anchor + (i + 1) * range.bucketMs)).toISOString(), value: 0,
   }));
   const bucket = (timestamp: string) => {
     const time = Date.parse(timestamp);
-    return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - cutoff) / range.bucketMs));
+    return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - anchor) / range.bucketMs));
   };
   const request: GitHubRequest = options.request ?? ((path, init) => githubRequest(path, token, signal, init));
   const deploymentPages = new Map<number, ReturnType<typeof request>>();
@@ -167,7 +191,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
         historyData.deployments = selected;
         return {
           value: count / days,
-          detail: `${count} deployment records · ${range.label} · all environments and outcomes`,
+          detail: `${count} deployments · all environments`,
           error: null, series, seriesError: null,
         };
       }
@@ -214,13 +238,16 @@ export async function loadMetrics(repository: string, token: string | undefined,
   async function ci() {
     const path = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${historyRange.since}..${historyRange.until}`)}`;
     const completedPath = `${path}&status=completed&per_page=100`;
-    const first = cached ? null : await request(`${completedPath}&page=1`);
+    // Partitioned loads read pages per window, so page 1 here only supplies total_count: ask for one row once history is known to be large.
+    const canPartition = Boolean(options.partitionCi) && historyEnd - historyStart > day;
+    const probe = canPartition && (options.previous?.runs.length ?? 0) > 1000;
+    const first = cached ? null : await request(probe ? `${path}&status=completed&per_page=1&page=1` : `${completedPath}&page=1`);
     const completed = cached ? cached.records.runs.length : countSchema.parse(first!.body).total_count;
     function summary(total: number, successful: number) {
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
         value: total === 0 ? null : successful / total * 100,
-        detail: total === 0 ? `No completed runs after excluding cancelled, skipped and deferred drafts · ${range.label}` : `${successful} of ${total} completed workflow runs · cancelled, skipped and deferred drafts excluded · ${range.label}`, error: null,
+        detail: total === 0 ? "No completed runs" : `${successful} of ${total} runs passed`, error: null,
       };
     }
     async function incomplete(message: string) {
@@ -273,17 +300,37 @@ export async function loadMetrics(repository: string, token: string | undefined,
     }
     try {
       async function completeHistory() {
-        if (!options.partitionCi || completed <= 1000 || historyEnd - historyStart <= 7 * 86_400_000) return history(historyStart, historyEnd, first!);
+        if (!canPartition || completed <= 1000) return history(historyStart, historyEnd, probe ? undefined : first!);
         const windows: [number, number][] = [];
         for (let start = historyStart; start <= historyEnd;) {
-          const finish = Math.min(historyEnd, (Math.floor(start / (7 * 86_400_000)) + 1) * 7 * 86_400_000 - 1);
+          const weekEnd = (Math.floor(start / (7 * day)) + 1) * 7 * day - 1;
+          // Only the open week is cut into days: closed windows keep stable cache keys and only today's window ends at `now`.
+          const finish = Math.min(historyEnd, weekEnd > historyEnd ? (Math.floor(start / day) + 1) * day - 1 : weekEnd);
           windows.push([start, finish]);
           start = finish + 1;
         }
+        const reuse = options.reuse, stored = options.previous?.runs, current = now.getTime();
+        // Accepted staleness: runs older than 48 h can still change (reruns) but are revalidated only hourly.
+        const reusable = ([start, finish]: [number, number]) => Boolean(reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(`${start}-${finish}`) ?? -Infinity) < 3_600_000);
+        // Progress counts only windows that hit the network, so routine refreshes that reuse stored history report little.
+        const progress = { runs: 0, done: 0, total: windows.filter((window) => !reusable(window)).length };
+        const report = () => { if (progress.total) { result.loading = { ...progress }; options.onProgress?.({ ...result }); } };
+        const load = async (window: [number, number]) => {
+          const [start, finish] = window;
+          if (reusable(window)) {
+            return new Map(stored!.filter((row) => { const time = Date.parse(row.created_at); return time >= start && time <= finish; }).map((row) => [row.id, row]));
+          }
+          const rows = await history(start, finish);
+          reuse?.checked.set(`${start}-${finish}`, current);
+          progress.runs += rows.size;
+          progress.done++;
+          report();
+          return rows;
+        };
+        report();
         // Read the active tail after closed windows so its pages cannot queue behind old history.
-        const results = await Promise.all(windows.slice(0, -1).map(([start, finish]) => history(start, finish)));
-        const tail = windows[windows.length - 1];
-        results.push(await history(tail[0], tail[1]));
+        const results = await Promise.all(windows.slice(0, -1).map(load));
+        results.push(await load(windows[windows.length - 1]));
         const combined = new Map<number, z.infer<typeof runSchema>>();
         for (const result of results) for (const [id, row] of result) {
           if (combined.has(id)) throw new Error("GitHub returned overlapping CI search results.");
@@ -332,10 +379,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
   }
   function errorMessage(reason: unknown) {
     const message = reason instanceof Error ? reason.message : "";
-    return message.startsWith("GitHub") || message.startsWith("More than")
-      ? message : "Unable to load this data. Check connectivity and try again.";
+    if (message.startsWith("GitHub") || message.startsWith("More than")) return message;
+    // A slow GitHub or a dropped connection is transient: say so instead of blaming the user's connectivity.
+    if (reason instanceof Error && (reason.name === "TimeoutError" || /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket/i.test(`${message} ${String(reason.cause ?? "")}`)))
+      return "GitHub did not respond in time or the connection dropped. The next refresh retries.";
+    return "Unable to load this data. Check connectivity and try again.";
   }
-  function failedMetric(reason: unknown) {
+  function failedMetric(field: string, reason: unknown) {
+    // The card only shows a summary; the log keeps the actual cause.
+    if (!signal.aborted) options.onWarning?.(`${field}: ${reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason)}`);
     return { value: null, detail: "Unavailable", series: null, seriesError: null, error: errorMessage(reason) };
   }
   const empty = { value: null, detail: "Loading…", error: null, series: null, seriesError: null };
@@ -351,8 +403,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
     catch (reason) { Object.assign(result, failure(reason)); }
     pending.splice(pending.indexOf(key), 1);
     result.pending = [...pending];
+    if (!pending.includes("ci")) delete result.loading;
     const runs = cached?.records.runs ?? historyData.runs;
     if ((key === "ci" || key === "commitActivity") && !pending.includes("ci") && result.ciOutcomes && runs) result.ciInsights = summarizeCi(runs.filter((row) => bucket(row.created_at) >= 0), cached?.records.branch ?? historyData.branch ?? null);
+    if (key === "ci" || key === "commitActivity") {
+      const ready = !pending.includes("ci") && result.ciOutcomes && runs;
+      const rows = commitsComplete ? cached?.records.commits ?? historyData.commits : undefined;
+      const trends = summarizeTrends(ready ? runs.filter((row) => bucket(row.created_at) >= 0) : null, rows ?? null, bucket, emptySeries);
+      if (Object.keys(trends).length) result.trends = trends;
+    }
     options.onProgress?.({ ...result });
   }
   let commitsComplete = false;
@@ -365,12 +424,12 @@ export async function loadMetrics(repository: string, token: string | undefined,
     historyData.head = head;
   }, options.previous).then(() => summarizeCommitActivity(historyData.commits!.filter((row) => Date.parse(row.committedDate) >= cutoff && Date.parse(row.committedDate) <= end), historyData.branch!));
   await Promise.all([
-    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric(reason) })),
-    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric(reason) })),
-    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric(reason), ciOutcomes: null })),
+    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric("deployments", reason) })),
+    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric("pullRequests", reason) })),
+    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric("ci", reason), ciOutcomes: null })),
     settle("reviewQueue", reviews().then((reviewQueue) => ({ reviewQueue })), (reason) => ({ reviewQueue: { total: null, items: [], error: errorMessage(reason) } })),
     settle("production", production().then((production) => ({ production })), (reason) => ({ production: { deployment: null, error: errorMessage(reason) } })),
-    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
+    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric("pullRequestsCreated", reason) })),
     settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
   ]);
   if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run, options.draftRules) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];

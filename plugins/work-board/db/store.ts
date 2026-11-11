@@ -1,4 +1,6 @@
 import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -76,6 +78,9 @@ interface FolderRow {
 
 interface ProjectRow {
   workflow_policy: string | null;
+  auto_archive_after_days: string | null;
+  stale_idle_minutes: string | null;
+  status_notifications: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -88,6 +93,8 @@ interface ProjectRow {
 }
 
 interface TaskRow {
+  ordinary_visible?: number;
+  scheduled_role?: Task["scheduledRole"];
   archived_at: string | null;
   id: string;
   project_id: string;
@@ -377,6 +384,9 @@ function folderFromRow(row: FolderRow): Folder {
 function projectFromRow(row: ProjectRow): Project {
   return {
     ...(row.workflow_policy == null ? {} : { workflowPolicy: workflowPolicySchema.parse(JSON.parse(row.workflow_policy)) }),
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
+    staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
+    statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -394,6 +404,8 @@ function projectFromRow(row: ProjectRow): Project {
 
 function taskFromRow(row: TaskRow): Task {
   return {
+    ...(row.ordinary_visible === 0 ? { ordinaryVisible: false } : {}),
+    ...(row.scheduled_role ? { scheduledRole: row.scheduled_role } : {}),
     id: row.id,
     archivedAt: row.archived_at,
     projectId: row.project_id,
@@ -538,7 +550,7 @@ export function createTasksStore(db: PluginDatabase) {
     "SELECT * FROM projects WHERE id = ?",
   );
   const taskSelect = `
-    SELECT t.*, p.prefix AS project_prefix
+    SELECT t.*, p.prefix AS project_prefix, CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible, (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role
     FROM tasks t
     JOIN projects p ON p.id = t.project_id
   `;
@@ -692,8 +704,8 @@ export function createTasksStore(db: PluginDatabase) {
     >(
       `
       INSERT INTO projects
-        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at)
-      VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+        (id, name, prefix, next_task_number, color, folder_id, linked_bb_project_id, created_at, auto_archive_after_days, stale_idle_minutes, status_notifications)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'off', '45', 'off')
     `,
     ).run(
       id,
@@ -752,11 +764,12 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string]
       >(
         `
       UPDATE projects
-      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?
+      SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?
       WHERE id = ?
     `,
       ).run(
@@ -775,6 +788,9 @@ export function createTasksStore(db: PluginDatabase) {
           : validateLinkedBbProjectId(input.linkedBbProjectId),
         JSON.stringify(statuses),
         policy ? JSON.stringify(policy) : null,
+        autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
+        staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
+        statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
         id,
       );
       return requireProject(id);
@@ -1065,6 +1081,7 @@ export function createTasksStore(db: PluginDatabase) {
     const dateField = filters.dateField ?? (filters.archive === "archived" ? "archived" : "created");
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
+    if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
     const parameters: Record<string, SqlParameter> = {};
@@ -1258,6 +1275,8 @@ export function createTasksStore(db: PluginDatabase) {
             WITH filtered_tasks AS (
               SELECT
                 t.*,
+                CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
+                (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role,
                 COALESCE(${dateColumn}, '') AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
@@ -1356,6 +1375,8 @@ export function createTasksStore(db: PluginDatabase) {
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
+      if (current.scheduledRole === "template" && (input.status !== undefined || input.executionTarget === "owner" || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
+        throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
       validateTaskStatus(current.projectId, status);
       validateWorkflowTransition(current, status);
@@ -1450,6 +1471,8 @@ export function createTasksStore(db: PluginDatabase) {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
+      if (root.scheduledRole)
+        throw new Error("Scheduled tasks keep their source project; create a schedule in the target project instead");
       const source = requireProject(root.projectId);
       const members =
         root.type === "epic" ? listTasks({ epicId: root.id }) : [];
@@ -1661,6 +1684,8 @@ export function createTasksStore(db: PluginDatabase) {
 
   const setTaskArchived = db.transaction((id: string, archived: boolean): Task[] => {
     const root = requireTask(id);
+    if (root.scheduledRole === "template")
+      throw new Error("Pause or delete the schedule in Scheduled settings instead of archiving its template");
     if (archived && root.archivedAt || !archived && !root.archivedAt) return [];
     const parentId = root.parentTaskId ?? root.epicId;
     if (!archived && parentId && requireTask(parentId).archivedAt)
@@ -1679,6 +1704,7 @@ export function createTasksStore(db: PluginDatabase) {
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
+      if (task.scheduledRole === "template") continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||
@@ -1699,6 +1725,10 @@ export function createTasksStore(db: PluginDatabase) {
   });
 
   function deleteTask(id: string): boolean {
+    if (db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?").get(id))
+      throw new Error("Delete the schedule in Scheduled settings instead of deleting its template");
+    if (db.prepare("SELECT 1 FROM task_scheduled_sources ss JOIN task_schedule_runs r ON r.id=ss.run_id WHERE ss.task_id=? AND ss.role<>'template' AND ss.started_at IS NULL AND r.state IN ('starting','queued','delivery_unknown','cancel_pending')").get(id))
+      throw new Error("Cancel the pending scheduled run before deleting its task");
     return (
       db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(id).changes > 0
     );
@@ -1799,6 +1829,18 @@ export function createTasksStore(db: PluginDatabase) {
       .map(taskLabelFromRow);
   }
 
+  // Project-wide batch reads for archive capture: one statement per table instead of one per task.
+  function listTaskLabelsForProject(projectId: string): TaskLabel[] {
+    return db
+      .prepare<[string], TaskLabelRow>(
+        `SELECT tl.task_id, tl.label_id FROM task_labels tl
+         JOIN tasks t ON t.id = tl.task_id WHERE t.project_id = ?
+         ORDER BY tl.task_id, tl.label_id`,
+      )
+      .all(projectId)
+      .map(taskLabelFromRow);
+  }
+
   function listLabelsForTask(taskId: string): Label[] {
     return db
       .prepare<[string], LabelRow>(
@@ -1874,6 +1916,16 @@ export function createTasksStore(db: PluginDatabase) {
       `,
       )
       .all(taskId)
+      .map(commentFromRow);
+  }
+
+  function listCommentsForProject(projectId: string): Comment[] {
+    return db
+      .prepare<[string], CommentRow>(
+        `SELECT c.* FROM comments c JOIN tasks t ON t.id = c.task_id
+         WHERE t.project_id = ? ORDER BY c.task_id, c.created_at, c.rowid`,
+      )
+      .all(projectId)
       .map(commentFromRow);
   }
 
@@ -1995,6 +2047,19 @@ export function createTasksStore(db: PluginDatabase) {
       .map(attachmentFromRow);
   }
 
+  // Task-owned and comment-owned attachments of a project; the owner is task_id or the comment's task.
+  function listAttachmentsForProject(projectId: string): Attachment[] {
+    return db
+      .prepare<[string, string], AttachmentRow>(
+        `SELECT a.* FROM attachments a JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ?
+         UNION ALL
+         SELECT a.* FROM attachments a JOIN comments c ON c.id = a.comment_id
+         JOIN tasks t ON t.id = c.task_id WHERE t.project_id = ?`,
+      )
+      .all(projectId, projectId)
+      .map(attachmentFromRow);
+  }
+
   function updateAttachment(
     id: string,
     input: UpdateAttachmentInput,
@@ -2101,13 +2166,23 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   // Status plus the latest task-level update: the task row itself or a non-system comment (evidence lives on comments).
-  function listTaskActivity(taskIds: readonly string[]): Map<string, { status: string; lastActivityAt: string }> {
+  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; executionTarget: Task["executionTarget"]; lastActivityAt: string }> {
     if (!taskIds.length) return new Map();
-    return new Map(db.prepare<string[], { id: string; status: string; at: string }>(
-      `SELECT t.id, t.status, MAX(t.updated_at, COALESCE(
+    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; execution_target: Task["executionTarget"]; at: string }>(
+      `SELECT t.id, t.project_id, t.status, t.execution_target, MAX(t.updated_at, COALESCE(
          (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
-    ).all(...taskIds).map((row) => [row.id, { status: row.status, lastActivityAt: row.at }]));
+    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, executionTarget: row.execution_target, lastActivityAt: row.at }]));
+  }
+
+  function listTaskThreadsForProject(projectId: string): TaskThread[] {
+    return db
+      .prepare<[string], TaskThreadRow>(
+        `SELECT th.* FROM task_threads th JOIN tasks t ON t.id = th.task_id
+         WHERE t.project_id = ? ORDER BY th.task_id, th.id`,
+      )
+      .all(projectId)
+      .map(taskThreadFromRow);
   }
 
   function listTaskThreads(taskId: string): TaskThread[] {
@@ -2371,10 +2446,12 @@ export function createTasksStore(db: PluginDatabase) {
     addTaskLabel,
     removeTaskLabel,
     listTaskLabels,
+    listTaskLabelsForProject,
     listLabelsForTask,
     createComment,
     getComment,
     listComments,
+    listCommentsForProject,
     getLatestAgentComment,
     updateComment,
     createAttachment,
@@ -2382,6 +2459,7 @@ export function createTasksStore(db: PluginDatabase) {
     listAttachmentsForTask,
     listAttachmentsForComment,
     listAttachmentsForTaskComments,
+    listAttachmentsForProject,
     updateAttachment,
     deleteAttachment,
     upsertTaskThread,
@@ -2389,6 +2467,7 @@ export function createTasksStore(db: PluginDatabase) {
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
     listTaskThreads,
+    listTaskThreadsForProject,
     listTaskThreadsForTasks,
     listTaskActivity,
     updateTaskThreadStatus,

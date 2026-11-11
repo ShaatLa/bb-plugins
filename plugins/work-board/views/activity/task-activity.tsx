@@ -37,6 +37,7 @@ import type {
   TaskPullRequest,
 } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
+import { withNativeThreadMentions } from "../../shared/thread-links.js";
 import {
   formatFileSize,
   formatRelativeTime,
@@ -249,7 +250,7 @@ function SystemEvent({ comment, nowMs }: { comment: Comment; nowMs: number }) {
   );
 }
 
-function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
+export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
   const { comment, attachments } = entry;
   const agent = comment.kind === "agent";
   const navigate = useBbNavigate();
@@ -261,7 +262,8 @@ function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
       ) : (
         <UserAvatar name={comment.authorName} />
       )}
-      <div className="min-w-0 flex-1">
+      {/* Host Markdown tables size their breakout from the nearest query container. */}
+      <div className="@container min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-1.5 text-xs">
           <CommentAuthor comment={comment} onOpenThread={navigate.toThread} />
           {agent && comment.presetName ? (
@@ -282,7 +284,10 @@ function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number }) {
             onOpenThread={(threadId) => navigate.toThread(threadId)}
           />
         ) : (
-          <Markdown content={comment.body} className="text-sm [overflow-wrap:anywhere]" />
+          <Markdown
+            content={withNativeThreadMentions(comment.body, window.location.origin)}
+            className="text-sm [overflow-wrap:anywhere]"
+          />
         )}
         {attachments.length > 0 ? (
           <AttachmentTracks

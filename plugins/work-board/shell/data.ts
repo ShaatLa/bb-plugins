@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { useWorkBoardRealtime as useRealtime, useWorkBoardRpc } from "./host.js";
 import type { z } from "zod";
 import {
   TASK_STATUSES,
@@ -24,7 +24,7 @@ import {
 } from "./signal-scheduler.js";
 
 export function useTasksRpc() {
-  return useRpc<TasksRpcContract>();
+  return useWorkBoardRpc<TasksRpcContract>();
 }
 
 export type TasksRpc = ReturnType<typeof useTasksRpc>;
@@ -113,10 +113,10 @@ export async function patchTasks(
     }
     const updated = updates.get(task.id) ?? null;
     updates.delete(task.id);
-    if (updated !== null && belongs(updated)) next.push(updated);
+    if (updated !== null && updated.ordinaryVisible !== false && belongs(updated)) next.push(updated);
   }
   for (const task of updates.values()) {
-    if (task !== null && belongs(task)) next.push(task);
+    if (task !== null && task.ordinaryVisible !== false && belongs(task)) next.push(task);
   }
   return next;
 }
@@ -342,6 +342,7 @@ export function useTasksQuery<T>(
   useRealtime("prs:changed", (payload) => scheduler.push("prs:changed", payload));
   useRealtime("locks:changed", (payload) => scheduler.push("locks:changed", payload));
   useRealtime("badge:changed", (payload) => scheduler.push("badge:changed", payload));
+  useRealtime("schedules:changed", (payload) => scheduler.push("schedules:changed", payload));
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
   return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
 }

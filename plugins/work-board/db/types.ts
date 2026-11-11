@@ -2,6 +2,7 @@ import type { TaskSort } from "../shared/pagination.js";
 import type { TaskDateFilters } from "../shared/task-dates.js";
 import type { TaskStatusDefinition } from "../shared/statuses.js";
 import type { Evidence } from "../shared/contract.js";
+import type { Project as ProjectContract } from "../shared/contract.js";
 import type {
   PRESET_ENVIRONMENT_KINDS,
   PresetPermissionMode,
@@ -30,6 +31,9 @@ export interface Folder {
 
 export interface Project {
   workflowPolicy?: import("../shared/workflow-policy.js").WorkflowPolicy;
+  autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
+  staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   id: string;
   name: string;
   prefix: string;
@@ -42,6 +46,8 @@ export interface Project {
 }
 
 export interface Task {
+  ordinaryVisible?: boolean;
+  scheduledRole?: "template" | "recurring_run" | "one_time_run";
   archivedAt?: string | null;
   id: string;
   projectId: string;
@@ -152,6 +158,9 @@ export interface CreateProjectInput {
 
 export interface UpdateProjectInput {
   workflowPolicy?: import("../shared/workflow-policy.js").WorkflowPolicy;
+  autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
+  staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
+  statusNotifications?: ProjectContract["statusNotifications"];
   name?: string;
   prefix?: string;
   color?: string;
@@ -193,6 +202,7 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters extends TaskDateFilters {
+  ordinaryOnly?: boolean;
   allowStaleCursor?: boolean;
   archive?: "active" | "archived" | "all";
   projectId?: string;

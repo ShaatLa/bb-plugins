@@ -11,7 +11,7 @@ import {
   type PrSnapshot,
 } from "../shared/git-sync";
 
-import { evaluateOverlaps } from "./overlap";
+import { prepareOverlaps } from "./overlap";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export function createGitSyncStore(db: Database) {
@@ -39,6 +39,7 @@ export function createGitSyncStore(db: Database) {
     ).run(link.taskId, prIdentity(link), JSON.stringify(link));
     return link;
   };
+  let cached: { projectId: string; token: string; evaluate: (taskId: string) => Overlap[]; results: Map<string, Overlap[]> } | undefined;
   // One project scan per call, not per task: board summaries arrive in batches of hundreds.
   function overlapsForTasks(taskIds: readonly string[]) {
     const result = new Map<string, Overlap[]>();
@@ -50,9 +51,22 @@ export function createGitSyncStore(db: Database) {
     for (const [projectId, ids] of byProject) {
       const projectConfig = config(projectId);
       const rows = db.prepare<[string], { taskId: string; taskKey: string; link: string; snapshot: string }>(`SELECT t.id AS taskId, p.prefix || '-' || t.number AS taskKey, l.payload AS link, s.payload AS snapshot FROM task_pr_links l JOIN tasks t ON t.id=l.task_id JOIN projects p ON p.id=t.project_id JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE t.project_id=? AND s.payload IS NOT NULL AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0 AND json_extract(s.payload, '$.state') IN ('open', 'draft') AND json_extract(s.payload, '$.files') IS NOT NULL`).all(projectId);
-      const entries = rows.map(row => ({ ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot: prSnapshotSchema.parse(JSON.parse(row.snapshot)) })).filter(row => projectConfig.repositories.includes(row.link.repository));
-      const withPrs = new Set(entries.map(entry => entry.taskId));
-      for (const taskId of ids) result.set(taskId, withPrs.has(taskId) ? evaluateOverlaps(entries, taskId, projectConfig.overlapRules ?? []) : []);
+      // Comparing the actual inputs also catches same-connection writes and uncommitted changes.
+      const token = JSON.stringify([projectConfig, rows]);
+      if (!cached || cached.projectId !== projectId || cached.token !== token) {
+        const snapshots = new Map<string, PrSnapshot>();
+        const entries = rows.map(row => {
+          let snapshot = snapshots.get(row.snapshot);
+          if (!snapshot) { snapshot = prSnapshotSchema.parse(JSON.parse(row.snapshot)); snapshots.set(row.snapshot, snapshot); }
+          return { ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot };
+        }).filter(row => projectConfig.repositories.includes(row.link.repository));
+        cached = { projectId, token, evaluate: prepareOverlaps(entries, projectConfig.overlapRules ?? []), results: new Map() };
+      }
+      for (const taskId of ids) {
+        let overlaps = cached.results.get(taskId);
+        if (!overlaps) { overlaps = cached.evaluate(taskId); cached.results.set(taskId, overlaps); }
+        result.set(taskId, overlaps);
+      }
     }
     return result;
   }

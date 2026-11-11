@@ -5,8 +5,13 @@ import { act, fireEvent, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
+import { duration, when } from "./ci-cards";
 import { minimumDate, resolveRange } from "./date-range";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp, renderSlot as renderSdkSlot } from "@get-bb/plugin-sdk/testing/app";
+
+const renderSlot: typeof renderSdkSlot = (registration, props, options) => renderSdkSlot(registration, props, {
+  ...options, rpc: { signals: () => ({ repositories: [], actors: { owner_sre: "SRE", pr_author: "Author", lead: "Lead", manager: "Manager" } }), navigationBadge: () => ({ count: 0, critical: 0 }), ...options?.rpc },
+});
 
 const app = await loadPluginApp(() => import("./app"));
 const metric = { value: 12, detail: "Fixture metric", error: null, seriesError: null,
@@ -20,7 +25,7 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
   production: { error: null, deployment: { environment: "production", state: "success", ref: "v2", createdAt: "2026-10-20T10:00:00Z", updatedAt: "2026-10-20T11:00:00Z", url: "https://github.com/acme/widgets/actions/runs/1" } },
 };
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 test("CI cards show actionable failures, workflow breakdown and overall and individual timing", async () => {
   vi.resetModules();
@@ -34,16 +39,14 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
   try {
     const attention = await slot.findByRole("region", { name: "CI health" });
     expect(slot.queryByRole("region", { name: "CI needs attention" })).toBeNull();
-    expect(attention.textContent).toContain("3 consecutive failures");
-    expect(slot.getByRole("link", { name: "Unit tests · main: latest run failed" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/3");
-    expect(slot.getByText("3 failed · 25.0% passed · 4 counted runs")).toBeTruthy();
+    expect(slot.getByText("— 3 failed · 25% passed")).toBeTruthy();
     const timings = slot.getByRole("region", { name: "CI run timings" });
-    const order = [timings, attention, slot.getByRole("heading", { name: "CI pass rate over time" }),
-      slot.getByRole("region", { name: "Repository activity in the last 7 days" }), slot.getByRole("region", { name: "PRs awaiting review" })];
+    const order = [timings, attention, slot.getByRole("region", { name: "Repository activity in the last 7 days" }),
+      slot.getByRole("combobox", { name: "First chart" }), slot.getByRole("region", { name: "PRs awaiting review" })];
     for (let index = 1; index < order.length; index++) expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(attention.contains(slot.getByRole("region", { name: "CI signals" }))).toBe(true);
     expect(timings.textContent).toContain("7m 0s");
-    expect(timings.textContent).toContain("Timing available for 2 of 2 successful runs · 3 non-successful runs excluded");
+    // Full timing coverage needs no caveat line.
+    expect(timings.textContent).not.toContain("Timing available");
     expect(slot.getByRole("link", { name: /Unit tests · main · #5/ }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/5");
     const workflows = slot.getByRole("list", { name: "Workflow timings" });
     expect(workflows.querySelector("li a")?.textContent).toBe("Slower workflow");
@@ -56,7 +59,7 @@ test("CI cards show actionable failures, workflow breakdown and overall and indi
 test("timing summary separates CI from frequent short automation without refetching", async () => {
   const started = "2026-10-20T00:00:00Z";
   const ciInsights = summarizeCi([10, 14, 16, 1000, 1100].map((seconds, index) => ({
-    id: index + 1, workflow_id: index < 3 ? 2 : 1, name: index < 3 ? "PR checks" : "CI",
+    id: index + 1, workflow_id: index < 3 ? 2 : 1, name: index < 3 ? "Docs check" : "CI",
     head_branch: "main", event: "push", conclusion: "success", created_at: started, run_started_at: started,
     updated_at: new Date(Date.parse(started) + seconds * 1000).toISOString(),
   })), "main");
@@ -66,16 +69,13 @@ test("timing summary separates CI from frequent short automation without refetch
     const card = await slot.findByRole("region", { name: "CI run timings" });
     const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
     expect(median()).toBe("17m 30s");
-    expect(card.textContent).toContain("Timing available for 2 of 2 successful runs");
     const calls = metrics.mock.calls.length;
     const select = within(card).getByRole("combobox", { name: "Timing workflow" });
     fireEvent.change(select, { target: { value: "all" } });
     expect(median()).toBe("16s");
-    expect(card.textContent).toContain("frequent short automation runs can dominate the median");
-    expect(card.textContent).toContain("Timing available for 5 of 5 successful runs");
+    expect(card.textContent).toContain("Short automation runs can dominate the combined median");
     fireEvent.change(select, { target: { value: "2" } });
     expect(median()).toBe("14s");
-    expect(card.textContent).toContain("Timing available for 3 of 3 successful runs");
     expect(metrics.mock.calls.length).toBe(calls);
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
     await act(async () => {});
@@ -221,7 +221,8 @@ test("side-card details load only when expanded, reuse the response and allow re
   const isolated = await loadPluginApp(() => import("./app"));
   const result = { checkedAt: repo.updatedAt, items: [{ id: 1, title: "Tests · broken build", createdAt: repo.updatedAt, state: "failure", url: "https://github.com/acme/widgets/actions/runs/1", compareUrl: null }] };
   const cardDetails = vi.fn().mockRejectedValueOnce(new Error("private error")).mockResolvedValue(result);
-  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data, cardDetails }, settings: {} });
+  let refreshed = false;
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => refreshed ? { ...data, repositories: [{ ...repo, updatedAt: "2026-10-20T13:00:00Z" }] } : data, cardDetails }, settings: {} });
   try {
     const summary = await slot.findByText("Latest failed runs");
     const details = summary.closest("details")!;
@@ -246,6 +247,10 @@ test("side-card details load only when expanded, reuse the response and allow re
     fireEvent(production, new Event("toggle"));
     expect((await slot.findByRole("link", { name: "Changes since previous deployment" })).getAttribute("href")).toBe(compareUrl);
     expect(cardDetails).toHaveBeenLastCalledWith({ kind: "production", repository: repo.repository, environment: "production" });
+    refreshed = true; fireEvent.click(slot.getByRole("button", { name: "Refresh" })); await act(async () => {});
+    expect(slot.getByText("Latest failed runs").closest("details")).toBe(details);
+    expect(slot.getByText("Recent production deployments").closest("details")).toBe(production);
+    expect(cardDetails).toHaveBeenCalledTimes(3);
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -372,7 +377,7 @@ test("registers only a sidebar page and renders accessible charts from real seri
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
     expect(slot.getByRole("figure", { name: "CI pass rate over time" })).toBeTruthy();
-    expect(slot.getByRole("group", { name: /Deployment throughput:.*Oct 14: 1/ })).toBeTruthy();
+    expect(slot.getByRole("group", { name: /Deployment throughput:.*Oct 13: 1/ })).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -399,7 +404,7 @@ test("renders CI outcomes, review ages, and a linked production deployment", asy
     expect(slot.getByRole("link", { name: "#17 Needs review" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/17");
     expect(slot.getByRole("link", { name: "View deployment" }).getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/1");
     expect(slot.getByText("Created 2h ago")).toBeTruthy();
-    expect(slot.getByText("No reviews yet · excludes drafts · oldest 5")).toBeTruthy();
+    expect(slot.getByText("No reviews yet · excludes drafts")).toBeTruthy();
     const reviewLink = new URL(slot.getByRole("link", { name: "View review queue" }).getAttribute("href")!);
     expect(reviewLink.searchParams.get("q")).toBe("is:pr is:open draft:false review:none");
   } finally { slot.lifecycle.unmount(); }
@@ -451,7 +456,7 @@ test("pending interval and manual refreshes leave the same cards visible without
     await act(async () => {});
     const originalCards = slot.getByRole("region", { name: "acme/widgets" });
     const refreshButton = slot.getByRole("button", { name: "Refresh" });
-    const refreshIcon = refreshButton.querySelector('svg[data-refresh-icon]');
+    const refreshIcon = refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]');
     expect(refreshIcon).not.toBeNull();
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
@@ -461,15 +466,16 @@ test("pending interval and manual refreshes leave the same cards visible without
     expect(slot.getByText("12.0 / day")).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
-    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(true);
     expect(refreshIcon?.classList.contains("motion-reduce:animate-none")).toBe(true);
     expect(slot.getByRole("button", { name: "Refresh" }).textContent?.trim()).toBe("");
     expect(slot.getByRole("region", { name: "GitHub CI metrics" }).getAttribute("aria-busy")).toBe("false");
-    expect(slot.queryByText(/Loading|Refreshing/)).toBeNull();
+    // The CI signals panel loads over its own RPC; only dashboard loading text matters here.
+    expect(slot.queryAllByText(/Loading|Refreshing/).filter((node) => !/CI problems|failure causes/.test(node.textContent ?? ""))).toEqual([]);
     await act(async () => { finish(data); });
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("false");
-    expect(refreshButton.querySelector('svg[data-refresh-icon]')).toBe(refreshIcon);
+    expect(refreshButton.querySelector('[data-icon="ArrowReloadHorizontal"]')).toBe(refreshIcon);
     expect(refreshIcon?.classList.contains("animate-spin")).toBe(false);
     expect(refreshButton.textContent).toBe("");
     fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
@@ -493,14 +499,15 @@ test("returning from the sidebar shows cached values immediately while retrying 
   try {
     expect(second.getByText("12.0 / day")).toBeTruthy();
     expect(second.getByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
-    expect(second.queryByText(/Loading|Refreshing/)).toBeNull();
+    // The CI signals panel loads over its own RPC; only dashboard loading text matters here.
+    expect(second.queryAllByText(/Loading|Refreshing/).filter((node) => !/CI problems|failure causes/.test(node.textContent ?? ""))).toEqual([]);
     await act(async () => { reject(new Error("offline")); });
     expect(second.getByText("12.0 / day")).toBeTruthy();
     expect(second.getByRole("alert").textContent).toContain("out of date");
   } finally { second.lifecycle.unmount(); }
 });
 
-test("presets preserve displayed data while updating and ignore superseded responses", async () => {
+test("presets show the loading state instead of the previous range while updating and ignore superseded responses", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));
   let finishDay!: (value: unknown) => void;
@@ -509,13 +516,13 @@ test("presets preserve displayed data while updating and ignore superseded respo
   try {
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 7 });
-    const activity = slot.getByRole("region", { name: "Repository activity in the last 7 days" });
+    expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBeTruthy();
     metrics.mockImplementationOnce(() => new Promise((resolve) => { finishDay = resolve; }));
     fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 1 });
-    expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBe(activity);
-    expect(slot.queryByText(/Updating date range/)).toBeNull();
+    expect(slot.queryByRole("region", { name: "Repository activity in the last 7 days" })).toBeNull();
+    expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
     const threeDays = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 3 }) }] };
     metrics.mockResolvedValue(threeDays);
@@ -722,16 +729,16 @@ test("shows a server snapshot in a fresh window while GitHub is still pending", 
 
 
 test("production dispatch needs confirmation, supports cancel, and links the requested run", async () => {
-  const deploymentData = { ...data, repositories: [{ ...repo, repository: "example-org/example-app" }] };
+  const deploymentData = { ...data, repositories: [{ ...repo, repository: "acme/widgets" }] };
   let finish!: (value: { url: string }) => void;
   const deployProduction = vi.fn(() => new Promise<{ url: string }>((resolve) => { finish = resolve; }));
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => deploymentData, deployProduction }, settings: { repository: "example-org/example-app" },
+    rpc: { snapshot: () => null, metrics: () => deploymentData, deployProduction }, settings: { repository: "acme/widgets", productionRepository: "acme/widgets", productionWorkflow: "deploy.yaml", productionRef: "release" },
   });
   try {
-    const deploy = await slot.findByRole("button", { name: "Deploy production" });
+    const deploy = await slot.findByRole("button", { name: "Deploy to production" });
     fireEvent.click(deploy);
-    expect(slot.getByRole("group", { name: "Confirm production deployment" }).textContent).toContain("example-org/example-app from main");
+    expect(slot.getByRole("group", { name: "Confirm production deployment" }).textContent).toContain("acme/widgets from release");
     expect(deployProduction).not.toHaveBeenCalled();
     fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
     expect(slot.queryByRole("group", { name: "Confirm production deployment" })).toBeNull();
@@ -741,23 +748,33 @@ test("production dispatch needs confirmation, supports cancel, and links the req
     await act(async () => {});
     expect(slot.getByRole("button", { name: "Requesting…" }).hasAttribute("disabled")).toBe(true);
     expect(deployProduction).toHaveBeenCalledTimes(1);
-    await act(async () => { finish({ url: "https://github.com/example-org/example-app/actions/runs/123" }); });
+    await act(async () => { finish({ url: "https://github.com/acme/widgets/actions/runs/123" }); });
     expect(slot.getByText("Production workflow requested.")).toBeTruthy();
     expect(slot.getByRole("link", { name: "View workflow" }).getAttribute("href")).toContain("/actions/runs/123");
-    expect(slot.queryByRole("button", { name: "Deploy production" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Deploy to production" })).toBeNull();
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("the deploy action stays hidden until a repository and workflow are configured for this repository", async () => {
+  for (const settings of [{ repository: "acme/widgets" }, { repository: "acme/widgets", productionRepository: "acme/widgets" }, { repository: "acme/widgets", productionRepository: "acme/other", productionWorkflow: "deploy.yaml" }] as Record<string, string>[]) {
+    const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "acme/widgets" }] }), deployProduction: vi.fn() }, settings });
+    try {
+      await slot.findByText("Latest production deployment");
+      expect(slot.queryByRole("button", { name: "Deploy to production" })).toBeNull();
+    } finally { slot.lifecycle.unmount(); }
+  }
 });
 
 test("unconfirmed production requests explain how to check status without exposing error content", async () => {
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "example-org/example-app" }] }), deployProduction: () => { throw new Error("private-token"); } },
-    settings: { repository: "example-org/example-app" },
+    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, repository: "acme/widgets" }] }), deployProduction: () => { throw new Error("private-token"); } },
+    settings: { repository: "acme/widgets", productionRepository: "acme/widgets", productionWorkflow: "deploy.yaml" },
   });
   try {
-    fireEvent.click(await slot.findByRole("button", { name: "Deploy production" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Deploy to production" }));
     fireEvent.click(slot.getByRole("button", { name: "Start deployment" }));
     const alert = await slot.findByRole("alert");
-    expect(alert.textContent).toContain("Check the Production workflow");
+    expect(alert.textContent).toContain("Check the production workflow");
     expect(alert.textContent).not.toContain("private-token");
     expect(slot.getByRole("button", { name: "Start deployment" }).hasAttribute("disabled")).toBe(false);
   } finally { slot.lifecycle.unmount(); }
@@ -875,4 +892,547 @@ test("draft settings start collapsed, keep native inputs and clean up on navigat
     expect(form.querySelector("input")?.parentElement?.parentElement?.style.display).toBe("");
     expect(form.querySelector("input")?.parentElement?.parentElement?.style.borderInlineStart).toBe("");
   } finally { dispose(); host.remove(); }
+});
+
+// --- CI health card: problems with Investigate/Dismiss, everything else in one "Details" ---
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+const problem = (id: string, severity: "critical" | "warning", minutes: number, extra: Record<string, unknown> = {}) =>
+  ({ id, severity, title: `Title ${id}`, what: `What ${id}.`, impact: "", where: { url: `https://github.com/acme/widgets/actions/runs/${id.length}` }, since: ago(minutes), handled: null, ...extra });
+const jobSignal = (id: string, kind: string, severity: string, minutes: number, where: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  ({ id, kind, severity, title: `server ${id}`, what: `what ${id}`, impact: "", where, since: ago(minutes), until: null, actor: "owner_sre", open: true, ...extra });
+const jobRepo = (extra: Record<string, unknown> = {}) => ({
+  repository: "acme/widgets", updatedAt: ago(1), error: null, projectId: "proj-1", live: { pools: [
+    { pool: "idle-pool", queued: 0, inProgress: 0, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
+    { pool: "self-hosted", queued: 0, inProgress: 12, oldestQueuedAt: null, lastStartedAt: null, queuedRunIds: [] },
+    { pool: "stuck-pool", queued: 3, inProgress: 0, oldestQueuedAt: ago(30), lastStartedAt: null, queuedRunIds: [1] }], truncated: false, polledAt: null },
+  problems: [
+    problem("pool_stall:stuck-pool", "critical", 5, { title: "Runner pool stalled: stuck-pool", what: "3 jobs wait for a runner." }),
+    problem("runner_loss:90", "warning", 12.5, { title: "Runner lost on main: Integration tests", what: "The runner stopped mid-job.", where: { url: "https://github.com/acme/widgets/actions/runs/9/job/90" } }),
+  ],
+  signals: [
+    jobSignal("runner_loss:90", "runner_loss", "warning", 12.5, { jobName: "Integration tests", branch: "main", url: "https://github.com/acme/widgets/actions/runs/9/job/90" }),
+    jobSignal("pool_stall:stuck-pool", "pool_stall", "critical", 5, { pool: "stuck-pool" }),
+    jobSignal("flake:1", "flake", "info", 30, { jobName: "Unit tests" }),
+    jobSignal("old", "runner_loss", "warning", 120, { jobName: "Lint", branch: "main" }, { open: false, until: ago(60) }),
+  ],
+  window: { since: "2026-10-16T12:00:00.000Z", until: "2026-10-30T12:00:00.000Z" },
+  failureCounts: { runner_loss: 2, flake: 1, transient: 3, real: 4, timeout: 1, superseded: 5, manual_cancel: 6, collateral_cancel: 7, consequence: 8, unknown: 0 },
+  runnerLosses: { byPool: { "self-hosted": { count: 2, runnerMs: 51 * 60000 } }, byJob: { "Integration tests": { count: 2, runnerMs: 51 * 60000 } }, byDay: {} },
+  massCancels: [{ since: "2026-10-19T12:00:00.000Z", until: "2026-10-19T12:01:00.000Z", runners: ["r1", "r2", "r3"], runIds: [1, 2], jobs: 3 }],
+  failures: [], reruns: [{ runId: 7, workflowName: "CI", headSha: "a", headBranch: "feature", attempts: 2, outcomes: ["failure", "success"], finalConclusion: "success", repeatedRunnerMs: 4 * 60000, url: "https://github.com/acme/widgets/actions/runs/7" }],
+  backfill: { remaining: 0, failed: 0, pausedUntil: null, coveredSince: "2026-10-16T12:00:00.000Z" },
+  ...extra,
+});
+const actors = { owner_sre: "Runner owner / SRE", pr_author: "Author", lead: "Lead", manager: "Manager" };
+const failingMain = () => summarizeCi([1, 2, 3].map((id) => ({ id, workflow_id: 42, name: "Unit tests", head_branch: "main", event: "push", conclusion: "failure",
+  created_at: `2026-10-20T0${id}:00:00Z`, run_started_at: `2026-10-20T0${id}:00:00Z`, updated_at: `2026-10-20T0${id}:02:00Z` })), "main");
+type Extra = { rpc?: Record<string, unknown>; sdk?: Record<string, unknown> };
+const healthSlot = (signals: (input: unknown) => unknown, ciInsights: unknown = failingMain(), panels = app.navPanels, extra: Extra = {}) => renderSlot(panels[0], { subPath: "" }, {
+  rpc: { snapshot: () => null, signals, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 2, failure: 3 } }] }), ...extra.rpc }, settings: {},
+  sdk: { ...extra.sdk, threads: { get: async () => ({ title: null }), ...(extra.sdk?.threads as object) } } as never });
+// The panel module remembers the last signals answer per repository, so tests that assert a first render start from a fresh module.
+const freshPanels = async () => { vi.resetModules(); return (await loadPluginApp(() => import("./app"))).navPanels; };
+const withProblems = (problems: unknown[], extra: Record<string, unknown> = {}) => () => ({ repositories: [jobRepo({ problems, ...extra })], actors });
+const problemRows = (card: HTMLElement) => Array.from(within(card).getByRole("list", { name: "Problems" }).querySelectorAll<HTMLElement>(":scope > li"));
+const threads = [{ id: "thr_a", title: "Fix flaky tests", status: "idle", deletedAt: null, archivedAt: null, visibility: "visible" }, { id: "thr_b", title: "Runner migration", status: "running", deletedAt: null, archivedAt: null, visibility: "visible" }];
+
+test("the header says All good, or counts the problems that need attention and turns red when one is critical", async () => {
+  vi.resetModules();
+  const states: [unknown[], string, boolean][] = [[[], "All good", false], [[problem("a", "warning", 5)], "1 problem needs attention", false],
+    [[problem("a", "warning", 5), problem("b", "critical", 6), problem("c", "critical", 7, { handled: { state: "dismissed", at: ago(1) } })], "2 problems need attention", true]];
+  for (const [problems, text, critical] of states) {
+    const slot = healthSlot(withProblems(problems), failingMain(), (await loadPluginApp(() => import("./app"))).navPanels);
+    try {
+      const card = await slot.findByRole("region", { name: "CI health" });
+      const header = await within(card).findByText(text);
+      expect(header.className).toContain(critical ? "text-destructive-text" : text === "All good" ? "text-muted-foreground" : "font-medium");
+      expect(header.className.includes("text-destructive-text")).toBe(critical);
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test("unhandled problems are listed with severity, plain title, age and one sentence, at most five until Show all; investigating ones sit under Handled", async () => {
+  const problems = [problem("investigating", "critical", 1, { handled: { state: "investigating", threadId: "thr_a", at: ago(1) } }),
+    ...["p1", "p2", "p3", "p4", "p5", "p6"].map((id, index) => problem(id, index === 0 ? "critical" : "warning", 10 + index))];
+  const slot = healthSlot(withProblems(problems), failingMain(), app.navPanels, { sdk: { threads: { get: async () => ({ title: "Fix flaky tests" }) } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    await within(card).findByText("6 problems need attention");
+    expect(problemRows(card).map((row) => row.querySelector("a")?.textContent)).toEqual(["Title p1", "Title p2", "Title p3", "Title p4", "Title p5"]);
+    const first = problemRows(card)[0];
+    expect(first.querySelector("p")?.textContent).toMatch(/^Critical Title p1 · 10 min ago$/);
+    expect(first.querySelectorAll("p")[1].textContent).toBe("What p1.");
+    expect(first.querySelector("a")?.getAttribute("href")).toBe("https://github.com/acme/widgets/actions/runs/2");
+    expect(problemRows(card)[1].querySelector("p")?.textContent).toMatch(/^Warning Title p2/);
+    fireEvent.click(within(card).getByRole("button", { name: "Show all 6" }));
+    expect(problemRows(card).map((row) => row.querySelector("a")?.textContent)).toEqual(["Title p1", "Title p2", "Title p3", "Title p4", "Title p5", "Title p6"]);
+    const handled = within(card).getByText("Handled · 1").closest("details")!;
+    expect(handled.open).toBe(false);
+    expect(within(handled).getByRole("list", { name: "Handled problems" }).textContent).toContain("Title investigating");
+    expect(within(card).getByRole("button", { name: "Show fewer" }).getAttribute("aria-expanded")).toBe("true");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Investigate opens a menu: New session starts a session through the RPC and refreshes the list", async () => {
+  const investigate = vi.fn(async () => ({ threadId: "thr_new" }));
+  const signals = vi.fn(withProblems([problem("a", "critical", 5)]));
+  const slot = healthSlot(signals, failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    const menu = within(card).getByRole("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["New session", "Existing session…"]);
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitem", { name: "New session" }));
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitem", { name: "Existing session…" }));
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(within(card).queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    const calls = signals.mock.calls.length;
+    fireEvent.click(within(card).getByRole("menuitem", { name: "New session" }));
+    await vi.waitFor(() => expect(investigate).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a" }));
+    await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThan(calls));
+    expect(within(card).queryByRole("menu")).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("without a linked BB project New session is disabled with a hint, and a failed action is reported", async () => {
+  const investigate = vi.fn(async () => { throw new Error("The session could not be started."); });
+  const slot = healthSlot(withProblems([problem("a", "critical", 5)], { projectId: null }), failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Investigate: Title a" }));
+    const item = within(card).getByRole("menuitem", { name: "New session" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(document.getElementById(item.getAttribute("aria-describedby")!)?.textContent).toBe("No BB project is linked to this repository.");
+    expect(within(card).getByRole("menuitem", { name: "Existing session…" })).toBeTruthy();
+    expect(investigate).not.toHaveBeenCalled();
+  } finally { slot.lifecycle.unmount(); }
+  const linked = healthSlot(withProblems([problem("a", "critical", 5)]), failingMain(), app.navPanels, { rpc: { investigate } });
+  try {
+    const card = await linked.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Investigate: Title a" }));
+    fireEvent.click(within(card).getByRole("menuitem", { name: "New session" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe("The session could not be started.");
+  } finally { linked.lifecycle.unmount(); }
+});
+
+test("Existing session… opens a picker of the project's sessions and sends the problem to the chosen one", async () => {
+  const restoreDialog = mockNativeDialog();
+  const investigate = vi.fn(async () => ({ threadId: "thr_b" }));
+  const list = vi.fn(async () => threads);
+  const signals = vi.fn(withProblems([problem("a", "critical", 5)]));
+  const slot = healthSlot(signals, failingMain(), app.navPanels, { rpc: { investigate }, sdk: { threads: { list } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    fireEvent.click(trigger);
+    fireEvent.click(within(card).getByRole("menuitem", { name: "Existing session…" }));
+    const dialog = await slot.findByRole("dialog", { name: "Send to existing session" });
+    expect(list).toHaveBeenCalledWith({ archived: false, limit: 50, offset: 0, projectId: "proj-1" });
+    expect(within(dialog).getByText(/“Title a” is sent/)).toBeTruthy();
+    expect(await within(dialog).findAllByRole("button", { name: /Fix flaky tests|Runner migration/ })).toHaveLength(2);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Filter sessions" }), { target: { value: "migration" } });
+    expect(within(dialog).queryByRole("button", { name: /Fix flaky tests/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /Runner migration/ }));
+    await vi.waitFor(() => expect(investigate).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", threadId: "thr_b" }));
+    await vi.waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+  } finally { slot.lifecycle.unmount(); restoreDialog(); }
+});
+
+test("a picker error stays in the dialog, and closing it returns focus to Investigate", async () => {
+  const restoreDialog = mockNativeDialog();
+  const investigate = vi.fn(async () => { throw new Error("Thread is archived."); });
+  const slot = healthSlot(withProblems([problem("a", "critical", 5)], { projectId: null }), failingMain(), app.navPanels, { rpc: { investigate }, sdk: { threads: { list: vi.fn(async () => threads) } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const trigger = await within(card).findByRole("button", { name: "Investigate: Title a" });
+    fireEvent.click(trigger);
+    fireEvent.click(within(card).getByRole("menuitem", { name: "Existing session…" }));
+    const dialog = await slot.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Fix flaky tests/ }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Thread is archived.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(slot.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  } finally { slot.lifecycle.unmount(); restoreDialog(); }
+});
+
+test("an investigating problem shows the session title as a link instead of the buttons", async () => {
+  const handled = { state: "investigating", threadId: "thr_a", at: ago(1) };
+  const slot = healthSlot(withProblems([problem("a", "critical", 5, { handled }), problem("b", "warning", 6)]), failingMain(), app.navPanels, { sdk: { threads: { get: vi.fn(async () => ({ title: "Fix flaky tests" })) } } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const link = await within(card).findByRole("button", { name: "Fix flaky tests" });
+    expect(link.closest("li")?.textContent).toContain("Investigating in Fix flaky tests");
+    expect(within(link.closest("li") as HTMLElement).queryByRole("button", { name: /Investigate:|Dismiss:/ })).toBeNull();
+    expect(within(problemRows(card)[0]).getByRole("button", { name: "Dismiss: Title b" })).toBeTruthy();
+    expect(within(card).getByText("1 problem needs attention")).toBeTruthy();
+    fireEvent.click(link);
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_a" });
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a fix_pending problem sits under Handled with its PR as a link, and Restore clears it", async () => {
+  vi.resetModules();
+  let pending = true;
+  const problemAction = vi.fn(async () => { pending = false; return { handled: null }; });
+  const handled = { state: "fix_pending", ref: "#12", by: "agent", threadId: "thr_worker", at: ago(1) };
+  const signals = () => ({ repositories: [jobRepo({ problems: [problem("a", "critical", 5, pending ? { handled } : {}), problem("b", "warning", 6, { handled: { state: "fix_pending", ref: "FIX-1", at: ago(1) } }),
+    problem("c", "warning", 7, { handled: { state: "fix_pending", ref: "https://example.test/pr/3", at: ago(1) } })] })], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels, { rpc: { problemAction } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const handledList = within(await within(card).findByText("Handled · 3").then((summary) => summary.closest("details") as HTMLElement)).getByRole("list", { name: "Handled problems" });
+    const rows = Array.from(handledList.querySelectorAll<HTMLElement>(":scope > li"));
+    expect(within(rows[0]).getByRole("link", { name: "#12" }).getAttribute("href")).toBe("https://github.com/acme/widgets/pull/12");
+    expect(rows[0].textContent).toContain("Fix pending: #12");
+    expect(rows[1].textContent).toContain("Fix pending: FIX-1");
+    expect(within(rows[1]).queryByRole("link", { name: "FIX-1" })).toBeNull();
+    expect(within(rows[2]).getByRole("link", { name: "https://example.test/pr/3" }).getAttribute("href")).toBe("https://example.test/pr/3");
+    fireEvent.click(within(rows[0]).getByRole("button", { name: "Restore: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", action: "restore" }));
+    await within(card).findByText("Handled · 2");
+    expect(within(card).getByRole("list", { name: "Problems" }).textContent).toContain("Title a");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Dismiss moves a problem under a collapsed Dismissed section where Restore brings it back", async () => {
+  vi.resetModules();
+  let dismissed = false;
+  const problemAction = vi.fn(async (input: { action: string }) => { dismissed = input.action === "dismiss"; return { handled: null }; });
+  const signals = () => ({ repositories: [jobRepo({ problems: [problem("a", "critical", 5, dismissed ? { handled: { state: "dismissed", at: ago(0) } } : {})] })], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels, { rpc: { problemAction } });
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Dismiss: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenCalledWith({ repository: "acme/widgets", id: "a", action: "dismiss" }));
+    await within(card).findByText("All good");
+    expect(within(card).queryByRole("list", { name: "Problems" })).toBeNull();
+    const section = within(card).getByText("Handled · 1").closest("details")!;
+    expect(section.open).toBe(false);
+    fireEvent.click(within(section).getByRole("button", { name: "Restore: Title a" }));
+    await vi.waitFor(() => expect(problemAction).toHaveBeenLastCalledWith({ repository: "acme/widgets", id: "a", action: "restore" }));
+    await within(card).findByText("1 problem needs attention");
+    expect(within(card).queryByText(/Handled ·/)).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Details keeps only the overview open; every other section is a closed <details> with its count and hint", async () => {
+  const slot = healthSlot(() => ({ repositories: [jobRepo()], actors }), failingMain(), await freshPanels());
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const causes = await within(card).findByRole("region", { name: "Failure causes" });
+    const details = Array.from(card.querySelectorAll(":scope > details"));
+    expect(details).toHaveLength(1);
+    const [all] = details as HTMLDetailsElement[];
+    expect(all.open).toBe(false);
+    expect(all.querySelector(":scope > summary")?.textContent).toBe("Details");
+    expect(all.contains(within(card).getByRole("region", { name: "CI problems" }))).toBe(false);
+    expect(all.contains(within(card).getByText("Passed"))).toBe(true);
+    expect(Array.from(all.querySelectorAll("h5")).map((heading) => heading.textContent)).toEqual(["Outcomes", "Failure causes"]);
+    const names = ["Pass rates", "Top failing workflows", "Runner pools", "Runner losses", "Reruns", "Lower-priority events", "Resolved incidents", "Mass runner losses"];
+    const sections = names.map((name) => { const section = within(card).getByRole("region", { name }); expect(all.contains(section)).toBe(true); return section; });
+    // Each nested section is a closed <details> with a real <summary>; "Latest failed runs" is the last, lazy one.
+    expect(sections.map((section) => (section.querySelector("details") as HTMLDetailsElement).open)).toEqual(names.map(() => false));
+    expect(Array.from(all.querySelectorAll("summary")).map((summary) => summary.textContent)).toEqual([
+      "Details", "Pass rates — main 0% · PRs —", "Top failing workflows · 1 — worst: Unit tests", "Runner pools · 3 — 1 stalled", "Runner losses · 2 — mostly Integration tests",
+      "Reruns · 1 — all passed after rerun", "Lower-priority events · 1", "Resolved incidents · 1", "Mass runner losses · 1", "Latest failed runs"]);
+    expect(card.textContent).not.toContain("Needs attention");
+    const text = (name: string) => within(card).getByRole("region", { name }).textContent;
+    const values: Record<string, Element | null> = Object.fromEntries(Array.from(causes.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")]));
+    expect(Object.entries(values).map(([key, dd]) => [key, dd?.textContent])).toEqual([["Runner losses", "2"], ["Flaky jobs", "1"], ["Network/tool errors", "3"], ["Real failures", "4"]]);
+    expect(values["Runner losses"]?.className).toContain("text-destructive-text");
+    expect(causes.textContent).toContain("Excluded: 5 superseded by newer runs, 6 cancelled manually, 7 cancelled with the run, 8 aggregator jobs, 1 timed out");
+    expect(causes.textContent).not.toContain("recognizable cause");
+    expect(causes.textContent).toContain("Job-level causes are kept for the last 14 days");
+    expect(text("Runner pools")).toContain("stuck-pool · 0 running · 3 waiting");
+    expect(text("Runner pools")!.indexOf("stuck-pool")).toBeLessThan(text("Runner pools")!.indexOf("self-hosted"));
+    expect(text("Runner pools")).toContain("self-hosted · 12 running · 0 waiting");
+    expect(text("Runner pools")).toContain("Idle: idle-pool");
+    expect(within(card).getByText(/stuck-pool · 0 running/).className).toContain("text-destructive-text");
+    expect(text("Runner losses")).toContain("By pool");
+    expect(text("Runner losses")).toContain("Integration tests — 2 losses · 51 min runner time");
+    expect(text("Reruns")).toContain("CI #7 (feature) failed → passed · 4 min repeated");
+    expect(within(card).getByRole("link", { name: "CI #7" })).toBeTruthy();
+    expect(text("Lower-priority events")).toContain("Flaky jobs — 1 open");
+    expect(text("Resolved incidents")).toMatch(/Runner lost on main: Lint — resolved (59 min|1 h) ago/);
+    expect(text("Resolved incidents")).not.toContain("what old");
+    expect(text("Top failing workflows")).toContain("Unit tests — 3 failed · 0% passed");
+    const mass = within(card).getByRole("region", { name: "Mass runner losses" });
+    expect(mass.textContent).toMatch(/Oct 19, \d\d:\d\d–\d\d:\d\d · 3 runners · 2 runs/);
+    expect(mass.textContent).not.toContain("r1");
+    expect(mass.querySelector("p")?.getAttribute("title")).toBe("Runners: r1, r2, r3");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("Excluded lists only non-zero items and disappears when all are zero", async () => {
+  const some = jobRepo({ failureCounts: { superseded: 1200, refused: 3, timeout: 2 } });
+  const none = jobRepo({ failureCounts: { real: 1 } });
+  for (const [repository, expected] of [[some, "Excluded: 1,200 superseded by newer runs, 3 refused by design, 2 timed out"], [none, null]] as const) {
+    const slot = healthSlot(() => ({ repositories: [repository], actors }), failingMain(), await freshPanels());
+    try {
+      const causes = await within(await slot.findByRole("region", { name: "CI health" })).findByRole("region", { name: "Failure causes" });
+      if (expected) expect(causes.textContent).toContain(expected); else expect(causes.textContent).not.toContain("Excluded");
+      if (expected) expect(causes.textContent).not.toContain("cancelled");
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test("duration and time helpers", () => {
+  expect([0, 45000, 32 * 60000, 65 * 60000, 120 * 60000].map(duration)).toEqual(["0 s", "45 s", "32 min", "1 h 5 min", "2 h"]);
+  const now = new Date(2026, 10, 5, 12, 0).getTime();
+  expect([new Date(2026, 10, 5, 8, 5), new Date(2026, 10, 4, 18, 16), new Date(2026, 10, 3, 14, 5)].map((date) => when(date.toISOString(), now)))
+    .toEqual(["today 08:05", "yesterday 18:16", "Nov 3, 14:05"]);
+});
+
+test("empty secondary blocks are not rendered and the zero causes stay in plain style", async () => {
+  const empty = jobRepo({ live: { pools: [], truncated: false, polledAt: null }, signals: [], problems: [], runnerLosses: { byPool: {}, byJob: {}, byDay: {} }, massCancels: [], reruns: [], failureCounts: {},
+    window: { since: "2026-10-01T00:00:00.000Z", until: "2026-10-15T00:00:00.000Z" } });
+  const slot = healthSlot(() => ({ repositories: [empty], actors }), { ...failingMain(), alerts: [] }, await freshPanels());
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const causes = await within(card).findByRole("region", { name: "Failure causes" });
+    expect(Array.from(causes.querySelectorAll("dd")).map((dd) => dd.textContent)).toEqual(["0", "0", "0", "0"]);
+    expect(causes.querySelector("dd")?.className).not.toContain("text-destructive-text");
+    expect(Array.from(card.querySelectorAll("section[aria-label]")).map((section) => section.getAttribute("aria-label"))).toEqual(["CI problems", "Outcomes", "Failure causes", "Pass rates", "Top failing workflows"]);
+    expect(causes.textContent).not.toContain("Job-level causes");
+    expect(within(card).getByText("All good")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI health explains a range older than the job history and the running backfill", async () => {
+  const loading = jobRepo({ backfill: { remaining: 4640, failed: 0, pausedUntil: null, coveredSince: "2026-10-18T00:00:00.000Z" } });
+  const slot = healthSlot(() => ({ repositories: [loading], actors }), failingMain(), await freshPanels());
+  try {
+    await vi.waitFor(() => expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toContain("Loading job history: 4,640 attempts left"));
+    expect(slot.getByRole("region", { name: "Failure causes" }).textContent).toMatch(/Job-level causes cover .* onward — history is still loading/);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a failing signals request keeps the run-level card and offers one retry", async () => {
+  vi.resetModules(); // fresh module: no cached job-level answer from an earlier test
+  const signals = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ repositories: [jobRepo()], actors });
+  const slot = healthSlot(signals, failingMain(), (await loadPluginApp(() => import("./app"))).navPanels);
+  try {
+    const card = await slot.findByRole("region", { name: "CI health" });
+    const retry = await within(card).findByRole("button", { name: "Retry" });
+    expect(within(card).getAllByRole("alert")).toHaveLength(1);
+    expect(within(card).getByText("Passed")).toBeTruthy();
+    expect(within(card).queryByRole("region", { name: "Failure causes" })).toBeNull();
+    fireEvent.click(retry);
+    expect(await within(card).findByRole("region", { name: "Failure causes" })).toBeTruthy();
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(within(card).getByText("2 problems need attention")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("with no open problems the outcomes overview sits in the card; with problems it moves into Details", async () => {
+  for (const [problems, inside] of [[[], false], [[problem("a", "warning", 5)], true]] as const) {
+    const slot = healthSlot(withProblems([...problems]));
+    try {
+      const card = await slot.findByRole("region", { name: "CI health" });
+      const outcomes = await within(card).findByRole("region", { name: "Outcomes" });
+      expect(!!outcomes.closest("details")).toBe(inside);
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test("switching to a range without a snapshot does not show the previous range's numbers", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: {
+    snapshot: (range: unknown) => (range as { days: number }).days === 14 ? null : data,
+    metrics: (range: unknown) => (range as { days: number }).days === 14 ? new Promise(() => {}) : data,
+  }, settings: {} });
+  try {
+    await act(async () => {});
+    expect(slot.getByText("12.0%")).toBeTruthy();
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "14" } });
+    await act(async () => {});
+    expect(slot.queryByText("12.0%")).toBeNull();
+    expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("a loading progress line shows runs and percentage while pending and disappears afterwards", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => new Promise(() => {}) }, settings: {} });
+  try {
+    await act(async () => {});
+    const empty = { value: null, detail: "Loading…", series: null, error: null, seriesError: null };
+    const progress = (metrics: object, startedAt: number) => slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt, metrics });
+    await progress({ ...repo, ci: empty, ciOutcomes: null, pending: ["ci"], loading: { runs: 1240, done: 2, total: 5 } }, 1);
+    expect(slot.getByText(/Loading CI history from GitHub · 1,240 runs so far · 40% · first load of a longer range can take a few minutes/)).toBeTruthy();
+    await progress({ ...repo, pending: [] }, 2);
+    expect(slot.queryByText(/Loading CI history from GitHub/)).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("history chart cards are switchable, never duplicate a chart and remember the choice", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const trends = {
+    durationMedian: dates.map((date, index) => ({ date, value: index === 0 ? null : index * 252_000 })),
+    lines: dates.map((date, index) => ({ date, value: index === 6 ? 1234 + 840 : 0, parts: [{ key: "additions", value: index === 6 ? 1234 : 0 }, { key: "deletions", value: index === 6 ? 840 : 0 }] })),
+  };
+  const render = () => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const names = (select: HTMLElement) => within(select).getAllByRole("option").map((option) => option.textContent);
+  const slot = render();
+  try {
+    const first = await slot.findByRole("combobox", { name: "First chart" });
+    const second = slot.getByRole("combobox", { name: "Second chart" });
+    expect(names(first)).not.toContain("Deployment throughput");
+    expect(names(second)).not.toContain("CI pass rate over time");
+    expect(names(first)).toContain("Median CI run duration");
+    fireEvent.change(first, { target: { value: "durationMedian" } });
+    const figure = slot.getByRole("figure", { name: "Median CI run duration" });
+    expect(slot.queryByRole("figure", { name: "CI pass rate over time" })).toBeNull();
+    expect(names(second)).toContain("CI pass rate over time");
+    expect(names(second)).not.toContain("Median CI run duration");
+    // Empty buckets show "—"; the others use the compact duration format.
+    expect(within(figure).getAllByRole("button", { name: /^Median CI run duration · .* · —/ })).toHaveLength(1);
+    expect(within(figure).getByRole("button", { name: /· 4m 12s ·/ })).toBeTruthy();
+    fireEvent.change(second, { target: { value: "lines" } });
+    const lines = slot.getByRole("figure", { name: "Lines changed" });
+    const bars = within(lines).getAllByRole("button", { name: /^Lines changed ·/ });
+    const latest = bars.at(-1)!;
+    expect(latest.textContent).toContain("+1.2K −840");
+    expect(latest.getAttribute("aria-label")).toContain("1,234 added, 840 deleted");
+    // Grouped bars share the largest single part as scale: additions 1234 → 100%, deletions 840 → 68%.
+    const [added, deleted] = ["bg-diff-added", "bg-diff-removed"].map((name) => latest.querySelector<HTMLElement>(`.${name}`)!);
+    expect(added.compareDocumentPosition(deleted) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(added.parentElement).toBe(deleted.parentElement);
+    expect(added.style.height).toBe("100%");
+    expect(parseFloat(deleted.style.height)).toBeCloseTo(840 / 1234 * 100, 1);
+    expect(bars[0]!.textContent).toBe("0");
+    expect(slot.getByText("added")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+  const remounted = render();
+  try {
+    expect(await remounted.findByRole("figure", { name: "Median CI run duration" })).toBeTruthy();
+    expect(remounted.getByRole("figure", { name: "Lines changed" })).toBeTruthy();
+  } finally { remounted.lifecycle.unmount(); }
+});
+
+test("a series that is still loading shows a skeleton and storage failures fall back to the default charts", async () => {
+  vi.resetModules();
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify(["runs", "runs"]));
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
+  try {
+    expect(await slot.findByRole("figure", { name: "CI pass rate over time" })).toBeTruthy();
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart" }), { target: { value: "failedRuns" } });
+    expect(slot.getByRole("figure", { name: "Failed CI runs" }).textContent).toContain("History is unavailable.");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("run-based charts default to the heaviest workflow, can pool all workflows and remember the choice", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number) => dates.map((date) => ({ date, value }));
+  const row = (id: number, name: string, successMs: number, median: number) => ({ id, name, total: 3, successMs,
+    durationMedian: flat(median), durationP90: flat(median), runs: flat(3), failedRuns: flat(0), startDelay: flat(1000) });
+  // The tiny workflow outnumbers the pipeline, so the pooled median is misleadingly short.
+  const trends = { ...row(0, "", 0, 12_000), workflows: [row(5, "Pipeline", 9_000_000, 1_500_000), row(8, "Bookkeeping", 60_000, 10_000)] };
+  const render = () => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const latest = (slot: ReturnType<typeof render>, title: string) => slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) }).at(-1)!.getAttribute("aria-label");
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "commits", workflow: 99 }]));
+  const slot = render();
+  try {
+    const workflow = await slot.findByRole("combobox", { name: "First chart workflow" });
+    expect((workflow as HTMLSelectElement).value).toBe("5");
+    expect(within(workflow).getAllByRole("option").map((option) => option.textContent)).toEqual(["All workflows", "Pipeline", "Bookkeeping"]);
+    expect(slot.getByRole("figure", { name: "Median CI run duration" }).textContent).toContain("Pipeline");
+    expect(latest(slot, "Median CI run duration")).toContain("25m 0s");
+    // Only run-based charts have a workflow select.
+    expect(slot.queryByRole("combobox", { name: "Second chart workflow" })).toBeNull();
+    fireEvent.change(workflow, { target: { value: "all" } });
+    expect(latest(slot, "Median CI run duration")).toContain("12s");
+    expect(slot.getByRole("figure", { name: "Median CI run duration" }).textContent).toContain("All workflows");
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
+    expect(latest(slot, "Median CI run duration")).toContain("10s");
+  } finally { slot.lifecycle.unmount(); }
+  const remounted = render();
+  try {
+    expect(((await remounted.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("8");
+  } finally { remounted.lifecycle.unmount(); }
+  // A stored workflow that is no longer in the data falls back to the default one.
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian", workflow: 404 }, { chart: "commits" }]));
+  const stale = render();
+  try {
+    expect(((await stale.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("5");
+  } finally { stale.lifecycle.unmount(); }
+});
+
+test("sample-based charts default to the workflow's main event, show their sample size and can pool all events", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number, count?: number) => dates.map((date) => ({ date, value, ...(count === undefined ? {} : { count }) }));
+  const entry = (total: number, minutes: number, count: number, runs: number) => ({ total, successMs: total * minutes * 60_000,
+    durationMedian: flat(minutes * 60_000, count), durationP90: flat(minutes * 60_000, count), runs: flat(runs), failedRuns: flat(0), startDelay: flat(1000, count) });
+  // Merge-queue runs are slow and fewer; the light pull_request runs would pull a pooled median down to 8m.
+  const events = [{ event: "merge_group", ...entry(49, 30, 49, 20) }, { event: "pull_request", ...entry(300, 7, 300, 50) }];
+  const trends = { workflows: [
+    { id: 5, name: "CI", ...entry(349, 8, 349, 70), successMs: 9e9, events },
+    { id: 8, name: "Docs", ...entry(2, 1, 2, 2), events: [{ event: "push", ...entry(2, 1, 2, 2) }] },
+  ] };
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "runs" }]));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  const latest = (title: string) => slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) }).at(-1)!;
+  try {
+    const event = await slot.findByRole("combobox", { name: "First chart event" }) as HTMLSelectElement;
+    expect(event.value).toBe("merge_group");
+    expect(within(event).getAllByRole("option").map((option) => option.textContent)).toEqual(["All events", "merge_group · 49 runs", "pull_request · 300 runs"]);
+    const figure = slot.getByRole("figure", { name: "Median CI run duration" });
+    expect(figure.textContent).toContain("successful runs · merge_group");
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("30m 0s · median of 49 successful merge_group runs; failed, cancelled and skipped runs excluded");
+    expect(latest("Median CI run duration").textContent).toContain("30m 0sn 49");
+    // The runs chart counts runs, so it pools by default.
+    expect((slot.getByRole("combobox", { name: "Second chart event" }) as HTMLSelectElement).value).toBe("all");
+    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 70 ·");
+    fireEvent.change(slot.getByRole("combobox", { name: "Second chart event" }), { target: { value: "merge_group" } });
+    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 20 ·");
+    fireEvent.change(event, { target: { value: "all" } });
+    expect(figure.textContent).toContain("successful runs · all events");
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("8m 0s · median of 349 successful runs;");
+    expect(latest("Median CI run duration").textContent).toContain("n 349");
+    fireEvent.change(event, { target: { value: "pull_request" } });
+    expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("7m 0s");
+    // A single-event workflow has nothing to split; the sample size stays.
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
+    expect(slot.queryByRole("combobox", { name: "First chart event" })).toBeNull();
+    expect(latest("Median CI run duration").textContent).toContain("n 2");
+    expect(JSON.parse(localStorage.getItem("ci-dashboard:history-charts")!)[0]).toEqual({ chart: "durationMedian", workflow: 8 });
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("CI run timings default to the workflow's main event and list every event's median in the breakdown", async () => {
+  const started = "2026-10-20T00:00:00Z";
+  const row = (id: number, event: string, minutes: number) => ({ id, workflow_id: 1, name: "CI", head_branch: "main", event, conclusion: "success", created_at: started, run_started_at: started,
+    updated_at: new Date(Date.parse(started) + minutes * 60_000).toISOString() });
+  const ciInsights = summarizeCi([...[30, 30, 30].map((minutes, index) => row(index + 1, "merge_group", minutes)), ...[6, 8, 10, 12, 14].map((minutes, index) => row(index + 10, "pull_request", minutes))], "main");
+  const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 8 } }] }) }, settings: {} });
+  try {
+    const card = await slot.findByRole("region", { name: "CI run timings" });
+    const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
+    const event = within(card).getByRole("combobox", { name: "Timing event" }) as HTMLSelectElement;
+    expect(event.value).toBe("merge_group");
+    expect(median()).toBe("30m 0s");
+    expect(card.textContent).toContain("successful runs only · merge_group");
+    fireEvent.change(event, { target: { value: "pull_request" } });
+    expect(median()).toBe("10m 0s");
+    fireEvent.change(event, { target: { value: "all" } });
+    expect(median()).toBe("13m 0s");
+    expect(within(card).getByRole("list", { name: "Workflow timings" }).textContent).toContain("merge_group 30m 0s · n 3pull_request 10m 0s · n 5");
+  } finally { slot.lifecycle.unmount(); }
 });

@@ -1,4 +1,4 @@
-import { useTaskStatuses } from "../../shell/task-statuses.js";
+import { useTasksNavigation } from "../../shell/routes";
 import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState, type ReactNode } from "react";
 import type {
@@ -7,17 +7,13 @@ import type {
   Task,
   TaskPriority,
   TaskStatus,
-  TaskThread,
 } from "../../shared/contract.js";
 import { TASK_PRIORITIES } from "../../shared/contract.js";
-import type { Preset } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import {
   PriorityIcon,
-  StatusIcon,
   formatDueDate,
-  isActiveThread,
 } from "./meta.js";
 import {
   DUE_DATE_PRESETS,
@@ -25,7 +21,6 @@ import {
   PRIORITY_LABELS,
 } from "../list/lib.js";
 import { EpicPicker } from "../../components/epic-picker.js";
-import { DispatchControl } from "./threads.js";
 import { DEFAULT_COLOR } from "../manage/shared.js";
 import { BbProjectLinkPicker } from "../manage/bb-project-link.js";
 import type { BbProjectOption } from "../../shared/contract.js";
@@ -68,7 +63,6 @@ interface TaskPropertiesProps {
   project: Project | undefined;
   projects: Project[] | undefined;
   labels: Label[] | undefined;
-  threads: TaskThread[];
   onUpdate: (update: TaskPropertyUpdate) => void;
   onMoveToProject: (projectId: string) => void;
   onAddQuestion?: () => void;
@@ -84,39 +78,6 @@ function LabelChip({ label }: { label: Label }) {
       />
       {label.name}
     </span>
-  );
-}
-
-function StatusMenu({
-  task,
-  onUpdate,
-  triggerClassName,
-}: {
-  task: Task;
-  onUpdate: (update: TaskPropertyUpdate) => void;
-  triggerClassName: string;
-}) {
-  const { ids: statusIds, label: statusLabel } = useTaskStatuses(task.projectId);
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button type="button" className={triggerClassName}>
-          <StatusIcon projectId={task.projectId} status={task.status} />
-          {statusLabel(task.status)}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
-        {statusIds.map((status) => (
-          <DropdownMenuItem key={status} onSelect={() => onUpdate({ status })}>
-            <StatusIcon projectId={task.projectId} status={status} />
-            {statusLabel(status)}
-            {status === task.status ? (
-              <Icon name="Check" className="ml-auto size-3.5" />
-            ) : null}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -266,28 +227,64 @@ function PriorityMenu({
 
 function DueDateMenu({
   task,
+  labels,
   onUpdate,
   triggerClassName,
 }: {
   task: Task;
+  labels: Label[] | undefined;
   onUpdate: (update: TaskPropertyUpdate) => void;
   triggerClassName: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [dates, setDates] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const rpc = useTasksRpc();
+  const epic = task.type === "epic";
+  const ongoingLabel = labels?.find((label) => label.name.toLowerCase() === "ongoing");
+  const ongoing = epic && !!ongoingLabel && task.labelIds.includes(ongoingLabel.id);
   const pick = (dueDate: string | null) => {
-    onUpdate({ dueDate });
+    onUpdate({ dueDate, ...(epic && ongoingLabel ? {
+      labelIds: task.labelIds.filter((id) => id !== ongoingLabel.id),
+    } : {}) });
     setOpen(false);
   };
+  const pickOngoing = async () => {
+    if (saving || !labels) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const label = ongoingLabel ?? (await rpc.call("createLabel", {
+        projectId: task.projectId, name: "ongoing", color: DEFAULT_COLOR,
+      })).label;
+      onUpdate({ dueDate: null, labelIds: [...new Set([...task.labelIds, label.id])] });
+      setOpen(false);
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); setDates(false); setError(null); }}>
       <PopoverTrigger asChild>
-        <button type="button" className={triggerClassName}>
-          <Icon name="Clock" className="size-3.5 shrink-0" />
-          {task.dueDate ? formatDueDate(task.dueDate) : "Set due date"}
+        <button type="button" className={triggerClassName} aria-label={epic ? "Timeframe" : undefined}>
+          {ongoing ? <span aria-hidden className="inline-flex size-3.5 shrink-0 items-center justify-center">∞</span> : <Icon name="Clock" className="size-3.5 shrink-0" />}
+          {ongoing ? "Ongoing" : task.dueDate ? formatDueDate(task.dueDate) : epic ? "No deadline" : "Set due date"}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-52 p-2">
         <div className="flex flex-col">
+          {epic && !dates ? (
+            <>
+              <p className="px-2 py-1 text-xs text-muted-foreground">Timeframe</p>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => pick(null)}>No deadline</button>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => setDates(true)}>Due date…</button>
+              <button type="button" disabled={saving || !labels} className="rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => void pickOngoing()}>Ongoing</button>
+            </>
+          ) : <>
+          {epic ? <button type="button" className="px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground" onClick={() => setDates(false)}>Back to timeframe</button> : null}
           {DUE_DATE_PRESETS.map(([label, days]) => (
             <button
               key={label}
@@ -320,6 +317,8 @@ function DueDateMenu({
               Remove due date
             </button>
           ) : null}
+          </>}
+          {error ? <p role="alert" className="px-2 py-1 text-xs text-destructive">{error}</p> : null}
         </div>
       </PopoverContent>
     </Popover>
@@ -609,12 +608,11 @@ const RAIL_ROW_CLASS =
   "-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-state-hover";
 
 export function PropertiesRail({
+  activityStatus,
   task,
   project,
   projects,
   labels,
-  threads,
-  presets,
   onUpdate,
   onMoveToProject,
   onError,
@@ -622,20 +620,19 @@ export function PropertiesRail({
   className,
   children,
 }: TaskPropertiesProps & {
-  presets: Preset[] | undefined;
   onError: (message: string) => void;
   className?: string;
   children?: ReactNode;
+  activityStatus?: ReactNode;
 }) {
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
   );
-  const active = threads.filter(isActiveThread);
-  const navigate = useBbNavigate();
   const bbProjects = useTasksQuery(
     async (query) => (await query.call("listBbProjects")).bbProjects,
     ["projects:changed"],
   );
+  const navigation = useTasksNavigation();
   return (
     <aside
       aria-label="Task details"
@@ -644,6 +641,7 @@ export function PropertiesRail({
         className,
       )}
     >
+      {activityStatus}
       <div className="hidden @[45rem]:block">
         <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
           Properties
@@ -663,14 +661,10 @@ export function PropertiesRail({
             projectId={task.projectId}
             value={task.epicId}
             onChange={(epicId) => onUpdate({ epicId })}
+            onOpen={(taskKey) => navigation.go({ kind: "task", taskKey })}
             className={RAIL_ROW_CLASS}
           />
         ) : null}
-        <StatusMenu
-          task={task}
-          onUpdate={onUpdate}
-          triggerClassName={RAIL_ROW_CLASS}
-        />
         <PriorityMenu
           task={task}
           onUpdate={onUpdate}
@@ -678,6 +672,7 @@ export function PropertiesRail({
         />
         <DueDateMenu
           task={task}
+          labels={labels}
           onUpdate={onUpdate}
           triggerClassName={RAIL_ROW_CLASS}
         />
@@ -736,18 +731,6 @@ export function PropertiesRail({
             ) : (
               <div className="py-0.5 text-sm text-muted-foreground">…</div>
             )}
-
-            <div className="mt-2.5 py-0.5">
-              <DispatchControl
-                taskId={task.id}
-                projectId={task.projectId}
-                threads={threads}
-                presets={presets}
-                onError={onError}
-                align="start"
-                className="w-full"
-              />
-            </div>
           </>
         ) : (
           <p className="mt-3 text-xs text-muted-foreground">
@@ -755,35 +738,6 @@ export function PropertiesRail({
             result; the requester thread will be notified if set.
           </p>
         )}
-
-        <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
-          Agents
-        </div>
-        <div className="flex flex-col gap-1 py-0.5 text-xs">
-          {active.length > 0 ? (
-            active.map((thread) => (
-              <button
-                key={thread.id}
-                type="button"
-                title={`${thread.title || thread.threadId} · ${thread.liveStatus === "starting" ? "starting" : "working"}`}
-                aria-label={`Open thread ${thread.title || thread.threadId}`}
-                onClick={() => navigate.toThread(thread.threadId)}
-                className="flex min-w-0 items-center gap-1.5 rounded text-left font-medium text-success hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <span
-                  aria-hidden
-                  className="size-1.5 shrink-0 animate-pulse rounded-full bg-success"
-                />
-                <span className="truncate">
-                  {thread.title || thread.threadId}
-                </span>
-                <Icon name="ArrowUpRight" className="size-3 shrink-0" />
-              </button>
-            ))
-          ) : (
-            <span className="text-muted-foreground">none active</span>
-          )}
-        </div>
       </div>
       {children}
     </aside>
@@ -798,18 +752,14 @@ export function InlineProperties({
   project,
   projects,
   labels,
-  threads,
-  presets,
   onUpdate,
   onMoveToProject,
-  onError,
   onAddQuestion,
   className,
 }: TaskPropertiesProps & {
-  presets: Preset[] | undefined;
-  onError: (message: string) => void;
   className?: string;
 }) {
+  const navigation = useTasksNavigation();
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
   );
@@ -833,14 +783,10 @@ export function InlineProperties({
           projectId={task.projectId}
           value={task.epicId}
           onChange={(epicId) => onUpdate({ epicId })}
+            onOpen={(taskKey) => navigation.go({ kind: "task", taskKey })}
           className={CHIP_CLASS}
         />
       ) : null}
-      <StatusMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={CHIP_CLASS}
-      />
       <PriorityMenu
         task={task}
         onUpdate={onUpdate}
@@ -848,6 +794,7 @@ export function InlineProperties({
       />
       <DueDateMenu
         task={task}
+        labels={labels}
         onUpdate={onUpdate}
         triggerClassName={CHIP_CLASS}
       />
@@ -869,16 +816,6 @@ export function InlineProperties({
           <Icon name="Plus" className="size-3" />
         </button>
       </LabelsMenu>
-      {task.executionTarget !== "owner" && !task.archivedAt ? (
-        <DispatchControl
-          taskId={task.id}
-          projectId={task.projectId}
-          threads={threads}
-          presets={presets}
-          onError={onError}
-          className="ml-auto max-w-56"
-        />
-      ) : null}
     </div>
   );
 }

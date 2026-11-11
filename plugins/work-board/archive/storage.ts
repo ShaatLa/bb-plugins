@@ -10,6 +10,7 @@ import {
   assertNoSecretsInValue,
 } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
+import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
   archiveTaskSchema,
@@ -18,10 +19,14 @@ import {
   type ProjectArchive,
 } from "./contract";
 
+// Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
+export const historicalRun = (run: ScheduleRun): ScheduleRun => ({ ...run, threadId: null, queueId: null, requestId: null, historical: true });
 type SqlValue = string | number | null;
 type Row = Record<string, SqlValue>;
 export const sha256 = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
+
+const withoutVisibility = <T extends { ordinaryVisible?: boolean; scheduledRole?: string }>({ ordinaryVisible: _derived, scheduledRole: _role, ...task }: T) => task;
 
 export function captureProject(
   bb: BbPluginApi,
@@ -43,9 +48,19 @@ export function captureProject(
     const tasks = store.tasks
       .listTasks({ projectId })
       .sort((a, b) => a.id.localeCompare(b.id));
+    // Constant statements: three batch reads cover every schedule table (sources/results may outlive schedules).
+    const scheduleDb = bb.storage.database();
+    const scheduleRows = scheduleDb.prepare<[string], { id: string; template_task_id: string; title: string; rule: string; created_at: string; updated_at: string }>(
+      "SELECT s.id, s.template_task_id, t.title, s.rule, s.created_at, s.updated_at FROM task_schedules s JOIN tasks t ON t.id=s.template_task_id WHERE s.project_id=? ORDER BY s.id",
+    ).all(projectId);
+    const sourceRows = scheduleDb.prepare<[string], { task_id: string; schedule_id: string; schedule_title: string; role: string; scheduled_for: string | null; started_at: string | null; run_id: string | null; occurrence_key: string | null }>(
+      "SELECT ss.* FROM task_scheduled_sources ss JOIN tasks t ON t.id=ss.task_id WHERE t.project_id=? ORDER BY ss.task_id",
+    ).all(projectId);
+    const runRows = scheduleDb.prepare<[string], { payload: string }>("SELECT payload FROM task_schedule_runs WHERE project_id=? ORDER BY id").all(projectId);
+    const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 10,
+      version: 14,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -54,42 +69,82 @@ export function captureProject(
         .sort((a, b) => a.id.localeCompare(b.id)),
       taskIds: tasks.map((task) => task.id),
       templates: structured.listTemplates(projectId),
+      // Portable definitions only: paused, unassigned and never scheduled, so a restore cannot reactivate old targets.
+      schedules: scheduleRows.map(row => scheduleSchema.parse({
+        id: row.id, projectId, templateTaskId: row.template_task_id, title: row.title, rule: JSON.parse(row.rule),
+        target: { kind: "unassigned" }, enabled: false, nextDueAt: null, createdAt: row.created_at, updatedAt: row.updated_at, overlapRunIds: [],
+      })),
+      scheduleSources: sourceRows.map(row => scheduleSourceSchema.parse({
+        taskId: row.task_id, scheduleId: row.schedule_id, scheduleTitle: row.schedule_title, role: row.role,
+        scheduledFor: row.scheduled_for, startedAt: row.started_at, runId: row.run_id, occurrenceKey: row.occurrence_key,
+      })),
+      scheduleRuns: runRows.map(row => {
+        const run = historicalRun(scheduleRunSchema.parse(JSON.parse(row.payload)));
+        // A run may outlive its result task; the dangling link is not portable.
+        return { ...run, taskId: run.taskId && taskIdSet.has(run.taskId) ? run.taskId : null };
+      }),
     });
-    const records = tasks.map((task) => {
-      const comments = store.tasks
-        .listComments(task.id)
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const attachments = [
-        ...store.tasks.listAttachmentsForTask(task.id),
-        ...comments.flatMap((comment) =>
-          store.tasks.listAttachmentsForComment(comment.id),
-        ),
-      ].sort((a, b) => a.id.localeCompare(b.id));
-      const aliases = bb.storage
-        .database()
-        .prepare<
-          [string],
-          { prefix: string; number: number }
-        >("SELECT prefix, number FROM task_key_aliases WHERE task_id = ? ORDER BY prefix, number")
-        .all(task.id);
-      return {
-        pullRequests: createGitSyncStore(bb.storage.database()).links(task.id),
-        task: {
-          ...task,
-          labelIds: store.tasks
-            .listTaskLabels(task.id)
-            .map((link) => link.labelId)
-            .sort(),
-        },
-        comments,
-        questions: structured.listQuestions(task.id),
-        attachments,
-        threads: store.tasks
-          .listTaskThreads(task.id)
-          .sort((a, b) => a.id.localeCompare(b.id)),
-        aliases,
-      };
-    });
+    // Resource invariant: every related table is read once per project (constant statement count),
+    // grouped in memory; statements must not scale with task or comment count.
+    const db = bb.storage.database();
+    const group = <T>(items: T[], owner: (item: T) => string) => {
+      const byOwner = new Map<string, T[]>();
+      for (const item of items) {
+        const list = byOwner.get(owner(item)) ?? [];
+        list.push(item);
+        byOwner.set(owner(item), list);
+      }
+      return byOwner;
+    };
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    const commentsByTask = group(store.tasks.listCommentsForProject(projectId), (c) => c.taskId);
+    const commentTask = new Map<string, string>();
+    for (const [taskId, list] of commentsByTask)
+      for (const comment of list) commentTask.set(comment.id, taskId);
+    const attachmentsByTask = group(
+      store.tasks.listAttachmentsForProject(projectId),
+      (a) => (a.taskId ?? commentTask.get(a.commentId!))!,
+    );
+    const labelsByTask = group(store.tasks.listTaskLabelsForProject(projectId), (l) => l.taskId);
+    const threadsByTask = group(store.tasks.listTaskThreadsForProject(projectId), (t) => t.taskId);
+    const questionsByTask = structured.listQuestionsForProject(projectId);
+    const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
+    const dependenciesByTask = group(db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
+      SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId
+      FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
+      WHERE t.project_id=? ORDER BY d.blocking_task_id
+    `).all(projectId), row => row.taskId);
+    const aliasesByTask = group(
+      db
+        .prepare<[string], { task_id: string; prefix: string; number: number }>(
+          "SELECT a.task_id, a.prefix, a.number FROM task_key_aliases a JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ? ORDER BY a.prefix, a.number",
+        )
+        .all(projectId),
+      (a) => a.task_id,
+    );
+    const historyTasks = new Set(
+      db
+        .prepare<[string], { task_id: string }>(
+          "SELECT h.task_id FROM task_activity_history h JOIN tasks t ON t.id = h.task_id WHERE t.project_id = ?",
+        )
+        .all(projectId)
+        .map((row) => row.task_id),
+    );
+    const records = tasks.map((task) => ({
+      activityHistory: historyTasks.has(task.id),
+      dependencies: (dependenciesByTask.get(task.id) ?? []).map(row => row.blockingTaskId),
+      pullRequests: linksByTask.get(task.id) ?? [],
+      // ordinaryVisible is derived from scheduled sources, not task data.
+      task: {
+        ...withoutVisibility(task),
+        labelIds: (labelsByTask.get(task.id) ?? []).map((link) => link.labelId).sort(),
+      },
+      comments: [...(commentsByTask.get(task.id) ?? [])].sort(byId),
+      questions: questionsByTask.get(task.id) ?? [],
+      attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
+      threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
+      aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
+    }));
     return { manifest, records };
   });
 }
@@ -165,10 +220,27 @@ export function restoreProject(
     assertNoSecretsInValue(archive.manifest.project.statuses, "statuses");
   if (archive.manifest.gitSync) assertNoSecretsInValue(archive.manifest.gitSync, "Git sync configuration");
   for (const record of archive.records) for (const link of record.pullRequests ?? []) assertNoSecretsInValue(link, "PR link");
+  for (const source of archive.manifest.scheduleSources) assertNoSecrets(source.scheduleTitle, "schedule title");
+  for (const run of archive.manifest.scheduleRuns) assertNoSecretsInValue(run, "schedule run");
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
   store.transaction(() => {
+    const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
+    const localDependencies = new Map<string, string[]>();
+    for (const row of db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
+      SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId FROM task_dependencies d
+      JOIN tasks t ON t.id=d.task_id WHERE t.project_id=? ORDER BY d.blocking_task_id
+    `).all(projectId)) {
+      const group = localDependencies.get(row.taskId) ?? [];
+      group.push(row.blockingTaskId);
+      localDependencies.set(row.taskId, group);
+    }
+    for (const record of records) if (record.dependencies && localTaskIds.has(record.task.id)) {
+      const current = localDependencies.get(record.task.id) ?? [];
+      if (!overwrite && JSON.stringify(current) !== JSON.stringify([...record.dependencies].sort()))
+        throw new Error(`Import conflict: dependencies ${record.task.key}; use --overwrite`);
+    }
     const changes: Array<{ table: string; row: Row; keys: string[] }> = [];
     const plan = (
       table: string,
@@ -273,7 +345,7 @@ export function restoreProject(
         throw new Error(`Invalid epic link: ${task.id}`);
     }
     for (const record of records) {
-      const { key: _key, labelIds, ...task } = record.task;
+      const { key: _key, labelIds, ordinaryVisible: _derived, ...task } = record.task;
       if (labelIds.some((id) => !labels.has(id)))
         throw new Error(`Unknown task label: ${task.id}`);
       const current = store.tasks.getTask(task.id);
@@ -367,6 +439,46 @@ export function restoreProject(
         );
       }
     }
+    // Schedules, sources and history go in after every task exists. All references are validated while planning,
+    // before any write; schedules are forced paused/unassigned and runs forced historical.
+    const rowOf = <T>(table: string, where: string, ...args: SqlValue[]) => db.prepare<SqlValue[], T>(`SELECT * FROM ${table} WHERE ${where}`).get(...args);
+    for (const schedule of manifest.schedules) {
+      const other = rowOf<{ id: string }>("task_schedules", "template_task_id=? AND id<>?", schedule.templateTaskId, schedule.id);
+      if (other) throw new Error(`Import conflict: template task already belongs to schedule ${other.id}`);
+      plan("task_schedules", {
+        id: schedule.id, project_id: projectId, template_task_id: schedule.templateTaskId, rule: JSON.stringify(schedule.rule),
+        target: JSON.stringify({ kind: "unassigned" }), enabled: 0, next_due_at: null, created_at: schedule.createdAt, updated_at: schedule.updatedAt,
+      }, ["id"], ["project_id", "template_task_id"]);
+    }
+    for (const source of manifest.scheduleSources) {
+      const referenced = source.runId && rowOf<{ project_id: string; schedule_id: string; occurrence_key: string; payload: string }>("task_schedule_runs", "id=?", source.runId);
+      // An expired run may be absent, but an existing run must belong to this exact result.
+      if (referenced && (referenced.project_id !== projectId || referenced.schedule_id !== source.scheduleId || referenced.occurrence_key !== source.occurrenceKey || scheduleRunSchema.parse(JSON.parse(referenced.payload)).taskId !== source.taskId))
+        throw new Error(`Import conflict: referenced scheduled run ${source.runId} belongs to another result`);
+      if (source.occurrenceKey !== null && rowOf("task_scheduled_sources", "schedule_id=? AND occurrence_key=? AND task_id<>?", source.scheduleId, source.occurrenceKey, source.taskId))
+        throw new Error(`Import conflict: occurrence ${source.occurrenceKey} already belongs to another result task`);
+      plan("task_scheduled_sources", {
+        task_id: source.taskId, schedule_id: source.scheduleId, schedule_title: source.scheduleTitle, role: source.role,
+        scheduled_for: source.scheduledFor, started_at: source.startedAt, run_id: source.runId, occurrence_key: source.occurrenceKey,
+      }, ["task_id"]);
+    }
+    for (const run of manifest.scheduleRuns) {
+      const current = rowOf<{ payload: string; project_id: string; schedule_id: string }>("task_schedule_runs", "id=?", run.id);
+      if (current) {
+        if (current.project_id !== projectId || current.schedule_id !== run.scheduleId) throw new Error(`ID belongs to another owner: task_schedule_runs ${run.id}`);
+        const local = scheduleRunSchema.parse(JSON.parse(current.payload));
+        // The same history re-imported on its own server must keep the local live IDs.
+        if (JSON.stringify(historicalRun(local)) === JSON.stringify(run)) continue;
+        if (!local.historical && ["starting", "queued", "running", "delivery_unknown", "cancel_pending"].includes(local.state))
+          throw new Error(`Import cannot replace an active scheduled run: ${run.id}`);
+      }
+      if (rowOf("task_schedule_runs", "schedule_id=? AND occurrence_key=? AND id<>?", run.scheduleId, run.occurrenceKey, run.id))
+        throw new Error(`Import conflict: occurrence ${run.occurrenceKey} already has another run`);
+      plan("task_schedule_runs", {
+        id: run.id, schedule_id: run.scheduleId, project_id: projectId, occurrence_key: run.occurrenceKey, state: run.state,
+        resolved_at: run.resolvedAt, finished_at: run.finishedAt, thread_id: null, payload: JSON.stringify(historicalRun(run)),
+      }, ["id"], ["project_id", "schedule_id"]);
+    }
     db.pragma("defer_foreign_keys = ON");
     for (const { table, row, keys } of changes) {
       const columns = Object.keys(row);
@@ -375,6 +487,14 @@ export function restoreProject(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
     }
+    for (const record of records)
+      if (record.activityHistory)
+        db.prepare<[string]>("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(record.task.id);
+    // validateArchive already checks the complete, project-local graph; never traverse it once per edge.
+    for (const record of records) if (record.dependencies !== undefined)
+      db.prepare<[string]>("DELETE FROM task_dependencies WHERE task_id=?").run(record.task.id);
+    const insertDependency = db.prepare<[string, string]>("INSERT INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)");
+    for (const record of records) for (const blocker of record.dependencies ?? []) insertDependency.run(record.task.id, blocker);
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
       const currentIds = store.tasks

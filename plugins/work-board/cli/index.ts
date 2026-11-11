@@ -1,3 +1,4 @@
+import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
@@ -57,7 +58,9 @@ import { seedDemo } from "./seed";
 import { exportProject, importProject } from "../archive";
 import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/evidence";
 import { taskMarkdownLink } from "../shared/task-link";
+import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
+import { scheduledCliCommands } from "../scheduled/cli";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -911,6 +914,52 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        ...scheduledCliCommands(bb, {
+          group: groupCommand,
+          projects: () => listProjects(domain),
+          project: (ctx, address, required) => selectedProject(domain, ctx, address, required),
+          task: (address) => resolveTask(domain, address),
+          preset: async (address) => resolvePreset(await listPresets(domain), address),
+          readText: async (ctx, machine, path) => (await readTextOption(bb, ctx, await resolveClientHostId(bb, domain, machine, ctx), undefined, path)) ?? "",
+        }),
+        storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
+        ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
+          summary: `${action} storage across all projects; preserve accessible task history`,
+          options: { json: JSON_OPTION },
+          run(input) { return guard(async () => {
+            const result = action === "status" ? await domain.getStorageStatus(null) : await domain.maintainStorage({ optimize: action === "optimize" });
+            if (input.options.json) return JSON.stringify(result);
+            const status = "after" in result ? result.after : result;
+            return [
+              `Database: ${status.databaseBytes} B; WAL: ${status.walBytes} B; reclaimable pages: ${status.freeDatabaseBytes} B`,
+              `Blobs: ${status.blobLogicalBytes} B logical, ${status.blobPhysicalBytes} B allocated; ${status.blobFiles} files`,
+              `Orphans older than 24h: ${status.orphanFiles} (${status.orphanBytes} B); missing attachments: ${status.missingAttachments}`,
+              ...("removedFiles" in result ? [`Removed ${result.removedFiles} files / ${result.removedRows} cache rows; shared ${result.deduplicatedFiles} duplicate files; warnings: ${result.warnings}`] : []),
+            ].join("\n");
+          }); },
+        })])),
+        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done)", [["add KEY --blocked-by KEY", "Add a predecessor"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["list KEY", "Show both directions"]]),
+        ...Object.fromEntries((["add", "remove", "list"] as const).map(action => [`dependency ${action}`, cliCommand({
+          summary: `${action} task dependencies; only Done satisfies a predecessor`,
+          positionals: [KEY_POSITIONAL],
+          options: { json: JSON_OPTION, ...(action === "list" ? {} : { "blocked-by": { type: "string" as const, required: true as const, description: "Predecessor task key or ID (same project)" } }) },
+          run(input, ctx) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            if (action !== "list") {
+              const blocker = await resolveTask(domain, String(input.options["blocked-by"]));
+              const args = { taskId: task.id, blockingTaskId: blocker.id, authorName: taskAuthor(ctx) };
+              const result = action === "add"
+                ? await domain.addTaskDependency(tasksRpcContract.addTaskDependency.input.parse(args))
+                : await domain.removeTaskDependency(tasksRpcContract.removeTaskDependency.input.parse(args));
+              return input.options.json ? JSON.stringify(result) : `${task.key}: ${action === "add" ? "blocked by" : "removed dependency on"} ${blocker.key}${result.changed ? "" : " (unchanged)"}`;
+            }
+            const result = await domain.listTaskDependencies({ taskId: task.id });
+            return input.options.json ? JSON.stringify(result) : [
+              `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
+              `Blocks: ${result.blocks.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
+            ].join("\n");
+          }); },
+        })])),
         seq: groupCommand("seq", "Manage project sequences", [["create", "Create a sequence"], ["list", "List sequences"], ["show", "Show sequence and claims"], ["set-next", "Resync next value"], ["delete", "Delete a sequence"]]),
         ...Object.fromEntries((["create", "list", "show", "set-next", "delete"] as const).map(action => [`seq ${action}`, cliCommand({
           summary: `${action} a project sequence`,
@@ -1595,6 +1644,35 @@ export function registerTasksCli(
             ["update", "Rename, recolor, refile, or relink a project"],
           ],
         ),
+        activity: groupCommand("activity", "Record optional task focus for diagnostics; badges follow live sessions", [["start <key-or-id>", "Record this card as the current turn focus"], ["stop <key-or-id>", "Clear this turn focus; does not stop the session"]]),
+        "activity start": cliCommand({
+          summary: "record diagnostic task focus for the current turn",
+          positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
+          options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const threadId = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId) throw new CliError("Pass --thread or run this command from a session");
+              const result = await domain.setTaskActivity({ taskId: task.id, threadId, active: true });
+              return input.options.json ? JSON.stringify(result) : "Activity start: " + task.key;
+            });
+          },
+        }),
+        "activity stop": cliCommand({
+          summary: "clear diagnostic task focus without stopping the session",
+          positionals: [{ name: "key-or-id", required: true, description: "Task key or id" }],
+          options: { thread: { type: "string", description: "Session id; defaults to this session" }, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const threadId = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId) throw new CliError("Pass --thread or run this command from a session");
+              const result = await domain.setTaskActivity({ taskId: task.id, threadId, active: false });
+              return input.options.json ? JSON.stringify(result) : "Activity stop: " + task.key;
+            });
+          },
+        }),
         "project create": cliCommand({
           summary: "Create a tracker project",
           options: {
@@ -1702,6 +1780,8 @@ export function registerTasksCli(
                 ["Color", project.color],
                 ["Folder", folder?.name ?? "-"],
                 ["BB project", project.linkedBbProjectId ?? "-"],
+                ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
+                ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
               ]);
@@ -1709,7 +1789,7 @@ export function registerTasksCli(
           },
         }),
         "project update": cliCommand({
-          summary: "Rename, recolor, refile, or relink a tracker project",
+          summary: "Update a project's identity, workflow, archiving or activity settings",
           positionals: [
             {
               name: "prefix-or-id",
@@ -1720,6 +1800,9 @@ export function registerTasksCli(
           options: {
             "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
+            "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
+            "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
+            "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -1784,6 +1867,9 @@ export function registerTasksCli(
               const changes = {
                 workflowPolicy,
                 statuses,
+                autoArchiveAfterDays: input.options["auto-archive"],
+                staleIdleMinutes: input.options["stale-idle"],
+                statusNotifications: input.options["status-notifications"],
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -1799,6 +1885,9 @@ export function registerTasksCli(
                 changes.folderId === undefined &&
                 changes.workflowPolicy === undefined &&
                 changes.statuses === undefined &&
+                changes.autoArchiveAfterDays === undefined &&
+                changes.staleIdleMinutes === undefined &&
+                changes.statusNotifications === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -1818,6 +1907,9 @@ export function registerTasksCli(
                 changes.folderId !== undefined ||
                 changes.workflowPolicy !== undefined ||
                 changes.statuses !== undefined ||
+                changes.autoArchiveAfterDays !== undefined ||
+                changes.staleIdleMinutes !== undefined ||
+                changes.statusNotifications !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -1838,6 +1930,9 @@ export function registerTasksCli(
                   prefix: renameInput?.prefix,
                   workflowPolicy: updateInput?.workflowPolicy,
                   statuses: updateInput?.statuses,
+                  autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
+                  staleIdleMinutes: updateInput?.staleIdleMinutes,
+                  statusNotifications: updateInput?.statusNotifications,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -2337,6 +2432,10 @@ export function registerTasksCli(
               type: "boolean",
               description: "Keep only tasks with a live agent thread",
             },
+            "include-scheduled": {
+              type: "boolean",
+              description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
+            },
             search: {
               type: "string",
               placeholder: "query",
@@ -2429,6 +2528,7 @@ export function registerTasksCli(
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
                     staleStatus: input.options["stale-status"],
+                    ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
                     limit,
@@ -2438,6 +2538,8 @@ export function registerTasksCli(
               );
               const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
               const flags = new Map(metadata.map((row) => [row.taskId, row.staleStatusFlags]));
+              const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
+              const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
                 metadata.map(
                   (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
@@ -2453,6 +2555,8 @@ export function registerTasksCli(
                   agentsWorking: metadata.find((row) => row.taskId === task.id)?.taskThreads.length ?? 0,
                   threadHealth: health.get(task.id),
                   staleStatusFlags: flags.get(task.id) ?? [],
+                  blockedBy: blockedBy.get(task.id) ?? [],
+                  advisories: advisories.get(task.id) ?? [],
                 });
               }
               if (input.options.json) {
@@ -2473,6 +2577,8 @@ export function registerTasksCli(
                   "LABELS",
                   "AGENTS",
                   "STALE STATUS",
+                  "BLOCKED BY",
+                  "ADVISORIES",
                 ],
                 tasks.map((task) => [
                   task.key,
@@ -2484,6 +2590,8 @@ export function registerTasksCli(
                   task.labels.join(", ") || "-",
                   task.agentsWorking,
                   task.staleStatusFlags.join(", ") || "-",
+                  task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
+                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
                 ]),
                 "No tasks.",
               );
@@ -2523,6 +2631,13 @@ export function registerTasksCli(
                     : { parentTaskId: task.id }),
                 }),
               );
+              const taskThreads = tasksRpcContract.listTaskThreads.output.parse(
+                await domain.listTaskThreads(
+                  tasksRpcContract.listTaskThreads.input.parse({
+                    taskId: task.id,
+                  }),
+                ),
+              ).taskThreads;
               const comments = tasksRpcContract.listComments.output.parse(
                 await domain.listComments(
                   tasksRpcContract.listComments.input.parse({
@@ -2539,18 +2654,9 @@ export function registerTasksCli(
                 task.id,
                 comments,
               );
-              const taskThreads = tasksRpcContract.listTaskThreads.output.parse(
-                await domain.listTaskThreads(
-                  tasksRpcContract.listTaskThreads.input.parse({
-                    taskId: task.id,
-                  }),
-                ),
-              ).taskThreads;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
-              const threadHealth = threadHealthJson(
-                cardMeta.threadHealth,
-                Date.now(),
-              );
+              const activity = cardMeta.activity;
+              const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
               const { pullRequests, unavailableThreadIds } =
                 tasksRpcContract.listTaskPullRequests.output.parse(
                   await domain.listTaskPullRequests(
@@ -2560,6 +2666,7 @@ export function registerTasksCli(
                   ),
                 );
               const { links: prLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const dependencies = await domain.listTaskDependencies({ taskId: task.id });
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
@@ -2574,6 +2681,10 @@ export function registerTasksCli(
                   taskThreads,
                   threadHealth,
                   staleStatusFlags: cardMeta.staleStatusFlags,
+                  activity,
+                  advisories: cardMeta.advisories ?? [],
+                  dependencies,
+                  blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   comments,
@@ -2605,6 +2716,8 @@ export function registerTasksCli(
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
+                  ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
+                  ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
                   ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),
                   ["Priority", task.priority],
                   ["Due", task.dueDate ?? "-"],
@@ -2616,6 +2729,12 @@ export function registerTasksCli(
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
+                ...(cardMeta.advisories?.length ? [`Advisories\n${cardMeta.advisories.map(item => advisoryText(item) + (item.kind === "merged-predecessor" ? ` \n${item.pr.url}` : "")).join("\n")}`] : []),
+                ...(activity ? [`Activity: ${activity.state ? ACTIVITY_LABELS[activity.state] : "No activity"}
+${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activity.diagnostics && !activity.diagnostics.complete ? "\nWarning: session data is incomplete." : ""}
+${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
+${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
+                ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 `Description\n${task.description || "(none)"}`,
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],

@@ -1,4 +1,5 @@
 import { mountDraftSettingsDisclosure } from "./settings-disclosure";
+import { chevronClass } from "./components/ui/summary";
 import { useEffect, useRef, useState } from "react";
 import { minimumDate, presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
@@ -8,10 +9,11 @@ import { Card } from "./components/ui/card";
 import { LoadingSkeleton } from "./components/ui/skeleton";
 import { DashboardSkeleton } from "./dashboard-skeleton";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
-import { HistoryCharts } from "./history-chart";
+import { HistoryCharts, trendKeysBySource } from "./history-chart";
 import { CiTiming } from "./ci-cards";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
 import { metricsProgressSchema } from "./metrics";
+import { useSignalsBadge } from "./signals-panel";
 
 type DashboardSnapshot = { configuration: string; selection: string; result: DashboardData };
 // Keep the last view across sidebar navigation within this window; never persist repository data in browser storage.
@@ -36,7 +38,7 @@ export function Dashboard() {
   const { values, isLoading } = useSettings();
   const repository = typeof values?.repository === "string" ? values.repository : "";
   const importProjects = values?.importBbRepositories !== false;
-  const configuration = JSON.stringify([repository, importProjects, values?.draftWorkflow ?? "CI", values?.draftJob ?? "CI gate", values?.draftStep ?? "Reject draft PR"]);
+  const configuration = JSON.stringify([repository, importProjects, values?.draftWorkflow ?? "", values?.draftJob ?? "", values?.draftStep ?? ""]);
   const seconds = typeof values?.refreshSeconds === "number" ? values.refreshSeconds : 300;
   const [range, setRange] = useState<RangeInput>(() => lastSelection);
   const selection = JSON.stringify(range);
@@ -88,6 +90,9 @@ export function Dashboard() {
         merged.ciOutcomes = cached.ciOutcomes;
         merged.ciInsights = cached.ciInsights;
       }
+      // Keep the previous trend series of any source that is still loading.
+      const retained = Object.entries(cached.trends ?? {}).filter(([name]) => (Object.entries(trendKeysBySource) as [string, readonly string[]][]).some(([source, names]) => metrics.pending?.includes(source) && names.includes(name)));
+      if (retained.length) merged.trends = { ...Object.fromEntries(retained), ...metrics.trends };
       // Retained values still describe the previous collection until this refresh completes.
       if (metrics.pending?.length) merged.updatedAt = cached.updatedAt;
       repositories[index] = merged;
@@ -171,7 +176,8 @@ export function Dashboard() {
     return () => { disposed = true; clearTimeout(timer); };
   }, [rpc, isLoading, configuration, selection, seconds, refresh]);
 
-  const current = data && (isLoading || data.configuration === configuration) ? data.result : null;
+  // Another range's numbers must not sit under this range's label; show the skeleton until its own data arrives.
+  const current = data && (isLoading || (data.configuration === configuration && data.selection === selection)) ? data.result : null;
   if (isLoading && !current) return <p role="status" className="text-sm text-muted-foreground">Loading dashboard settings…</p>;
   return (
     <section aria-label="GitHub CI metrics" aria-busy={busy && !current} className="space-y-6">
@@ -186,13 +192,10 @@ export function Dashboard() {
             {presets.map((days, index) => <option key={days} value={days}>{["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"][index]}</option>)}
             <option value="custom">Custom dates</option>
           </select>
-          <svg aria-hidden="true" viewBox="0 0 12 8" fill="none" className="pointer-events-none absolute right-3 top-1/2 h-2 w-3 -translate-y-1/2 text-foreground"><path d="m1 1 5 5 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
         </span>
         <Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
-          <svg data-refresh-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`}>
-            <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.8L21 8" />
-            <path d="M21 3v5h-5" />
-          </svg>
+          <Icon name="ArrowReloadHorizontal" aria-hidden className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`} />
         </Button>
       </div>
       {mode === "custom" && <div className="flex flex-wrap items-end gap-3">
@@ -200,10 +203,10 @@ export function Dashboard() {
         <label className="space-y-1 text-xs text-muted-foreground"><span className="block">Through (UTC)</span><input aria-label="Through date" type="date" min={start > earliest ? start : earliest} max={today} value={end} onChange={(event) => setEnd(event.target.value)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>
         <Button variant="outline" size="sm" onClick={() => applyRange({ start, end })}>Apply dates</Button>
       </div>}
-      {rangeError && <p role="alert" className="text-sm text-destructive">{rangeError}</p>}
+      {rangeError && <p role="alert" className="text-sm text-destructive-text">{rangeError}</p>}
       {!current && !error && <DashboardSkeleton />}
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {current?.discoveryError && <p role="alert" className="text-sm text-destructive">{current.discoveryError}</p>}
+      {error && <p role="alert" className="text-sm text-destructive-text">{error}</p>}
+      {current?.discoveryError && <p role="alert" className="text-sm text-destructive-text">{current.discoveryError}</p>}
       {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → CI Dashboard.</p>}
       {current?.repositories.map((repo) => {
         const cards = [
@@ -225,6 +228,10 @@ export function Dashboard() {
           <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(repo.range.since).toUTCString()} – ${new Date(repo.range.until).toUTCString()}`}>
             <span className="font-medium text-foreground">{rangeTitle}</span><span aria-hidden="true">·</span><span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
           </p>
+          {/* Background refreshes keep cached values on screen; only an empty CI card needs the explanation. */}
+          {repo.pending?.includes("ci") && repo.ci.value === null && repo.loading ? <p role="status" className="text-xs text-muted-foreground">
+            Loading CI history from GitHub · {repo.loading.runs.toLocaleString()} runs so far{repo.loading.total > 0 ? ` · ${Math.floor(repo.loading.done / repo.loading.total * 100)}%` : ""} · first load of a longer range can take a few minutes
+          </p> : null}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {cards.map(({ title, pending, metric, format }) => (
               <Card key={title} className={`space-y-2 p-4 ${title === "CI pass rate" ? "border-primary/30 bg-primary/5" : ""}`}>
@@ -233,14 +240,14 @@ export function Dashboard() {
                   <p className="text-2xl font-semibold tabular-nums">{metric.value == null ? "—" : format(metric.value)}</p>
                   <p className="text-xs text-muted-foreground">{metric.detail}</p>
                 </>}
-                {metric.error && <p role="alert" className="text-xs text-destructive">{metric.error}</p>}
+                {metric.error && <p role="alert" className="text-xs text-destructive-text">{metric.error}</p>}
               </Card>
             ))}
           </div>
           <CiTiming repo={repo} />
           <CiOutcomes repo={repo} showDetails />
-          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           <RepositoryActivity repo={repo} />
+          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
           <RepositoryDetails repo={repo} />
           <p className="text-xs text-muted-foreground">Last checked {new Date(repo.updatedAt).toLocaleString()}</p>
         </section>;
@@ -260,5 +267,6 @@ export default definePluginApp((app) => {
   app.contentScripts.register({ id: "draft-settings-disclosure", mount: ({ signal }) => mountDraftSettingsDisclosure(signal) });
   app.slots.navPanel({
     id: "ci-dashboard", title: "CI Dashboard", icon: "delivery-dashboard/pipeline", path: "dashboard", component: DashboardPage,
+    ...{ experimental_useBadge: useSignalsBadge },
   });
 });

@@ -340,6 +340,75 @@ const MIGRATIONS = [
     at TEXT NOT NULL
   );
   CREATE INDEX idx_resource_lock_events ON resource_lock_events(project_id, name, id);`,
+  `CREATE TABLE task_activity_history (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
+   INSERT INTO task_activity_history(task_id) SELECT DISTINCT task_id FROM comments WHERE kind='agent' AND thread_id IS NOT NULL;
+   CREATE TRIGGER task_activity_agent_comment AFTER INSERT ON comments
+   WHEN NEW.kind='agent' AND NEW.thread_id IS NOT NULL
+   BEGIN INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (NEW.task_id); END;
+   CREATE TABLE task_activity_claims (thread_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, turn_id TEXT NOT NULL);
+   CREATE TABLE task_activity_queue (thread_id TEXT NOT NULL, queue_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(thread_id, queue_id));`,
+  `ALTER TABLE projects ADD COLUMN auto_archive_after_days TEXT
+     CHECK (auto_archive_after_days IN ('off', '7', '14', '30'));
+   ALTER TABLE projects ADD COLUMN stale_idle_minutes TEXT
+     CHECK (stale_idle_minutes IN ('off', '30', '45', '60', '120'));`,
+  `CREATE TABLE task_dependencies (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     blocking_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     PRIMARY KEY (task_id, blocking_task_id),
+     CHECK (task_id <> blocking_task_id)
+   );
+   CREATE INDEX idx_task_dependencies_blocker ON task_dependencies(blocking_task_id, task_id);`,
+  `CREATE TABLE task_schedules (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    template_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), rule TEXT NOT NULL, target TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0,1)), next_due_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_task_schedules_due ON task_schedules(enabled,next_due_at);
+  CREATE TABLE task_scheduled_sources (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    schedule_id TEXT NOT NULL, schedule_title TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('template','recurring_run','one_time_run')),
+    scheduled_for TEXT, started_at TEXT, run_id TEXT, occurrence_key TEXT
+  );
+  CREATE UNIQUE INDEX idx_task_scheduled_source_occurrence ON task_scheduled_sources(schedule_id,occurrence_key) WHERE occurrence_key IS NOT NULL;
+  CREATE INDEX idx_task_scheduled_sources_schedule ON task_scheduled_sources(schedule_id,role,task_id);
+  CREATE TABLE task_schedule_runs (
+    id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    occurrence_key TEXT NOT NULL, state TEXT NOT NULL, resolved_at TEXT, finished_at TEXT,
+    thread_id TEXT, payload TEXT NOT NULL,
+    UNIQUE(schedule_id,occurrence_key)
+  );
+  CREATE INDEX idx_task_schedule_runs_pending ON task_schedule_runs(state,thread_id);
+  CREATE INDEX idx_task_schedule_runs_history ON task_schedule_runs(project_id,schedule_id,id);
+  CREATE INDEX idx_task_schedule_runs_retention ON task_schedule_runs(state,resolved_at,finished_at);
+  CREATE INDEX idx_task_schedule_runs_queue ON task_schedule_runs(json_extract(payload,'$.queueId'));
+  CREATE INDEX idx_task_schedule_runs_request ON task_schedule_runs(thread_id,json_extract(payload,'$.requestId'));
+  CREATE TRIGGER task_scheduled_status AFTER UPDATE OF status ON tasks
+  WHEN NEW.status<>OLD.status AND EXISTS(SELECT 1 FROM task_scheduled_sources WHERE task_id=NEW.id AND started_at IS NOT NULL)
+  BEGIN
+    UPDATE task_schedule_runs SET
+      state=CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+      resolved_at=CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,
+      finished_at=CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,
+      payload=json_set(payload,'$.state',CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+        '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.resolvedAt',CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
+    WHERE id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
+  END;`,
+  `ALTER TABLE projects ADD COLUMN status_notifications TEXT CHECK(status_notifications IN ('off','all','done'));`,
+  `DROP TRIGGER task_scheduled_status;
+  CREATE TRIGGER task_scheduled_status AFTER UPDATE OF status ON tasks
+  WHEN NEW.status<>OLD.status AND EXISTS(SELECT 1 FROM task_scheduled_sources WHERE task_id=NEW.id AND started_at IS NOT NULL)
+  BEGIN
+    UPDATE task_schedule_runs SET
+      state=CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+      resolved_at=CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,
+      finished_at=CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,
+      payload=json_set(payload,'$.state',CASE NEW.status WHEN 'done' THEN 'completed' WHEN 'canceled' THEN 'canceled' ELSE 'running' END,
+        '$.finishedAt',CASE WHEN NEW.status IN ('done','canceled') THEN NEW.updated_at ELSE NULL END,'$.resolvedAt',CASE WHEN NEW.status='canceled' THEN NEW.updated_at WHEN NEW.status='done' THEN resolved_at ELSE NULL END,'$.updatedAt',NEW.updated_at)
+    WHERE project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND id=(SELECT run_id FROM task_scheduled_sources WHERE task_id=NEW.id) AND COALESCE(json_extract(payload,'$.historical'),0)=0;
+  END;`,
   `ALTER TABLE projects ADD COLUMN workflow_policy TEXT`,
   `CREATE TABLE legacy_done_tasks (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE);
    INSERT INTO legacy_done_tasks SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id
@@ -350,6 +419,10 @@ const MIGRATIONS = [
 
 export function initializeTasksSchema(db: PluginDatabase): void {
   db.pragma("foreign_keys = ON");
+  // A large transaction must not retain its peak WAL allocation after checkpoints can reset it.
+  db.pragma("journal_size_limit = 4194304");
+  // Fresh databases can reclaim pages incrementally without a blocking rebuild during startup.
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").get()) db.pragma("auto_vacuum = INCREMENTAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,

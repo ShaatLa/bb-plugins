@@ -101,7 +101,7 @@ async function setup() {
   };
 }
 
-it.each(["main", "side", "kanban"])(
+it.each(["side", "kanban"])(
   "finds sub-task questions from the parent on the %s board and opens the child",
   async (surface) => {
     const {
@@ -118,19 +118,13 @@ it.each(["main", "side", "kanban"])(
     const slot =
       surface === "side"
         ? renderSlot(taskTab(app), { threadId: "thr_subtasks", environment: null }, { rpc, sdk })
-        : surface === "kanban"
-          ? renderSlot(
-              {
-                component: navTab(app, "kanban").component,
-              },
-              { subPath: project.id },
-              { rpc, sdk },
-            )
-          : renderSlot(
-              app.navPanels[0]!,
-              { subPath: `${project.id}?view=board` },
-              { rpc },
-            );
+        : renderSlot(
+            {
+              component: navTab(app, "kanban").component,
+            },
+            { subPath: project.id },
+            { rpc, sdk },
+          );
     const badge = await slot.findByRole("img", {
       name: "1 unanswered question",
     });
@@ -197,8 +191,8 @@ it("adds own and child question counts, prioritizes children needing answers and
     options: ["Yes", "No"],
   });
   const slot = renderSlot(
-    app.navPanels[0]!,
-    { subPath: `${project.id}?view=board` },
+    { component: navTab(app, "kanban").component },
+    { subPath: project.id },
     { rpc },
   );
   const badge = await slot.findByRole("img", {
@@ -319,7 +313,7 @@ it.each(["main", "side"])(
   },
 );
 
-it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { count: 2500, surface: "main" }, { count: 2500, surface: "side" }])("shows $count cards before metadata, bounds DOM, scrolls and reopens ($surface)", async ({ count, surface }) => {
+it.each([{ count: 250, surface: "kanban" }, { count: 250, surface: "side" }, { count: 2500, surface: "kanban" }, { count: 2500, surface: "side" }])("shows $count cards before metadata, bounds DOM, scrolls and reopens ($surface)", async ({ count, surface }) => {
   const f = await setup();
   const statuses = ["backlog", "todo", "in_progress", "in_review", "done"] as const;
   let lastBacklog = f.unrelated;
@@ -339,14 +333,15 @@ it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { cou
   };
   for (const method of ["listTaskCardMeta", "listLabels", "questionCounts", "prSummaries"]) f.rpc[method] = () => pending;
   const options = { rpc: f.rpc, sdk: f.sdk };
-  const mount = () => surface === "main"
-    ? renderSlot(app.navPanels[0]!, { subPath: `${f.project.id}?view=board` }, options)
+  const mount = () => surface === "kanban"
+    ? renderSlot({ component: navTab(app, "kanban").component }, { subPath: f.project.id }, options)
     : renderSlot(taskTab(app), { threadId: "thr_subtasks", environment: null }, options);
   const started = performance.now();
   const slot = mount();
   await waitFor(() => expect(slot.container.querySelectorAll("[data-task-key]").length).toBeGreaterThan(0), { timeout: 500 });
   const coldReadyMs = performance.now() - started;
   expect(coldReadyMs).toBeLessThan(500);
+  expect(slot.queryByText("Updating board…")).toBeNull();
   expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
   release();
   await slot.findByText(`${count} tasks`);
@@ -355,10 +350,11 @@ it.each([{ count: 250, surface: "main" }, { count: 250, surface: "side" }, { cou
   fireEvent.scroll(backlog, { target: { scrollTop: 1_000_000 } });
   await waitFor(() => expect(slot.container.querySelector(`[data-task-key="${lastBacklog.key}"]`)).not.toBeNull());
   expect(slot.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
-  if (count === 250 && surface === "main") {
+  if (count === 250 && surface === "kanban") {
     f.store.tasks.updateTask(lastBacklog.id, { title: "Changed while metadata is blocked" });
     await slot.behavior.emitRealtime("tasks:changed", { taskId: lastBacklog.id, projectId: f.project.id });
     await slot.findByText("Changed while metadata is blocked", {}, { timeout: 500 });
+    expect(slot.queryByText("Updating board…")).toBeNull();
     const todo = slot.container.querySelector('[data-board-column="todo"]')!;
     fireEvent.click(slot.getByRole("button", { name: `Sub-tasks of ${f.parent.key}` }));
     await slot.findByRole("list", { name: `Sub-tasks of ${f.parent.key}` });

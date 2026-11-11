@@ -1,9 +1,11 @@
+import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
+import { idleThreshold } from "../shared/project-settings";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BadgeCriterion } from "../shared/badge";
 import { evaluateThreadHealth, staleIdleMinutes } from "../shared/thread-health";
 import type { TasksApiStore } from ".";
 
-const LIVE = "t.archived_at IS NULL";
+const LIVE = `t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}`;
 const ACTIVE = `${LIVE} AND t.status NOT IN ('done', 'canceled')`;
 const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id
   AND json_array_length(q.payload, '$.selectedOptionIds') = 0
@@ -22,10 +24,10 @@ export function navigationBadgeCounts(
   bb: BbPluginApi,
   store: TasksApiStore,
   criteria: readonly BadgeCriterion[],
-  idleThresholdMinutes: number | null,
   now: number,
 ): { count: number; counts: Partial<Record<BadgeCriterion, number>> } {
   const db = bb.storage.database();
+  const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
   const ids = (where: string) =>
     db.prepare<[], { id: string }>(`SELECT t.id FROM tasks t WHERE ${where}`).all().map((row) => row.id);
   const union = new Set<string>();
@@ -33,7 +35,6 @@ export function navigationBadgeCounts(
   for (const criterion of criteria) {
     let matched: string[];
     if (criterion === "stale_idle") {
-      if (idleThresholdMinutes === null) continue;
       // Only tasks with an idle thread can be stale, so the rule runs on a small candidate set.
       const candidates = ids(`${ACTIVE} AND t.status <> 'in_review'
         AND EXISTS (SELECT 1 FROM task_threads l WHERE l.task_id = t.id AND l.live_status = 'idle')`);
@@ -43,7 +44,7 @@ export function navigationBadgeCounts(
       const activity = store.tasks.listTaskActivity(candidates);
       matched = candidates.filter((taskId) => {
         const task = activity.get(taskId);
-        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", idleThresholdMinutes);
+        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null);
         return staleIdleMinutes(health.idle, now) !== null;
       });
     } else {

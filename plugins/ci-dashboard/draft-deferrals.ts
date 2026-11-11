@@ -7,15 +7,16 @@ export const draftSettingLabels = {
   draftJob: "Draft deferral: only failed job name (exact match)",
   draftStep: "Draft deferral: only failed step name (exact match)",
 };
-export const defaultDraftRules = { workflow: "CI", job: "CI gate", step: "Reject draft PR" };
+// Blank by default: the rule only applies once all three names are configured.
+export const defaultDraftRules = { workflow: "", job: "", step: "" };
 export type DraftRules = typeof defaultDraftRules;
-export const draftNameSchema = z.string().trim().min(1).max(200);
+export const draftNameSchema = z.string().trim().max(200);
 export function draftRules(values: { draftWorkflow: string; draftJob: string; draftStep: string }): DraftRules {
   return { workflow: values.draftWorkflow, job: values.draftJob, step: values.draftStep };
 }
 
 type Run = z.infer<typeof ciRunSchema>;
-export const draftCandidate = (run: Run, rules: DraftRules = defaultDraftRules) => run.name === rules.workflow && run.event === "pull_request" && run.conclusion === "failure";
+export const draftCandidate = (run: Run, rules: DraftRules = defaultDraftRules) => !!rules.workflow && !!rules.job && !!rules.step && run.name === rules.workflow && run.event === "pull_request" && run.conclusion === "failure";
 const jobsSchema = z.object({ total_count: z.number().int().nonnegative(), jobs: z.array(z.object({
   id: z.number().int().positive(), name: z.string(), conclusion: z.string().nullable(),
   steps: z.array(z.object({ name: z.string(), conclusion: z.string().nullable() })),

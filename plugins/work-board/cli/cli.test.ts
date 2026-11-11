@@ -83,6 +83,40 @@ function stdout(result: {
 }
 
 describe("bb work-board CLI", () => {
+  it("updates project archiving and idle thresholds independently", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      await plugin(bb);
+      const store = createStore(bb);
+      const first = store.tasks.createProject({ name: "One", prefix: "ONE", color: "blue" });
+      const other = store.tasks.createProject({ name: "Two", prefix: "TWO", color: "red" });
+      const result = await harness.runCli(["project", "update", "ONE", "--auto-archive", "14", "--stale-idle", "off", "--json"]);
+      expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ project: { id: first.id, autoArchiveAfterDays: "14", staleIdleMinutes: "off" } });
+      expect(store.tasks.getProject(other.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
+      expect((await harness.runCli(["project", "update", "ONE", "--auto-archive", "1"])).exitCode).toBe(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("configures project status notifications and validates the option", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      await plugin(bb);
+      const store = createStore(bb);
+      const project = store.tasks.createProject({ name: "One", prefix: "ONE", color: "blue" });
+      const result = await harness.runCli(["project", "update", "ONE", "--status-notifications", "done", "--json"]);
+      expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ project: { id: project.id, statusNotifications: "done" } });
+      expect((await harness.runCli(["project", "update", "ONE", "--status-notifications", "sometimes"])).exitCode).toBe(1);
+      expect((await harness.runCli(["project", "update", "ONE", "--status-notifications", "off"])).exitCode).toBe(0);
+      expect(store.tasks.getProject(project.id)?.statusNotifications).toBe("off");
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("lists seed-demo in help while retaining the explicit confirmation guard", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

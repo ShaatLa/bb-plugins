@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useRpc, useSdk } from "@get-bb/plugin-sdk/app";
+import { useSdk } from "@get-bb/plugin-sdk/app";
+import { useWorkBoardRpc } from "../../shell/host.js";
 import type { DelegationRpcContract } from "../../delegate/contract";
 import { errorMessage } from "../../shared/errors";
 import { Button } from "@/components/ui/button";
@@ -8,9 +9,9 @@ import { Input } from "@/components/ui/input";
 import { CheckboxField } from "../manage/shared";
 import { storeDefaultThread, useDefaultThread } from "./thread-preference";
 
-export function ExistingThreadDialog({ taskId, projectId, onClose }: { taskId: string; projectId: string; onClose: () => void }) {
+export function ExistingThreadDialog({ taskId, projectId, onClose, assignOnly = false }: { taskId: string; projectId: string; onClose: () => void; assignOnly?: boolean }) {
   const sdk = useSdk();
-  const rpc = useRpc<DelegationRpcContract>();
+  const rpc = useWorkBoardRpc<DelegationRpcContract>();
   type Threads = Awaited<ReturnType<typeof sdk.threads.list>>;
   const [threads, setThreads] = useState<Threads>([]);
   const [offset, setOffset] = useState(0);
@@ -42,8 +43,8 @@ export function ExistingThreadDialog({ taskId, projectId, onClose }: { taskId: s
     setSending(true);
     setError(null);
     try {
-      await rpc.call("delegateToThread", { taskId, threadId });
-      storeDefaultThread(projectId, remember ? { id: threadId, title } : null);
+      await rpc.call(assignOnly ? "taskThreadsAttach" : "delegateToThread", { taskId, threadId });
+      if (!assignOnly) storeDefaultThread(projectId, remember ? { id: threadId, title } : null);
       onClose();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -60,15 +61,15 @@ export function ExistingThreadDialog({ taskId, projectId, onClose }: { taskId: s
     <Dialog open onOpenChange={(open) => { if (!open && !sending) onClose(); }}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Send to existing thread</DialogTitle>
-          <DialogDescription>The task context will be sent using the thread’s current settings. Busy threads receive it in their queue.</DialogDescription>
+          <DialogTitle>{assignOnly ? "Assign thread" : "Send to existing thread"}</DialogTitle>
+          <DialogDescription>{assignOnly ? "Assign responsibility without sending a message or changing the task status. Idle sessions keep their assignment until removed, archived or deleted." : "The task context will be sent using the thread’s current settings. Busy threads receive it in their queue."}</DialogDescription>
         </DialogHeader>
         <Input aria-label="Filter loaded threads or enter a thread ID" placeholder="Filter loaded threads or paste thr_…" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <fieldset disabled={sending} className="space-y-1">
+        {!assignOnly ? <fieldset disabled={sending} className="space-y-1">
           <CheckboxField checked={remember} onCheckedChange={setRemember} label="Use this thread by default" />
           <p className="text-xs text-muted-foreground">Remember the selected thread for this project on this device.</p>
           {defaultThread ? <Button size="sm" variant="ghost" onClick={() => { storeDefaultThread(projectId, null); setRemember(false); }}>Clear default thread</Button> : null}
-        </fieldset>
+        </fieldset> : null}
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         <div className="max-h-72 space-y-1 overflow-y-auto" aria-busy={loading || sending}>
           {matching.map((thread) => (
@@ -81,7 +82,7 @@ export function ExistingThreadDialog({ taskId, projectId, onClose }: { taskId: s
           {loading ? <p role="status" className="text-sm text-muted-foreground">Loading threads…</p> : null}
         </div>
         {hasMore ? <Button variant="outline" disabled={loading || sending} onClick={() => setOffset(threads.length)}>Load more threads</Button> : null}
-        {/^thr_[a-zA-Z0-9_-]+$/.test(query.trim()) ? <Button disabled={sending} onClick={() => void dispatch(query.trim(), threads.find(({ id }) => id === query.trim())?.title ?? "Existing thread")}>Send to {query.trim()}</Button> : null}
+        {/^thr_[a-zA-Z0-9_-]+$/.test(query.trim()) ? <Button disabled={sending} onClick={() => void dispatch(query.trim(), threads.find(({ id }) => id === query.trim())?.title ?? "Existing thread")}>{assignOnly ? "Assign to" : "Send to"} {query.trim()}</Button> : null}
       </DialogContent>
     </Dialog>
   );

@@ -131,7 +131,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     priorities: filters.priorities,
     labelIds,
   });
-  const meta = useTaskListMeta(projectId);
+  const meta = useTaskListMeta(projectId, tasksQuery.data ?? []);
   const questionCounts = useQuestionCounts(tasksQuery.data ?? []);
   const prSummaries = usePrSummaries(tasksQuery.data ?? []);
   const edits = useListTaskEdits(tasksQuery.data, (message) => push(message));

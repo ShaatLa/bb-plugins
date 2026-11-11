@@ -1,8 +1,41 @@
-import { describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { describe, expect, it } from "vitest";
 import plugin, { WORK_BOARD_PLUGIN_VERSION } from "./server";
+import { createStore } from "./api";
 
 describe("Tasks plugin scaffold", () => {
+  it("migrates legacy settings once without replacing project overrides", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board", settings: {
+      autoArchiveAfterDays: "14", staleIdleMinutes: "120", defaultScreen: "active",
+    } });
+    try {
+      const store = createStore(bb);
+      const legacy = store.tasks.createProject({ name: "Legacy", prefix: "OLD", color: "blue" });
+      const explicit = store.tasks.createProject({ name: "Explicit", prefix: "EXP", color: "red" });
+      bb.storage.database().prepare("UPDATE projects SET auto_archive_after_days = NULL, stale_idle_minutes = NULL WHERE id = ?").run(legacy.id);
+      await plugin(bb);
+      expect(store.tasks.getProject(legacy.id)).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
+      expect(store.tasks.getProject(explicit.id)).toMatchObject({ autoArchiveAfterDays: "off", staleIdleMinutes: "45" });
+      expect(await harness.callRpc("getBoardPreferences", null)).toEqual({ defaultScreen: "active" });
+      await harness.callRpc("updateProject", { projectId: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" });
+      const replacement = await harness.lifecycle.reload(plugin);
+      try {
+        expect(replacement.harness.registrations.settingsDescriptors).toEqual({});
+        const projects = await replacement.harness.callRpc("listProjects", {});
+        expect(projects).toMatchObject({ projects: expect.arrayContaining([
+          expect.objectContaining({ id: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" }),
+        ]) });
+        const created = await replacement.harness.callRpc("createProject", { name: "New", prefix: "NEW", color: "blue" });
+        expect(created).toMatchObject({ project: { autoArchiveAfterDays: "off", staleIdleMinutes: "45" } });
+        await expect(replacement.harness.callRpc("updateProject", { projectId: legacy.id, autoArchiveAfterDays: "1" })).rejects.toThrow();
+      } finally {
+        await replacement.harness.dispose();
+      }
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("registers the CLI and RPC surfaces after opening plugin storage", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
 

@@ -1,9 +1,13 @@
 import { workflowPolicySchema } from "./workflow-policy.js";
+import { taskAdvisorySchema } from "./task-advisories";
+import { taskActivitySchema } from "./task-activity.js";
+import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -299,6 +303,9 @@ export const projectSchema = z
     nextTaskNumber: z.number().int().positive(),
     workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
+    staleIdleMinutes: staleIdleThresholdSchema.optional(),
+    statusNotifications: statusNotificationsSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -316,6 +323,8 @@ export const taskSchema = z
     description: z.string(),
     status: taskStatusSchema,
     archivedAt: z.iso.datetime({ precision: 3 }).nullable().optional(),
+    ordinaryVisible: z.boolean().optional(),
+    scheduledRole: z.enum(["template", "recurring_run", "one_time_run"]).optional(),
     priority: taskPrioritySchema,
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),
@@ -329,6 +338,15 @@ export const taskSchema = z
     labelIds: z.array(idSchema),
   })
   .strict();
+
+export const dependencyTaskSchema = taskSchema.pick({
+  id: true, projectId: true, key: true, title: true, status: true,
+});
+export type DependencyTask = z.infer<typeof dependencyTaskSchema>;
+export const taskDependenciesSchema = z.object({
+  blockedBy: z.array(dependencyTaskSchema),
+  blocks: z.array(dependencyTaskSchema),
+}).strict();
 
 export const labelSchema = z
   .object({
@@ -545,6 +563,9 @@ const updateProjectInputSchema = z
     name: nonBlankStringSchema.optional(),
     workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
+    autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
+    staleIdleMinutes: staleIdleThresholdSchema.optional(),
+    statusNotifications: statusNotificationsSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -554,6 +575,9 @@ const updateProjectInputSchema = z
     (input) =>
       input.workflowPolicy !== undefined ||
       input.statuses !== undefined ||
+      input.autoArchiveAfterDays !== undefined ||
+      input.staleIdleMinutes !== undefined ||
+      input.statusNotifications !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||
@@ -633,6 +657,19 @@ const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
 export const tasksRpcContract = {
+  ...storageMethods,
+  listTaskDependencies: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: taskDependenciesSchema,
+  },
+  addTaskDependency: {
+    input: z.object({ taskId: idSchema, blockingTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
+  removeTaskDependency: {
+    input: z.object({ taskId: idSchema, blockingTaskId: idSchema, authorName: nonBlankStringSchema.default("Owner") }).strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
   ...gitSyncMethods,
   createSequence: { input: sequenceKeySchema.extend({ next: sequenceNumberSchema, format: z.string().max(40).default("{n}") }), output: z.object({ sequence: sequenceSchema }).strict() },
   listSequences: { input: z.object({ projectId: idSchema }).strict(), output: z.object({ sequences: z.array(sequenceSchema) }).strict() },
@@ -678,6 +715,14 @@ export const tasksRpcContract = {
   listFolders: {
     input: z.null(),
     output: z.object({ folders: z.array(folderSchema) }).strict(),
+  },
+  getBoardPreferences: {
+    input: z.null(),
+    output: boardPreferencesSchema,
+  },
+  setBoardPreferences: {
+    input: boardPreferencesSchema,
+    output: boardPreferencesSchema,
   },
   createProject: {
     input: z
@@ -869,6 +914,7 @@ export const tasksRpcContract = {
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
         staleStatus: z.boolean().default(false),
+        includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
         executionTarget: z.enum(EXECUTION_TARGETS).optional(),
@@ -978,12 +1024,19 @@ export const tasksRpcContract = {
     input: z.object({ taskId: idSchema, reconcile: z.boolean().optional() }).strict(),
     output: z.object({ taskThreads: z.array(taskThreadSchema) }).strict(),
   },
+  setTaskActivity: {
+    input: z.object({ taskId: idSchema, threadId: z.string().startsWith("thr_"), active: z.boolean() }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   listTaskCardMeta: {
     input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
     output: z.object({ metadata: z.array(z.object({
       taskId: idSchema,
       attachmentCount: z.number().int().nonnegative(),
       taskThreads: z.array(taskThreadSchema),
+      activity: taskActivitySchema.optional(),
+      blockedBy: z.array(dependencyTaskSchema).optional(),
+      advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
       staleStatusFlags: z.array(z.string()).default([]),
     }).strict()) }).strict(),

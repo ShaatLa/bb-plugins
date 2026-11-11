@@ -34,7 +34,7 @@ if (!window.matchMedia) {
 }
 
 installTestPluginRuntime();
-const { PropertiesRail } = await import("./rail");
+const { PropertiesRail, InlineProperties } = await import("./rail");
 const { TasksRefreshProvider } = await import("../../shell/refresh");
 
 function RailHarness(props: ComponentProps<typeof PropertiesRail>) {
@@ -90,8 +90,6 @@ function railProps(
     project,
     projects: [project, HOME_PROJECT],
     labels: [],
-    threads: [],
-    presets: [],
     onUpdate: () => {},
     onMoveToProject,
     onError: () => {},
@@ -245,4 +243,67 @@ describe("Owner action controls", () => {
     );
     expect(updates).toEqual([{ requesterThreadId: "thr_initiator" }]);
   });
+});
+
+it.each(["rail", "inline"])("opens the selected epic independently of its picker in %s properties", async layout => {
+  const epic = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT6", number: 6, key: "TSK-6", title: "Big initiative", type: "epic" });
+  const props = { ...railProps(null), task: { ...task, epicId: epic.id } };
+  function Harness() { return <TasksRefreshProvider>{layout === "rail" ? <PropertiesRail {...props} /> : <InlineProperties {...props} />}</TasksRefreshProvider>; }
+  const slot = renderSlot({ component: Harness }, {}, { rpc: { listBbProjects: () => ({ bbProjects: [] }), listTasks: () => ({ tasks: [epic], nextCursor: null }) } });
+  fireEvent.click(await slot.findByRole("button", { name: "Open epic TSK-6" }));
+  expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "task/TSK-6" } });
+  expect(slot.queryByPlaceholderText("Choose an epic…")).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Epic" }));
+  expect(await slot.findByRole("option", { name: "No epic" })).toBeTruthy();
+});
+
+const ongoingLabel = { id: "01HZZZZZZZZZZZZZZZZZZZZZL1", projectId: PROJECT_ID, name: "ongoing", color: "purple" };
+
+it.each(["rail", "inline"].flatMap(layout => ["ongoing", "Ongoing"].map(name => ({ layout, name }))))("changes an $name epic to no deadline or a date in $layout properties", async ({ layout, name }) => {
+  const updates: unknown[] = [];
+  const props = { ...railProps(null), task: { ...task, type: "epic" as const, labelIds: ["other", ongoingLabel.id] }, labels: [{ ...ongoingLabel, name }], onUpdate: (update: unknown) => updates.push(update) };
+  function Harness() { return <TasksRefreshProvider>{layout === "rail" ? <PropertiesRail {...props} /> : <InlineProperties {...props} />}</TasksRefreshProvider>; }
+  const slot = renderSlot({ component: Harness }, {}, { rpc: { listBbProjects: () => ({ bbProjects: [] }) } });
+  expect(slot.getByRole("button", { name: "Timeframe" }).textContent).toContain("Ongoing");
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Ongoing" }));
+  expect(updates).toEqual([{ dueDate: null, labelIds: ["other", ongoingLabel.id] }]);
+  updates.length = 0;
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "No deadline" }));
+  expect(updates).toEqual([{ dueDate: null, labelIds: ["other"] }]);
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Due date…" }));
+  fireEvent.change(slot.getByLabelText("Due date"), { target: { value: "2027-01-12" } });
+  expect(updates[1]).toEqual({ dueDate: "2027-01-12", labelIds: ["other"] });
+});
+
+it.each([false, true])("creates the ongoing label safely (creation fails: %s)", async fails => {
+  const updates: unknown[] = [];
+  const creates: unknown[] = [];
+  const slot = renderSlot({ component: RailHarness }, {
+    ...railProps(null), task: { ...task, type: "epic", dueDate: "2027-01-12", labelIds: ["other"] },
+    onUpdate: update => updates.push(update),
+  }, { rpc: {
+    listBbProjects: () => ({ bbProjects: [] }),
+    createLabel: raw => { creates.push(rpcInput(raw)); if (fails) throw new Error("Cannot create label"); return { label: ongoingLabel }; },
+  } });
+  fireEvent.click(slot.getByRole("button", { name: "Timeframe" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Ongoing" }));
+  if (fails) {
+    expect(await slot.findByRole("alert")).toBeTruthy();
+    expect(updates).toEqual([]);
+  } else {
+    await waitFor(() => expect(updates).toEqual([{ dueDate: null, labelIds: ["other", ongoingLabel.id] }]));
+  }
+  expect(creates).toEqual([{ projectId: PROJECT_ID, name: "ongoing", color: "slateblue" }]);
+});
+
+it("keeps the ordinary task date picker", async () => {
+  const updates: unknown[] = [];
+  const slot = renderSlot({ component: RailHarness }, { ...railProps(null), onUpdate: update => updates.push(update) }, { rpc: { listBbProjects: () => ({ bbProjects: [] }) } });
+  fireEvent.click(slot.getByRole("button", { name: "Set due date" }));
+  expect(slot.queryByRole("button", { name: "Ongoing" })).toBeNull();
+  fireEvent.change(slot.getByLabelText("Due date"), { target: { value: "2027-01-12" } });
+  expect(updates).toEqual([{ dueDate: "2027-01-12" }]);
 });

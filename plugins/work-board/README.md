@@ -1,5 +1,51 @@
 # Work Board
 
+## Storage management (0.22.2)
+
+Settings → Work Board → **Storage** shows database/WAL usage, free database pages, logical blob contents versus allocated filesystem blocks, old unreferenced files, and missing attachment files. Statistics load only when the section opens. Storage is shared across projects.
+
+Daily cleanup removes orphan activity claims/queue markers and PR snapshots with no surviving link, plus unreferenced managed blob files older than 24 hours and empty blob directories. It rechecks references before deletion and protects active uploads/imports, including long-running imports. Symlinks are never followed. Tasks, archived cards, comments/evidence, questions, dependencies, PR links/exclusions, observed-work history and accessible attachments are retained. Missing files are reported without deleting their metadata.
+
+**Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
+
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v13. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+
+
+## Task dependencies (0.22.0)
+
+Use the task's **Dependencies** section to add or remove **Blocked by / Blocks** links and search predecessors by key or title. Board cards and list rows show **Blocked** with the unfinished predecessors; task details retain satisfied links and their status. A predecessor satisfies its links only in **Done**. Canceled does not satisfy them, and reopening Done restores the warning. These are warnings: dispatch and status changes remain available, and workflow status is never replaced automatically.
+
+Agents can use `bb work-board dependency add ABC-2 --blocked-by ABC-1`, `dependency list ABC-2 --json`, and `dependency remove ABC-2 --blocked-by ABC-1`. `show --json` includes `dependencies` and `blocked`; `list --json` includes unresolved `blockedBy`. Dispatch prompts include the current blockers. Add/remove operations record history on both cards. Self-links and cycles are refused. Links currently stay within one project; moving a task family is allowed only if it carries all its dependency endpoints. Exports preserve outgoing dependency IDs (introduced in v12); imports v1–v11 preserve existing local dependencies.
+
+Performance: activity consumers share bounded SDK reads and immutable dispatch attribution; Git sync batches attached sessions and shares post-merge pages within each run; archive capture batches SQL and limits JSON I/O while keeping blobs sequential; downloads revalidate privately with ETags and avoid an extra full-size buffer copy. Browser snapshot writes are coalesced and bounded, and PR overlap preparation is reused. Small English comments describe the resource invariants beside these paths.
+
+
+Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
+
+## Scheduled tasks CLI
+
+`bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
+handlers as the Scheduled page: `list`, `show`, `create`, `edit`, `reschedule`, `enable`/`pause`/`resume`,
+`delete --yes`, `preview`, `run-now`, `retry`, `cancel-queued`, `resolve`, `dismiss`, `runs`, `needs-attention`
+and `results`. Use `--daily|--weekly|--at` with `--time`, `--timezone` and `--days`, and `--thread` or `--preset`
+(`--rule`/`--target` accept the raw JSON). Schedules are addressable by UUID or by the key of their template or
+result task; the template key printed by `schedule show` works with ordinary task commands. Descriptions can be
+read with `--description-file` from the invoking machine. `--json` returns the contract objects with stable
+state enums and bounded pages (`--limit`, `--cursor`, `--all`). Scheduled templates and not-yet-started results
+stay out of the normal `list` unless `--include-scheduled` is passed. See `skills/work-board/SKILL.md` for the full guide.
+
+## Project settings
+
+Settings → Work Board starts with **New project** and a single project selector. Archiving, idle-thread warnings, task statuses and Git/PR synchronization below it belong to the selected project. **General** contains the shared default screen and navigation badge criteria. The last selected project is still remembered on each device.
+
+Existing projects inherit the former plugin-wide archive interval and idle threshold once during upgrade. New projects default to auto-archive Off and idle warnings after 45 minutes. The migration briefly registers legacy controls to read their values; reload the plugin after the first upgrade to remove those controls. Changing a project never changes another project's policy. Export v11 includes both project settings; v1–v10 imports remain accepted and missing settings preserve existing choices (or use Off/45 for a new imported project). General preferences are local and are not exported.
+
+```sh
+bb work-board project show EXA --json
+bb work-board project update EXA --auto-archive 14 --stale-idle 60
+bb work-board project update EXA --auto-archive off --stale-idle off
+```
+
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 
 Трекер проектов для совместной работы людей и AI-агентов внутри BB. Основан на встроенном BB Tasks из BB 0.46.1 и сохраняет его проекты, комментарии, вложения, пресеты и связи с тредами.
@@ -20,7 +66,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 В настройках **Work Board → Open by default** выбирается стартовый экран: канбан последнего проекта (по умолчанию), список последнего проекта, все задачи или активные задачи. Последний выбранный проект запоминается на этом устройстве. Если он удалён, открывается первый доступный проект. Прямые ссылки продолжают открывать указанный в них экран.
 
-Кнопка **Open kanban in side panel** в заголовке проекта открывает вкладку **Kanban** справа, рядом с Browser и Terminal, а в основной области показывает список задач. Вкладка также доступна в панели напрямую. Доска следует за выбранным проектом, сохраняет перетаскивание карточек и обновляется вместе со списком задач.
+Переключатель **List / Board** в заголовке проекта (и задачи) управляет вкладкой **Kanban** справа: **Board** открывает её, **List** возвращает вкладку Navigation, не закрывая Browser, Terminal и саму панель. Состояние переключателя берётся из панели, поэтому смена вкладки или скрытие панели сразу обновляют его. Основная область всегда показывает список или задачу, так что задачу можно читать рядом с доской. В заголовке доски есть кнопка **Scheduled**, она открывает расписание в основной области. Доска следует за выбранным проектом, сохраняет перетаскивание карточек и обновляется вместе со списком задач.
 
 Вкладка **Work Board** в правой панели треда по умолчанию показывает доску проекта Work Board, связанного с BB-проектом этого треда. Карточки на доске и новые задачи открываются в той же вкладке; **Back to project board** возвращает к доске. Ключ и кнопка назад находятся в заголовке самой карточки, над названием; кнопка копирования стоит рядом с ключом и копирует только ключ; отдельная верхняя полоса задачи в боковой панели не занимает место. Открытие конкретной задачи из сообщения сохраняется. Стрелка в заголовке открывает доску или задачу в основном разделе Work Board. Если связь проектов отсутствует, панель предлагает **Manage projects**, не подменяя её последним просмотренным проектом.
 
@@ -31,7 +77,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 
 ## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v10**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v10).
+Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v13**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v13).
 
 Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
 
@@ -44,7 +90,7 @@ bb work-board status --json
 
 Если установлен Tasks Plus, используйте `tasks-plus` вместо `agent-board` в командах сохранения настроек, отключения и `--source-plugin`. Помощник находится в новой папке `plugins/work-board/scripts`.
 
-Помощник копирует БД в `~/.bb/plugins/work-board`, сохраняет ID и все таблицы, переносит вложения и меняет только старые URL вложений на новый ID, включая ссылки в вопросах и JSON-истории. Исходник остаётся нетронутым; повторный перенос поверх существующих данных запрещён. Через `bb plugin config work-board set …` восстановите сохранённые значения `autoArchiveAfterDays` и `defaultScreen`. PR-настройки и связи находятся в самой БД: переносите их актуальные значения на момент переключения. Старый плагин оставьте выключенным до проверки переноса и экспорта, затем удалите его регистрацию; резервные копии сохраняйте отдельно.
+Помощник копирует БД в `~/.bb/plugins/work-board`, сохраняет ID и все таблицы, переносит вложения и меняет только старые URL вложений на новый ID, включая ссылки в вопросах и JSON-истории. Исходник остаётся нетронутым; повторный перенос поверх существующих данных запрещён. При первом запуске прежние `autoArchiveAfterDays`, `staleIdleMinutes` и `defaultScreen` переносятся автоматически. Дальше архивация и порог простоя меняются в настройках выбранного проекта; страница по умолчанию — в General. PR-настройки и связи находятся в самой БД: переносите их актуальные значения на момент переключения. Старый плагин оставьте выключенным до проверки переноса и экспорта, затем удалите его регистрацию; резервные копии сохраняйте отдельно.
 
 При откате после новых записей переносите **последние** данные назад, а не заменяйте их старым снимком. Отключите Work Board, сохраните оба каталога и освободите каталог назначения, затем используйте `--source-plugin work-board --destination-plugin agent-board` (или `tasks-plus`); установите прежний замороженный релиз и восстановите настройки. Параметр `--data-dir` поддерживает другой каталог BB.
 
@@ -67,7 +113,7 @@ Evidence сначала показывает последние 15 записе�
 Карточки на доске (основная и боковая панель) и строки списка показывают пассивные маркеры; задача в detail показывает упавший тред красной рамкой и временем сбоя. Ничего не отправляется в треды и агентам, серверных таймеров и уведомлений нет.
 
 - **Красный маркер** — у незавершённой задачи (не `done`/`canceled`) есть прикреплённый тред в статусе `failed` (bb шлёт `thread.failed` и для упавшего хода, и для прерванного: перезапуск демона, потеря связи). Подсказка: «Thread <title> failed». Маркер гаснет, когда тред снова активен, откреплён или в архиве. Показывается и у завершённых задач.
-- **Янтарный маркер** «Thread idle 52 min, task not updated» — задача не `done`/`canceled`/`in_review`, есть idle-тред, нет working/starting-треда и `now − max(idleSince, lastTaskActivityAt) ≥ порог`. `idleSince` — это `task_threads.updated_at` (время последней смены статуса, миграция не нужна; при нескольких idle-тредах берётся самый поздний); `lastTaskActivityAt` — максимум из `tasks.updated_at` (поля, статус) и комментариев не-system, включая evidence. Порог — настройка `staleIdleMinutes` (off | 30 | 45 | 60 | 120, по умолчанию 45). Расчёт идёт при чтении (`listTaskCardMeta`), UI сверяет часы раз в минуту.
+- **Янтарный маркер** «Thread idle 52 min, task not updated» — задача не `done`/`canceled`/`in_review`, есть idle-тред, нет working/starting-треда и `now − max(idleSince, lastTaskActivityAt) ≥ порог`. `idleSince` — это `task_threads.updated_at` (время последней смены статуса, миграция не нужна; при нескольких idle-тредах берётся самый поздний); `lastTaskActivityAt` — максимум из `tasks.updated_at` (поля, статус) и комментариев не-system, включая evidence. Порог задаётся отдельно для каждого проекта: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, по умолчанию 45). Расчёт идёт при чтении (`listTaskCardMeta`), UI сверяет часы раз в минуту.
 - `show --json` и `list --json` содержат `threadHealth: {failed: [threadId…], staleIdle: {threadId, idleMinutes} | null}`.
 
 Данные не экспортируются: это производное состояние. Фильтр «needs attention» не добавлялся.
@@ -162,6 +208,8 @@ bb work-board template delete --project EXA --name task
 
 Эпики используют общую нумерацию проекта, статусы, описание, комментарии, вложения и привязку тредов. Статус эпика меняется вручную; прогресс считается по завершённым входящим задачам. Агент получает описание эпика вместе с контекстом своей задачи.
 
+Для постоянной области используй обычную метку проекта `ongoing`: добавь или убери её через **Labels**, либо `bb work-board update ABC-1 --add-label ongoing` / `--remove-label ongoing` (создать метку: `bb work-board label create --project ABC --name ongoing`). Инструкция агентам исключает такой эпик из проверок на закрытие: завершать нужно конечные входящие задачи, статус самого эпика сохраняется по решению владельца. Полное завершение текущих задач не повод повторно спрашивать о закрытии эпика. Закрытие постоянной области требует явного решения владельца. Это соглашение для агентов, без нового статуса или запрета ручного редактирования; метка не наследуется задачами. В JSON доступны `task.labelIds`, а имена — в `show --json` и `label list --project ABC --json`.
+
 ```sh
 bb work-board create --project ABC --title "Big initiative" --type epic
 bb work-board create --project ABC --title "First task" --epic ABC-1
@@ -173,6 +221,8 @@ bb work-board update ABC-2 --no-epic
 ```
 
 Перенос эпика в другой проект переносит его задачи вместе с подзадачами, сохраняя связи и старые ключи. Перенос отдельной задачи снимает её связь с прежним эпиком. Удаление эпика сохраняет входящие задачи. Вложенные эпики не поддерживаются; изменить тип можно после удаления связей и дочерних задач. Существующие записи при обновлении остаются обычными задачами.
+
+В свойствах эпика **Timeframe** предлагает **No deadline**, **Due date…** и **Ongoing** (∞). Ongoing добавляет метку `ongoing` и очищает дедлайн; выбор даты или No deadline снимает только эту метку. В компактной карточке доступен тот же выбор. У обычных задач сохраняется Set due date. В CLI для постоянного эпика используй `--add-label ongoing --no-due`, для конечного с датой — `--remove-label ongoing --due YYYY-MM-DD`.
 
 ## Блокировки ресурсов (dev-контур)
 
@@ -513,7 +563,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v10; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v10 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v14; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
 
 ## Dispatch и иерархия тредов
 
@@ -541,8 +591,36 @@ Export v9 preserves optional workflow status icons and colors. Imports accept v1
 
 Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.
 
-### Upgrade and rollback (0.17.0)
+### Upgrade and rollback (0.28.0)
 
-Export v10 includes optional per-project workflow policy, outcome evidence and deploy PR citations. Imports retain support for v1–v9. Update strict archive consumers before upgrading; keep a backup before rollback because older releases cannot read v10 archives. Diagnostic flags are calculated from local records and are not completion evidence.
+Export v14 includes optional per-project workflow policy, outcome evidence and deploy PR citations. Imports retain support for v1–v13. Update strict archive consumers before upgrading; keep a backup before rollback because older releases cannot read v10 archives. Diagnostic flags are calculated from local records and are not completion evidence.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
 `bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`; recorded active thread status may be out of date. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
+## Card activity (0.18.0)
+
+Card activity is separate from task workflow status. An attached session with both thread and runtime status active makes the card Working; idle or host-waiting sessions stay Attached. This applies to every card linked to that session, including parent links. Unattached sessions never imply card work. Accepted request markers and manual activity start/stop claims are diagnostic context only; they cannot hide or fabricate live execution. Pending owner interactions produce Waiting for owner, and queued card dispatches produce Queued when the session is not executing. A failure to read extra event/request metadata does not suppress verified live runtime activity. Missing thread/runtime data is treated as unknown. Observed execution or agent comments records work history; with no remaining sessions it gives Abandoned, except on owner actions and done/canceled cards. Active work on terminal cards is warned about. Archive v10 preserves work history, not live claims or queue identities; imports v1–v9 remain accepted.
+
+
+### Activity diagnostics (0.19.0)
+
+Central and thread task details show the workflow status picker, live activity and attached-session links in a compact panel. Dispatch controls sit directly below it. The new-session preset button is shown only when no session is attached; attached cards keep the existing-session navigation and picker. Wide cards place this group above the properties rail; narrow cards show it inline. Technical explanations and identities are available through CLI diagnostics rather than in the task form.
+
+`bb work-board show KEY` includes activity explanations and links to recent agent reports. `show KEY --json` exposes the same `activity` object as `listTaskCardMeta`: optional `diagnostics` contains `explanation`, `hasWorked`, `complete`, `checkedAt` and `inactiveSessions`; each session's optional `diagnostics` includes the source explanation, runtime/thread status, focused task, turn, request, queue and interaction identities. Diagnostics contain identifiers, not request or interaction contents. Check `complete` before interpreting missing activity; unavailable thread/runtime data leaves unverified sessions Attached; missing supplementary event data does not override a verified active runtime. Work history predating diagnostics records only that work happened, not the exact original execution or detachment event. Agent reports remain in `comments`; no history is fabricated.
+
+
+### Sessions created outside Work Board
+
+A session created directly in BB is automatically attached to every unfinished agent card explicitly named anywhere in its title, within the linked BB project. Examples: `Designer (Codex): EXA-455 Reference scenes`, `EXA-405, EXA-441`, and `EXA-202+359` (both EXA-202 and EXA-359). Duplicate keys are ignored; existing manual links remain intact.
+
+Created/active lifecycle events attach immediately. Card metadata and thread reads also discover currently running sessions, sharing a bounded read for 10 seconds; titles generated later are picked up on a subsequent refresh. Only running ids are fetched, in batches of at most 200; idle history is not scanned. Manual detachment prevents rediscovery for that card while other named cards can still attach. Archived/done/canceled cards, owner actions, unrelated projects and unavailable/private side-chat sessions are skipped. A system comment records the exact title reference. Runtime activity continues to determine Working versus Attached. Missing/malformed keys are not guessed. Failed discovery marks diagnostics incomplete without hiding verified execution or falsely marking an orphan Abandoned.
+
+
+### Advisory checks
+
+Cards, task details, and CLI `list` / `show` expose advisory warnings (`advisories` in JSON). An unresolved predecessor with a confirmed delivering PR that has merged prompts an acceptance-criteria or remaining-work check; the evidence includes the predecessor, PR URL, merge SHA, merge time, observation time and expiry. Related, design-only, excluded and unconfirmed links never count. Evidence requires enabled repository sync, a successful snapshot, and freshness within the configured polling interval; missing, failed or stale data remains unknown.
+
+Agent tasks in `in_progress` with complete activity diagnostics and no live attached session prompt reassignment or queueing. Owner actions are excluded. The report includes the latest retained attachment and task activity; removed attachment details may no longer be retained. Session checks expire after one minute. Expired UI advice disappears until a fresh metadata read; there are no extra GitHub requests or per-card network polling. PR refreshes invalidate both predecessor and dependent advice. These checks never move statuses, remove dependency links, block commands or send notifications. Only Done satisfies a dependency; a merged PR alone does not.
+
+Управление метками и пресетами доступно из верхней панели: **шестерёнка → Manage labels and presets → Labels**. Пункт **Plugin settings** в том же меню открывает настройки Work Board.
+
+В заголовке карточки кнопка **Copy task link** рядом с ключом копирует Markdown-ссылку для вставки в чат агента; отдельной дублирующей кнопки Share в карточке нет. В Scheduled доступен прежний Share.

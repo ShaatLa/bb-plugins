@@ -56,6 +56,21 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       store.tasks.removeTaskLabel(taskId, label.id);
     }
   };
+  // One project-wide read grouped by task, in the same per-task order (id) as listQuestions.
+  const listQuestionsForProject = (projectId: string) => {
+    const byTask = new Map<string, TaskQuestion[]>();
+    for (const row of db
+      .prepare<[string], { task_id: string; payload: string }>(
+        `SELECT q.task_id, q.payload FROM task_questions q JOIN tasks t ON t.id = q.task_id
+         WHERE t.project_id = ? ORDER BY q.task_id, q.id`,
+      )
+      .all(projectId)) {
+      const list = byTask.get(row.task_id) ?? [];
+      list.push(questionSchema.parse(JSON.parse(row.payload)));
+      byTask.set(row.task_id, list);
+    }
+    return byTask;
+  };
   const listTemplates = (projectId: string): DescriptionTemplate[] =>
     db
       .prepare<
@@ -362,5 +377,5 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       return { deleted };
     },
   };
-  return { handlers, listQuestions, listTemplates, applyTemplate };
+  return { handlers, listQuestions, listQuestionsForProject, listTemplates, applyTemplate };
 }

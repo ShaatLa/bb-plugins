@@ -1,12 +1,15 @@
 import { useRef, useState } from "react";
-import { productionTarget } from "./production";
+import { productionTargetFrom, type ProductionTarget } from "./production";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
-import { experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, UrlLink, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
+import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
-import { CiSignals, passRate } from "./ci-cards";
+import { CiJobCauses, CiRunNotes, Disclosure, percent } from "./ci-cards";
+import { CiProblems, ProblemsBadge } from "./ci-problems-view";
+import { useRepositorySignals, type JobSignals } from "./signals-panel";
 import { CardDetailsView } from "./card-details-view";
 
 function ageLabel(timestamp: string, checkedAt: string) {
@@ -24,14 +27,15 @@ const labels: Record<string, string> = {
 export function RepositoryDetails({ repo }: { repo: Metrics }) {
   const { reviewQueue, production } = repo;
   const deployment = production.deployment;
+  const target = productionTargetFrom(useSettings().values);
   return <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
     <Card role="region" aria-label="PRs awaiting review" className="space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-sm font-medium">PRs awaiting review</h4>
         {reviewQueue.total !== null && <span className="text-xs text-muted-foreground">{reviewQueue.total} total</span>}
       </div>
-      <p className="text-xs text-muted-foreground">No reviews yet · excludes drafts · oldest 5</p>
-      {repo.pending?.includes("reviewQueue") && reviewQueue.total === null ? <LoadingSkeleton label="Loading review queue…" /> : reviewQueue.error ? <p role="alert" className="text-sm text-destructive">{reviewQueue.error}</p>
+      <p className="text-xs text-muted-foreground">No reviews yet · excludes drafts</p>
+      {repo.pending?.includes("reviewQueue") && reviewQueue.total === null ? <LoadingSkeleton label="Loading review queue…" /> : reviewQueue.error ? <p role="alert" className="text-sm text-destructive-text">{reviewQueue.error}</p>
         : reviewQueue.total === 0 ? <p className="text-sm text-muted-foreground">No unreviewed PRs.</p>
         : <ul className="divide-y divide-border">{reviewQueue.items.map((pr) => <li key={pr.number} className="flex items-start justify-between gap-3 py-2 first:pt-0">
           <UrlLink href={pr.url} className="min-w-0 break-words text-sm hover:underline">#{pr.number} {pr.title}</UrlLink>
@@ -41,22 +45,22 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
     </Card>
     <Card role="region" aria-label="Latest production deployment" className="space-y-3 p-4">
       <h4 className="text-sm font-medium">Latest production deployment</h4>
-      {repo.pending?.includes("production") && !deployment ? <LoadingSkeleton label="Loading production deployment…" /> : production.error ? <p role="alert" className="text-sm text-destructive">{production.error}</p>
+      {repo.pending?.includes("production") && !deployment ? <LoadingSkeleton label="Loading production deployment…" /> : production.error ? <p role="alert" className="text-sm text-destructive-text">{production.error}</p>
         : deployment ? <>
-          <span className={`inline-block rounded-md border px-2 py-1 text-xs ${deployment.state === "success" ? "border-emerald-500/30 text-emerald-500" : ["failure", "error"].includes(deployment.state) ? "border-destructive/30 text-destructive" : "border-border text-muted-foreground"}`}>{deployment.state.replaceAll("_", " ")}</span>
+          <span className={`inline-block rounded-md border px-2 py-1 text-xs ${deployment.state === "success" ? "border-success/30 bg-success/10 text-diff-added" : ["failure", "error"].includes(deployment.state) ? "border-destructive/30 text-destructive-text" : "border-border text-muted-foreground"}`}>{deployment.state.replaceAll("_", " ")}</span>
           <p className="break-all text-sm">{deployment.environment} · {deployment.ref}</p>
           <p className="text-xs text-muted-foreground" title={new Date(deployment.createdAt).toLocaleString()}>Created {ageLabel(deployment.createdAt, repo.updatedAt)} ago</p>
           <p className="text-xs text-muted-foreground">Updated {new Date(deployment.updatedAt).toLocaleString()}</p>
           <UrlLink href={deployment.url} className="inline-flex items-center gap-1 text-sm hover:underline">View deployment<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
-          <CardDetailsView key={`${repo.repository}:${deployment.environment}:${repo.updatedAt}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
+          <CardDetailsView key={`${repo.repository}:${deployment.environment}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}
-      {repo.repository.toLowerCase() === productionTarget.repository && <ProductionDeployButton />}
+      {target?.repository.toLowerCase() === repo.repository.toLowerCase() && <ProductionDeployButton target={target} />}
     </Card>
   </div>;
 }
 
 
-function ProductionDeployButton() {
+function ProductionDeployButton({ target }: { target: ProductionTarget }) {
   const rpc = useRpc<typeof rpcContract>();
   const trigger = useRef<HTMLButtonElement>(null);
   const [confirm, setConfirm] = useState(false);
@@ -75,11 +79,10 @@ function ProductionDeployButton() {
     <p>Production workflow requested.</p><UrlLink href={url} className="inline-flex items-center gap-1 hover:underline">View workflow<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
   </div>;
   return <div className="space-y-3 border-t border-border pt-3">
-    <Button ref={trigger} size="sm" variant="outline" disabled={pending} aria-expanded={confirm} onClick={() => setConfirm(true)}>Deploy production</Button>
+    <Button ref={trigger} size="sm" variant="outline" disabled={pending} aria-expanded={confirm} onClick={() => setConfirm(true)}>Deploy to production</Button>
     {confirm && <div role="group" aria-label="Confirm production deployment" className="space-y-3">
-      <p className="break-all text-sm">Deploy {productionTarget.repository} from {productionTarget.ref}?</p>
-      <p className="text-xs text-muted-foreground">Starts the Production workflow with its existing checks and approvals.</p>
-      {error && <p role="alert" className="text-sm text-destructive">Request not confirmed. Check the Production workflow and Actions write access before retrying.</p>}
+      <p className="break-all text-sm">Deploy {target.repository} from {target.ref}?</p>
+      {error && <p role="alert" className="text-sm text-destructive-text">Request not confirmed. Check the production workflow and Actions write access before retrying.</p>}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" autoFocus disabled={pending} onClick={() => { setConfirm(false); setError(false); trigger.current?.focus(); }}>Cancel</Button>
         <Button size="sm" disabled={pending} aria-busy={pending} onClick={() => void deploy()}>{pending ? "Requesting…" : "Start deployment"}</Button>
@@ -92,10 +95,10 @@ function ProductionDeployButton() {
 export function RepositoryActivity({ repo }: { repo: Metrics }) {
   const activity = repo.commitActivity;
   const statistics = [
-    { label: "PRs created", value: repo.pullRequestsCreated.value, prefix: "", tone: "", detail: "All states · includes drafts" },
+    { label: "PRs created", value: repo.pullRequestsCreated.value, prefix: "", tone: "", detail: "Includes drafts" },
     { label: "Commits", value: activity.commits, prefix: "", tone: "", detail: activity.branch ? `${activity.branch} history` : "Default branch history" },
-    { label: "Lines added", value: activity.additions, prefix: "+", tone: "text-emerald-500", detail: "Cumulative commit additions" },
-    { label: "Lines deleted", value: activity.deletions, prefix: "−", tone: "text-destructive", detail: "Cumulative commit deletions" },
+    { label: "Lines added", value: activity.additions, prefix: "+", tone: "text-diff-added", detail: "" },
+    { label: "Lines deleted", value: activity.deletions, prefix: "−", tone: "text-diff-removed", detail: "" },
   ];
   return <Card role="region" aria-label={`Repository activity ${repo.range.label === "today" ? "today" : `in the ${repo.range.label}`}`} className="space-y-3 p-4">
     <h4 className="text-sm font-medium">Activity · {repo.range.label}</h4>
@@ -108,31 +111,52 @@ export function RepositoryActivity({ repo }: { repo: Metrics }) {
         </dd>
       </div>)}
     </dl>
-    {repo.pullRequestsCreated.error && <p role="alert" className="text-xs text-destructive">PR activity: {repo.pullRequestsCreated.error}</p>}
-    {activity.error && <p role="alert" className="text-xs text-destructive">Commit activity: {activity.error}</p>}
+    {repo.pullRequestsCreated.error && <p role="alert" className="text-xs text-destructive-text">PR activity: {repo.pullRequestsCreated.error}</p>}
+    {activity.error && <p role="alert" className="text-xs text-destructive-text">Commit activity: {activity.error}</p>}
   </Card>;
 }
 
 export function CiOutcomes({ repo, showDetails = false }: { repo: Metrics; showDetails?: boolean }) {
-  return <Card role="region" aria-label={showDetails ? "CI health" : "CI outcomes"} className="space-y-4 p-4">
-      <div><h4 className="text-sm font-medium">{showDetails ? "CI health" : "CI outcomes"}</h4><p className="mt-1 text-xs text-muted-foreground">Completed workflow runs · {repo.range.label}</p></div>
-      <div className={showDetails ? "grid grid-cols-1 items-start gap-5 lg:grid-cols-2" : undefined}>
-      {showDetails && <CiSignals repo={repo} />}
-      <div className="min-w-0 space-y-3">
-      {repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
-        {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
-          <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
-          <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-emerald-500" : state === "failure" || state === "timed_out" ? "text-destructive" : ""}`}>{count.toLocaleString()}</dd>
-        </div>)}
-      </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>}
-      {showDetails && !repo.pending?.includes("ci") && repo.ciInsights && repo.ciInsights.workflows.some((workflow) => workflow.failed > 0) && <details className="space-y-2 border-t border-border pt-3">
-        <summary className="cursor-pointer text-sm">Top failing workflows</summary>
-        {repo.ciInsights.workflows.filter((workflow) => workflow.failed > 0).slice(0, 3).map((workflow) => <p key={workflow.id} className="text-sm">
-          <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${workflow.failureId}`} className="break-words hover:underline">{workflow.name}</UrlLink>
-          <span className="block text-xs text-muted-foreground">{workflow.failed} failed · {passRate(workflow)} passed · {workflow.eligible} counted runs</span>
-        </p>)}
-      </details>}
-      {showDetails && <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}:${repo.updatedAt}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />}
-      </div></div>
-    </Card>;
+  return showDetails ? <CiHealth repo={repo} /> : <CiOutcomesCard repo={repo} />;
+}
+
+function CiHealth({ repo }: { repo: Metrics }) {
+  return <CiOutcomesCard repo={repo} signals={useRepositorySignals(repo.repository, repo.range)} />;
+}
+
+function CiOutcomesCard({ repo, signals }: { repo: Metrics; signals?: JobSignals }) {
+  const outcomes = repo.pending?.includes("ci") && !repo.ciOutcomes ? <LoadingSkeleton label="Loading CI outcomes…" className="grid grid-cols-2 gap-3 space-y-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton> : repo.ciOutcomes ? <dl className="grid grid-cols-2 gap-3">
+    {Object.entries({ success: 0, failure: 0, cancelled: 0, skipped: 0, ...repo.ciOutcomes }).map(([state, count]) => <div key={state}>
+      <dt className="text-xs text-muted-foreground">{labels[state] ?? state.replaceAll("_", " ")}</dt>
+      <dd className={`text-lg font-semibold tabular-nums ${state === "success" ? "text-diff-added" : state === "failure" || state === "timed_out" ? "text-destructive-text" : ""}`}>{count.toLocaleString()}</dd>
+    </div>)}
+  </dl> : <p className="text-sm text-muted-foreground">{repo.ci.error || repo.ci.seriesError || "Outcome breakdown is unavailable."}</p>;
+  if (!signals) return <Card role="region" aria-label="CI outcomes" className="space-y-4 p-4"><div><h4 className="text-sm font-medium">CI outcomes</h4></div>{outcomes}</Card>;
+  const failing = !repo.pending?.includes("ci") && repo.ciInsights?.workflows.filter((workflow) => workflow.failed > 0).sort((a, b) => b.failed - a.failed).slice(0, 3);
+  const overview = <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
+    <section aria-label="Outcomes" className="space-y-3"><h5 className="text-sm font-medium">Outcomes</h5>{outcomes}</section>
+    <CiJobCauses repo={repo} signals={signals} part="causes" />
+  </div>;
+  // With no open problems the overview has the space to itself; otherwise problems come first and it moves into Details.
+  const allGood = signals.repo?.problems.every((problem) => problem.handled) ?? false;
+  return <Card role="region" aria-label="CI health" className="space-y-4 p-4">
+    <div><h4 className="flex flex-wrap items-center gap-2 text-sm font-medium">CI health <ProblemsBadge signals={signals} /></h4></div>
+    <CiProblems repository={repo.repository} signals={signals} />
+    {allGood && overview}
+    <details className="border-t border-border pt-3">
+      <Summary className="text-sm">Details</Summary>
+      <div className="mt-3 space-y-3">
+        {!allGood && overview}
+        <CiRunNotes repo={repo} />
+        {failing && failing.length > 0 && <Disclosure name="Top failing workflows" count={failing.length} hint={`worst: ${failing[0].name}`}>
+          {failing.map((workflow) => <p key={workflow.id} className="text-sm">
+            <UrlLink href={`https://github.com/${repo.repository}/actions/runs/${workflow.failureId}`} className="break-words hover:underline">{workflow.name}</UrlLink>
+            <span className="text-xs text-muted-foreground"> — {workflow.failed.toLocaleString()} failed · {percent(workflow)} passed</span>
+          </p>)}
+        </Disclosure>}
+        <CiJobCauses repo={repo} signals={signals} part="details" />
+        <CardDetailsView key={`${repo.repository}:${repo.range.since}:${repo.range.until}`} input={{ kind: "ci", repository: repo.repository, since: repo.range.since, until: repo.range.until }} />
+      </div>
+    </details>
+  </Card>;
 }

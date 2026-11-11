@@ -1,9 +1,11 @@
+import { HugeiconsIcon } from "@hugeicons/react";
+import Clock01Icon from "@hugeicons/core-free-icons/Clock01Icon";
 import { useEffect, useState } from "react";
 import type { ThreadHealth } from "../shared/contract.js";
 import { staleIdleMinutes } from "../shared/thread-health.js";
 import { formatRelativeTime } from "../views/detail/meta.js";
 
-/** Display-only dots: red for a failed attached thread, amber for an idle one with no task update. */
+/** Red marks failed sessions; an amber clock distinguishes stale idle from attachment. */
 export function ThreadHealthMarkers({ health }: { health: ThreadHealth | undefined }) {
   const [now, setNow] = useState(Date.now);
   const armed = health?.idle != null;
@@ -25,7 +27,9 @@ export function ThreadHealthMarkers({ health }: { health: ThreadHealth | undefin
         <span role="img" title={failedTitle} aria-label={failedTitle} data-thread-health="failed" className="size-2 shrink-0 rounded-full bg-destructive" />
       ) : null}
       {idleMinutes !== null ? (
-        <span role="img" title={idleTitle} aria-label={idleTitle} data-thread-health="idle" className="size-2 shrink-0 rounded-full bg-warning" />
+        <span role="img" title={idleTitle} aria-label={idleTitle} data-thread-health="idle" className="inline-flex shrink-0 text-warning">
+          <HugeiconsIcon icon={Clock01Icon} aria-hidden className="size-3" />
+        </span>
       ) : null}
     </>
   );

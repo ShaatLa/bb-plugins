@@ -59,6 +59,30 @@ function trackedThreadFixture(
 }
 
 describe("task thread lifecycle", () => {
+  it("does not overwrite a newer lifecycle event with a delayed startup snapshot", async () => {
+    const fixture = trackedThreadFixture("idle", "idle");
+    let resolve!: (thread: ReturnType<typeof makeThreadResponse>) => void;
+    fixture.harness.sdk.stub("threads.get", () => new Promise((done) => { resolve = done; }));
+    const startup = registerLifecycle(fixture.bb, fixture.store);
+    await fixture.harness.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_worker", status: "active" }) });
+    resolve(makeThreadResponse({ id: "thr_worker", status: "idle" }));
+    await startup;
+    expect(fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus).toBe("working");
+    await fixture.harness.dispose();
+  });
+  it("reads a shared thread once and reconciles every linked task", async () => {
+    const fixture = trackedThreadFixture("working", "idle");
+    const first = fixture.store.tasks.getTask(fixture.taskId)!;
+    const second = fixture.store.tasks.createTask({ projectId: first.projectId, title: "Second" });
+    const link = fixture.store.tasks.upsertTaskThread({ taskId: second.id, threadId: "thr_worker", presetName: "Attached", title: "Worker", liveStatus: "working" });
+
+    await registerLifecycle(fixture.bb, fixture.store);
+
+    expect(fixture.harness.sdk.callsTo("threads.get")).toHaveLength(1);
+    expect(fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus).toBe("idle");
+    expect(fixture.store.tasks.getTaskThread(link.id)?.liveStatus).toBe("idle");
+    await fixture.harness.dispose();
+  });
   it("reconciles each non-terminal task thread once during startup", async () => {
     const fixture = trackedThreadFixture("working", "active");
 

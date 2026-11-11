@@ -1,0 +1,80 @@
+import { z } from "zod";
+
+export const ACTIVITY_LABELS = { working: "Working", attached: "Assigned", abandoned: "Abandoned", error: "Error", "waiting-owner": "Waiting for owner", queued: "Queued" } as const;
+
+const inactiveSessionSchema = z.object({
+  threadId: z.string().startsWith("thr_"),
+  title: z.string(),
+  reason: z.enum(["archived", "deleted", "missing"]),
+}).strict();
+
+export const taskActivitySessionSchema = z.object({
+  threadId: z.string().startsWith("thr_"),
+  title: z.string(),
+  role: z.enum(["worker", "parent"]),
+  state: z.enum(["working", "waiting-owner", "queued", "attached", "error"]),
+  diagnostics: z.object({
+    explanation: z.string(),
+    threadStatus: z.string().nullable(),
+    runtimeStatus: z.string().nullable(),
+    turnId: z.string().nullable(),
+    requestId: z.string().nullable(),
+    focusedTaskId: z.string().nullable(),
+    focusedTaskKey: z.string().nullable(),
+    queueIds: z.array(z.string()),
+    interactionIds: z.array(z.string()),
+  }).strict().optional(),
+}).strict();
+
+export const taskActivitySchema = z.object({
+  state: z.enum(["working", "waiting-owner", "queued", "attached", "abandoned", "error"]).nullable(),
+  workingCount: z.number().int().nonnegative(),
+  attachedCount: z.number().int().nonnegative(),
+  sessions: z.array(taskActivitySessionSchema),
+  terminalWarning: z.boolean(),
+  hasFailure: z.boolean(),
+  diagnostics: z.object({
+    explanation: z.string(),
+    hasWorked: z.boolean(),
+    complete: z.boolean(),
+    checkedAt: z.string().datetime(),
+    inactiveSessions: z.array(inactiveSessionSchema),
+  }).strict().optional(),
+}).strict();
+
+export type TaskActivitySession = z.infer<typeof taskActivitySessionSchema>;
+export type TaskActivity = z.infer<typeof taskActivitySchema>;
+
+/** Live execution of any attached session determines activity; idle attachment is not work. */
+export function evaluateTaskActivity(input: {
+  sessions: TaskActivitySession[];
+  hasWorked: boolean;
+  hasLostSession: boolean;
+  executionTarget: "agent" | "owner";
+  terminal: boolean;
+  complete: boolean;
+  inactiveSessions?: z.infer<typeof inactiveSessionSchema>[];
+}): TaskActivity {
+  const { sessions, hasWorked, hasLostSession, terminal, complete, executionTarget } = input;
+  const workingCount = sessions.filter((session) => session.state === "working").length;
+  const hasFailure = sessions.some((session) => session.state === "error");
+  const state = workingCount ? "working"
+    : sessions.some((session) => session.state === "waiting-owner") ? "waiting-owner"
+    : sessions.some((session) => session.state === "queued") ? "queued"
+    : hasFailure ? "error"
+    : sessions.length ? "attached"
+    : complete && hasWorked && hasLostSession && !terminal && executionTarget !== "owner" ? "abandoned" : null;
+  const explanation = state === "working" ? "An attached session is actively executing."
+    : state === "waiting-owner" ? "An attached session has a pending owner interaction."
+    : state === "queued" ? "A dispatched request for this task is still in a session's queue."
+    : state === "error" ? "An attached session has failed."
+    : state === "attached" ? "Assigned sessions are available; none is actively executing."
+    : state === "abandoned" ? "Previous work is recorded, no live sessions remain attached, and the task is neither done nor canceled."
+    : !complete ? "Activity could not be verified because session data is unavailable."
+    : terminal ? "No current activity; done and canceled tasks are not marked Abandoned."
+    : executionTarget === "owner" ? "No current activity; owner actions are not marked Abandoned."
+    : "No assigned session. Previous comments alone do not establish an assignment.";
+  return { state, workingCount, attachedCount: sessions.length, sessions, terminalWarning: terminal && workingCount > 0, hasFailure,
+    diagnostics: { explanation, hasWorked, complete, checkedAt: new Date().toISOString(), inactiveSessions: input.inactiveSessions ?? [] } };
+
+}
