@@ -144,8 +144,9 @@ agy discovers `AGENTS.md` natively; `GEMINI.md` is not required. Each prompt als
 explicitly asks the agent to read applicable root and nested `AGENTS.md` files
 in full. BB's role instructions, skills, and memory index continue through the
 standard ACP bridge. BB sends them only in a new session's first prompt, so the shim keeps
-that block with the session and adds a pointer to a saved copy to every
-prompt; after context compression or a resumed session the agent rereads it. Prompts travel directly over stdin as stream-json, so
+that block with the session, saves a copy as a native agy workspace rule
+(`.agents/rules/`, listed every turn as a pointer) and adds the same pointer to
+every prompt; after context compression or a resumed session the agent rereads it. Prompts travel directly over stdin as stream-json, so
 large instruction sets do not depend on reading a temporary prompt file.
 
 Fork, native user questions, native archive and rename, manual compaction,

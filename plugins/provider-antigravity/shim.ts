@@ -28,7 +28,8 @@ const models=await new Promise(resolve=>execFile(agy,['models'],{timeout:30000,m
 }));
 function sessionFile(id){if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid session ID.');return join(dataDir,'sessions',id+'.json');}
 // BB sends <system_instructions> only in the first prompt of a new session; keep them for resume and compression.
-const instructionsFile=session=>join(session.root,'bb-instructions.md');
+// As a native workspace rule agy lists the file every turn (large rules appear as a pointer, not inline).
+const instructionsFile=session=>join(session.root,'.agents','rules','bb-instructions.md');
 function save(session){
   const file=sessionFile(session.id),temporary=file+'.'+process.pid+'.tmp';
   const {id,cwd,conversationId,selected,instructions}=session;
@@ -46,7 +47,7 @@ function config(session){
 function attachMcp(session,servers=[]){
   if(session.root){rmSync(session.root,{recursive:true,force:true});pendingRoots.delete(session.root);}
   const root=mkdtempSync(join(tempDir,'agy-bb-session-'));session.root=root;pendingRoots.add(root);
-  mkdirSync(join(root,'.agents'),{mode:0o700});
+  mkdirSync(join(root,'.agents','rules'),{recursive:true,mode:0o700});
   if(session.instructions)writeFileSync(instructionsFile(session),session.instructions,{mode:0o600});
   const mcpServers=Object.fromEntries(servers.map(server=>{
     if(typeof server.command!=='string'||!Array.isArray(server.args)||!Array.isArray(server.env))throw Error('Only stdio MCP is supported.');

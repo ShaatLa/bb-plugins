@@ -76,7 +76,7 @@ test('isolates MCP configs, preserves credentials privately, selects live model 
     // After load bb sends no instructions; the prompt must point to a fresh saved copy instead.
     const followUp=await readFile(path.join(dir,'input.txt'),'utf8');
     const saved=followUp.match(/saved in full at (\S+bb-instructions\.md)/)?.[1];
-    assert.ok(saved&&!saved.startsWith(a)&&!followUp.includes('BB role instruction sentinel'));
+    assert.ok(saved&&!saved.startsWith(a)&&saved.includes(path.join('.agents','rules'))&&!followUp.includes('BB role instruction sentinel'));
     assert.ok((await readFile(saved,'utf8')).includes('BB role instruction sentinel'));
     const followUpArgs=JSON.parse(await readFile(path.join(dir,'args.json'),'utf8'));
     assert.equal(followUpArgs[followUpArgs.indexOf('--conversation')+1],'native-conversation');
