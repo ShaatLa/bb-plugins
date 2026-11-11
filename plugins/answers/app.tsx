@@ -242,7 +242,7 @@ function Page({ threadId, view, projectId, query, questions, cursor }: { threadI
     {result.data && <>
       {!cursor && !result.data.items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{items.map(item => <Fragment key={item.id}>{chronological && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{items.map(item => <Fragment key={item.id}>{chronological && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
       {!chronological && more}
     </>}
   </>;
