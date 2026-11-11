@@ -369,7 +369,7 @@ function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { e
   const problem = !['Saved', 'Saving…', 'Not saved'].includes(status);
   const remove = async () => { try { await rpc.call('poolRemove', { id: entry.id }); refresh(); } catch (e) { setStatus(errorText(e)); } };
   return <li className="space-y-2">
-    <Composer label="Pool note" sendLabel="Send entry" autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} value={note} onChange={value => { local.current.note = value; setNote(value); setStatus('Not saved'); }} attachments={files} onAttachments={update => { const next = update(local.current.files); local.current.files = next; setFiles(next); setStatus('Not saved'); }} projectId={projectId} pending={pending} onBlur={() => void flush().catch(() => {})} onSend={options => onSend(entry.id, options)} actions={<Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>} header={entry.quote && <div className="border-l-2 border-border-seam pl-3 pr-3 pt-3 text-sm text-muted-foreground"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div>} />
+    <Composer label="Pool note" sendLabel="Send entry" autoFocus={autoFocus} placeholder={entry.quote ? 'Your reply to this quote…' : 'Your message…'} value={note} onChange={value => { local.current.note = value; setNote(value); setStatus('Not saved'); }} attachments={files} onAttachments={update => { const next = update(local.current.files); local.current.files = next; setFiles(next); setStatus('Not saved'); }} projectId={projectId} pending={pending} onBlur={() => void flush().catch(() => {})} onSend={options => onSend(entry.id, options)} actions={<Button type="button" size="icon" variant="ghost" className="size-8 text-muted-foreground" aria-label="Remove" onClick={() => void remove()}><Icon name="Trash2" aria-hidden className="size-3.5" /></Button>} header={entry.quote && <div className="px-4 pt-3"><div className="border-l-2 border-border-seam pl-2 text-sm text-muted-foreground [&_*]:text-muted-foreground [&_p]:m-0"><div ref={quote} className={expanded ? '' : 'line-clamp-3'}><Markdown content={entry.quote} /></div>{(clamped || expanded) && <button type="button" className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}</div></div>} />
     {problem && <p role="status" className={`text-[11px] ${status.startsWith('Not saved:') ? 'text-destructive' : 'text-muted-foreground'}`}>{status}</p>}
   </li>;
 }
@@ -405,9 +405,13 @@ export function Pools({ threadId }: { threadId?: string }) {
   const [feedback, setFeedback] = useTransientText();
   const result = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const pools = result.data?.pools.filter(pool => !threadId || pool.threadId === threadId);
+  const box = useRef<HTMLDivElement>(null), [more, setMore] = useState(false);
+  const fit = (node: HTMLDivElement) => setMore(node.scrollHeight - node.scrollTop - node.clientHeight > 4);
+  useLayoutEffect(() => { if (box.current) fit(box.current); }, [result.data, feedback]);
   if (threadId && !pools?.length && !feedback) return null;
-  // In a thread tab the pool sits above the answers list, so it must not take the whole height.
-  return <div className={threadId ? 'max-h-[50%] shrink-0 overflow-auto border-b border-border-seam' : 'h-full overflow-auto'}>
+  // In a thread tab the pool sits above the answers list, so it must not take the whole height;
+  // a bottom fade shows that more of it scrolls under the list.
+  return <div ref={box} onScroll={event => fit(event.currentTarget)} className={threadId ? `max-h-[50%] shrink-0 overflow-auto border-b border-border-seam ${more ? '[mask-image:linear-gradient(to_bottom,black_calc(100%-32px),transparent)]' : ''}` : 'h-full overflow-auto'}>
     {feedback && <p role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground"><Icon name={/uncertain|not sent/i.test(feedback) ? 'X' : 'Check'} aria-hidden className="size-3.5" />{feedback}</p>}
     {result.error && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{result.error.message}</p>}
     {pools?.length === 0 && !threadId && <EmptyState icon="Sent" title="No reply pools yet">Select text in an answer and choose <span className="font-medium text-foreground">Add to reply pool</span> in the send menu. Collect quotes from one thread, then send them together.</EmptyState>}
