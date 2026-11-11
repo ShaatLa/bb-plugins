@@ -2,7 +2,7 @@ import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
-import { Inbox, Pools, Avatar, ago } from './inbox';
+import { Inbox, Pools, Avatar, ago, conversation } from './inbox';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
@@ -123,7 +123,8 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{body && <span className="inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap">{body}</span>}{time && <span className="shrink-0 text-xs text-muted-foreground">{body && '· '}{time}</span>}</div>;
 }
-export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean }) {
+// part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
+export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -183,7 +184,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
   const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || last.kind === 'update') && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
-  useReadOnView(card, autoRead && unread, () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
+  useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
@@ -194,7 +195,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
   const status = item.status === 'waiting' && item.failedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center"><ThreadStatusGlyph indicator="runtime" size="compact" /><span className="sr-only">waiting</span></span> : item.status;
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><Markdown content={content} /></div>;
-  return <li ref={card} className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
+  return <li ref={card} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
     {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
@@ -206,19 +207,20 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden />Question for you{chat && <>{' · '}{time}</>}</div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="px-2"><button type="button" title="Go to the question" className="block w-full cursor-pointer border-l-2 border-border-seam pl-2 text-left text-sm text-muted-foreground" onClick={() => onJump?.(last.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{group.map(member => member.question).filter(Boolean).join('\n')}</span></button></div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {(chat || isQuestion) && <div className="flex items-center gap-2 text-xs text-muted-foreground">{isQuestion && <span className="flex items-center gap-1"><Icon name="MessageQuestion" aria-hidden className="size-3.5" />Question</span>}{chat && time}</div>}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
-    {item.answer && agentBody(item.answer, item.answerSeq)}
-    {item.interim && <div className="space-y-1"><span title="Interim reply: the agent will report back" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>{agentBody(item.interim, item.interimSeq)}</div>}
-    {item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
+    {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
+    {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
+    {part !== 'answer' && item.interim && <div className="space-y-1"><span title="Interim reply: the agent will report back" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>{agentBody(item.interim, item.interimSeq)}</div>}
+    {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
     {item.snoozedUntil !== null && <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground">Snoozed until {new Date(item.snoozedUntil).toLocaleString()} <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('snooze', { id: last.id, until: null }))}>Unsnooze</Button></div>}
     {item.taskKey && <UrlLink href={`/plugins/work-board/work-board/task/${encodeURIComponent(item.taskKey)}`} className="mx-2 text-xs">{item.taskKey}</UrlLink>}
-    {item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
-    <div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
+    </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
+    {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
       {!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
       <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
@@ -238,12 +240,12 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full text-xs text-muted-foreground">Recommended: {item.recommendReason}</p>}</div>}
     {replying && <div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div>}
-    {feedback && <p role="status">{feedback}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
 }
 
-function Page({ threadId, view, projectId, query, cursor }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string }) {
-  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
+function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string; orphans?: Item[][] }) {
+  const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId, order: 'activity' as const } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 } });
   const [next, setNext] = useState(false);
   const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
@@ -251,14 +253,17 @@ function Page({ threadId, view, projectId, query, cursor }: { threadId?: string;
   // Open agent questions live in the Questions section; the thread feed shows them once replied.
   const items = result.data ? (chronological ? [...result.data.items].reverse().filter(item => item.kind !== 'for_me' || item.status !== 'open') : result.data.items) : [];
   if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
-  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
+  // Pages render apart, so a split question older than this page goes on to the earlier one.
+  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans) : { entries: items.map(item => ({ group: [item], part: undefined })), orphans: [] };
+  const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
+  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
     {result.data && <>
       {!cursor && !items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{items.map(item => <Fragment key={item.id}>{chronological && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group: [item], part }) => <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
       {!chronological && more}
     </>}
   </>;

@@ -76,9 +76,11 @@ export default function plugin(bb: BbPluginApi) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
     }
     if (p.query) {where.push("(instr(lower(question),lower(?))>0 OR instr(lower(coalesce(answer,'')),lower(?))>0)"); args.push(p.query,p.query);}
-    if (p.cursor) {const [at,id]=p.cursor.split('|'); where.push('(created_at<? OR (created_at=? AND id<?))'); args.push(Number(at),Number(at),id);}
+    // activity: conversations place an item at its latest activity, so a late answer pages in with its own time.
+    const at = p.order === 'activity' ? 'coalesce(answered_at,created_at)' : 'created_at';
+    if (p.cursor) {const [time,id]=p.cursor.split('|'); where.push(`(${at}<? OR (${at}=? AND id<?))`); args.push(Number(time),Number(time),id);}
     const limit = p.limit ?? 50;
-    const rows = db.prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY created_at DESC,id DESC LIMIT ?`).all(...args,limit+1) as Row[];
+    const rows = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE ${where.join(' AND ')} ORDER BY ${at} DESC,id DESC LIMIT ?`).all(...args,limit+1) as Row[];
     const more = rows.length>limit; rows.splice(limit);
     const titles = new Map<string,string>();
     const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
@@ -87,11 +89,11 @@ export default function plugin(bb: BbPluginApi) {
     if (rows.some(r=>r.project_id)) for (const p of await bb.sdk.projects.list()) names.set(p.id,p.name);
     const items: Item[] = rows.map(row => {
       const value: Row = {};
-      for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
+      for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
       return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
-    return {items,nextCursor:more && last ? `${last.created_at}|${last.id}` : null};
+    return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};
   }
   function markRead(raw: {all:true;threadId?:string}): {ok:true;batch:string|null;count:number};
   function markRead(raw: z.infer<typeof inputs.markRead>): {ok:true;batch?:string|null;count?:number};
