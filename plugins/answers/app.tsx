@@ -145,7 +145,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
-export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean }) {
+export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Refresh reads after our own writes instead of relying only on the server's realtime invalidation.
   const { refresh } = experimental_useRpcRefresh();
@@ -235,7 +235,7 @@ export function ItemCard({ item, members, chat = false, markable = !chat, autoRe
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
+      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="px-2"><button type="button" title="Go to the question" className="block w-full cursor-pointer border-l-2 border-border-seam pl-2 text-left text-sm text-muted-foreground" onClick={() => onJump?.(last.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{group.map(member => member.question).filter(Boolean).join('\n')}</span></button></div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {chat && <div className="flex items-center gap-2 text-xs text-muted-foreground">{time}</div>}
@@ -373,6 +373,12 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   // Page only: the Questions section replaces the chats; a stored 'Asked of you' view (now removed) opens it.
   const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
+  // Opening a thread's conversation: the Chats view picks the stored selection up when it mounts.
+  const openChat = (id: string) => { try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } setQuestions(false); };
+  // A link from bb's chat (?thread=) opens that conversation once; the parameter is dropped so a reload keeps the user's place.
+  // The selection is stored during this render, before the Chats view mounts and reads it; the section switch follows.
+  const [linked] = useState(() => { const id = threadId ? null : linkedThread(); if (!id) return null; try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } const url = new URL(window.location.href); url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); return id; });
+  useEffect(() => { if (linked) setQuestions(false); }, [linked]);
   const pendingRows = usePendingInteractionRows(threadId ? [] : threads);
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 } });
   const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
@@ -397,7 +403,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{threadId && <> · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></>}</p>}
-    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} items={forMe.data?.items ?? []} loading={!forMe.data} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
@@ -405,15 +411,15 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
 
 type Sidebar = ReturnType<typeof experimental_useSidebarThreads>;
 // Every pending question in one stack, oldest first: bb's blocking forms (one card per thread) and open agent questions.
-function QuestionsSection({ threads, projects, rows, items, loading }: { threads: Sidebar['threads']; projects: Sidebar['projects']; rows: ReturnType<typeof usePendingInteractionRows>; items: Item[]; loading: boolean }) {
+function QuestionsSection({ threads, projects, rows, items, loading, onOpen }: { threads: Sidebar['threads']; projects: Sidebar['projects']; rows: ReturnType<typeof usePendingInteractionRows>; items: Item[]; loading: boolean; onOpen: (threadId: string) => void }) {
   const providers = experimental_useProviders().providers;
   const entries = [...threads.flatMap(thread => rows[thread.id]?.length ? [{ key: thread.id, threadId: thread.id, at: Math.min(...rows[thread.id]!.map(row => row.createdAt)), item: null as Item | null }] : []), ...items.map(item => ({ key: item.id, threadId: item.threadId, at: item.createdAt, item }))].sort((a, b) => a.at - b.at);
   if (!entries.length) return loading ? null : <div className="min-h-0 flex-1 overflow-auto"><EmptyState icon={emptyCopy.for_me[0]} title={emptyCopy.for_me[1]}>{emptyCopy.for_me[2]}</EmptyState></div>;
   return <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3"><div className="space-y-3">{entries.map(entry => {
     const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, title = thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
     return <section key={entry.key} aria-label={title} className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
-      <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={`${projectId ? `/projects/${projectId}` : ''}/threads/${entry.threadId}`} className="shrink-0 text-xs">Open thread</UrlLink></header>
-      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked />}
+      <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={answersThreadHref(entry.threadId)} className="shrink-0 text-xs" onClick={event => { event.preventDefault(); onOpen(entry.threadId); }}>Open thread</UrlLink></header>
+      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Answers', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked />}
     </section>;
   })}</div></div>;
 }
@@ -421,12 +427,14 @@ function QuestionsSection({ threads, projects, rows, items, loading }: { threads
 // A thread's open agent questions, oldest first, in bb's collapsible card for the stack above a composer (bb's thread chat
 // and the Inbox conversation). Same items as the Questions section, so an answer anywhere closes them everywhere.
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
+const linkedThread = () => { try { return new URLSearchParams(window.location.search).get('thread'); } catch { return null; } };
+export const answersThreadHref = (threadId: string) => `/plugins/answers/answers?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => a.createdAt - b.createdAt);
   if (!items.length) return null;
   // Open from the start (bb's CollapsibleStackCard always starts collapsed and hid them); header as "Active child threads".
-  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact />)}</ul></section>;
+  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Answers' }} />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
 // bb shows its own blocking question forms in its chat; this banner adds only the agents' open questions.

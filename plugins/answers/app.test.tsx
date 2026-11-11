@@ -584,7 +584,7 @@ it('stacks pending questions from every thread, oldest first, and switches back 
   await slot.findAllByText('Second?'); await slot.findAllByText('First?'); await slot.findByText('Pick one?');
   const cards = slot.getAllByRole('region').filter(node => node.className.includes('shadow-lift'));
   expect(cards.map(card => card.getAttribute('aria-label'))).toEqual(['Beta thread', 'Third thread', 'Alpha thread']);
-  expect(within(cards[0]!).getByRole('link', { name: 'Open thread' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_b');
+  expect(within(cards[0]!).getByRole('link', { name: 'Open thread' }).getAttribute('href')).toBe('/plugins/answers/answers?thread=thr_b');
   expect(within(cards[0]!).getByText(/Project one/)).toBeTruthy();
   expect(within(cards[0]!).getByTitle('codex')).toBeTruthy();
   expect(within(cards[1]!).getByRole('button', { name: 'Reply' })).toBeTruthy();
@@ -593,6 +593,20 @@ it('stacks pending questions from every thread, oldest first, and switches back 
   expect(toggle.getAttribute('aria-pressed')).toBe('false');
   expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(slot.queryByText('Second?')).toBeNull();
+});
+it('opens a question\'s conversation in Answers: from the Questions section in place, from a ?thread= link on load', async () => {
+  const { AnswersPanel } = await import('./app');
+  localStorage.setItem('bb-plugin-answers:page:questions', 'true');
+  const slot = renderQuestions(AnswersPanel);
+  await slot.findByText('Pick one?');
+  fireEvent.click(slot.getAllByRole('link', { name: 'Open thread' })[0]!);
+  expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
+  expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_b"');
+  slot.unmount(); localStorage.setItem('bb-plugin-answers:page:questions', 'true');
+  window.history.replaceState(null, '', '/plugins/answers/answers?thread=thr_c');
+  const again = renderQuestions(AnswersPanel);
+  expect(await again.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
+  expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_c"'); expect(window.location.search).toBe('');
 });
 it('keeps the thread tab on its views, without the Questions section', async () => {
   const { AnswersPanel } = await import('./app');
