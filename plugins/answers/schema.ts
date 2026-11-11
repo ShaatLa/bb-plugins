@@ -88,4 +88,6 @@ CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind 
   // the acceptance and the turn's reply is not its answer. turn_updates.busy: the turn already produced an item.
   `ALTER TABLE items ADD COLUMN steer_seq INTEGER;
 ALTER TABLE turn_updates ADD COLUMN busy INTEGER NOT NULL DEFAULT 0;`,
+  // Auto-defer safety net: JSON string[] of child thread ids a deferred question still waits for (NULL: none).
+  `ALTER TABLE items ADD COLUMN wait_children TEXT;`,
 ];

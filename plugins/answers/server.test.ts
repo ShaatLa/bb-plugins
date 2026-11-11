@@ -496,6 +496,34 @@ describe('ingestion driver',()=>{
   expect(invalidate).toHaveBeenCalledTimes(1);
   expect(harness.inspection.sdk.callsTo('threads.events.list')).toHaveLength(2);
  });
+ it('Stop waiting clears the auto-defer wait list',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_w','mine'); db.prepare("UPDATE items SET status='deferred',wait_children='[\"k\"]'").run();
+  await harness.behavior.callRpc('setDismissed',{id:'ans_w',dismissed:true});
+  expect(db.prepare('SELECT wait_children FROM items').get()).toEqual({wait_children:null});
+ });
+ it.each([
+  ['running child created after the question',[{id:'k',createdAt:2000,status:'active'}],true],
+  ['no children',[],false],
+  ['child created before the question',[{id:'k',createdAt:500,status:'active'}],false],
+  ['child already finished',[{id:'k',createdAt:2000,status:'idle'}],false],
+  ['archived child',[{id:'k',createdAt:2000,status:'active',archivedAt:3000}],false],
+  ['backfill of old history',[{id:'k',createdAt:2000,status:'active'}],false,true],
+ ])('auto-defers a turn answer only on live ingestion: %s',async(_name,kids,deferredExpected,backfill=false)=>{
+  const {harness,db,driver}=driverSetup();
+  const events=[
+   {seq:1,type:'client/turn/requested',createdAt:1000,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'Research?'}]}},
+   {seq:2,type:'turn/started',scope:{turnId:'u'},data:{}},
+   {seq:3,type:'turn/input/accepted',scope:{turnId:'u'},data:{clientRequestId:'r'}},
+   {seq:4,type:'item/completed',scope:{turnId:'u'},data:{item:{type:'agentMessage',text:'Research started, I will report'}}},
+   {seq:5,type:'turn/completed',scope:{turnId:'u'},data:{status:'completed'}},
+  ];
+  let shown=backfill?events:[];
+  harness.sdk.stub('threads.events.list',async(args:any)=>args.order==='desc' ? [...shown].reverse() : shown.filter(e=>e.seq>Number(args.afterSeq ?? 0)));
+  harness.sdk.stub('threads.list',async(args:any)=>args.parentThreadId==='t' ? kids.map(k=>makeThreadResponse({parentThreadId:'t',...k} as any)) : []);
+  await driver.schedule('t'); shown=events; await driver.schedule('t');
+  const item=db.prepare("SELECT status,interim,answer,read_at,wait_children FROM items").get();
+  expect(item).toEqual(deferredExpected ? {status:'deferred',interim:'Research started, I will report',answer:null,read_at:null,wait_children:'["k"]'} : expect.objectContaining({status:'answered',answer:'Research started, I will report',wait_children:null}));
+ });
  it('skips archived and unchanged tracked threads using reconcile metadata',async()=>{
   const {harness,db,driver}=driverSetup();
   const eventThreads:string[]=[];
