@@ -175,6 +175,7 @@ interface TasksQuery<T> {
   isLoading: boolean;
   isFetching: boolean;
   refresh: () => void;
+  patch: (update: (rpc: TasksRpc, current: T) => Promise<T>) => Promise<void>;
 }
 
 interface TasksQuerySnapshot<T> {
@@ -310,6 +311,17 @@ export function useTasksQuery<T>(
       ),
     );
   }, [rpc, depsKey, dataScopeKey, scheduler]);
+  const patch = useCallback(async (update: (rpc: TasksRpc, current: T) => Promise<T>) => {
+    const current = dataRef.current;
+    if (!enabledRef.current || current === undefined) return;
+    const seq = seqRef.current;
+    const next = await update(rpc, current);
+    if (seq !== seqRef.current || next === current) return;
+    dataRef.current = next;
+    const snapshot = snapshotRef.current;
+    if (snapshot) writeQuerySnapshot(snapshot.name, next, claimQuerySnapshotRevision(snapshot.name));
+    setState((previous) => ({ ...previous, data: next }));
+  }, [rpc]);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
@@ -394,7 +406,7 @@ export function useTasksQuery<T>(
   useRealtime("badge:changed", (payload) => { forgetReads(); scheduler.push("badge:changed", payload); });
   useRealtime("schedules:changed", (payload) => { forgetReads(); scheduler.push("schedules:changed", payload); });
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
-  return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
+  return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh, patch };
 }
 
 const foldersSnapshot = {

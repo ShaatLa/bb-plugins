@@ -3,6 +3,7 @@ import { signalTaskIds } from "../shell/signal-scheduler";
 import { useTasksQuery, type TasksRpc } from "../shell/data";
 import type { Overlap } from "../shared/git-sync";
 import type { Task } from "../shared/contract";
+import { useEffect, useRef } from "react";
 export type PrSummary = {
   total: number;
   merged: number;
@@ -15,13 +16,21 @@ async function readSummaries(rpc: TasksRpc, ids: readonly string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("prSummaries", { taskIds })).summaries);
   return new Map<string, PrSummary>(rows.map((row) => [row.taskId, row]));
 }
-export function usePrSummaries(tasks: readonly Task[]) {
+export function usePrSummaries(tasks: readonly Task[], enabled = true, projectId = tasks[0]?.projectId ?? "") {
   const ids = tasks.map((task) => task.id).sort();
-  return useTasksQuery(
-    (rpc) => readSummaries(rpc, ids),
+  const idsKey = ids.join();
+  const previousIds = useRef<{ projectId: string; ids: string[] } | null>(null);
+  const query = useTasksQuery(
+    async (rpc) => {
+      const rows = await readSummaries(rpc, ids);
+      previousIds.current = { projectId, ids };
+      return rows;
+    },
     ["tasks:changed", "prs:changed"],
-    [ids.join()],
+    [projectId],
     {
+      enabled,
+      dataScope: projectId,
       relevantTaskIds: ids,
       applySignals: async (rpc, current, signals) => {
         const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "prs:changed")])].filter((id) => ids.includes(id));
@@ -33,6 +42,20 @@ export function usePrSummaries(tasks: readonly Task[]) {
       },
     },
   );
+  useEffect(() => {
+    if (!enabled || query.isFetching || !query.data) return;
+    const previous = previousIds.current;
+    previousIds.current = { projectId, ids };
+    if (!previous || previous.projectId !== projectId) return;
+    const added = ids.filter((id) => !previous.ids.includes(id));
+    if (!added.length && previous.ids.length === ids.length) return;
+    void query.patch(async (rpc, current) => {
+      const next = new Map([...current].filter(([id]) => ids.includes(id)));
+      for (const [id, summary] of await readSummaries(rpc, added)) next.set(id, summary);
+      return next;
+    }).catch(() => query.refresh());
+  }, [projectId, idsKey, enabled, query.isFetching, query.data, query.patch]);
+  return query;
 }
 export function PullRequestSummary({ summary }: { summary?: PrSummary }) {
   if (!summary?.total) return null;
