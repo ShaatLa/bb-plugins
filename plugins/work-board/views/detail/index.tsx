@@ -17,10 +17,10 @@ import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
 import type { Task, TaskThread } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
+import { useWorkBoardRpc } from "../../shell/host.js";
 import {
   experimental_copyToClipboard,
   useBbNavigate,
-  useRpc,
 } from "@get-bb/plugin-sdk/app";
 import {
   listAllTasks,
@@ -306,7 +306,7 @@ function TaskDetail({
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
   const rpc = useTasksRpc();
-  const delegationRpc = useRpc<DelegationRpcContract>();
+  const delegationRpc = useWorkBoardRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);

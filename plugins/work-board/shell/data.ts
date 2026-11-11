@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { useWorkBoardRealtime as useRealtime, useWorkBoardRpc } from "./host.js";
 import type { z } from "zod";
 import {
   TASK_STATUSES,
@@ -24,7 +24,7 @@ import {
 } from "./signal-scheduler.js";
 
 export function useTasksRpc() {
-  return useRpc<TasksRpcContract>();
+  return useWorkBoardRpc<TasksRpcContract>();
 }
 
 export type TasksRpc = ReturnType<typeof useTasksRpc>;
