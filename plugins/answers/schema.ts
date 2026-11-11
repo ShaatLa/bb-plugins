@@ -84,4 +84,8 @@ CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind 
   `ALTER TABLE items ADD COLUMN asks INTEGER NOT NULL DEFAULT 0;            -- 'update': the agent seemingly asks the owner something`,
   // Updates that ask nothing carry no read state: they are read on arrival.
   `UPDATE items SET read_at=coalesce(answered_at,created_at) WHERE kind='update' AND asks=0 AND read_at IS NULL;`,
+  // A steer accepted into a running turn is seen by the agent only after its next tool result; until then steer_seq holds
+  // the acceptance and the turn's reply is not its answer. turn_updates.busy: the turn already produced an item.
+  `ALTER TABLE items ADD COLUMN steer_seq INTEGER;
+ALTER TABLE turn_updates ADD COLUMN busy INTEGER NOT NULL DEFAULT 0;`,
 ];

@@ -22,7 +22,20 @@ describe('applyEvents', () => {
  it.each([{initiator:'agent'},{initiator:'system'},{originPluginId:'slots'},{senderThreadId:'sender'},{input:[{type:'text',text:'  '}]},{input:[{type:'text',text:'/help',mentions:[{start:0,end:5,resource:{kind:'command'}}]}]}])('ignores non-questions %j', extra => {const db=setup(); applyEvents(db,'t',[req(1,'r',extra)]); expect(rows(db)).toHaveLength(0);});
  it('tracks the owner\'s words sent through Answers itself', () => {const db=setup(); applyEvents(db,'t',[req(1,'r',{originPluginId:'answers'})]); expect(rows(db)).toHaveLength(1);});
  it('keeps a slash command with additional text', () => {const db=setup(); applyEvents(db,'t',[req(1,'r',{input:[{type:'text',text:'/help explain',mentions:[{start:0,end:5,resource:{kind:'command'}}]}]})]); expect(rows(db)).toHaveLength(1);});
- it('steers into an agent turn using only messages after the question', () => {const db=setup(); applyEvents(db,'t',[start(1),message(2,'old'),req(3),accept(4),done(5)]); expect(row(db).status).toBe('waiting'); applyEvents(db,'t',[start(6),accept(7),message(8,'new'),done(9)]); expect(row(db).answer).toBe('new');});
+ it('steers into an agent turn using only messages after the question', () => {const db=setup(); const mine=()=>rows(db).find(r=>r.kind==='mine'); applyEvents(db,'t',[start(1),message(2,'old'),req(3),accept(4),done(5)]); expect(mine().status).toBe('waiting'); applyEvents(db,'t',[start(6),accept(7),message(8,'new'),done(9)]); expect(mine().answer).toBe('new');});
+ it('a steer the agent never saw (no tool result after it) is answered by the next turn, not by the reply already being written', () => {
+  const db=setup(), mine=()=>rows(db).filter(r=>r.kind==='mine');
+  const tool=(seq:number,turn='x')=>ev(seq,'item/completed',turn,{item:{type:'commandExecution'}});
+  applyEvents(db,'t',[req(1,'a',{initiator:'system'}),start(2),accept(3,'a'),tool(4),req(5,'s'),accept(6,'s'),message(7,'report on the old work'),done(8)]);
+  expect(mine()).toMatchObject([{status:'waiting',steer_seq:6}]);
+  applyEvents(db,'t',[req(9,'n'),start(10,'y'),accept(11,'n','y'),message(12,'answers both','y'),done(13,'completed','y')]);
+  expect(mine().map(r=>[r.status,r.answer])).toEqual([['answered','answers both'],['answered','answers both']]);
+ });
+ it('a steer followed by a tool result is seen and answered by the same turn', () => {
+  const db=setup(), tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution'}});
+  applyEvents(db,'t',[req(1,'a',{initiator:'system'}),start(2),accept(3,'a'),tool(4),req(5,'s'),accept(6,'s'),tool(7),message(8,'saw it'),done(9)]);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'saw it',steer_seq:null});
+ });
  it('ignores nested starts, messages and completions', () => {const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(),ev(5,'turn/started','nested',{parentToolCallId:'tool'}),message(6,'nested','nested',{parentToolCallId:'tool'}),done(7,'completed','nested')]); expect(row(db).candidate).toBe('answer'); expect(db.prepare('SELECT active_turn_id FROM threads_state').get()).toEqual({active_turn_id:'x'}); applyEvents(db,'t',[done(8)]); expect(row(db).answer).toBe('answer');});
  it.each(['failed','interrupted'])('%s: failed keeps interim and waiting, a stopped message is dropped', status => {const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(),done(5,status)]); if (status === 'interrupted') { expect(rows(db)).toHaveLength(0); return; } expect(row(db)).toMatchObject({status:'waiting',interim:'answer',interim_seq:4,answer:null,candidate:null,dismissed_at:null});});
  it('shares the final candidate for two accepted questions', () => {const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),req(4,'r2'),accept(5,'r2'),message(6,'final'),done(7)]); expect(rows(db).map(r=>r.answer)).toEqual(['final','final']);});
