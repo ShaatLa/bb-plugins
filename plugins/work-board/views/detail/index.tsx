@@ -312,7 +312,8 @@ function TaskDetail({
   const subtasksRef = useRef<HTMLElement>(null);
   const [addingQuestion, setAddingQuestion] = useState<string | null>(null);
 
-  const [draft, setDraft] = useState<{ taskId: string; markdown: string }>();
+  // A ref, not state: typing must not rerender the whole detail subtree.
+  const draftRef = useRef<{ taskId: string; markdown: string } | undefined>(undefined);
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
   const pushRef = useRef(push);
@@ -469,7 +470,7 @@ function TaskDetail({
   };
 
   const onDescriptionChange = (markdown: string) => {
-    setDraft({ taskId: task.id, markdown });
+    draftRef.current = { taskId: task.id, markdown };
     saverRef.current?.onChange(task.id, markdown);
   };
 
@@ -519,6 +520,7 @@ function TaskDetail({
   const mentionItems = useMentionItems();
   const navigate = useBbNavigate();
 
+  const draft = draftRef.current;
   const descriptionValue =
     draft && draft.taskId === task.id
       ? draft.markdown
@@ -615,6 +617,7 @@ function TaskDetail({
           <TasksEditor
             value={descriptionValue}
             onChange={onDescriptionChange}
+            deferChange
             variant="doc"
             className="min-h-24"
             placeholder={

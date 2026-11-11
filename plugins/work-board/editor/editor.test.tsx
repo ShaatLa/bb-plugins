@@ -718,3 +718,55 @@ describe("description links", () => {
     expect(onOpenUrl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("TasksEditor deferChange", () => {
+  function setup(extra: Partial<React.ComponentProps<typeof TasksEditor>> = {}) {
+    let editor: Editor | undefined;
+    const onChange = vi.fn();
+    const screen = render(
+      <TasksEditor value="" onChange={onChange} deferChange onEditorReady={(e) => { editor = e; }} {...extra} />,
+    );
+    return { screen, onChange, editor: () => editor! };
+  }
+  const type = (editor: Editor, text: string) => {
+    for (const char of text) editor.commands.insertContent(char);
+  };
+
+  it("serializes once per frame and reports the exact final Markdown", async () => {
+    const { onChange, editor } = setup();
+    const serialize = vi.spyOn(editor().storage.markdown, "getMarkdown");
+    type(editor(), "helloWorld");
+    expect(onChange).not.toHaveBeenCalled();
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(editor().storage.markdown.getMarkdown());
+  });
+
+  it("flushes pending text on blur, submit and unmount", async () => {
+    const onSubmit = vi.fn();
+    const { screen, onChange, editor } = setup({ onSubmit });
+    type(editor(), "one");
+    editor().view.dom.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    editor().emit("blur", { editor: editor(), event: new FocusEvent("blur"), transaction: editor().state.tr });
+    expect(onChange).toHaveBeenLastCalledWith("one");
+    type(editor(), "two");
+    fireEvent.keyDown(getEditorSurface(screen.container), { key: "Enter", metaKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("onetwo");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    type(editor(), "three");
+    screen.unmount();
+    expect(onChange).toHaveBeenLastCalledWith("onetwothree");
+  });
+
+  it("delivers pending text to the handler that owned it when the value is replaced", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    let editor: Editor | undefined;
+    const screen = render(<TasksEditor value="a" onChange={first} deferChange onEditorReady={(e) => { editor = e; }} />);
+    editor!.commands.insertContent("x");
+    screen.rerender(<TasksEditor value="b" onChange={second} deferChange />);
+    await screen.findByText("b");
+    expect(first).toHaveBeenCalledWith(expect.stringContaining("x"));
+    expect(second).not.toHaveBeenCalled();
+  });
+});
