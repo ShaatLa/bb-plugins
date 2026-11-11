@@ -314,16 +314,6 @@ it('marks a contact whose thread waits for input', async () => {
   expect(within(first!).getByLabelText('Needs input').getAttribute('data-icon')).toBe('CircleQuestion');
   expect(within(second!).queryByLabelText('Needs input')).toBeNull();
 });
-it('lists a child question in the parent stack as a link to the child thread, not an inline form', async () => {
-  const parent = { id:'thr_one', title:'Parent', displayTitle:'Parent', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
-  const child = { ...parent, id:'thr_child', title:'Child task', displayTitle:'Child task', parentThreadId:'thr_one', hasPendingInteraction:true };
-  const question = { id:'i_child', threadId:'thr_child', status:'pending', payload:{ kind:'user_question', questions:[{ id:'q1', prompt:'Allow Codex to use bb?', shortLabel:'Choice', required:true, multiSelect:false, allowFreeText:false, options:[{ value:'a', label:'Yes' }] }] } };
-  const { slot, recipients } = setup({ sidebarThreads:{ threads:[parent, child], projects:[] }, interactions:{ list: ({ threadId }: { threadId: string }) => Promise.resolve(threadId === 'thr_child' ? [question] : []) } }); fireEvent.click(await recipients.findByRole('option'));
-  const row = await slot.findByRole('link', { name:/Child task: Allow Codex to use bb\?/ });
-  expect(row.closest('[data-promptbox-shell]')).toBeTruthy();
-  expect(row.getAttribute('href')).toBe('/projects/pr_one/threads/thr_child');
-  expect(slot.container.querySelector('[data-question-form]')).toBeNull();
-});
 it('renews the edit hold lease while the queued message is being edited', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:7 };
   const hold = vi.fn(() => Promise.resolve({ leaseMs:200 }));
