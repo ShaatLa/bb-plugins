@@ -27,10 +27,12 @@ const models=await new Promise(resolve=>execFile(agy,['models'],{timeout:30000,m
   resolve(error?[]:output.trim().split(/\r?\n/).map(line=>{const [value,name]=line.split('\t');return {value,name};}).filter(model=>model.value?.startsWith(${JSON.stringify(GOOGLE_MODEL_PREFIX)})&&model.name));
 }));
 function sessionFile(id){if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid session ID.');return join(dataDir,'sessions',id+'.json');}
+// BB sends <system_instructions> only in the first prompt of a new session; keep them for resume and compression.
+const instructionsFile=session=>join(session.root,'bb-instructions.md');
 function save(session){
   const file=sessionFile(session.id),temporary=file+'.'+process.pid+'.tmp';
-  const {id,cwd,conversationId,selected}=session;
-  writeFileSync(temporary,JSON.stringify({id,cwd,conversationId,selected}),{mode:0o600});renameSync(temporary,file);
+  const {id,cwd,conversationId,selected,instructions}=session;
+  writeFileSync(temporary,JSON.stringify({id,cwd,conversationId,selected,instructions}),{mode:0o600});renameSync(temporary,file);
 }
 function config(session){
   const seen=new Set();
@@ -45,6 +47,7 @@ function attachMcp(session,servers=[]){
   if(session.root){rmSync(session.root,{recursive:true,force:true});pendingRoots.delete(session.root);}
   const root=mkdtempSync(join(tempDir,'agy-bb-session-'));session.root=root;pendingRoots.add(root);
   mkdirSync(join(root,'.agents'),{mode:0o700});
+  if(session.instructions)writeFileSync(instructionsFile(session),session.instructions,{mode:0o600});
   const mcpServers=Object.fromEntries(servers.map(server=>{
     if(typeof server.command!=='string'||!Array.isArray(server.args)||!Array.isArray(server.env))throw Error('Only stdio MCP is supported.');
     return [server.name,{command:server.command,args:server.args,env:Object.fromEntries(server.env.map(e=>[e.name,e.value]))}];
@@ -72,7 +75,9 @@ function attachMcp(session,servers=[]){
 }
 function getSession(id){const session=sessions.get(id);if(!session)throw Error('Unknown session.');return session;}
 function promptText(session,parts){
-  const text=(permissionMode==='accept-edits'?'For read-only review use bb_review MCP tools first: memory (search/get/catalog), git (worktree inspection), read_file (worktree and BB current/parent storage). These grant no shell or write access. Other actions keep the native policy.\n\n':'')+'Before using tools, if present, read and follow the applicable AGENTS.md at the workspace root and in the current directory, plus any nested AGENTS.md for files you touch. Read files in full if the native rules index only gives a pointer. GEMINI.md is not required. If a tool action is denied, respect the denial: never retry it or bypass it through another tool. Continue with permitted alternatives, or explicitly report what was denied and which requested work remains blocked. Do not silently stop or claim completion. Follow the BB instructions below.\n\n'+parts.map((part,index)=>{
+  const block=parts.find(part=>part.type==='text'&&typeof part.text==='string'&&/^<system_instructions>[\s\S]*<\/system_instructions>$/.test(part.text.trim()));
+  if(block){session.instructions=block.text.trim();writeFileSync(instructionsFile(session),session.instructions,{mode:0o600});}
+  const text=(session.instructions?'BB thread instructions are saved in full at '+instructionsFile(session)+'. If they are no longer in your context, for example after context compression or a resumed session, read that file in full and follow it.\n\n':'')+(permissionMode==='accept-edits'?'For read-only review use bb_review MCP tools first: memory (search/get/catalog), git (worktree inspection), read_file (worktree and BB current/parent storage). These grant no shell or write access. Other actions keep the native policy.\n\n':'')+'Before using tools, if present, read and follow the applicable AGENTS.md at the workspace root and in the current directory, plus any nested AGENTS.md for files you touch. Read files in full if the native rules index only gives a pointer. GEMINI.md is not required. If a tool action is denied, respect the denial: never retry it or bypass it through another tool. Continue with permitted alternatives, or explicitly report what was denied and which requested work remains blocked. Do not silently stop or claim completion. Follow the BB instructions below.\n\n'+parts.map((part,index)=>{
     if(part.type==='text'&&typeof part.text==='string')return part.text;
     if(part.type==='image'&&typeof part.data==='string'){
       const extension=new Map([['image/png','png'],['image/jpeg','jpg'],['image/webp','webp'],['image/gif','gif']]).get(part.mimeType);
@@ -150,7 +155,7 @@ async function handle(request){
   }
   if(method==='session/load'||method==='session/resume'){
     const stored=JSON.parse(readFileSync(sessionFile(p.sessionId),'utf8'));
-    if(stored.id!==p.sessionId||typeof stored.cwd!=='string'||typeof stored.selected!=='string'||!(stored.conversationId===null||typeof stored.conversationId==='string'))throw Error('Invalid stored session.');
+    if(stored.id!==p.sessionId||typeof stored.cwd!=='string'||typeof stored.selected!=='string'||!(stored.conversationId===null||typeof stored.conversationId==='string')||!(stored.instructions===undefined||typeof stored.instructions==='string'))throw Error('Invalid stored session.');
     const selected=models.find(model=>model.value===stored.selected)||models[0];
     if(!selected)throw Error('No Google models available.');
     const session={...stored,selected:selected.value,cwd:p.cwd||stored.cwd,child:null};attachMcp(session,p.mcpServers);save(session);sessions.set(session.id,session);

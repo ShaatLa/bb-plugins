@@ -35,7 +35,8 @@ test('isolates MCP configs, preserves credentials privately, selects live model 
     for(const value of ['claude-next','gpt-oss'])await assert.rejects(()=>request('session/set_config_option',{sessionId:second.sessionId,configId:'model',value}));
     await assert.rejects(()=>request('session/set_config_option',{sessionId:first.sessionId,configId:'model',value:'missing'}));
     const persisted=JSON.parse(await readFile(path.join(dir,'sessions',first.sessionId+'.json'),'utf8'));assert.equal(persisted.selected,'gemini-new-high');
-    await request('session/prompt',{sessionId:first.sessionId,prompt:[{type:'text',text:'BB role instruction sentinel'}]});
+    await request('session/prompt',{sessionId:first.sessionId,prompt:[{type:'text',text:'<system_instructions>\nBB role instruction sentinel\n</system_instructions>'},{type:'text',text:'hello'}]});
+    assert.ok(JSON.parse(await readFile(path.join(dir,'sessions',first.sessionId+'.json'),'utf8')).instructions.includes('BB role instruction sentinel'));
     const args=JSON.parse(await readFile(path.join(dir,'args.json'),'utf8'));
     assert.ok(args.includes('--dangerously-skip-permissions'));
     const body=await readFile(path.join(dir,'input.txt'),'utf8');
@@ -72,6 +73,11 @@ test('isolates MCP configs, preserves credentials privately, selects live model 
     await new Promise(resolve=>setTimeout(resolve,200));
     assert.throws(()=>process.kill(descendant,0),{code:'ESRCH'});
     assert.equal((await request('session/prompt',{sessionId:first.sessionId,prompt:[{type:'text',text:'steered follow-up'}]})).stopReason,'end_turn');
+    // After load bb sends no instructions; the prompt must point to a fresh saved copy instead.
+    const followUp=await readFile(path.join(dir,'input.txt'),'utf8');
+    const saved=followUp.match(/saved in full at (\S+bb-instructions\.md)/)?.[1];
+    assert.ok(saved&&!saved.startsWith(a)&&!followUp.includes('BB role instruction sentinel'));
+    assert.ok((await readFile(saved,'utf8')).includes('BB role instruction sentinel'));
     const followUpArgs=JSON.parse(await readFile(path.join(dir,'args.json'),'utf8'));
     assert.equal(followUpArgs[followUpArgs.indexOf('--conversation')+1],'native-conversation');
     const exit=once(child,'exit');child.stdin.end();await exit;
