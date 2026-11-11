@@ -60,7 +60,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 13,
+      version: 15,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -114,6 +114,11 @@ export function captureProject(
       FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
       WHERE t.project_id=? ORDER BY d.blocking_task_id
     `).all(projectId), row => row.taskId);
+    const relatedByTask = group(db.prepare<[string], { taskId: string; relatedTaskId: string }>(`
+      SELECT r.task_id AS taskId, r.related_task_id AS relatedTaskId
+      FROM task_relations r JOIN tasks t ON t.id=r.task_id
+      WHERE t.project_id=? ORDER BY r.related_task_id
+    `).all(projectId), row => row.taskId);
     const aliasesByTask = group(
       db
         .prepare<[string], { task_id: string; prefix: string; number: number }>(
@@ -133,6 +138,7 @@ export function captureProject(
     const records = tasks.map((task) => ({
       activityHistory: historyTasks.has(task.id),
       dependencies: (dependenciesByTask.get(task.id) ?? []).map(row => row.blockingTaskId),
+      related: (relatedByTask.get(task.id) ?? []).map(row => row.relatedTaskId),
       pullRequests: linksByTask.get(task.id) ?? [],
       // ordinaryVisible is derived from scheduled sources, not task data.
       task: {
@@ -181,7 +187,7 @@ function dbRow(value: object): Row {
   return Object.fromEntries(
     Object.entries(value).map(([key, value]) => [
       key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
-      key === "statuses"
+      key === "statuses" || key === "workflowPolicy"
         ? JSON.stringify(value)
         : typeof value === "boolean"
           ? Number(value)
@@ -240,6 +246,13 @@ export function restoreProject(
       const current = localDependencies.get(record.task.id) ?? [];
       if (!overwrite && JSON.stringify(current) !== JSON.stringify([...record.dependencies].sort()))
         throw new Error(`Import conflict: dependencies ${record.task.key}; use --overwrite`);
+    }
+    // Archives before v15 cannot carry relations, so they leave local relations untouched.
+    const relatedOf = (record: (typeof records)[number]) => (manifest.version >= 15 ? record.related : undefined);
+    for (const record of records) if (relatedOf(record) && localTaskIds.has(record.task.id) && !overwrite) {
+      const current = db.prepare<[string], { id: string }>("SELECT related_task_id AS id FROM task_relations WHERE task_id=? ORDER BY related_task_id").all(record.task.id).map(row => row.id);
+      if (JSON.stringify(current) !== JSON.stringify([...relatedOf(record)!].sort()))
+        throw new Error(`Import conflict: related tasks ${record.task.key}; use --overwrite`);
     }
     const changes: Array<{ table: string; row: Row; keys: string[] }> = [];
     const plan = (
@@ -495,6 +508,10 @@ export function restoreProject(
       db.prepare<[string]>("DELETE FROM task_dependencies WHERE task_id=?").run(record.task.id);
     const insertDependency = db.prepare<[string, string]>("INSERT INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)");
     for (const record of records) for (const blocker of record.dependencies ?? []) insertDependency.run(record.task.id, blocker);
+    for (const record of records) if (relatedOf(record) !== undefined)
+      db.prepare<[string]>("DELETE FROM task_relations WHERE task_id=?").run(record.task.id);
+    const insertRelation = db.prepare<[string, string]>("INSERT INTO task_relations(task_id, related_task_id) VALUES (?, ?)");
+    for (const record of records) for (const other of relatedOf(record) ?? []) insertRelation.run(record.task.id, other);
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
       const currentIds = store.tasks

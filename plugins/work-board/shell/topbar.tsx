@@ -2,12 +2,15 @@ import { useTaskStatuses } from "./task-statuses.js";
 import { useCallback, useMemo } from "react";
 import type { Project, Task } from "../shared/contract.js";
 import { groupTasksByStatus } from "../views/list/lib.js";
-import { listAllTasks, useTasksQuery } from "./data.js";
+import { patchTasks, useTasksQuery } from "./data.js";
+import { loadTaskDataset, taskDatasetSnapshot } from "./task-dataset";
+import { signalTaskIds } from "./signal-scheduler.js";
 import type { ResolvedTasksRoute, TaskViewMode, TasksRoute } from "./routes.js";
 import { projectForRoute } from "./kanban-view.js";
 import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -54,18 +57,21 @@ function TaskPager({
   onNavigate: (route: TasksRoute) => void;
 }) {
   const { ids: statusIds } = useTaskStatuses(projectId);
-  const siblings = useTasksQuery(
-    async (rpc) =>
-      listAllTasks(rpc, {
-        ...(projectId === null ? {} : { projectId }),
-        parentTaskId: null,
-      }),
-    ["tasks:changed"],
+  // Shares the warm list/board dataset instead of re-listing the project on every event.
+  const dataset = useTasksQuery<Task[]>(
+    (rpc, publish) => loadTaskDataset(rpc, projectId, publish),
+    ["tasks:changed", "projects:changed"],
     [projectId],
+    {
+      snapshot: taskDatasetSnapshot(projectId),
+      applySignals: (rpc, current, signals) => signals.some((signal) => signal.channel === "projects:changed")
+        ? Promise.resolve(null)
+        : patchTasks(rpc, current, signalTaskIds(signals, "tasks:changed"), (task) => !task.archivedAt && (projectId === null || task.projectId === projectId)),
+    },
   );
   const position = useMemo(
-    () => (siblings.data ? pagerPosition(siblings.data, taskKey, statusIds) : null),
-    [siblings.data, taskKey, statusIds],
+    () => (dataset.data ? pagerPosition(dataset.data.filter((task) => task.parentTaskId === null), taskKey, statusIds) : null),
+    [dataset.data, taskKey, statusIds],
   );
   if (!position) return null;
   const step = (key: string | null) => {
@@ -286,23 +292,33 @@ export function TasksTopbar({
         onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
       />
       <RefreshTasksButton />
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              asChild
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-            >
-              <a href="/settings/plugins/work-board" aria-label="Work Board settings">
-                <Icon name="Settings" className="size-3.5" />
-              </a>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Work Board settings</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <DropdownMenu>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label="Work Board settings"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+                >
+                  <Icon name="Settings" className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Work Board settings</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => onNavigate({ kind: "manage" })}>
+            Manage labels and presets
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <a href="/settings/plugins/work-board">Plugin settings</a>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" && route.kind !== "scheduled" ? (
         <Button
           size="sm"

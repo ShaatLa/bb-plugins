@@ -691,3 +691,30 @@ describe("TasksEditor submit-on-Enter", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+describe("description links", () => {
+  it("opens web links through onOpenUrl and leaves other clicks to the editor", async () => {
+    const onOpenUrl = vi.fn(() => true);
+    let editor: Editor | undefined;
+    const view = render(
+      <TasksEditor
+        value="Open http://127.0.0.1:8768/Anvil%20Pipeline%20builder.dc.html?v=cpedit"
+        onChange={() => {}}
+        onOpenUrl={onOpenUrl}
+        onEditorReady={(ready) => { editor = ready; }}
+      />,
+    );
+    await waitFor(() => expect(editor && view.container.querySelector("a[href]")).toBeTruthy());
+    const click = (target: Element, init: MouseEventInit = {}) => {
+      const event = new MouseEvent("click", { button: 0, ...init });
+      Object.defineProperty(event, "target", { value: target });
+      return editor!.view.someProp("handleClick", (handle) => handle(editor!.view, 1, event));
+    };
+    const anchor = view.container.querySelector("a[href]")!;
+    expect(click(anchor)).toBe(true);
+    expect(onOpenUrl).toHaveBeenCalledWith("http://127.0.0.1:8768/Anvil%20Pipeline%20builder.dc.html?v=cpedit");
+    expect(click(anchor, { shiftKey: true })).toBeFalsy();
+    expect(click(view.container.querySelector("p")!)).toBeFalsy();
+    expect(onOpenUrl).toHaveBeenCalledTimes(1);
+  });
+});

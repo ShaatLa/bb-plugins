@@ -21,7 +21,7 @@ const navigationRegistration = {
   component: navigationView.component,
 };
 
-beforeEach(() => window.localStorage.clear());
+beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -137,7 +137,7 @@ describe("project view preference", () => {
 
   it("restores the remembered view when the URL names none and opens the native board for it", async () => {
     const listed = openProject(`${PROJECT_ID}?view=list`, panelOptions(nativePanel("tab-navigation")));
-    expect(listed.getByRole("link", { name: "Work Board settings" }).getAttribute("href")).toBe("/settings/plugins/work-board");
+    expect(listed.getByRole("button", { name: "Work Board settings" })).toBeTruthy();
     fireEvent.click(await listed.findByRole("button", { name: "Board" }));
     expect(listed.navigateCalls).toContainEqual({
       method: "toPluginPanel",
@@ -200,6 +200,32 @@ describe("project view preference", () => {
 });
 
 describe("startup screen", () => {
+  it("shares one in-flight listProjects read across mounted surfaces", async () => {
+    let resolveProjects!: (value: { projects: (typeof project)[] }) => void;
+    const projects = new Promise<{ projects: (typeof project)[] }>((resolve) => { resolveProjects = resolve; });
+    let reads = 0;
+    const rpc = seededRpc({ listProjects: () => { reads++; return projects; } });
+    const first = renderSlot(navigationRegistration, { subPath: "" }, { rpc });
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc });
+    expect(reads).toBe(1);
+    resolveProjects({ projects: [project] });
+    await first.findByText(project.name);
+    second.lifecycle.unmount();
+  });
+
+  it("does not let a read started after a change join one started before it", async () => {
+    let resolveProjects!: (value: { projects: (typeof project)[] }) => void;
+    const projects = new Promise<{ projects: (typeof project)[] }>((resolve) => { resolveProjects = resolve; });
+    let reads = 0;
+    const rpc = seededRpc({ listProjects: () => { reads++; return projects; } });
+    const first = renderSlot(navigationRegistration, { subPath: "" }, { rpc });
+    expect(reads).toBe(1);
+    await first.emitRealtime("projects:changed", { projectId: PROJECT_ID });
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc });
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    resolveProjects({ projects: [project] });
+    second.lifecycle.unmount();
+  });
   const rpc = seededRpc({
     listProjects: () => ({ projects: [project, { ...project, id: OTHER_PROJECT_ID, name: "Other project", prefix: "OTH" }] }),
     listLabels: () => ({ labels: [] }),
@@ -209,6 +235,8 @@ describe("startup screen", () => {
     const visited = renderSlot(tasksRegistration, { subPath: `${OTHER_PROJECT_ID}?view=list` }, { rpc });
     await waitFor(() => expect(loadLastProjectId()).toBe(OTHER_PROJECT_ID));
     visited.lifecycle.unmount();
+    // A new app session: within one session the panel resumes its exact last location instead.
+    window.sessionStorage.clear();
     const reopened = renderSlot(tasksRegistration, { subPath: "" }, { rpc, ...panelOptions(nativePanel("tab-navigation")) });
     await waitFor(() => expect(reopened.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: `${OTHER_PROJECT_ID}?view=board`, replace: true } }));
     expect(reopened.inspection.experimental_panelCalls).toEqual([]);
@@ -1050,7 +1078,7 @@ describe("tasks app shell", () => {
       });
     });
 
-    it("keeps the newer projects snapshot when an older request resolves later", async () => {
+    it("refreshes the shared projects snapshot after an invalidation", async () => {
       const olderProject = { ...project, name: "Older truth" };
       const newerProject = { ...project, name: "Newer truth" };
       const older = deferred<{ projects: (typeof project)[] }>();
@@ -1067,16 +1095,16 @@ describe("tasks app shell", () => {
         { subPath: "" },
         { rpc },
       );
+      expect(calls).toBe(1);
+      older.resolve({ projects: [olderProject] });
+      await second.findByText("Older truth");
+      await second.emitRealtime("projects:changed", { projectId: PROJECT_ID });
       await second.findByText("Newer truth");
       await waitFor(() =>
         expect(
           JSON.parse(window.localStorage.getItem(projectsKey) ?? "null"),
         ).toEqual([newerProject]),
       );
-      older.resolve({ projects: [olderProject] });
-      await act(async () => {
-        await older.promise;
-      });
       expect(
         JSON.parse(window.localStorage.getItem(projectsKey) ?? "null"),
       ).toEqual([newerProject]);
@@ -1405,5 +1433,45 @@ describe("tasks app shell", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(projectCalls).toBe(settled);
+  });
+});
+
+
+it("opens label management from the main toolbar settings menu", async () => {
+  const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, {
+    rpc: seededRpc({ listLabels: () => ({ labels: [] }) }),
+  });
+  fireEvent.keyDown(await slot.findByRole("button", { name: "Work Board settings" }), { key: "ArrowDown" });
+  const settings = await slot.findByRole("menuitem", { name: "Plugin settings" });
+  expect(settings.getAttribute("href")).toBe("/settings/plugins/work-board");
+  fireEvent.click(slot.getByRole("menuitem", { name: "Manage labels and presets" }));
+  expect(slot.navigateCalls).toContainEqual({
+    method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
+  });
+  slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
+  await slot.findByText("Projects, labels, agent presets, and folders.");
+  expect(slot.getByRole("tab", { name: "Labels" }).getAttribute("data-state")).toBe("active");
+  expect(await slot.findByText("No labels yet.")).toBeTruthy();
+});
+
+describe("resuming the panel", () => {
+  it("reopens the last viewed task when the panel is opened at its root", async () => {
+    const viewed = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-4" }, { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) });
+    await waitFor(() => expect(window.sessionStorage.getItem("bb-work-board:last-route")).toBe("task/TSK-4"));
+    viewed.lifecycle.unmount();
+
+    const reopened = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) });
+    await waitFor(() => expect(reopened.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: "task/TSK-4", replace: true },
+    }));
+  });
+
+  it("uses the default screen when the remembered project no longer exists", async () => {
+    window.sessionStorage.setItem("bb-work-board:last-route", "01HZZZZZZZZZZZZZZZZZZZGONE");
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) });
+    await waitFor(() => expect(slot.navigateCalls.some((call) => call.method === "toPluginPanel")).toBe(true));
+    expect(slot.navigateCalls).not.toContainEqual(expect.objectContaining({ options: expect.objectContaining({ subPath: expect.stringContaining("GONE") }) }));
   });
 });

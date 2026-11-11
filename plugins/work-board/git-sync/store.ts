@@ -111,6 +111,11 @@ export function createGitSyncStore(db: Database) {
         "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? ORDER BY l.task_id, l.identity",
       ).all(projectId).map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
     },
+    attempts(projectId: string) {
+      return new Map(db.prepare<[string], { identity: string; lastAttemptAt: number | null; failureCount: number }>(
+        "SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount FROM git_pr_snapshots WHERE project_id=?",
+      ).all(projectId).map((row) => [row.identity, row]));
+    },
     config,
     links,
     saveLink,
@@ -154,15 +159,20 @@ export function createGitSyncStore(db: Database) {
         error: row?.error ?? null,
       };
     },
+    markAttempt(projectId: string, link: Pick<PrLink, "repository" | "number">) {
+      db.prepare<[string, string, number]>(
+        "INSERT INTO git_pr_snapshots(project_id, identity, last_attempt_at) VALUES (?, ?, ?) ON CONFLICT(project_id, identity) DO UPDATE SET last_attempt_at=excluded.last_attempt_at",
+      ).run(projectId, prIdentity(link), Date.now());
+    },
     saveSnapshot(
       projectId: string,
       link: Pick<PrLink, "repository" | "number">,
       snapshot: PrSnapshot,
     ) {
       const value = prSnapshotSchema.parse(snapshot);
-      db.prepare<[string, string, string]>(
-        "INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, NULL) ON CONFLICT(project_id, identity) DO UPDATE SET payload=excluded.payload, error=NULL",
-      ).run(projectId, prIdentity(link), JSON.stringify(value));
+      db.prepare<[string, string, string, number]>(
+        "INSERT INTO git_pr_snapshots(project_id, identity, payload, error, last_attempt_at) VALUES (?, ?, ?, NULL, ?) ON CONFLICT(project_id, identity) DO UPDATE SET payload=excluded.payload, error=NULL, last_attempt_at=excluded.last_attempt_at, failure_count=0",
+      ).run(projectId, prIdentity(link), JSON.stringify(value), Date.now());
       // A repository rename is a durable identity update, not a new delivery link.
       const linked = db.prepare<[string, string], { payload: string }>(
         "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity=?",
@@ -193,18 +203,18 @@ export function createGitSyncStore(db: Database) {
           ).run(current.taskId, prIdentity(current));
       }
       if (prIdentity(link) !== prIdentity(value))
-        db.prepare<[string, string, string]>(
-          "INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, NULL) ON CONFLICT(project_id, identity) DO UPDATE SET payload=excluded.payload, error=NULL",
-        ).run(projectId, prIdentity(value), JSON.stringify(value));
+        db.prepare<[string, string, string, number]>(
+          "INSERT INTO git_pr_snapshots(project_id, identity, payload, error, last_attempt_at) VALUES (?, ?, ?, NULL, ?) ON CONFLICT(project_id, identity) DO UPDATE SET payload=excluded.payload, error=NULL, last_attempt_at=excluded.last_attempt_at, failure_count=0",
+        ).run(projectId, prIdentity(value), JSON.stringify(value), Date.now());
     },
     fail(
       projectId: string,
       link: Pick<PrLink, "repository" | "number">,
       error: string,
     ) {
-      db.prepare<[string, string, string]>(
-        "INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, NULL, ?) ON CONFLICT(project_id, identity) DO UPDATE SET error=excluded.error",
-      ).run(projectId, prIdentity(link), error);
+      db.prepare<[string, string, string, number]>(
+        "INSERT INTO git_pr_snapshots(project_id, identity, payload, error, last_attempt_at, failure_count) VALUES (?, ?, NULL, ?, ?, 1) ON CONFLICT(project_id, identity) DO UPDATE SET error=CASE WHEN error IS excluded.error THEN error ELSE excluded.error END, last_attempt_at=excluded.last_attempt_at, failure_count=failure_count+1",
+      ).run(projectId, prIdentity(link), error, Date.now());
     },
   };
 }

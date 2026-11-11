@@ -389,6 +389,8 @@ Read `bb work-board dependency list KEY --json` before starting a task. Add `bb 
 
 Use the Dependencies section in the task UI to search/add/remove links or open either endpoint. Board/list Blocked badges identify unfinished predecessors. Links are within one project; self-links and cycles are rejected. Move all connected endpoints together in a task family or remove the links before a project move. Exports store each task's outgoing dependency IDs, validates the graph and restores it atomically. Older imports preserve local links; conflicting imported sets need --overwrite. No merge condition or automatic workflow moves are inferred.
 
+Related links (0.29.0) connect tasks that share context without blocking either one: `bb work-board dependency add ABC-2 --relates-to ABC-1`, `dependency remove ABC-2 --relates-to ABC-1`. The link is symmetric and same-project; `dependency list` and `show --json` return it under `dependencies.related`. Use it instead of a blocker when a task only needs to be read alongside another. Export v15 carries related links; imports accept v1–v14.
+
 
 ## Storage maintenance (0.22.2)
 
@@ -415,3 +417,6 @@ Abandoned requires recorded work AND a confirmed lost assignment (archived/delet
 ## Sharing task context
 
 The UI Share button copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status. A scheduled task shares its template key; agents can inspect/change it with `schedule show KEY` and `schedule edit KEY`, and use ordinary task commands for attachments/questions/comments. Selected scheduled targets display the thread title; an unavailable thread is not silently replaced.
+Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
+
+Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.

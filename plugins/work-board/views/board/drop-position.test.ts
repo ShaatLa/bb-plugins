@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TaskStatus } from "../../shared/contract.js";
 import {
   applyBoardMove,
+  dropIndexForLayout,
   dropIndexForPointer,
   dropNeighborsForIndex,
+  updateDragState,
   visibleBoardStatuses,
 } from "./drop-position.js";
+import { cardLayout } from "./card-window.js";
 
 describe("visibleBoardStatuses", () => {
   const columns = (canceled: number): Record<TaskStatus, unknown[]> => ({
@@ -114,6 +117,41 @@ describe("dropIndexForPointer", () => {
   it("returns 0 for an empty column", () => {
     expect(dropIndexForPointer([], 42)).toBe(0);
   });
+});
+
+describe("dropIndexForLayout", () => {
+  it("uses variable-height card centers and excludes the dragged card at boundaries", () => {
+    const layout = cardLayout(["a", "b", "c"], new Map([["a", 40], ["b", 100], ["c", 20]]));
+    expect(dropIndexForLayout(layout, 20, "elsewhere")).toBe(0);
+    expect(dropIndexForLayout(layout, 20.01, "elsewhere")).toBe(1);
+    expect(dropIndexForLayout(layout, 98, "elsewhere")).toBe(1);
+    expect(dropIndexForLayout(layout, 98.01, "elsewhere")).toBe(2);
+    expect(dropIndexForLayout(layout, 160, "b")).toBe(1);
+    expect(dropIndexForLayout(layout, 166.01, "b")).toBe(2);
+    expect(dropIndexForLayout(layout, 999, "c")).toBe(2);
+  });
+
+  it("reads logarithmically many card positions in a large column", () => {
+    const layout = cardLayout(Array.from({ length: 327 }, (_, index) => String(index)), new Map());
+    let reads = 0;
+    const positions = new Proxy(layout.offsets, { get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    } });
+    expect(dropIndexForLayout({ ...layout, offsets: positions }, 10_000, "170")).toBeGreaterThan(0);
+    expect(reads).toBeLessThanOrEqual(9);
+  });
+});
+
+it("retains the same drag state when the pointer and drop position are unchanged", () => {
+  const current = { x: 10, y: 20, overStatus: "todo" as TaskStatus, dropIndex: 2 };
+  const setDrag = vi.fn();
+  expect(updateDragState(current, { ...current }, setDrag)).toBe(current);
+  expect(setDrag).not.toHaveBeenCalled();
+  expect(updateDragState(current, { ...current, x: 11 }, setDrag)).not.toBe(current);
+  expect(updateDragState(current, { ...current, dropIndex: 3 }, setDrag)).not.toBe(current);
+  expect(updateDragState(null, current, setDrag)).toBe(current);
+  expect(setDrag).toHaveBeenCalledTimes(3);
 });
 
 describe("applyBoardMove", () => {

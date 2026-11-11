@@ -148,6 +148,7 @@ describe("lifecycle SQL scope", () => {
           expected: string,
           statementsPerMapping: number,
           comments: number,
+          signalsPerMapping = statementsPerMapping === 0 ? 0 : 1,
         ) => {
           f.queries.length = 0;
           const signalsBefore = f.harness.realtimeSignals.length;
@@ -170,14 +171,16 @@ describe("lifecycle SQL scope", () => {
           else await f.harness.emitThreadEvent("thread.deleted", { thread });
           expect(f.queries).toHaveLength(1 + count * statementsPerMapping);
           expect(f.harness.realtimeSignals.length - signalsBefore).toBe(
-            statementsPerMapping === 0 ? 0 : count * 2,
+            count * signalsPerMapping,
           );
           if (statementsPerMapping > 0) {
             expect(f.harness.realtimeSignals.slice(signalsBefore)).toEqual(
               expect.arrayContaining(
                 f.tasks.slice(0, count).flatMap((task) => [
                   { channel: "threads:changed", payload: { taskId: task.id } },
-                  { channel: "comments:changed", payload: { taskId: task.id } },
+                  ...(signalsPerMapping === 2
+                    ? [{ channel: "comments:changed", payload: { taskId: task.id } }]
+                    : []),
                 ]),
               ),
             );
@@ -205,10 +208,11 @@ describe("lifecycle SQL scope", () => {
         };
         await transition("active", "working", 0, 0);
         await transition("idle", "idle", 3, 0);
-        await transition("error", "failed", 6, 1);
+        // +1 statement per mapping: the duplicate-comment lookup; comments:changed only when written
+        await transition("error", "failed", 7, 1, 2);
         await transition("error", "failed", 0, 1);
         await transition("active", "working", 3, 1);
-        await transition("deleted", "completed", 6, 2);
+        await transition("deleted", "completed", 7, 2, 2);
         await transition("active", "completed", 0, 2);
         await transition("deleted", "completed", 0, 2);
       } finally {
@@ -223,9 +227,9 @@ describe("lifecycle SQL scope", () => {
     ["active", null, "working", 1],
     ["stopping", null, "working", 1],
     ["idle", null, "idle", 4],
-    ["error", null, "failed", 7],
-    ["idle", 1, "completed", 7],
-    ["error", 1, "failed", 7],
+    ["error", null, "failed", 8],
+    ["idle", 1, "completed", 8],
+    ["error", 1, "failed", 8],
   ] as const)(
     "maps created %s / deletedAt %s to %s",
     async (status, deletedAt, expected, statements) => {

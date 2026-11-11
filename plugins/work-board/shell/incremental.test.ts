@@ -69,7 +69,7 @@ describe("patchTasks", () => {
     store.tasks.updateTask(first.id, { title: "First renamed" });
     const next = await patchTasks(rpc, current, [first.id], () => true);
 
-    expect(next.map((task) => [task.id, task.title])).toEqual([
+    expect(next!.map((task) => [task.id, task.title])).toEqual([
       [first.id, "First renamed"],
       [second.id, "Second"],
     ]);
@@ -93,7 +93,7 @@ describe("patchTasks", () => {
     store.tasks.deleteTask(second.id);
     const next = await patchTasks(rpc, current, [second.id], () => true);
 
-    expect(next.map((task) => task.id)).toEqual([first.id]);
+    expect(next!.map((task) => task.id)).toEqual([first.id]);
     expect(callsTo("listTasks")).toEqual([]);
   });
 
@@ -121,7 +121,25 @@ describe("patchTasks", () => {
       (task) => task.parentTaskId === null,
     );
 
-    expect(next.map((task) => task.id)).toEqual([child.id]);
+    expect(next!.map((task) => task.id)).toEqual([child.id]);
+  });
+
+  it("falls back to one dataset refetch for a 150-task event", async () => {
+    const { rpc, callsTo } = setup();
+    const ids = Array.from({ length: 150 }, (_, index) => `task-${index}`);
+    expect(await patchTasks(rpc, [], ids, () => true)).toBeNull();
+    expect(callsTo("getTask")).toHaveLength(0);
+  });
+
+  it("shares an in-flight task read across two patches", async () => {
+    const { store, project, rpc, callsTo } = setup();
+    const task = store.tasks.createTask({ projectId: project.id, title: "Shared" });
+    const [first, second] = await Promise.all([
+      patchTasks(rpc, [], [task.id], () => true),
+      patchTasks(rpc, [], [task.id], () => true),
+    ]);
+    expect(first).toEqual(second);
+    expect(callsTo("getTask")).toHaveLength(1);
   });
 });
 

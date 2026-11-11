@@ -209,6 +209,11 @@ export function publishTasksChanged(
     WHERE d.task_id=? OR d.blocking_task_id=?
   `).all(taskId, taskId, taskId);
   for (const neighbour of neighbours) bb.realtime.publish("tasks:changed", neighbour);
+  // Subtask lists on a parent's or epic's page listen for that parent, since a new child's ID is unknown there.
+  const family = bb.storage.database().prepare<[string], { parent: string | null; epic: string | null }>(
+    "SELECT parent_task_id AS parent, epic_id AS epic FROM tasks WHERE id=?",
+  ).get(taskId);
+  for (const id of new Set([family?.parent, family?.epic])) if (id) bb.realtime.publish("tasks:changed", { taskId: id, projectId });
 }
 
 export function publishProjectsChanged(
@@ -656,8 +661,26 @@ export function registerHandlers(
     }
     return { changed };
   }
+  function changeRelation(input: { taskId: string; relatedTaskId: string; authorName: string }, add: boolean) {
+    const changed = store.transaction(() => {
+      const changed = add ? dependencies.relate(input.taskId, input.relatedTaskId) : dependencies.unrelate(input.taskId, input.relatedTaskId);
+      if (changed) {
+        const task = store.tasks.getTask(input.taskId)!, other = store.tasks.getTask(input.relatedTaskId)!;
+        writeSystemComments(store, task.id, input.authorName, [`${add ? "Related task added" : "Related task removed"}: ${other.key} by ${input.authorName}`]);
+        writeSystemComments(store, other.id, input.authorName, [`${add ? "Related task added" : "Related task removed"}: ${task.key} by ${input.authorName}`]);
+      }
+      return changed;
+    });
+    if (changed) for (const id of [input.taskId, input.relatedTaskId]) {
+      publishTasksChanged(bb, id, store.tasks.getTask(id)!.projectId);
+      publishCommentsChanged(bb, id);
+    }
+    return { changed };
+  }
   return {
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
+    addTaskRelation: (input) => changeRelation(input, true),
+    removeTaskRelation: (input) => changeRelation(input, false),
     getStorageStatus: () => storageService(bb).status(),
     maintainStorage: ({ optimize }) => storageService(bb).run(optimize),
     addTaskDependency: (input) => changeDependency(input, true),
@@ -989,6 +1012,7 @@ export function registerHandlers(
         priorities: input.priorities,
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
+        staleStatus: input.staleStatus,
         parentTaskId: input.parentTaskId,
         type: input.type,
         executionTarget: input.executionTarget,
@@ -999,8 +1023,10 @@ export function registerHandlers(
         cursor: input.cursor,
         allowStaleCursor: input.allowStaleCursor,
       });
+      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
       return {
         tasks: apiTasks(store, page.tasks),
+        staleStatusFlags: page.tasks.map((task) => ({ taskId: task.id, flags: flags.get(task.id) ?? [] })),
         nextCursor: page.nextCursor,
       };
     },
@@ -1047,8 +1073,10 @@ export function registerHandlers(
         );
         if (bb.storage.database().prepare<[], { found: number }>(`
           SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
-          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id LIMIT 1
-        `).get()) throw new Error("Remove dependencies outside the moving task family before changing projects");
+          JOIN tasks b ON b.id=d.blocking_task_id WHERE t.project_id<>b.project_id
+          UNION ALL SELECT 1 FROM task_relations r JOIN tasks t ON t.id=r.task_id
+          JOIN tasks b ON b.id=r.related_task_id WHERE t.project_id<>b.project_id LIMIT 1
+        `).get()) throw new Error("Remove dependencies and related links outside the moving task family before changing projects");
         for (const { previousKey, task } of outcome.moved) {
           writeSystemComments(store, task.id, input.authorName, [
             `Moved from ${previousKey} to ${task.key} by ${input.authorName}`,
@@ -1224,6 +1252,7 @@ export function registerHandlers(
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
+      const flags = store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const blockedBy = dependencies.blockers(ids);
@@ -1235,6 +1264,7 @@ export function registerHandlers(
         return {
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
+          staleStatusFlags: flags.get(taskId) ?? [],
           activity: scopedActivity.get(taskId),
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],

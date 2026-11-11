@@ -21,6 +21,23 @@ export function storeLastProjectId(projectId: string): void {
   } catch {}
 }
 
+const LAST_ROUTE_STORAGE_KEY = "bb-work-board:last-route";
+
+/** The panel location last shown in this app session, so reopening Work Board resumes it. */
+export function loadLastRoute(): string | null {
+  try {
+    return window.sessionStorage.getItem(LAST_ROUTE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function storeLastRoute(subPath: string): void {
+  try {
+    window.sessionStorage.setItem(LAST_ROUTE_STORAGE_KEY, subPath);
+  } catch {}
+}
+
 const DEFAULT_VIEW_MODE: TaskViewMode = "list";
 
 interface StoredDocumentV1 {
