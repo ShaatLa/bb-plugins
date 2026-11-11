@@ -299,7 +299,7 @@ it('answers an open agent question of the conversation from the bottom stack, ou
   fireEvent.click(await recipients.findByRole('option'));
   const card = await slot.findByRole('region', { name:'Questions for you' });
   expect(card.closest('[data-promptbox-shell]')?.closest('.sticky')).toBeTruthy();
-  expect(within(card).getByText('Question for you', { selector:'h3' })).toBeTruthy();
+  expect(within(card).getByText('Question for you')).toBeTruthy();
   expect(within(slot.getByRole('list', { name:'History' })).queryByText('Ship it?')).toBeNull();
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ view:'for_me', threadId:'thr_one' }));
   fireEvent.click(within(card).getByRole('button', { name:/^Yes/ }));

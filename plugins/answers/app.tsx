@@ -1,6 +1,6 @@
 import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, experimental_CollapsibleStackCard as CollapsibleStackCard, useComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
@@ -412,7 +412,8 @@ export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?:
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => a.createdAt - b.createdAt);
   if (!items.length) return null;
-  const card = <CollapsibleStackCard label="Questions for you" title={items.length === 1 ? 'Question for you' : `${items.length} questions for you`} icon="MessageQuestion" isActive><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain px-2">{items.map(item => <ItemCard key={item.id} item={item} chat />)}</ul></CollapsibleStackCard>;
+  // Open from the start (bb's CollapsibleStackCard always starts collapsed and hid them); header as "Active child threads".
+  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
 // bb shows its own blocking question forms in its chat; this banner adds only the agents' open questions.
@@ -457,7 +458,7 @@ export default definePluginApp(app => {
     experimental_panel.openTab({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
   } });
   app.slots.experimental_appOverlay({ id: 'chat-comment', component: ChatComment });
-  app.composer.customize({ id: 'questions', scopes: ['thread'], banners: [{ id: 'questions', chrome: 'bare', component: ComposerQuestions }] });
+  app.composer.customize({ id: 'questions', scopes: ['thread'], banners: [{ id: 'questions', chrome: 'card', component: ComposerQuestions }] });
   app.slots.messageAction({ id: 'comment', title: 'Comment', icon: 'MessageSquare', run({ selectedText, message, composer }) {
     if (!composer) throw new Error('The thread composer is unavailable on this surface');
     const selection = window.getSelection();

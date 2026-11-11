@@ -620,11 +620,10 @@ describe('thread composer banner', () => {
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'for_me', threadId: 'thr_one' })));
     expect(slot.container.querySelector('[data-testid="bb-collapsible-stack-card"]')).toBeNull();
   });
-  it('shows the thread\'s open questions oldest first in bb\'s stack card', async () => {
+  it('shows the thread\'s open questions oldest first, open from the start', async () => {
     const { slot } = await render([{ ...ask, id: 'ans_new', question: 'Newer?', createdAt: 2 }, { ...ask, createdAt: 1 }]);
     const card = await slot.findByRole('region', { name: 'Questions for you' });
-    expect(card.dataset.icon).toBe('MessageQuestion'); expect(card.dataset.active).toBe('true');
-    expect(within(card).getByText('2 questions for you')).toBeTruthy();
+    expect(within(card).getByText('Questions for you')).toBeTruthy(); expect(within(card).getByText('2')).toBeTruthy();
     const text = card.textContent!; expect(text.indexOf('Choose?')).toBeLessThan(text.indexOf('Newer?'));
     expect(within(card).getAllByRole('button', { name: /^B/ })[0]!.className).not.toBe(within(card).getAllByRole('button', { name: /^A/ })[0]!.className);
   });
