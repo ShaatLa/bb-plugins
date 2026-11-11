@@ -4,7 +4,7 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
-import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
+import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest, collapsedCount } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
@@ -58,10 +58,10 @@ export default function plugin(bb: BbPluginApi) {
   };
   function counts(): Counts {
     return db.prepare(`SELECT
-      count(CASE WHEN kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
+      ${collapsedCount("kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL")} AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
-      count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
+      ${collapsedCount(ATTENTION_SQL)} AS inbox
       FROM items WHERE dismissed_at IS NULL AND ${ACTIVE_THREAD_SQL}`).get() as Counts;
   }
   async function list(raw: ListInput) {
@@ -96,7 +96,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};
@@ -228,7 +228,7 @@ export default function plugin(bb: BbPluginApi) {
       const chosenAttention=contactAttention.replace('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
-        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
+        SELECT thread_id,${collapsedCount(contactAttention)} AS unread,max(updated_at) AS last_at
         FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL}
         GROUP BY thread_id ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
       ) SELECT grouped.*,chosen.project_id,
@@ -246,8 +246,9 @@ export default function plugin(bb: BbPluginApi) {
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
       const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND coalesce(answered_at,created_at)<=?`);
+      const unreadOf=db.prepare(`SELECT ${collapsedCount(contactAttention)} AS n FROM items WHERE thread_id=? AND thread_deleted=0`);
       let seen=0;
-      for (const r of rows) { const readAt=threadMap.get(r.thread_id)?.lastReadAt; if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
+      for (const r of rows) { const readAt=threadMap.get(r.thread_id)?.lastReadAt; if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; if (n) r.unread=(unreadOf.get(r.thread_id) as {n:number}).n; seen+=n; } }
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);

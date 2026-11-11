@@ -80,4 +80,6 @@ CREATE TABLE request_triggers (thread_id TEXT NOT NULL, request_id TEXT NOT NULL
 CREATE TABLE turn_updates (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, kind TEXT, source_id TEXT, question TEXT NOT NULL DEFAULT '', answer TEXT, answer_seq INTEGER, PRIMARY KEY (thread_id, turn_id));`,
   // Conversation order (list order:'activity'): an item sits at its latest activity, the answer time when answered.
   `CREATE INDEX items_thread_activity ON items(thread_id, coalesce(answered_at,created_at), id);`,
+  // Updates that ask nothing collapse into one group and are never pushed; existing rows stay 0 (SQL cannot run asksOwner).
+  `ALTER TABLE items ADD COLUMN asks INTEGER NOT NULL DEFAULT 0;            -- 'update': the agent seemingly asks the owner something`,
 ];

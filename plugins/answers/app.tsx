@@ -2,7 +2,7 @@ import { taskKeyRegex } from './task-links';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, experimental_Icon as Icon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
-import { Inbox, Pools, Avatar, ago, conversation } from './inbox';
+import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
@@ -123,6 +123,26 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
     : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? ['Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground">{source}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{body && <span className="inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap">{body}</span>}{time && <span className="shrink-0 text-xs text-muted-foreground">{body && '· '}{time}</span>}</div>;
+}
+// A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
+// latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
+const PREVIEW_RAIL = "relative my-1 pl-3 pr-2 before:pointer-events-none before:absolute before:bottom-1 before:left-1.5 before:top-0 before:w-px before:bg-border-seam before:content-['']";
+export function UpdateGroup({ items, autoRead, reveal, children }: { items: Item[]; autoRead: boolean; reveal?: string | null; children: (item: Item) => ReactNode }) {
+  const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
+  const [open, setOpen] = useState(false), row = useRef<HTMLLIElement>(null), last = items.at(-1)!, unread = items.filter(isUnread);
+  useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
+  // Seen collapsed, the whole group is read; expanded, each card reads itself.
+  useReadOnView(row, autoRead && !open && unread.length > 0, () => void rpc.call('markRead', { ids: unread.map(item => item.id) }).then(() => refresh(), () => {}));
+  const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-5">
+    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2 text-left text-sm leading-5">
+      <Icon name="ListTodo" aria-hidden className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 truncate text-muted-foreground">{items.length} agent updates</span>
+      <time className="shrink-0 text-xs text-muted-foreground" dateTime={new Date(at).toISOString()}>· {age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
+      {unread.length > 0 && <span className="size-1.5 shrink-0 rounded-full bg-foreground/70" aria-label="Unread" />}
+      <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? '' : '-rotate-90'}`} />
+    </button>
+    {open ? <ul className="divide-y divide-border-seam">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul> : <div className={PREVIEW_RAIL}><p className="truncate pl-2 text-sm leading-relaxed text-muted-foreground">{preview}</p></div>}
+  </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 export function ItemCard({ item, members, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump }: { item: Item; members?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void }) {
@@ -256,7 +276,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   const items = result.data ? (chronological ? [...result.data.items].reverse().filter(item => item.kind !== 'for_me' || item.status !== 'open') : result.data.items) : [];
   if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
   // Pages render apart, so a split question older than this page goes on to the earlier one.
-  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans) : { entries: items.map(item => ({ group: [item], part: undefined })), orphans: [] };
+  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
   const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
   const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
   return <>
@@ -265,7 +285,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
     {result.data && <>
       {!cursor && !items.length && <EmptyState icon={emptyCopy[view][0]} title={emptyCopy[view][1]}>{query ? 'Nothing matches this search.' : emptyCopy[view][2]}</EmptyState>}
       {chronological && more}
-      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group: [item], part }) => <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && item.id === firstUnread.current && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}<ItemCard item={item} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} /></Fragment>)}</ul>
+      <ul aria-label="Answers" className={chronological ? 'divide-y divide-border-seam [&>:has(+[data-new])]:border-b-0' : 'space-y-3'}>{entries.map(({ group, part, updates }) => { const item = group[0], card = (member: Item) => <ItemCard item={member} part={part} onJump={jump} chat={chronological} markable autoRead={chronological && view === 'all'} replyToOwn={!threadId} />; return <Fragment key={part === 'answer' ? `${item.id}:answer` : item.id}>{chronological && part !== 'question' && group.some(member => member.id === firstUnread.current) && <li data-new className="flex items-center gap-3 border-b-0 py-2 text-xs font-medium text-muted-foreground"><span className="h-px flex-1 bg-border" />New<span className="h-px flex-1 bg-border" /></li>}{updates ? <UpdateGroup items={group} autoRead={chronological && view === 'all'}>{card}</UpdateGroup> : card(item)}</Fragment>; })}</ul>
       {!chronological && more}
     </>}
   </>;

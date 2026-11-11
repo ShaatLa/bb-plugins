@@ -117,6 +117,22 @@ it('shows only the quoted answer while its question is beyond the loaded window,
   fireEvent.click(slot.getByRole('button', { name:'Load earlier' }));
   await waitFor(() => expect(document.querySelector('[data-history-ids="ans_q"]')).not.toBeNull());
 });
+const quiet = (n: number, answer: string, asks = false) => ({ ...between, id:`ans_u${n}`, answer, asks, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+it('collapses consecutive quiet updates into one group with a preview of the latest, and expands it on click', async () => {
+  const { slot, recipients } = setup({ list: () => ({ items:[quiet(3, 'Third **report**'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  const toggle = await slot.findByRole('button', { name:/3 agent updates/ });
+  expect(document.querySelectorAll('[data-update-group]')).toHaveLength(1); expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(document.querySelector('[data-history-ids="ans_u1 ans_u2 ans_u3"]')).not.toBeNull();
+  expect(slot.getByText('Third report')).toBeTruthy(); expect(slot.queryByText('First report')).toBeNull();
+  fireEvent.click(toggle);
+  expect(await slot.findByText('First report')).toBeTruthy(); expect(slot.getByText('Second report')).toBeTruthy(); expect(toggle.getAttribute('aria-expanded')).toBe('true');
+});
+it('keeps an update that asks the owner as a full message that splits the run', async () => {
+  const { slot, recipients } = setup({ list: () => ({ items:[quiet(5, 'Five'), quiet(4, 'Four'), quiet(3, 'Merge now?', true), quiet(2, 'Two'), quiet(1, 'One')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Merge now?');
+  expect(Array.from(document.querySelectorAll('[data-update-group]'), node => node.getAttribute('data-history-ids'))).toEqual(['ans_u1 ans_u2', 'ans_u4 ans_u5']);
+  expect(document.querySelector('[data-history-ids="ans_u3"] [data-update-group]')).toBeNull();
+});
 it('shows an update as the agent message under a caption naming the finished child, without an owner bubble', async () => {
   const child = { id:'thr_child', title:'Child task', projectId:'pr_one', parentThreadId:'thr_one', parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const update = { ...base, id:'ans_upd', kind:'update' as const, question:'[bb system] @thread:thr_child completed: ok', questionSeq:null, answer:'Child report', answerSeq:7, trigger:{ kind:'system' as const, sourceId:'thr_child' } };
