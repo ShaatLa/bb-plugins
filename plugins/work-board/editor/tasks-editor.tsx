@@ -208,6 +208,12 @@ interface TasksEditorProps {
   /** Opens an http(s) link from the content; returns whether it was handled. */
   onOpenUrl?: (url: string) => boolean;
   onSubmit?: () => void;
+  /**
+   * Serialize to Markdown at most once per animation frame instead of on every
+   * update. Pending text is flushed on blur, submit, unmount and when `value`
+   * is replaced. Only for consumers that do not read their state synchronously.
+   */
+  deferChange?: boolean;
   onEditorReady?: (editor: Editor) => void;
   className?: string;
 }
@@ -224,6 +230,7 @@ export function TasksEditor({
   onOpenThread,
   onOpenUrl,
   onSubmit,
+  deferChange = false,
   onEditorReady,
   className,
 }: TasksEditorProps) {
@@ -250,6 +257,12 @@ export function TasksEditor({
   onSubmitRef.current = onSubmit;
   const readyRef = useRef(onEditorReady);
   readyRef.current = onEditorReady;
+  const deferChangeRef = useRef(deferChange);
+  deferChangeRef.current = deferChange;
+  // The onChange captured when the update happened, so a task switch cannot
+  // deliver the old task's text to the new task's handler.
+  const pendingChangeRef = useRef<{ emit: (markdown: string) => void; frame: number } | null>(null);
+  const flushChangeRef = useRef<() => void>(() => {});
   const initialValueRef = useRef(value);
   const isPointerCoarse = usePointerCoarse();
   const canSubmitWithEnterKey = Boolean(onSubmit) && !isPointerCoarse;
@@ -379,6 +392,7 @@ export function TasksEditor({
           if (plainEnter && !canSubmitWithEnterRef.current) return false;
 
           event.preventDefault();
+          flushChangeRef.current();
           onSubmitRef.current();
           return true;
         },
@@ -452,12 +466,38 @@ export function TasksEditor({
         }),
       );
     }
-    editor.on("update", () => {
+    const flushChange = () => {
+      const pending = pendingChangeRef.current;
+      if (!pending) return;
+      pendingChangeRef.current = null;
+      cancelAnimationFrame(pending.frame);
       const markdown = editor.storage.markdown.getMarkdown() as string;
       lastMarkdownRef.current = markdown;
-      changeRef.current(markdown);
+      pending.emit(markdown);
+    };
+    flushChangeRef.current = flushChange;
+    editor.on("update", () => {
+      if (!deferChangeRef.current) {
+        const markdown = editor.storage.markdown.getMarkdown() as string;
+        lastMarkdownRef.current = markdown;
+        changeRef.current(markdown);
+        return;
+      }
+      if (pendingChangeRef.current) return;
+      pendingChangeRef.current = {
+        emit: changeRef.current,
+        frame: requestAnimationFrame(flushChange),
+      };
     });
-    editor.on("transaction", () => setRevision((current) => current + 1));
+    editor.on("blur", flushChange);
+    // Only the bubble toolbar reads editor state, and it is hidden while the selection is empty.
+    let selectionWasEmpty = true;
+    editor.on("transaction", ({ editor: current }) => {
+      const selectionEmpty = current.state.selection.empty;
+      if (selectionEmpty && selectionWasEmpty) return;
+      selectionWasEmpty = selectionEmpty;
+      setRevision((revision) => revision + 1);
+    });
     readyRef.current?.(editor);
     const root = rootRef.current;
     const onClick = (event: MouseEvent) => {
@@ -472,6 +512,8 @@ export function TasksEditor({
     root.addEventListener("click", onClick);
     return () => {
       root.removeEventListener("click", onClick);
+      flushChange();
+      flushChangeRef.current = () => {};
       editorRef.current = null;
       setMentionRef.current(null);
       editor.destroy();
@@ -482,6 +524,8 @@ export function TasksEditor({
     initialValueRef.current = value;
     const editor = editorRef.current;
     if (!editor || value === lastMarkdownRef.current) return;
+    // Deliver text typed before this replacement (e.g. a task switch) to the handler that owned it.
+    flushChangeRef.current();
     lastMarkdownRef.current = value;
     editor.commands.setContent(value, false);
   }, [value]);
