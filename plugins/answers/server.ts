@@ -299,7 +299,7 @@ export default function plugin(bb: BbPluginApi) {
         const item=get(p.id);
         if (item.thread_deleted || item.kind==='saved') throw new Error('item cannot receive replies');
         if (item.kind==='for_me' && item.status!=='open') throw new Error('question already replied');
-        const result=await deliver(threadId,`Re: "${item.question.slice(0,120)}"\n\n${p.text}`,p.attachments,p.send);
+        const result=await deliver(threadId,buildReplyMessage([{quote:item.question,note:p.text}]),p.attachments,p.send);
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
         return result;
       });
