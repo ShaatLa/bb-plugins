@@ -139,13 +139,15 @@ it('loads earlier pages by itself while the loaded window holds only quiet updat
   await waitFor(() => expect(list.mock.calls.some(([input]: any[]) => input.cursor === '1|ans_u1')).toBe(true));
 });
 it('names a plugin that started an update by its name and icon, not its id', async () => {
-  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI** deploy', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
+  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI Dashboard** · `Deploy finished` main\n- Run: 42', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), plugins: { list: async () => ({ plugins:[{ id:'delivery-dashboard', name:'CI Dashboard', icon:'Activity' }] }) } });
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Deployed');
   const caption = document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]') as HTMLElement;
   await waitFor(() => expect(caption.textContent).toContain('CI Dashboard'));
   expect(caption.textContent).not.toContain('delivery-dashboard');
+  // The notice that woke the agent follows the sender, so the reply below does not read as the plugin's own text.
+  expect(caption.textContent).toContain('CI Dashboard · Deploy finished main'); expect(caption.textContent).not.toContain('Run: 42');
 });
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });

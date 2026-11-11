@@ -129,6 +129,12 @@ export function usePluginBrand(id: string | null) {
 }
 // An update has no owner message; bb's own row for what started its turn names it: a finished child or another thread
 // (bb's "… finished" and "Message from" rows, same classes and icons), or a plugin. bb's quote of the trigger is left out.
+// The notice that woke the agent, as one line after its sender: the text below is the agent's reply to it, not the sender's.
+function notice(text: string, sender: string) {
+  const line = text.split('\n').map(l => l.replace(/[*`_#>]/g, '').trim()).find(Boolean) ?? '';
+  const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
+  return rest ? ` · ${rest}` : '';
+}
 function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
   const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId, title = thread?.displayTitle ?? thread?.title ?? trigger?.sourceTitle ?? source ?? '';
@@ -137,9 +143,9 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   const [icon, body]: [IconName | null, ReactNode] = !source ? [null, null]
     : trigger?.kind === 'system' ? ['CircleCheck', <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink><span className="shrink-0 whitespace-pre text-muted-foreground"> finished</span></>]
     : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
-    : trigger?.kind === 'plugin' && brand ? [null, <span className="flex min-w-0 items-center gap-2"><PluginIcon pluginId={brand.id} icon={brand.icon} className="size-4 shrink-0" /><span className="min-w-0 truncate whitespace-pre text-muted-foreground">{brand.name}</span></span>]
+    : trigger?.kind === 'plugin' && brand ? [null, <span className="flex min-w-0 items-center gap-2"><PluginIcon pluginId={brand.id} icon={brand.icon} className="size-4 shrink-0" /><span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{brand.name}</span>{notice(item.question, brand.name)}</span></span>]
     // A tagged script waking its own thread: bb's automation icon; a plugin that is not installed any more: its bare id.
-    : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? [trigger.kind === 'other' ? 'Repeat' : 'Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground">{source}</span>] : [null, null];
+    : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? [trigger.kind === 'other' ? 'Repeat' : 'Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{body && <span className="inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap">{body}</span>}{time && <span className="shrink-0 text-xs text-muted-foreground">{body && '· '}{time}</span>}</div>;
 }
