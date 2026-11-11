@@ -594,3 +594,25 @@ it('opens the Questions section for a stored Asked of you view and shows the emp
   expect(slot.getByRole('button', { name: 'Questions' }).getAttribute('aria-pressed')).toBe('true');
   expect(await slot.findByText('No questions for you')).toBeTruthy();
 });
+
+describe('thread composer banner', () => {
+  const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, options: ['A', 'B'], recommended: 'B' };
+  const render = async (items: Item[]) => {
+    const { ComposerQuestions } = await import('./app');
+    const list = vi.fn(() => ({ items, nextCursor: null }));
+    return { list, slot: renderSlot({ component: ComposerQuestions }, {}, { composer: { text: '', scope: { kind: 'thread', threadId: 'thr_one' } }, rpc: { list } } as any) };
+  };
+  it('renders nothing without open questions', async () => {
+    const { slot, list } = await render([{ ...ask, status: 'replied' as const }]);
+    await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'for_me', threadId: 'thr_one' })));
+    expect(slot.container.querySelector('[data-testid="bb-collapsible-stack-card"]')).toBeNull();
+  });
+  it('shows the thread\'s open questions oldest first in bb\'s stack card', async () => {
+    const { slot } = await render([{ ...ask, id: 'ans_new', question: 'Newer?', createdAt: 2 }, { ...ask, createdAt: 1 }]);
+    const card = await slot.findByRole('region', { name: 'Questions for you' });
+    expect(card.dataset.icon).toBe('MessageQuestion'); expect(card.dataset.active).toBe('true');
+    expect(within(card).getByText('2 questions for you')).toBeTruthy();
+    const text = card.textContent!; expect(text.indexOf('Choose?')).toBeLessThan(text.indexOf('Newer?'));
+    expect(within(card).getAllByRole('button', { name: /^B/ })[0]!.className).not.toBe(within(card).getAllByRole('button', { name: /^A/ })[0]!.className);
+  });
+});

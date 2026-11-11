@@ -9,9 +9,9 @@ import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }) }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context } }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context } }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -155,12 +155,12 @@ it('shows Reply only on agent questions and keeps open ones out of the conversat
   await slot.findByText('Choose?');
   expect(within(document.querySelector('[data-history-ids="ans_one"]')!).queryByRole('button', { name:'Reply' })).toBeNull();
   expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
-  expect(slot.queryByText('Still open?')).toBeNull();
+  expect(within(slot.getByRole('list', { name:'History' })).queryByText('Still open?')).toBeNull();
 });
 it('keeps the list and the previous conversation on screen while switching', async () => {
   let release!: () => void;
   const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Answer two' };
-  const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId === 'thr_two'
+  const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId === 'thr_two' && input.view !== 'for_me'
     ? new Promise(resolve => { release = () => resolve({ items:[{ ...base, id:'ans_two', threadId:'thr_two', question:'Question two', answer:'Answer two' }], nextCursor:null }); })
     : { items:[base], nextCursor:null } });
   fireEvent.click((await recipients.findAllByRole('option'))[0]!);
@@ -280,7 +280,7 @@ it('shows bb system notice icon and text for completed and failed children', asy
   expect(Array.from(notices).map(node => [node.getAttribute('title'), node.querySelector('[data-icon]')?.getAttribute('data-icon')])).toEqual([['Child 0 finished', 'CircleCheck'], ['Child 1 failed', 'CircleX']]);
   expect(slot.queryByText('[bb system] raw report')).toBeNull();
 });
-it('leaves pending questions to the Questions section: no form in the chat, composer and footer stay', async () => {
+it('shows the thread\'s pending bb form in the bottom stack, keeping the composer and footer', async () => {
   const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x', branchName:'main' } };
   const question = { id:'i1', threadId:'thr_one', status:'pending', payload:{ kind:'user_question', questions:[{ id:'q1', prompt:'Choose?', shortLabel:'Choice', required:true, multiSelect:false, allowFreeText:false, options:[{ value:'a', label:'Alpha' }] }] } };
   const list = vi.fn(() => Promise.resolve([question]));
@@ -288,8 +288,23 @@ it('leaves pending questions to the Questions section: no form in the chat, comp
   const composer = (await slot.findByRole('textbox', { name:'Send message' })).closest('form')!;
   expect(composer.parentElement?.hidden).toBe(false);
   expect(slot.getByText('main')).toBeTruthy();
-  expect(slot.queryByText('Choose?')).toBeNull();
-  expect(slot.container.querySelector('[data-pending-question-card]')).toBeNull();
+  await waitFor(() => expect(slot.container.querySelector('[data-pending-question-card]')?.closest('[data-promptbox-shell]')).toBeTruthy());
+  expect(slot.getByRole('button', { name:/Alpha/ })).toBeTruthy();
+  expect(list).toHaveBeenCalledWith({ threadId:'thr_one' });
+});
+it('answers an open agent question of the conversation from the bottom stack, outside the history', async () => {
+  const open = { ...base, id:'ans_open', kind:'for_me' as const, status:'open' as const, question:'Ship it?', answer:null, answerSeq:null, options:['Yes', 'No'], recommended:'Yes' };
+  const reply = vi.fn(() => ({ ok:true, delivery:'sent' }));
+  const { slot, recipients, list } = setup({ list: (input: any) => ({ items: input.view === 'for_me' ? [open] : [base], nextCursor:null }), rpc: { reply } });
+  fireEvent.click(await recipients.findByRole('option'));
+  const card = await slot.findByRole('region', { name:'Questions for you' });
+  expect(card.closest('[data-promptbox-shell]')?.closest('.sticky')).toBeTruthy();
+  expect(within(card).getByText('Question for you', { selector:'h3' })).toBeTruthy();
+  expect(within(slot.getByRole('list', { name:'History' })).queryByText('Ship it?')).toBeNull();
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ view:'for_me', threadId:'thr_one' }));
+  fireEvent.click(within(card).getByRole('button', { name:/^Yes/ }));
+  await waitFor(() => expect(reply).toHaveBeenCalledWith(expect.objectContaining({ id:'ans_open', text:'Yes' })));
+  expect(slot.getByRole('textbox', { name:'Send message' })).toBeTruthy();
 });
 it('marks a contact whose thread waits for input', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
