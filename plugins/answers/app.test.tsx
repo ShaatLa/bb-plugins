@@ -679,3 +679,15 @@ it('stops refetching an older thread-tab page once it has loaded', async () => {
   // Only the newest page refetches; the loaded older page is no longer re-fetched on every tick.
   expect(list.mock.calls.slice(before).map(call => (call as any[])[0].cursor)).toEqual([undefined]);
 });
+
+it('shows a query error only once it outlasts a plugin restart', async () => {
+  const { renderHook } = await import('@testing-library/react');
+  const { useSteadyError } = await import('./app');
+  vi.useFakeTimers();
+  try {
+    const { result, rerender } = renderHook(({ error }: { error: Error | null }) => useSteadyError(error), { initialProps: { error: new Error('down') as Error | null } });
+    act(() => { vi.advanceTimersByTime(2000); }); expect(result.current).toBeNull();
+    rerender({ error: null }); act(() => { vi.advanceTimersByTime(5000); }); expect(result.current).toBeNull();
+    rerender({ error: new Error('still down') }); act(() => { vi.advanceTimersByTime(3000); }); expect(result.current?.message).toBe('still down');
+  } finally { vi.useRealTimers(); }
+});

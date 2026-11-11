@@ -66,6 +66,14 @@ function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachme
   </>;
 }
 
+// A reinstall or reload restarts the plugin server, and queries fail for a moment before the next refetch succeeds;
+// an error shows only once it outlasts that window.
+export function useSteadyError<E>(error: E | null | undefined, ms = 3000): E | null {
+  const [steady, setSteady] = useState(false), failing = !!error;
+  // Keyed on failing, not the error object, so a retry that fails again does not restart the wait.
+  useEffect(() => { if (!failing) { setSteady(false); return; } const timer = setTimeout(() => setSteady(true), ms); return () => clearTimeout(timer); }, [failing, ms]);
+  return steady && error ? error : null;
+}
 export function useAnswersBadge() {
   const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
   const count = data ? data.inbox : 0;

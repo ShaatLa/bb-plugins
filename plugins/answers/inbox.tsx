@@ -6,7 +6,7 @@ import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEn
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { ContactsFooter } from './contacts-footer';
-import { ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands } from './app';
+import { ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands, useSteadyError } from './app';
 import { buildReplyMessage } from './reply-message';
 import { Composer, SendButton } from './composer';
 import { EmptyState, useTransientText } from './empty';
@@ -126,7 +126,8 @@ function HistoryPage({ threadId, cursor, index, depth, receive, unread = 0 }: { 
   const delivered = useRef(false);
   useEffect(() => { if (!result.data || (!delivered.current && result.isFetching)) return; delivered.current = true; receive(threadId, index, result.data); if (index > 0 && !settled) { setOlderData(result.data); setSettled(true); } }, [result.data, result.isFetching, threadId, index, receive, settled]);
   const page = olderData ?? result.data;
-  return <>{result.error && <p role="alert">{result.error.message}<Button onClick={() => void result.refetch()}>Retry</Button></p>}{page?.nextCursor && index + 1 < depth && <HistoryPage key={page.nextCursor} {...{ threadId, depth, receive }} index={index + 1} cursor={page.nextCursor} />}</>;
+  const error = useSteadyError(result.error);
+  return <>{error && <p role="alert">{error.message}<Button onClick={() => void result.refetch()}>Retry</Button></p>}{page?.nextCursor && index + 1 < depth && <HistoryPage key={page.nextCursor} {...{ threadId, depth, receive }} index={index + 1} cursor={page.nextCursor} />}</>;
 }
 // Recomputed groups are fresh arrays over mostly unchanged items, so rows compare their items, not the arrays.
 const sameItems = (a: Item[], b: Item[]) => a === b || (a.length === b.length && a.every((item, i) => item === b[i]));
@@ -168,7 +169,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
-  const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} });
+  const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} }), recipientsError = useSteadyError(result.error);
   // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
   // and the server's invalidation refreshes the rest when that changed something.
   useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } void result.refetch(); }, [bbReadKey]);
@@ -371,7 +372,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
     <div className={`flex min-h-0 min-w-0 flex-col min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><div role="listbox" aria-label="Recipients" className="relative min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
       {/* With a list already shown, a failed refresh (e.g. while the plugin restarts) floats over it instead of pushing the rows down. */}
-      {result.error && <p role="alert" className={recipients ? 'absolute inset-x-2 top-2 z-10 rounded-md border border-border bg-background px-2 py-1 text-xs text-destructive shadow-lift' : 'px-2 py-1 text-xs text-destructive'}>{result.error.message}</p>}
+      {recipientsError && <p role="alert" className={recipients ? 'absolute inset-x-2 top-2 z-10 rounded-md border border-border bg-background px-2 py-1 text-xs text-destructive shadow-lift' : 'px-2 py-1 text-xs text-destructive'}>{recipientsError.message}</p>}
       {recipients?.recipients.length === 0 && <EmptyState icon="MailOpen" title="All caught up">New answers from your threads will show up here.</EmptyState>}
       {groups.map(([group, list]) => { const movable = !!group && order.includes(group), over = drag?.over === group && drag.id !== group; return <div key={group ?? ''} role={group !== null ? 'group' : undefined} aria-label={group !== null ? list[0]?.projectName ?? 'No project' : undefined}
         className={`space-y-0.5 ${over ? (drag!.after ? 'shadow-[0_2px_0_0_var(--color-ring,currentColor)]' : 'shadow-[0_-2px_0_0_var(--color-ring,currentColor)]') : ''} ${drag?.id === group ? 'opacity-50' : ''}`}
@@ -460,7 +461,7 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
 }
 export function Pools({ threadId }: { threadId?: string }) {
   const [feedback, setFeedback] = useTransientText();
-  const result = useQuery({ contract: rpcContract, method: 'pools', input: {} });
+  const result = useQuery({ contract: rpcContract, method: 'pools', input: {} }), poolsError = useSteadyError(result.error);
   const pools = result.data?.pools.filter(pool => !threadId || pool.threadId === threadId);
   const box = useRef<HTMLDivElement>(null), [more, setMore] = useState(false);
   const fit = (node: HTMLDivElement) => setMore(node.scrollHeight - node.scrollTop - node.clientHeight > 4);
@@ -470,7 +471,7 @@ export function Pools({ threadId }: { threadId?: string }) {
   // a bottom fade shows that more of it scrolls under the list.
   return <div ref={box} onScroll={event => fit(event.currentTarget)} className={threadId ? `max-h-[50%] shrink-0 overflow-auto border-b border-border-seam ${more ? '[mask-image:linear-gradient(to_bottom,black_calc(100%-32px),transparent)]' : ''}` : 'h-full overflow-auto'}>
     {feedback && <p role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground"><Icon name={/uncertain|not sent/i.test(feedback) ? 'X' : 'Check'} aria-hidden className="size-3.5" />{feedback}</p>}
-    {result.error && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{result.error.message}</p>}
+    {poolsError && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{poolsError.message}</p>}
     {pools?.length === 0 && !threadId && <EmptyState icon="Sent" title="No reply pools yet">Select text in an answer and choose <span className="font-medium text-foreground">Add to reply pool</span> in the send menu. Collect quotes from one thread, then send them together.</EmptyState>}
     {pools?.map(pool => <ReplyPool key={pool.threadId} pool={pool} setFeedback={setFeedback} />)}
   </div>;
