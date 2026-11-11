@@ -316,6 +316,21 @@ it('sends a chat comment as a quoted message to the thread and cancels on Esc', 
   expect(send).toHaveBeenCalledTimes(1);
 });
 
+it('adds a chat comment to the thread reply pool', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  let composer!: ReturnType<typeof useComposer>;
+  const poolAdd = vi.fn(() => ({ id: 'pool_one' })), send = vi.fn();
+  const Overlay = app.appOverlays.find(overlay => overlay.id === 'chat-comment')!.component;
+  const slot = renderSlot({ component: () => { composer = useComposer(); return <Overlay />; } }, {}, { composer: { text: '', scope: { kind: 'thread', threadId: item.threadId } }, rpc: { poolAdd }, sdk: { threads: { send } } } as any);
+  const context = { threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant' as const, text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Quoted part', composer, experimental_panel: {} as any };
+  act(() => { void app.messageActions.find(action => action.id === 'comment')!.run(context); });
+  change(slot.getByRole('textbox', { name: 'Comment text' }), { target: { value: 'Pool note' } });
+  fireEvent.click(slot.getByRole('button', { name: 'Add to pool' }));
+  await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, quote: 'Quoted part', quoteSeq: 20, note: 'Pool note' }));
+  await waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
+  expect(send).not.toHaveBeenCalled();
+});
+
 it('sends the snapshot to its original recipient after switching recipients', async () => {
   const quoteReply = vi.fn(() => ({ delivery: 'sent' }));
   const recipients = vi.fn((input: { selected?: string }) => ({ recipients: [recipient, { ...recipient, threadId: 'thr_two', threadTitle: 'Second recipient' }].filter(r => r.unread || r.threadId === input.selected) }));
