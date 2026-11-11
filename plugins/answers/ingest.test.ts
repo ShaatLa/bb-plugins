@@ -152,6 +152,32 @@ describe('updates',()=>{
  });
 });
 
+describe('auto-defer wait list',()=>{
+ const wake = (seq:number, child:string, turn:string, text='report') => [req(seq,'c'+seq,{initiator:'system',input:[{type:'text',text:`[bb system] @thread:${child} completed: ok`}]}),start(seq+1,turn),accept(seq+2,'c'+seq,turn),message(seq+3,text,turn),done(seq+4,'completed',turn)];
+ const waiting = (kids:string[]) => { const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(),done()]); db.prepare("UPDATE items SET status='deferred',interim=answer,answer=NULL,answer_source=NULL,answered_at=NULL,wait_children=?").run(JSON.stringify(kids)); return db; };
+ const long = 'final report '.repeat(20), mine = (db:Database.Database) => db.prepare("SELECT * FROM items WHERE kind='mine'").get() as any;
+ const updates = (db:Database.Database) => db.prepare("SELECT trigger_source FROM items WHERE kind='update'").all();
+ it('an earlier child still leaves a quiet update; the last child answers the question with its report',()=>{
+  const db=waiting(['thr_a','thr_b']);
+  applyEvents(db,'t',wake(10,'thr_a','y','first report'),'p',5,true,true);
+  expect(mine(db)).toMatchObject({status:'deferred',wait_children:'["thr_b"]'}); expect(updates(db)).toEqual([{trigger_source:'thr_a'}]);
+  applyEvents(db,'t',wake(20,'thr_b','z',long),'p',9,true,true);
+  expect(mine(db)).toMatchObject({status:'answered',answer:long,answer_source:'agent',answered_at:9,read_at:null,notify_state:1,wait_children:null}); expect(updates(db)).toEqual([{trigger_source:'thr_a'}]);
+ });
+ it('a child nobody waits for behaves as before', () => { const db=waiting(['thr_a']); applyEvents(db,'t',wake(10,'thr_other','y')); expect(mine(db)).toMatchObject({status:'deferred',wait_children:'["thr_a"]'}); expect(updates(db)).toEqual([{trigger_source:'thr_other'}]); });
+ it('the oldest item whose list empties is resolved', () => {
+  const db=waiting(['thr_a']); applyEvents(db,'t',[req(30,'q2'),start(31,'w'),accept(32,'q2','w'),message(33,'ok','w'),done(34,'completed','w')]);
+  db.prepare("UPDATE items SET status='deferred',answer=NULL,answer_source=NULL,wait_children='[\"thr_a\"]' WHERE question_seq=30").run();
+  applyEvents(db,'t',wake(40,'thr_a','y','report'));
+  expect(db.prepare("SELECT status,wait_children FROM items WHERE kind='mine' ORDER BY question_seq").all()).toEqual([{status:'answered',wait_children:null},{status:'deferred',wait_children:null}]); expect(updates(db)).toEqual([]);
+ });
+ it('an explicit answers_resolve in the waking turn wins and clears the list', () => {
+  const db=waiting(['thr_a']); db.prepare("UPDATE items SET resolve_turn_id='y'").run();
+  applyEvents(db,'t',wake(10,'thr_a','y','explicit'));
+  expect(mine(db)).toMatchObject({status:'answered',answer:'explicit',answer_source:'agent',wait_children:null}); expect(updates(db)).toEqual([]);
+ });
+});
+
 describe('asksOwner',()=>{
  it.each([
   ['Should I merge it?',true],['Мержить? Жду ответа.',true],['Готово. Мержить?',true],['Ship it (or wait?)',true],['**Merge now?**',true],['Ready?\n\nDetails below.',true],['Готово？',true],

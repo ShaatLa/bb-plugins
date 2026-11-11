@@ -88,6 +88,9 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       }
       changed = db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions,live.has(id)))() || changed;
     }
+    // Turn answers already on record before this drain; only those it adds can be auto-deferred, and only when live (not a backfill).
+    const answeredTurns = () => new Set((db.prepare("SELECT id FROM items WHERE thread_id=? AND kind='mine' AND status='answered' AND answer_source='turn'").all(id) as {id:string}[]).map(r=>r.id));
+    const before = live.has(id) ? answeredTurns() : null;
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
       const result = await page(id,cursor,'asc',100);
@@ -98,8 +101,22 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       }
       if (result.events.length < result.size) break;
     }
+    if (before && !signal.aborted) await autoDefer(id,[...answeredTurns()].filter(x=>!before.has(x)));
     if (!signal.aborted) db.prepare('UPDATE threads_state SET ingested_thread_updated_at=? WHERE thread_id=? AND coalesce(ingested_thread_updated_at,0)<?').run(thread.updatedAt,id,thread.updatedAt);
     } finally { if (changed) invalidate(); }
+  }
+  // Safety net: a turn that answered with sub-sessions still running is an interim reply; defer the question until they report back.
+  async function autoDefer(id: string, items: string[]) {
+    if (!items.length) return;
+    try {
+      const kids = await bb.sdk.threads.list({parentThreadId:id,includeHidden:true,limit:200,signal});
+      const running = kids.filter(t=>!t.archivedAt && !t.deletedAt && ['active','pending','starting','stopping'].includes(t.status));
+      for (const item of items) {
+        const since = (db.prepare('SELECT created_at FROM items WHERE id=?').get(item) as {created_at:number}).created_at;
+        const waits = running.filter(t=>t.createdAt>=since).map(t=>t.id);
+        if (waits.length) db.prepare("UPDATE items SET status='deferred',interim=answer,interim_seq=answer_seq,answer=NULL,answer_seq=NULL,answer_source=NULL,answered_at=NULL,read_at=NULL,likely_interim=0,notify_state=0,wait_children=?,updated_at=? WHERE id=? AND status='answered' AND answer_source='turn'").run(JSON.stringify(waits),Date.now(),item);
+      }
+    } catch (e) { if (signal.aborted) throw e; bb.log.warn(`Answers auto-defer: ${String(e)}`); }
   }
   async function attempt(id: string, listed?: Thread) {
     try {

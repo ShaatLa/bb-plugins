@@ -335,7 +335,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     markRead: markReadFromUi,
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
-    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Date.now(),p.id);},
+    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {
       const p=inputs.reply.parse(raw), threadId=get(p.id).thread_id as string;
       return guarded(threadId,async()=>{
@@ -380,7 +380,7 @@ export default function plugin(bb: BbPluginApi) {
           const params=p as {id?:string;note?:string};
           const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;
           if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine' || !['waiting','deferred'].includes(item.status)) throw new Error('pending question not found in calling thread');
-          if (method==='defer') commit("UPDATE items SET status='deferred',note=?,updated_at=? WHERE id=?",params.note ?? null,now,item.id);
+          if (method==='defer') commit("UPDATE items SET status='deferred',note=?,wait_children=NULL,updated_at=? WHERE id=?",params.note ?? null,now,item.id);
           else {
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null};
             if (!state?.active_turn_id) throw new Error('no active turn');
