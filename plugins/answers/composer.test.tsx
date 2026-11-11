@@ -140,3 +140,18 @@ it('keeps a mixed draft intact while typing around thread and link pills', () =>
   expect(box.querySelectorAll('.prompt-mention-pill')).toHaveLength(2);
   expect(box.textContent).toBe('See Fix login and ACM-5 ok ');
 });
+it('revokes an uploaded image preview when the attachment is removed, and on unmount', async () => {
+  const create = vi.fn().mockReturnValueOnce('blob:one').mockReturnValueOnce('blob:two'), revoke = vi.fn();
+  Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+  const upload = (n: string) => ({ type:'localImage', path:`/${n}.png`, name:`${n}.png`, mimeType:'image/png' });
+  const names = ['one', 'two'];
+  const slot = renderSlot({ component: () => { const [files, setFiles] = useState<any[]>([]); return <Composer label="Reply" value="" onChange={() => {}} attachments={files} onAttachments={update => setFiles(update)} projectId="p" onSend={() => {}} />; } }, {}, { sdk: { projects: { attachments: { upload: () => Promise.resolve(upload(names.shift()!)) } } } } as any);
+  const input = slot.container.querySelector('input[type=file]')!;
+  fireEvent.change(input, { target:{ files:[new File(['x'], 'one.png', { type:'image/png' }), new File(['y'], 'two.png', { type:'image/png' })] } });
+  await slot.findByRole('button', { name:'Remove two.png' });
+  expect(revoke).not.toHaveBeenCalled();
+  fireEvent.click(slot.getByRole('button', { name:'Remove one.png' }));
+  expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:one');
+  cleanup();
+  expect(revoke).toHaveBeenLastCalledWith('blob:two'); expect(revoke).toHaveBeenCalledTimes(2);
+});
