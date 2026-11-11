@@ -23,18 +23,22 @@ function setup(
   options: {
     relevantTaskIds?: readonly string[];
     canPatch?: boolean;
+    signalDelayMs?: (channel: string) => number;
   } = {},
 ) {
   let timer: (() => void) | null = null;
+  let delay = -1;
   let hidden = false;
   const counts = { refetch: 0, refetchAfterFetch: 0 };
   const patched: TaskSignal[][] = [];
   const scheduler = createTaskSignalScheduler({
-    channels: () => ["tasks:changed"],
+    channels: () => ["tasks:changed", "threads:changed", "projects:changed"],
     relevantTaskIds: () => options.relevantTaskIds,
     isHidden: () => hidden,
-    setTimer: (callback) => {
+    signalDelayMs: options.signalDelayMs,
+    setTimer: (callback, delayMs) => {
       timer = callback;
+      delay = delayMs;
       return () => {
         timer = null;
       };
@@ -56,10 +60,27 @@ function setup(
   const setHidden = (value: boolean) => {
     hidden = value;
   };
-  return { scheduler, counts, patched, fireTimer, setHidden };
+  return { scheduler, counts, patched, fireTimer, setHidden, getDelay: () => delay };
 }
 
 describe("task signal scheduler", () => {
+  it("coalesces unrelated sidebar events for 1.5 seconds and refreshes projects immediately", () => {
+    const { scheduler, counts, fireTimer, getDelay } = setup({
+      signalDelayMs: (channel) => channel === "projects:changed" ? 0 : 1500,
+    });
+    for (let index = 0; index < 150; index++) {
+      scheduler.push(index % 2 ? "threads:changed" : "tasks:changed", { taskId: `other-${index}` });
+    }
+    expect(getDelay()).toBe(1500);
+    expect(counts.refetch).toBe(0);
+    fireTimer();
+    expect(counts.refetch).toBe(1);
+    scheduler.push("projects:changed", { projectId: "another" });
+    scheduler.push("tasks:changed", { taskId: "next" });
+    expect(getDelay()).toBe(0);
+    fireTimer();
+    expect(counts.refetch).toBe(2);
+  });
   it("patches one batch per burst of signals for the same task", async () => {
     const { scheduler, counts, patched, fireTimer } = setup({
       canPatch: true,

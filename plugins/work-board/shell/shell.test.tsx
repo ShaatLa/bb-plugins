@@ -200,6 +200,18 @@ describe("project view preference", () => {
 });
 
 describe("startup screen", () => {
+  it("shares one in-flight listProjects read across mounted surfaces", async () => {
+    let resolveProjects!: (value: { projects: (typeof project)[] }) => void;
+    const projects = new Promise<{ projects: (typeof project)[] }>((resolve) => { resolveProjects = resolve; });
+    let reads = 0;
+    const rpc = seededRpc({ listProjects: () => { reads++; return projects; } });
+    const first = renderSlot(navigationRegistration, { subPath: "" }, { rpc });
+    const second = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc });
+    expect(reads).toBe(1);
+    resolveProjects({ projects: [project] });
+    await first.findByText(project.name);
+    second.lifecycle.unmount();
+  });
   const rpc = seededRpc({
     listProjects: () => ({ projects: [project, { ...project, id: OTHER_PROJECT_ID, name: "Other project", prefix: "OTH" }] }),
     listLabels: () => ({ labels: [] }),
@@ -1052,7 +1064,7 @@ describe("tasks app shell", () => {
       });
     });
 
-    it("keeps the newer projects snapshot when an older request resolves later", async () => {
+    it("refreshes the shared projects snapshot after an invalidation", async () => {
       const olderProject = { ...project, name: "Older truth" };
       const newerProject = { ...project, name: "Newer truth" };
       const older = deferred<{ projects: (typeof project)[] }>();
@@ -1069,16 +1081,16 @@ describe("tasks app shell", () => {
         { subPath: "" },
         { rpc },
       );
+      expect(calls).toBe(1);
+      older.resolve({ projects: [olderProject] });
+      await second.findByText("Older truth");
+      await second.emitRealtime("projects:changed", { projectId: PROJECT_ID });
       await second.findByText("Newer truth");
       await waitFor(() =>
         expect(
           JSON.parse(window.localStorage.getItem(projectsKey) ?? "null"),
         ).toEqual([newerProject]),
       );
-      older.resolve({ projects: [olderProject] });
-      await act(async () => {
-        await older.promise;
-      });
       expect(
         JSON.parse(window.localStorage.getItem(projectsKey) ?? "null"),
       ).toEqual([newerProject]);

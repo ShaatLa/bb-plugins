@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import {
@@ -15,7 +15,7 @@ import {
   readQuerySnapshot,
   writeQuerySnapshot,
 } from "./query-snapshot.js";
-import { invalidateTaskDatasets } from "./task-dataset";
+import { getSharedTask, invalidateTaskDatasets } from "./task-dataset";
 import { useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
@@ -23,8 +23,46 @@ import {
   type TaskSignal,
 } from "./signal-scheduler.js";
 
+const readFlights = new Map<string, Promise<unknown>>();
+let rpcUsers = 0;
+const readMethods = new Set<string>([
+  "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
+  "getBoardPreferences", "listProjects", "listQuestions", "questionCounts",
+  "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
+  "listComments", "listAttachments", "listTaskThreads", "listTaskCardMeta",
+  "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
+  "listBbProjects", "getNavigationBadgeCriteria", "navigationBadge",
+  "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",
+]);
+
 export function useTasksRpc() {
-  return useRpc<TasksRpcContract>();
+  const rpc = useRpc<TasksRpcContract>();
+  useEffect(() => {
+    rpcUsers++;
+    return () => {
+      if (--rpcUsers === 0) readFlights.clear();
+    };
+  }, []);
+  return useMemo(() => {
+    const flights = readFlights;
+    return {
+      ...rpc,
+      call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
+        if (!readMethods.has(method))
+          return (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+        const key = JSON.stringify([method, args], (_key, value: unknown) =>
+          value && typeof value === "object" && !Array.isArray(value)
+            ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+            : value);
+        const existing = flights.get(key);
+        if (existing) return existing;
+        const read = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+        flights.set(key, read);
+        void read.finally(() => { if (flights.get(key) === read) flights.delete(key); }).catch(() => undefined);
+        return read;
+      }) as typeof rpc.call,
+    };
+  }, [rpc]);
 }
 
 export type TasksRpc = ReturnType<typeof useTasksRpc>;
@@ -96,11 +134,12 @@ export async function patchTasks(
   current: readonly Task[],
   taskIds: readonly string[],
   belongs: (task: Task) => boolean,
-): Promise<Task[]> {
+): Promise<Task[] | null> {
   if (taskIds.length === 0) return [...current];
+  if (taskIds.length > 25) return null;
   const fetched = await Promise.all(
     taskIds.map(async (taskId) => {
-      const { task } = await rpc.call("getTask", { taskId });
+      const task = await getSharedTask(rpc, taskId);
       return [taskId, task] as const;
     }),
   );
@@ -152,6 +191,7 @@ export function useTasksQuery<T>(
     snapshot?: TasksQuerySnapshot<T>;
     applySignals?: ApplySignals<T>;
     relevantTaskIds?: readonly string[];
+    signalDelayMs?: (channel: InvalidationChannel) => number;
   } = {},
 ): TasksQuery<T> {
   const rpc = useTasksRpc();
@@ -187,6 +227,7 @@ export function useTasksQuery<T>(
   const signalStateRef = useRef<{
     channels: readonly InvalidationChannel[];
     relevantTaskIds: readonly string[] | undefined;
+    signalDelayMs?: (channel: InvalidationChannel) => number;
     refresh: () => Promise<void>;
     preparePatch: (signals: TaskSignal[]) => (() => Promise<void>) | null;
   }>({
@@ -199,6 +240,7 @@ export function useTasksQuery<T>(
     createTaskSignalScheduler({
       channels: () => signalStateRef.current.channels,
       relevantTaskIds: () => signalStateRef.current.relevantTaskIds,
+      signalDelayMs: (channel) => signalStateRef.current.signalDelayMs?.(channel) ?? 50,
       isHidden: () => document.visibilityState === "hidden",
       setTimer: (callback, delayMs) => {
         const timer = setTimeout(callback, delayMs);
@@ -315,6 +357,7 @@ export function useTasksQuery<T>(
   signalStateRef.current = {
     channels,
     relevantTaskIds: options.relevantTaskIds,
+    signalDelayMs: options.signalDelayMs,
     refresh,
     preparePatch,
   };
@@ -392,7 +435,7 @@ export function useSidebarSummary() {
     async (rpc) => (await rpc.call("sidebarSummary")).projects,
     ["tasks:changed", "projects:changed", "threads:changed"],
     [],
-    { snapshot: sidebarSummarySnapshot },
+    { snapshot: sidebarSummarySnapshot, signalDelayMs: sidebarSignalDelay },
   );
 }
 
@@ -431,6 +474,11 @@ export function useMentionItems() {
 export function useActiveTasks() {
   return useTasksQuery(
     async (rpc) => listAllTasks(rpc, { activeOnly: true }),
-    ["tasks:changed", "threads:changed"],
+    ["tasks:changed", "threads:changed", "projects:changed"],
+    [],
+    { signalDelayMs: sidebarSignalDelay },
   );
 }
+
+const sidebarSignalDelay = (channel: InvalidationChannel) =>
+  channel === "projects:changed" ? 0 : 1500;

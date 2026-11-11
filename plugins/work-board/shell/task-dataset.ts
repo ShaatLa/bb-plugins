@@ -7,9 +7,19 @@ import { readQuerySnapshot } from "./query-snapshot";
 type Publish = (tasks: Task[]) => void;
 interface Flight { promise: Promise<Task[]>; listeners: Set<Publish>; latest?: Task[]; completed?: boolean; invalidated?: boolean }
 const flights = new Map<string, Flight>();
+const taskReads = new Map<string, Promise<Task | null>>();
+
+export function getSharedTask(rpc: TasksRpc, taskId: string): Promise<Task | null> {
+  const existing = taskReads.get(taskId);
+  if (existing) return existing;
+  const read = rpc.call("getTask", { taskId }).then(({ task }) => task);
+  taskReads.set(taskId, read);
+  void read.finally(() => { if (taskReads.get(taskId) === read) taskReads.delete(taskId); }).catch(() => undefined);
+  return read;
+}
 
 export let taskDatasetEpoch = 0;
-export function resetTaskDatasetCachesForTest() { flights.clear(); taskDatasetEpoch++; }
+export function resetTaskDatasetCachesForTest() { flights.clear(); taskReads.clear(); taskDatasetEpoch++; }
 export function invalidateTaskDatasets(force = false) {
   for (const [key, flight] of flights) {
     if (force || flight.completed) flights.delete(key);

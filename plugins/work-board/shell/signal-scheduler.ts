@@ -42,6 +42,7 @@ interface TaskSignalSchedulerHost {
   relevantTaskIds: () => readonly string[] | undefined;
   isHidden: () => boolean;
   setTimer: (callback: () => void, delayMs: number) => () => void;
+  signalDelayMs?: (channel: InvalidationChannel) => number;
   refetch: () => void;
   refetchAfterFetch: () => void;
   preparePatch: (signals: TaskSignal[]) => (() => Promise<void>) | null;
@@ -109,8 +110,11 @@ export function createTaskSignalScheduler(
         return;
       }
       pending.set(`${channel}\n${taskId ?? ""}`, { channel, taskId });
-      if (cancelTimer !== null) return;
-      cancelTimer = host.setTimer(flush, SIGNAL_BATCH_MS);
+      const delay = host.signalDelayMs === undefined ? SIGNAL_BATCH_MS
+        : Math.min(...[...pending.values()].map((signal) => host.signalDelayMs!(signal.channel)));
+      if (cancelTimer !== null && delay === SIGNAL_BATCH_MS) return;
+      clearTimer();
+      cancelTimer = host.setTimer(flush, delay);
     },
     flush,
     trackFetch(start) {
