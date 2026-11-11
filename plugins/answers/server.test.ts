@@ -17,6 +17,26 @@ function seed(db:Database.Database,id='ans_one',kind='for_me',thread='t') {
 }
 const deferred=<T>()=>{let resolve!:(v:T)=>void; const promise=new Promise<T>(r=>resolve=r); return {promise,resolve};};
 describe('server',()=>{
+ it('caches display metadata across list and recipients with independent TTLs',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_cache','mine');
+  db.prepare("UPDATE items SET project_id='p'").run();
+  const threads=vi.fn(async()=>[makeThreadResponse({id:'t',title:'T',projectId:'p'})]);
+  const projects=vi.fn(async()=>[{id:'p',name:'P'}]);
+  harness.sdk.stub('threads.list',threads); harness.sdk.stub('projects.list',projects as any);
+  const now=vi.spyOn(Date,'now').mockReturnValue(100000);
+  try {
+   await harness.behavior.callRpc('list',{view:'all'}); await harness.behavior.callRpc('recipients',{});
+   expect(threads).toHaveBeenCalledTimes(1); expect(projects).toHaveBeenCalledTimes(1);
+   now.mockReturnValue(130001); await harness.behavior.callRpc('recipients',{});
+   expect(threads).toHaveBeenCalledTimes(2); expect(projects).toHaveBeenCalledTimes(1);
+   now.mockReturnValue(160001); await harness.behavior.callRpc('list',{view:'all'});
+   expect(threads).toHaveBeenCalledTimes(3); expect(projects).toHaveBeenCalledTimes(2);
+   db.prepare("UPDATE items SET status='answered',answer='A',answered_at=1").run();
+   threads.mockImplementation(async()=>[makeThreadResponse({id:'t',lastReadAt:10})]);
+   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(0);
+   expect(threads).toHaveBeenCalledTimes(4);
+  } finally {now.mockRestore();}
+ });
  it('clears bb\'s unread mark when a thread has nothing left unread in Answers, and restores it on undo',async()=>{
   const {harness,db}=setup(), read=vi.fn(async(_a:unknown)=>({})), unread=vi.fn(async(_a:unknown)=>({}));
   harness.sdk.stub('threads.markRead',read as any); harness.sdk.stub('threads.markUnread',unread as any);

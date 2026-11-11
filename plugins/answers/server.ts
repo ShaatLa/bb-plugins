@@ -37,6 +37,21 @@ export default function plugin(bb: BbPluginApi) {
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
   const driver = createDriver(bb,db,() => {invalidate(); onAttention();});
+  let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
+  type DisplayThread = {id:string; title:string|null; projectId:string};
+  const threadCache=new Map<string,{expires:number; thread:DisplayThread|undefined}>();
+  async function displayProjects() {
+    if (!projectCache || projectCache.expires<=Date.now()) projectCache={rows:await bb.sdk.projects.list(),expires:Date.now()+60000};
+    return projectCache.rows;
+  }
+  async function displayThreads(ids:string[]) {
+    const missing=[...new Set(ids)].filter(id=>!threadCache.has(id) || threadCache.get(id)!.expires<=Date.now());
+    if (missing.length) {
+      const rows=await bb.sdk.threads.list({threadIds:missing,includeHidden:true,limit:200}), expires=Date.now()+30000;
+      for (const id of missing) {const t=rows.find(t=>t.id===id); threadCache.set(id,{expires,thread:t ? {id:t.id,title:t.title,projectId:t.projectId} : undefined});}
+    }
+    return ids.flatMap(id=>{const t=threadCache.get(id)?.thread; return t ? [t] : [];});
+  }
   const sending = new Set<string>();
   // Drafts wait in the thread's queue until the user sends them from the chat, like bb's built-in Drafts plugin.
   bb.experimental_hooks.on('message.dispatch',ctx=>{
@@ -98,13 +113,13 @@ export default function plugin(bb: BbPluginApi) {
     const more = rows.length>limit; rows.splice(limit);
     const titles = new Map<string,string>();
     const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
-    if (ids.length) for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) titles.set(t.id,t.title ?? t.id);
+    if (ids.length) for (const t of await displayThreads(ids)) titles.set(t.id,t.title ?? t.id);
     // Update captions name the child or sender thread; one that left the sidebar (archived) is looked up by id.
     const sources = [...new Set(rows.filter(r=>r.trigger_kind==='system' || r.trigger_kind==='agent').map(r=>r.trigger_source as string|null).filter((id):id is string=>!!id && !titles.has(id)))];
-    if (sources.length) for (const t of await bb.sdk.threads.list({threadIds:sources,includeHidden:true,limit:200})) titles.set(t.id,t.title ?? t.id);
-    await Promise.all(sources.filter(id=>!titles.has(id)).map(id=>bb.sdk.threads.get({threadId:id}).then(t=>{titles.set(id,t.title ?? id);},()=>{})));
+    if (sources.length) for (const t of await displayThreads(sources)) titles.set(t.id,t.title ?? t.id);
+    await Promise.all(sources.filter(id=>!titles.has(id)).map(id=>bb.sdk.threads.get({threadId:id}).then(t=>{titles.set(id,t.title ?? id); threadCache.set(id,{expires:Date.now()+30000,thread:{id:t.id,title:t.title,projectId:t.projectId}});},()=>{})));
     const names = new Map<string,string>();
-    if (rows.some(r=>r.project_id)) for (const p of await bb.sdk.projects.list()) names.set(p.id,p.name);
+    if (rows.some(r=>r.project_id)) for (const p of await displayProjects()) names.set(p.id,p.name);
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
@@ -240,17 +255,20 @@ export default function plugin(bb: BbPluginApi) {
         )`).all(p.selected ?? '',p.selected ?? '') as Row[];
       if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
-      const threads=rows.length ? await bb.sdk.threads.list({threadIds:rows.map(r=>r.thread_id),includeHidden:true,limit:200}) : [];
-      const projects=rows.length ? await bb.sdk.projects.list() : [];
+      const threads=rows.length ? await displayThreads(rows.map(r=>r.thread_id)) : [];
+      const projects=rows.length ? await displayProjects() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
       const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`);
+      const unreadIds=rows.filter(r=>r.unread>0).map(r=>r.thread_id as string);
+      const fresh=unreadIds.length ? await bb.sdk.threads.list({threadIds:unreadIds,includeHidden:true,limit:200}) : [];
+      const readTimes=new Map(fresh.map(t=>[t.id,t.lastReadAt]));
       let seen=0;
-      for (const r of rows) { const readAt=threadMap.get(r.thread_id)?.lastReadAt; if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
+      for (const r of rows) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
-      if (mentioned.length) threads.push(...await bb.sdk.threads.list({threadIds:mentioned,includeHidden:true,limit:200}));
+      if (mentioned.length) threads.push(...await displayThreads(mentioned));
       for(const t of threads) threadMap.set(t.id,t);
       // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
       const unquote=(text:string)=>{const note=text.split('\n').filter(line=>!/^\s*>/.test(line)).join('\n').trim(); return note || text.replace(/^\s*>[ \t]?/gm,'');};
@@ -386,5 +404,5 @@ export default function plugin(bb: BbPluginApi) {
   });
   wakeDue();
   const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
-  bb.onDispose(async()=>{disposed=true; if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
+  bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
 }
