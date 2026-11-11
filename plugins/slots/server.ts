@@ -295,8 +295,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       return [id, await entry.value] as const;
     }));
     if (!hostName || hostName.until <= runtime.now()) {
-      const value = await deadline(bb.sdk.hosts.get({ hostId: localHostId })).then(host => host.name).catch(error => { if (error instanceof DeadlineError) throw error; return null; });
-      hostName = { until: runtime.now() + 300000, value };
+      const value = await deadline(bb.sdk.hosts.get({ hostId: localHostId })).then(host => host.name).catch(() => null);
+      hostName = { until: runtime.now() + (value === null ? 30000 : 300000), value };
     }
     const localHostName = hostName.value;
     return { ok: true, data: { ...snapshot, localHostName, titles: Object.fromEntries(resolved) } };

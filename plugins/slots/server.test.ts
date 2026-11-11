@@ -588,3 +588,70 @@ it("times out a hung lookup without ending the lease or applying a late result",
   h.harness.sdk.stub("threads.get", async () => h.threads.get("a")!);
   expect((await h.view()).pools[0].leases).toHaveLength(1);
 });
+
+it("throttles active holder heartbeats across sampler ticks", async () => {
+  const h = await setup(); const lease = await h.grant();
+  const get = vi.fn(async () => makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+  h.harness.sdk.stub("threads.get", get);
+  for (let i = 1; i <= 8; i++) {
+    h.advance(15000); const count = h.metrics.mock.calls.length;
+    const service = h.harness.behavior.runService("sampler");
+    try { await vi.waitFor(() => expect(h.metrics.mock.calls.length).toBeGreaterThan(count)); }
+    finally { service.controller.abort(); await service.done; }
+    expect(get).toHaveBeenCalledTimes(Math.floor(i / 4));
+  }
+  expect((await h.view()).pools[0].leases[0].lastHeartbeatAt).toBe(lease.lastHeartbeatAt + 120000);
+});
+
+it("keeps active holders ahead of the 30 minute TTL and 29 minute warning boundary", async () => {
+  const h = await setup(); await h.configure({ leaseTtlMinutes: 30, heartbeatIntervalMinutes: 29 });
+  await h.grant(); h.send.mockClear();
+  h.harness.sdk.stub("threads.get", async () => makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+  for (let i = 0; i < 12; i++) {
+    h.advance(15000); const count = h.metrics.mock.calls.length;
+    const service = h.harness.behavior.runService("sampler");
+    try { await vi.waitFor(() => expect(h.metrics.mock.calls.length).toBeGreaterThan(count)); }
+    finally { service.controller.abort(); await service.done; }
+  }
+  const lease = (await h.view()).pools[0].leases[0];
+  expect(lease.warnedAt).toBeNull();
+  expect(h.send).not.toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("to keep it") })] }));
+});
+
+it("continues the sampler after a holder lookup times out without late mutation", async () => {
+  const h = await setup(); await h.grant(); h.advance(60000);
+  let finish!: (thread: ReturnType<typeof makeThreadResponse>) => void;
+  const get = vi.fn(() => new Promise<ReturnType<typeof makeThreadResponse>>(resolve => { finish = resolve; }));
+  const prune = vi.spyOn(h.runtime.store, "prune"); h.metrics.mockClear();
+  h.harness.sdk.stub("threads.get", get);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const service = h.harness.behavior.runService("sampler");
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10001);
+    h.harness.sdk.stub("threads.get", async () => h.threads.get("a")!);
+    // Queue a read behind the sampler: it completes only after tick and sample.
+    const view = await h.view();
+    expect(view.pools[0].leases).toHaveLength(1);
+    expect(h.metrics).toHaveBeenCalled();
+    expect(prune).toHaveBeenCalled();
+    const before = await readFile(join(h.path, "state.json"), "utf8");
+    finish(makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await readFile(join(h.path, "state.json"), "utf8")).toBe(before);
+  } finally { service.controller.abort(); await service.done; vi.useRealTimers(); }
+});
+
+it("uses a short null cache after a host name timeout", async () => {
+  const h = await setup(); await h.view(); h.advance(300001); let calls = 0;
+  h.harness.sdk.stub("hosts.get", () => { calls++; return calls === 1 ? new Promise(() => {}) : Promise.resolve(makeHostResponse({ id: "local", name: "Recovered" })); });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const pending = h.view(); await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1); await vi.advanceTimersByTimeAsync(10001);
+    expect((await pending).localHostName).toBeNull();
+    h.advance(29999); expect((await h.view()).localHostName).toBeNull(); expect(calls).toBe(1);
+    h.advance(1); expect((await h.view()).localHostName).toBe("Recovered"); expect(calls).toBe(2);
+  } finally { vi.useRealTimers(); }
+});
