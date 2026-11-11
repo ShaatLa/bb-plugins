@@ -345,6 +345,33 @@ Configured post-merge push workflows are tracked on the merge SHA/base branch. A
 
 Export v8 adds project.json.gitSync and per-record pullRequests, including exclusions and immutable task/PR identifiers; live CI caches and tokens stay local. Legacy imports preserve local links/config when absent. New conflicts need explicit --overwrite; imports make no GitHub request. Only activate v8 after downstream strict format checkers accept the exact schema and sample.
 
+## Waiting for PR CI (0.30.0)
+
+```
+bb work-board pr wait --url https://github.com/OWNER/REPO/pull/N [--head <full 40-hex SHA>] [--timeout 45m] [--json]
+```
+
+Blocks until every **required** check of the PR head settles and exits with a verdict. It runs on the bb server with the server's `gh` login, so it works from the agent sandbox where `gh` cannot reach GitHub. It polls every 20 s (independent of the 5-minute background sync) and stops at `--timeout` (1–60 min, default 45 min).
+
+- **Which head.** `--head` takes the full SHA (`git rev-parse HEAD`); a short one is refused. Without it the wait judges the PR head at the moment it starts. If the head moves while waiting, the result is superseded (exit 2); if the requested SHA never becomes the head within 2 minutes, exit 3.
+- **What is green.** The required set is read from GitHub for the PR's base branch (branch protection plus rulesets), never hard-coded. Green means every required check passed (skipped/neutral count, as on GitHub) on that exact head **and** no workflow run for the head is still running. A single summary job such as `CI complete` passing alone is not enough when other checks are required.
+- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. A PR that is still a draft after 2 minutes gives exit 3.
+- **Complete listing.** Checks come from the head's check runs and commit statuses (all pages), not from `gh run view --json jobs`, which can omit jobs.
+
+| Exit | Verdict | Meaning |
+|---|---|---|
+| 0 | green | every required check passed on the judged head |
+| 1 | red | a required check failed; names are printed (`failed` in `--json`) |
+| 2 | cancelled | a required check or run was cancelled, or the head moved (superseded). Terminal for that head: report it, do not re-wait the same SHA |
+| 3 | no-verdict | PR DIRTY or closed, still a draft, no run 2 min after the head was first seen/marked ready, the required set is unknown or empty, timeout, or GitHub failed 5 polls in a row |
+
+`--json` prints `{url, repository, number, sha, shaFrom, verdict, exitCode, message, failed, waitedMs}` when the command returns.
+
+**How to wait without blocking your turn badly.** Output arrives only when the command returns, and CI usually takes 9–12 minutes.
+- **Claude:** run it with Bash `run_in_background` and a tool timeout of at least 3600000 ms; act on the completion notification instead of polling.
+- **Codex, Antigravity:** no background command wakes the thread, so run it in the foreground within the turn.
+- Read the command's own exit code, never a wrapper's (`cmd; echo` reports the `echo`). A plugin reload aborts waits in flight.
+
 ## Building a hierarchy without burning provider limits
 
 By default every child turn wakes its parent, so status pings burn the parent's provider quota.

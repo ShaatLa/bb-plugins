@@ -531,6 +531,10 @@ bb work-board list --project EXA --archived --date-field created --on 2026-10-01
 Automatic retention is a device/plugin setting, applies to all tracker projects, and is disabled until enabled. It runs while BB has the plugin loaded; missed checks are caught by the next hourly sweep. It preserves the existing manual and bulk actions. Export stays v7, includes all records, and carries no device settings.
 
 
+### Waiting for PR CI (0.30.0)
+
+`bb work-board pr wait --url <PR URL> [--head <SHA>] [--timeout 45m] [--json]` blocks on the bb server until every required check of the PR head settles: exit 0 green, 1 red (failed names printed), 2 cancelled or superseded, 3 no verdict (DIRTY, draft, no run, unknown required set, timeout). The required set comes from branch protection and rulesets; Actions checks older than the PR's latest `ready_for_review` are ignored, so a finished draft run is never judged. See the work-board skill, section "Waiting for PR CI".
+
 ### PR file overlaps
 
 Open linked PRs in the same repository show shared files across different tasks. Configure up to 50 `overlapRules` in Git/PR Advanced settings or `git-config --file`, for example `[{"pattern":"migrations/**","match":"added"},{"pattern":"docs/traceability/*.json","match":"changed"}]`. `changed` highlights shared matching paths; `added` highlights matching additions or rename targets even when their names differ. Patterns support `*`, `**` and `?`. Cards show a marker and PR details list matched files; `show --json` and `pr list --json` include `overlaps`. File lists are fetched during sync only when the PR head changes, capped at 3,000 files with `truncated` recorded. Cached files and overlap results are local and not exported; rules round-trip in export v8.

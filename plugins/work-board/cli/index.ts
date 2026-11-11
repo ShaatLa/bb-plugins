@@ -1,3 +1,5 @@
+import { createGithubClient, githubToken } from "../git-sync/github";
+import { waitForPrCi } from "../git-sync/ci-wait";
 import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
@@ -1004,7 +1006,37 @@ export function registerTasksCli(
         }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
-        pr: groupCommand("pr", "Manage persistent task-to-PR links", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"]]),
+        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
+        "pr wait": cliCommand({
+          summary: "Block until every required check of a PR head settles; exit 0 green, 1 red, 2 cancelled or superseded, 3 no verdict",
+          options: {
+            url: { type: "string", required: true, description: "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123" },
+            head: { type: "string", description: "Full 40-character head SHA to judge (default: the PR head when the wait starts)" },
+            timeout: { type: "duration", defaultUnit: "m", default: 45 * 60_000, min: 60_000, max: 60 * 60_000, description: "How long to wait, 1 to 60 min (default 45 min)" },
+            json: JSON_OPTION,
+          },
+          run(input, ctx) { return guard(async () => {
+            const match = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/.exec(input.options.url.trim());
+            if (!match) throw new CliError(`"${input.options.url}" is not a GitHub pull request URL`);
+            const head = input.options.head?.toLowerCase();
+            if (head !== undefined && !/^[0-9a-f]{40}$/.test(head))
+              throw new PluginCliError(`--head needs the full 40-character SHA, got "${input.options.head}"`, { code: "sha_not_full", hint: 'Pass --head "$(git rev-parse HEAD)".' });
+            const signal = ctx.signal ?? new AbortController().signal;
+            let token: { at: number; value: Promise<string | undefined> } | undefined;
+            const client = createGithubClient({ signal, token: () => {
+              if (!token || Date.now() - token.at > 60_000) token = { at: Date.now(), value: githubToken(signal) };
+              return token.value;
+            } });
+            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout }, signal);
+            const from = head ? "--head" : "the PR head";
+            return {
+              exitCode: result.exitCode,
+              stdout: input.options.json
+                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], waitedMs: result.waitedMs })
+                : `${match[1]}#${match[2]} at ${result.sha || "unknown head"} (from ${from}), waited ${Math.round(result.waitedMs / 60_000)} min\n${result.message}`,
+            };
+          }); },
+        }),
         ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({
           summary: action === "list" ? "List persistent PR links and their cached status" : action === "link" ? "Link or confirm a PR with an explicit role" : "Exclude a PR (survives discovery)",
           positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" } } : {}) },
