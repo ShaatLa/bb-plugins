@@ -36,7 +36,7 @@ const css = `
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
-.ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .3s ease-in-out infinite alternate}
+.ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
@@ -45,7 +45,7 @@ const css = `
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
 @keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
 @keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
-@keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
+@keyframes ar-scratch{from{transform:rotate(-10deg)}to{transform:rotate(24deg)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
