@@ -26,6 +26,12 @@ it('shows a renamed thread at once from bb\'s live sidebar title', async () => {
   expect(await recipients.findByText('Renamed')).toBeTruthy();
   expect(recipients.queryByText('One')).toBeNull();
 });
+it('previews a contact with sub-sessions as their tally: direct and nested, working and idle', async () => {
+  const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const busy = { ...idle, status:'active', runtimeStatus:'active', indicator:'runtime' };
+  const { recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'One' }, { ...busy, id:'thr_a', parentThreadId:'thr_one' }, { ...idle, id:'thr_b', parentThreadId:'thr_one' }, { ...busy, id:'thr_c', parentThreadId:'thr_a' }], projects:[] } });
+  expect(await recipients.findByText('2 sub + 1 nested · 2 working · 1 idle')).toBeTruthy();
+});
 it('badges a contact avatar with its thread\'s agent provider', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const { recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'Renamed', providerId:'codex' }], projects:[] } });
