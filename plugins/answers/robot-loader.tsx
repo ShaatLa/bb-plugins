@@ -26,7 +26,7 @@ const css = `
 .ar-glow{animation:ar-dot .9s ease-in-out infinite;opacity:.2}.ar-glow.b{animation-delay:.3s}.ar-glow.c{animation-delay:.6s}
 .ar-scroll{animation:ar-scroll 2.4s linear infinite}
 .ar-tap{transform-box:view-box;animation:ar-tap .3s ease-in-out infinite alternate}
-.ar-tap.l{transform-origin:6.5px 13px}.ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
+.ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer .7s cubic-bezier(.6,0,.9,.5) infinite}
 .ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
 .ar-paper{animation:ar-paper 1.6s linear infinite}
@@ -100,7 +100,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <rect x="3" y="-3" width="20" height="10" rx="1" />
       <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 7, 12, 16, 8].map((end, i) => <line key={i} x1="5" y1={-0.5 + i * 2} x2={end + 3} y2={-0.5 + i * 2} />)}</g></g>
       <g transform="translate(-4 0)">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
-        <line className="ar-tap l" x1="6.5" y1="13" x2="5" y2="10.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
+        <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
