@@ -372,12 +372,16 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     return () => { observer?.disconnect(); for (const name of events) node.removeEventListener(name, release); };
   }, [selected]);
   // As in bb's chat the conversation scrolls under the composer to the bottom of the window: the composer stack floats over
-  // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up (the
-  // effect below keeps a reader at the bottom there). The stack stops short of the scrollbar.
+  // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
   useEffect(() => {
     const node = scroll.current, box = stack.current; if (!node || !box || typeof ResizeObserver === 'undefined') return;
-    const fit = () => { const column = node.querySelector<HTMLElement>('[data-chat-column]'); if (column) column.style.paddingBottom = `${box.offsetHeight}px`; setScrollbar(node.offsetWidth - node.clientWidth); };
+    // The distance from the bottom is kept across the change, so the stack pushes whatever the reader sees up (or lets it down).
+    const fit = () => {
+      const column = node.querySelector<HTMLElement>('[data-chat-column]'), padding = `${box.offsetHeight}px`;
+      if (column && column.style.paddingBottom !== padding) { const gap = node.scrollHeight - node.scrollTop - node.clientHeight; column.style.paddingBottom = padding; if (!pin.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
+      setScrollbar(node.offsetWidth - node.clientWidth);
+    };
     const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit();
     return () => observer.disconnect();
   }, [selected]);
