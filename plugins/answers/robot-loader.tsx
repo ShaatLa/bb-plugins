@@ -6,6 +6,7 @@ const css = `
 .ar-right{animation:ar-right 8s step-end infinite}
 .ar-left{animation:ar-left 8s step-end infinite;opacity:0}
 .ar-front{animation:ar-front 8s step-end infinite;opacity:0}
+.ar-bob{animation:ar-bob .25s ease-in-out infinite alternate}
 .ar-leg{transform-box:fill-box;transform-origin:50% 0;animation:ar-step .5s ease-in-out infinite alternate}
 .ar-leg.b{animation-direction:alternate-reverse}
 .ar-arm{transform-box:fill-box;transform-origin:50% 0;animation:ar-step .5s ease-in-out infinite alternate-reverse}
@@ -15,15 +16,17 @@ const css = `
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
 @keyframes ar-front{0%{opacity:0}35%{opacity:1}50%{opacity:0}85%{opacity:1}}
-@keyframes ar-step{from{transform:rotate(-22deg)}to{transform:rotate(22deg)}}
+@keyframes ar-step{from{transform:rotate(-18deg)}to{transform:rotate(18deg)}}
+@keyframes ar-bob{from{transform:translateY(0)}to{transform:translateY(-.6px)}}
 @keyframes ar-dot{0%,100%{opacity:.2}50%{opacity:1}}
 `;
 
 // Profile facing right; the left-facing one mirrors it.
+// Both legs swing from one hip, opposite each other, while the body bobs once per step: a walk, not a limp.
 const side = <>
-  <line x1="12" y1="2.5" x2="12" y2="4" /><rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="7.5" r=".9" />
-  <rect x="9.5" y="12" width="5" height="6" rx="1" /><line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
-  <line className="ar-leg" x1="11" y1="18" x2="11" y2="21.5" /><line className="ar-leg b" x1="13" y1="18" x2="13" y2="21.5" />
+  <g className="ar-bob"><line x1="12" y1="2.5" x2="12" y2="4" /><rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="7.5" r=".9" />
+  <rect x="9.5" y="12" width="5" height="6" rx="1" /><line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" /></g>
+  <line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" />
 </>;
 
 export function RobotLoader({ className = 'h-5', label = 'Still working' }: { className?: string; label?: string }) {
