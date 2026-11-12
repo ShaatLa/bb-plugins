@@ -173,7 +173,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <rect className="ar-solid" x="10" y="10.2" width="6.4" height="5" rx="1" /><line x1="11" y1="10.2" x2="15" y2="9.4" /></g>
       <line x1="16.4" y1="13" x2="23" y2="13" /><line x1="16.4" y1="14.3" x2="23" y2="14.3" />
       <rect className="ar-solid" x="0" y="15.4" width="26" height="2.6" rx="1" /><rect className="ar-solid" x="-1" y="13.4" width="2.6" height="4.6" rx="1" /><rect className="ar-solid" x="24.4" y="13.4" width="2.6" height="4.6" rx="1" />
-      {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M10.5 5 h1.4 l-1.4 1.4 h1.4" />)}
+      {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M10.5 6.6 h2.2 l-2.2 2.2 h2.2" strokeWidth=".6" />)}
     </>;
     default: return pacing(true, false);
   }
