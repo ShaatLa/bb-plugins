@@ -59,12 +59,18 @@ describe('Answers app', () => {
   });
   it('opens saved messages from the page\'s Saved section', async () => {
     const app = await loadPluginApp(() => import('./app'));
-    const list = vi.fn((input: any) => ({ items: input.view === 'saved' ? [{ ...item, id: 'ans_kept', kind: 'saved', status: 'saved', question: '', answer: 'Kept message' }] : [], nextCursor: null }));
+    const kept = (n: number) => Array.from({ length: n }, (_, i) => ({ ...item, id: `ans_kept${i}`, kind: 'saved', status: 'saved', question: '', answer: `Kept message ${i}` }));
+    let saved = kept(1);
+    const list = vi.fn((input: any) => ({ items: input.view === 'saved' ? saved.slice(0, input.limit) : [], nextCursor: null }));
     const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
     fireEvent.click(slot.getByRole('button', { name: 'Saved' }));
-    expect(await slot.findByText('Kept message')).toBeTruthy();
-    expect(slot.getByRole('searchbox', { name: 'Search answers' })).toBeTruthy();
-    slot.unmount(); localStorage.removeItem('bb-plugin-answers:page:saved-tab');
+    expect(await slot.findByText('Kept message 0')).toBeTruthy();
+    // One saved message needs no search; from two on it shows.
+    expect(slot.queryByRole('searchbox', { name: 'Search answers' })).toBeNull();
+    slot.unmount(); saved = kept(2);
+    const again = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+    expect(await again.findByRole('searchbox', { name: 'Search answers' })).toBeTruthy();
+    again.unmount(); localStorage.removeItem('bb-plugin-answers:page:saved-tab');
   });
   it('keeps the selected page section after the page is unmounted', async () => {
     const app = await loadPluginApp(() => import('./app'));
