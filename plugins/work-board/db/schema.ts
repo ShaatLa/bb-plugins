@@ -430,6 +430,9 @@ const MIGRATIONS = [
    CREATE TRIGGER task_parent_fallback_release AFTER UPDATE OF status ON tasks
    WHEN NEW.status IN ('done','canceled') AND OLD.status <> NEW.status
    BEGIN DELETE FROM task_threads WHERE task_id=NEW.id AND preset_name='Parent thread'; END;`,
+  `ALTER TABLE tasks ADD COLUMN progress_note TEXT;
+   ALTER TABLE tasks ADD COLUMN progress_updated_at TEXT;
+   ALTER TABLE tasks ADD COLUMN progress_updated_by TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

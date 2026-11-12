@@ -102,6 +102,9 @@ interface TaskRow {
   project_prefix: string;
   title: string;
   description: string;
+  progress_note: string | null;
+  progress_updated_at: string | null;
+  progress_updated_by: string | null;
   status: Task["status"];
   priority: Task["priority"];
   due_date: string | null;
@@ -413,6 +416,9 @@ function taskFromRow(row: TaskRow): Task {
     key: `${row.project_prefix}-${row.number}`,
     title: row.title,
     description: row.description,
+    progressNote: row.progress_note,
+    progressUpdatedAt: row.progress_updated_at,
+    progressUpdatedBy: row.progress_updated_by,
     status: row.status,
     priority: row.priority,
     dueDate: row.due_date,
@@ -1446,6 +1452,10 @@ export function createTasksStore(db: PluginDatabase) {
         nowIso(),
         id,
       );
+      if (input.progressNote !== undefined) {
+        db.prepare("UPDATE tasks SET progress_note=?, progress_updated_at=?, progress_updated_by=? WHERE id=?")
+          .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
+      }
       return requireTask(id);
     },
   );
@@ -1463,6 +1473,9 @@ export function createTasksStore(db: PluginDatabase) {
       !/^thr_[A-Za-z0-9_-]+$/.test(input.requesterThreadId)
     )
       throw new Error("Invalid requester thread id");
+    assertNoSecrets(input.progressNote ?? undefined, "current state");
+    if (input.progressNote != null && Buffer.byteLength(input.progressNote, "utf8") > 4096)
+      throw new Error("Current state exceeds 4 KB; keep it to current state and move details to a comment or attachment");
     return updateTaskTransaction(id, input);
   }
 

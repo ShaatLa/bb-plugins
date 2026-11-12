@@ -57,6 +57,17 @@ function cursorForEmptyArrayFilter(
 }
 
 describe("tasks storage", () => {
+  it("migrates existing tasks to nullable current state columns", async () => {
+    const { db, store, harness } = setup();
+    try {
+      const project = createProject(store, "OLD");
+      const task = store.createTask({ projectId: project.id, title: "Existing", description: "Preserved" });
+      db.exec("ALTER TABLE tasks DROP COLUMN progress_note; ALTER TABLE tasks DROP COLUMN progress_updated_at; ALTER TABLE tasks DROP COLUMN progress_updated_by; DELETE FROM schema_version WHERE version=28;");
+      const migrated = createTasksStore(db);
+      expect(migrated.getTask(task.id)).toMatchObject({ description: "Preserved", progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null });
+    } finally { await harness.dispose(); }
+  });
+
   it("initializes its versioned schema idempotently", async () => {
     const { db, harness } = setup();
     try {
@@ -67,7 +78,9 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(27);
+      ).toBe(28);
+      const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
+      expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
     } finally {
       await harness.dispose();
     }

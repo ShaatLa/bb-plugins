@@ -139,10 +139,10 @@ function friendlyError(error: unknown): string {
 
 const COMMENTS_PAGE_MAX = 500;
 
-function commentsTable(comments: readonly { createdAt: string; kind: string; threadTitle: string | null; authorName: string; provider: { name: string } | null; body: string }[]): string {
+function commentsTable(comments: readonly { id: string; createdAt: string; kind: string; threadTitle: string | null; authorName: string; provider: { name: string } | null; body: string }[]): string {
   return table(
-    ["TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
-    comments.map((comment) => [comment.createdAt, comment.kind, comment.threadTitle ?? comment.authorName, comment.provider?.name ?? "-", comment.body]),
+    ["ID", "TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
+    comments.map((comment) => [comment.id, comment.createdAt, comment.kind, comment.threadTitle ?? comment.authorName, comment.provider?.name ?? "-", comment.body]),
     "(none)",
   );
 }
@@ -2718,7 +2718,12 @@ export function registerTasksCli(
               const keep = input.options.comments ?? (brief ? 0 : comments.length);
               const shownComments = keep ? comments.slice(-keep) : [];
               const omittedComments = comments.length - shownComments.length;
-              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => question) : questions;
+              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => question.answeredBy !== null ? {
+                id: question.id, prompt: question.prompt,
+                answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
+                answeredBy: question.answeredBy, updatedAt: question.updatedAt,
+              } : question) : questions;
+              const latestCommentId = comments.at(-1)?.id ?? null;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
               const activity = cardMeta.activity;
               const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
@@ -2735,6 +2740,11 @@ export function registerTasksCli(
                 ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
                 : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
+              const more: Record<string, string> = {};
+              if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
+              if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
+              if (brief && questions.some(q => q.answeredBy !== null || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
+              if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json`;
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
@@ -2755,6 +2765,8 @@ export function registerTasksCli(
                   blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
+                  latestCommentId,
+                  ...(Object.keys(more).length ? { more } : {}),
                   comments: shownComments,
                   commentCount: comments.length,
                   ...(omittedComments ? { commentsOmitted: omittedComments } : {}),
@@ -2807,6 +2819,7 @@ ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thre
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                `Current state (updated ${task.progressUpdatedAt ?? "-"} by ${task.progressUpdatedBy ?? "-"})\n${task.progressNote ?? "(none)"}`,
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],
                   subtasks.map((subtask) => [
@@ -2850,9 +2863,10 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
-                `Questions\n${JSON.stringify(shownQuestions, null, 2)}`,
+                `Questions\n${brief ? shownQuestions.map(q => "answer" in q ? `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})` : JSON.stringify(q)).join("\n") : JSON.stringify(shownQuestions, null, 2)}`,
                 brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
-                `Comments\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key}\`` : ""}`,
+                `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
+                ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),
               ].join("\n\n");
             });
           },
@@ -2911,6 +2925,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               description:
                 "Read the replacement description from this UTF-8 file on the invoking machine",
             },
+            progress: { type: "string", description: "Replace the current state note (4 KB maximum)" },
+            "progress-file": { type: "string", description: "Read current state from a UTF-8 file on the invoking machine" },
+            "clear-progress": { type: "boolean", description: "Clear the current state note" },
             due: {
               type: "string",
               placeholder: "YYYY-MM-DD",
@@ -2951,6 +2968,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             json: JSON_OPTION,
           },
           constraints: [
+            { kind: "at-most-one", options: ["progress", "progress-file", "clear-progress"] },
             {
               kind: "at-most-one",
               options: ["description", "description-file"],
@@ -2958,11 +2976,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             { kind: "at-most-one", options: ["due", "no-due"] },
             { kind: "at-most-one", options: ["parent", "no-parent"] },
             { kind: "at-most-one", options: ["epic", "no-epic"] },
-            {
-              kind: "requires",
-              option: "machine",
-              needs: ["description-file"],
-            },
+
           ],
           run(input, ctx) {
             return guard(async () => {
@@ -2979,8 +2993,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   ? undefined
                   : await resolveTask(domain, parentAddress);
               const descriptionFile = input.options["description-file"];
+              if (input.options.machine && !descriptionFile && !input.options["progress-file"]) throw new CliError("--machine requires --description-file or --progress-file");
               const clientHostId =
-                descriptionFile !== undefined
+                (descriptionFile !== undefined || input.options["progress-file"] !== undefined)
                   ? await resolveClientHostId(
                       bb,
                       domain,
@@ -2995,6 +3010,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.description,
                 descriptionFile,
               );
+              const progressNote = input.options["clear-progress"] ? null : await readTextOption(bb, ctx, clientHostId, input.options.progress, input.options["progress-file"]);
               const labels = await projectLabels(domain, task.projectId);
               const nextLabels = new Set(task.labelIds);
               for (const name of input.options["add-label"]) {
@@ -3011,6 +3027,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.priority === undefined &&
                 input.options.title === undefined &&
                 description === undefined &&
+                progressNote === undefined &&
                 dueDate === undefined &&
                 !noDue &&
                 parentAddress === undefined &&
@@ -3047,13 +3064,14 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     priority: input.options.priority,
                     title: input.options.title,
                     description,
+                    progressNote,
                     dueDate: noDue ? null : dueDate,
                     parentTaskId:
                       parentAddress === undefined && !noParent
                         ? undefined
                         : (parent?.id ?? null),
                     labelIds: labelsChanged ? [...nextLabels] : undefined,
-                    authorName: taskAuthor(ctx),
+                    authorName: progressNote !== undefined ? ctx.threadId ?? taskAuthor(ctx) : taskAuthor(ctx),
                   }),
                 ),
               );
@@ -3110,28 +3128,67 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
           },
         }),
 
+        "comment show": cliCommand({
+          summary: "Read a full comment and its attachments",
+          positionals: [{ name: "comment-id", description: "Comment ID from comment list", required: true }],
+          options: { json: JSON_OPTION },
+          run(input) {
+            return guard(async () => {
+              const id = input.positionals["comment-id"]!.trim().toUpperCase();
+              const stored = store.tasks.getComment(id);
+              if (!stored) throw new CliError(`comment not found: ${id}`);
+              const { comments } = await domain.listComments({ taskId: stored.taskId });
+              const comment = comments.find(comment => comment.id === id)!;
+              const { attachments } = await domain.listAttachments({ commentId: id });
+              if (input.options.json) return JSON.stringify({ comment, attachments });
+              return `${detail([["ID", comment.id], ["Task", comment.taskId], ["Time", comment.createdAt], ["Kind", comment.kind], ["Author", comment.authorName], ["Preset", comment.presetName ?? "-"], ["Notified", comment.notifiedCount], ["Thread", comment.threadId ?? "-"], ["Thread title", comment.threadTitle ?? "-"], ["Provider", comment.provider?.name ?? "-"]])}\n\n${comment.body}\n\n${comment.evidence ? `Evidence\n${JSON.stringify(comment.evidence, null, 2)}\n\n` : ""}Attachments\n${table(["ID", "NAME", "SIZE"], attachments.map(a => [a.id, a.fileName, bytes(a.sizeBytes)]), "(none)")}`;
+            });
+          },
+        }),
+
         "comment list": cliCommand({
           summary: "List a task's comments one page at a time, newest page first",
           positionals: [KEY_POSITIONAL],
           options: {
             limit: { type: "integer", min: 1, max: COMMENTS_PAGE_MAX, description: "Comments per page (default 20)" },
             cursor: { type: "string", description: "nextCursor from the previous page: comments older than that one" },
-            kind: { type: "enum", values: ["user", "agent", "system"] as const, repeatable: true, description: "Only these comment kinds; repeat to include several" },
+            after: { type: "string", description: "Only comments strictly newer than this comment ID" },
+            preview: { type: "boolean", description: "Show a 200-character index; use comment show ID for full text and attachments" },
+            kind: { type: "enum", values: ["user", "agent", "system"] as const, repeatable: true, description: "Only these comment kinds; default user and agent" },
             json: JSON_OPTION,
           },
           run(input) {
             return guard(async () => {
               const task = await resolveTask(domain, input.positionals["key-or-id"]);
-              const kinds: readonly string[] = input.options.kind ?? [];
-              const comments = tasksRpcContract.listComments.output.parse(
-                await domain.listComments(tasksRpcContract.listComments.input.parse({ taskId: task.id })),
-              ).comments.filter((comment) => !kinds.length || kinds.includes(comment.kind));
-              const end = input.options.cursor ? comments.findIndex((comment) => comment.id === input.options.cursor) : comments.length;
-              if (end < 0) throw new CliError(`cursor not found: ${input.options.cursor}; the comment was deleted or the filters changed, so start again without --cursor`);
-              const page = comments.slice(Math.max(0, end - (input.options.limit ?? 20)), end);
-              const nextCursor = end > page.length ? page[0]!.id : null;
-              if (input.options.json) return JSON.stringify({ comments: page, total: comments.length, nextCursor });
-              return `${commentsTable(page)}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}`;
+              const kinds: readonly string[] = input.options.kind.length ? input.options.kind : ["user", "agent"];
+              const all = tasksRpcContract.listComments.output.parse(
+                await domain.listComments({ taskId: task.id }),
+              ).comments;
+              const boundary = (option: "after" | "cursor", fallback: number) => {
+                const id = input.options[option];
+                if (!id) return fallback;
+                const index = all.findIndex(comment => comment.id === id);
+                if (index < 0) throw new CliError(`${option} not found: ${id}; restart without --${option}`);
+                return index;
+              };
+              const window = all.slice(boundary("after", -1) + 1, boundary("cursor", all.length));
+              const hiddenSystem = kinds.includes("system") ? 0 : window.filter(c => c.kind === "system").length;
+              const comments = window.filter(comment => kinds.includes(comment.kind));
+              const page = comments.slice(-(input.options.limit ?? 20));
+              const nextCursor = comments.length > page.length ? page[0]!.id : null;
+              const latestCommentId = all.at(-1)?.id ?? null;
+              const previews = page.map(comment => ({
+                id: comment.id, createdAt: comment.createdAt, kind: comment.kind,
+                author: comment.threadTitle ?? comment.authorName,
+                bytes: Buffer.byteLength(comment.body, "utf8"),
+                preview: oneLine(comment.body).slice(0, 200),
+                truncated: oneLine(comment.body).length > 200,
+              }));
+              const more = input.options.preview ? Object.fromEntries(page.map(c => [c.id, `bb work-board comment show ${c.id}`])) : {};
+              if (hiddenSystem) more.system = `bb work-board comment list ${task.key} --kind system${input.options.after ? ` --after ${input.options.after}` : ""}${input.options.cursor ? ` --cursor ${input.options.cursor}` : ""}`;
+              if (input.options.json) return JSON.stringify({ comments: input.options.preview ? previews : page, total: comments.length, nextCursor, latestCommentId, hiddenSystem, ...(Object.keys(more).length ? { more } : {}) });
+              const rendered = input.options.preview ? table(["ID", "TIME", "KIND", "AUTHOR", "SIZE", "PREVIEW"], previews.map(c => [c.id, c.createdAt, c.kind, c.author, bytes(c.bytes), c.preview]), "(none)") : commentsTable(page);
+              return `${rendered}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}${hiddenSystem ? `\n${hiddenSystem} system comment(s) hidden; read with \`${more.system}\`` : ""}${input.options.preview ? page.map(c => `\nFull comment and attachments: \`bb work-board comment show ${c.id}\``).join("") : ""}`;
             });
           },
         }),

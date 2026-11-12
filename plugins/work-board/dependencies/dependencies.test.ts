@@ -76,7 +76,7 @@ it("round-trips archive v12, rejects bad graphs, and preserves links on legacy i
   source.dependencies.add(source.b.id, source.a.id);
   const capture = captureProject(source.bb, source.store, source.project.id);
   const archive = { manifest: capture.manifest, records: capture.records.map(record => archiveTaskSchema.parse(record)) };
-  expect(archive.manifest.version).toBe(15);
+  expect(archive.manifest.version).toBe(16);
   const targetHost = createFakePluginHost({ pluginId: "work-board" });
   hosts.push(targetHost);
   const targetStore = createStore(targetHost.bb);

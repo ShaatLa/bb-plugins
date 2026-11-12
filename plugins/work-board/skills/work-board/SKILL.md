@@ -136,19 +136,34 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    open/draft/merged/closed). Use
    `bb work-board show ABC-12 --json` when the result will drive commands or code.
 
-   Long cards carry hundreds of comments, so save context: start with
-   `bb work-board show ABC-12 --brief`, which keeps the fields, description,
-   dependencies, subtasks, threads, PR states and questions but leaves out
-   comments, evidence records, question history and per-check PR details (it
-   reports how many comments it skipped). Add `--comments N` for the latest N
-   comments. Read older history a page at a time, newest page first:
+   Read in text mode; use `--json` only when output feeds a script or another
+   command. Start with `bb work-board show ABC-12 --brief` before any comments.
+   It includes Current state, full open questions and compact answered questions.
+   Omission hints name commands for comments, evidence, full questions/history
+   (`question list ABC-12`) and per-check PR details (`show ABC-12 --json`). JSON puts
+   those commands in `more`. Add `--comments N` for the latest N of all kinds.
 
+   The responsible session replaces Current state at each milestone and hand-off:
+   done, next, blockers, links to key comments/attachments. Do not append a log;
+   keep history in comments. Sub-sessions do not write it. Use
+   `update ABC-12 --progress "..."` or `--progress-file <path>` (invoking machine),
+   or `--clear-progress`. The note is limited to 4 KB UTF-8 and secret-guarded;
+   saving changes neither status nor comment history.
+
+   Read comments newest page first:
    ```sh
-   bb work-board comment list ABC-12 --limit 20 [--kind user --kind agent] [--cursor <nextCursor>] --json
+   bb work-board comment list ABC-12 --preview --limit 20
+   bb work-board comment show <comment-id>
+   bb work-board comment list ABC-12 --after <latestCommentId> --cursor <nextCursor>
    ```
-
-   Each page returns `nextCursor` (null on the oldest page); pass it back with
-   the same `--kind` filters. Use the full `show` only when you need everything.
+   Preview shows IDs, time, kind, author, UTF-8 size and 200 collapsed characters;
+   `comment show` returns the full comment and attachments. List hides system
+   comments by default and reports `hiddenSystem`; include them with repeatable
+   `--kind user --kind agent --kind system`. IDs in full `show` and lists support
+   `comment show`, `--after` (strictly newer) and `--cursor` (strictly older).
+   Both boundaries resolve before kind filtering. JSON reports `latestCommentId`
+   of any kind (also in `show`) and `nextCursor`, null when the window is exhausted.
+   An unknown boundary requires restarting without that option.
 
    For project-wide discovery, `bb work-board list` returns at most 100 rows by
    default. Pass `--limit 1-500`; in JSON, continue with `nextCursor` via the

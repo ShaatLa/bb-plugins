@@ -135,6 +135,96 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("indexes new comments across kinds and reads full comments with attachments", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    const store = createStore(bb);
+    const project = store.tasks.createProject({ name: "Index", prefix: "IDX", color: "blue" });
+    const task = store.tasks.createTask({ projectId: project.id, title: "Index" });
+    const first = store.tasks.createComment({ taskId: task.id, body: "first", kind: "user", authorName: "Owner" });
+    const system = store.tasks.createComment({ taskId: task.id, body: "system", kind: "system", authorName: "System" });
+    const body = "é \n" + "long ".repeat(60);
+    const last = store.tasks.createComment({ taskId: task.id, body, kind: "agent", authorName: "Agent" });
+    const tail = store.tasks.createComment({ taskId: task.id, body: "tail", kind: "system", authorName: "System" });
+    const attachment = store.tasks.createAttachment({ commentId: last.id, fileName: "note.txt", mime: "text/plain", sizeBytes: 4, blobPath: "fixture-note", isImage: false });
+    const list = async (...args: string[]) => JSON.parse(stdout(await harness.runCli(["comment", "list", task.key, ...args, "--json"])));
+    expect(await list()).toMatchObject({ hiddenSystem: 2, latestCommentId: tail.id, comments: [{ id: first.id }, { id: last.id }] });
+    expect(await list("--after", first.id, "--limit", "1")).toMatchObject({ comments: [{ id: last.id }], nextCursor: null });
+    expect(await list("--cursor", system.id)).toMatchObject({ comments: [{ id: first.id }] });
+    expect(await list("--after", system.id, "--cursor", tail.id)).toMatchObject({ comments: [{ id: last.id }], nextCursor: null });
+    expect(await list("--after", tail.id)).toMatchObject({ comments: [], latestCommentId: tail.id });
+    expect(await list("--kind", "system")).toMatchObject({ hiddenSystem: 0, comments: [{ id: system.id }, { id: tail.id }] });
+    for (const option of ["--after", "--cursor"]) {
+      const failure = await harness.runCli(["comment", "list", task.key, option, "unknown"]);
+      expect(failure.exitCode).toBe(1);
+      expect(failure.stderr).toContain(`restart without ${option}`);
+    }
+    const preview = await list("--preview", "--after", first.id);
+    expect(preview.comments).toEqual([{ id: last.id, createdAt: last.createdAt, kind: "agent", author: "Agent", bytes: Buffer.byteLength(body), preview: body.replace(/\s+/g, " ").trim().slice(0, 200), truncated: true }]);
+    expect(preview.more[last.id]).toBe(`bb work-board comment show ${last.id}`);
+    expect((await list("--preview", "--cursor", system.id)).comments[0].truncated).toBe(false);
+    const full = JSON.parse(stdout(await harness.runCli(["comment", "show", last.id, "--json"])));
+    expect(full).toMatchObject({ comment: { id: last.id, body, threadTitle: null, provider: null }, attachments: [{ id: attachment.id, fileName: "note.txt", sizeBytes: 4 }] });
+    expect(stdout(await harness.runCli(["show", task.key]))).toContain(`Latest comment: ${tail.id}`);
+    expect(JSON.parse(stdout(await harness.runCli(["show", task.key, "--brief", "--json"])))).toMatchObject({ latestCommentId: tail.id });
+    expect(stdout(await harness.runCli(["comment", "list", task.key, "--preview"]))).toContain("PREVIEW");
+    await harness.dispose();
+  });
+
+  it("compacts answered questions and names the full history command", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Questions", "--prefix", "CMP"]);
+    await harness.runCli(["create", "--project", "CMP", "--title", "Questions"]);
+    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "CMP-1", "--prompt", "Choose\nnow", "--option", "One", "--option", "Two", "--multiple", "--allow-other", "--json"]))).question;
+    const result = await harness.runCli(["question", "answer", "CMP-1", "--question", question.id, "--answer", question.options[0].id, "--answer", question.options[1].id, "--text", "Details", "--revision", String(question.revision)]);
+    expect(result.exitCode).toBe(0);
+    await harness.runCli(["question", "add", "CMP-1", "--prompt", "Open question", "--option", "Yes", "--option", "No"]);
+    const evidence = await harness.runCli(["comment", "CMP-1", "--kind", "review", "--pr", "1", "--head", "a".repeat(40), "--verdict", "approve", "--thread", "thr_reviewer", "--body", "Reviewed"]);
+    expect(evidence.exitCode).toBe(0);
+    const brief = JSON.parse(stdout(await harness.runCli(["show", "CMP-1", "--brief", "--json"])));
+    expect(brief.questions[0]).toEqual({ id: question.id, prompt: "Choose\nnow", answer: "One; Two; Details", answeredBy: expect.any(String), updatedAt: expect.any(String) });
+    expect(brief.more.questions).toBe("bb work-board question list CMP-1");
+    expect(brief.more.evidence).toBe("bb work-board evidence CMP-1");
+    expect(brief.more.comments).toContain("--kind system");
+    expect(brief.questions[1]).toMatchObject({ prompt: "Open question", selectedOptionIds: [] });
+    expect(brief.questions[1]).not.toHaveProperty("history");
+    const text = stdout(await harness.runCli(["show", "CMP-1", "--brief"]));
+    expect(text).toContain(`✓ Choose now → One; Two; Details (${question.id})`);
+    expect(text).toContain("bb work-board question list CMP-1");
+    expect(JSON.parse(stdout(await harness.runCli(["question", "list", "CMP-1", "--json"]))).questions[0].history.length).toBeGreaterThan(0);
+    await harness.dispose();
+  });
+
+  it("sets, clears and reads progress files while refusing secrets and oversized notes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "progress-cli-"));
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board", sdk: { files: localFilesSdk() } });
+    try {
+      await plugin(bb);
+      await harness.runCli(["project", "create", "--name", "Progress", "--prefix", "PRG"]);
+      await harness.runCli(["create", "--project", "PRG", "--title", "Progress"]);
+      const update = async (...args: string[]) => harness.runCli(["update", "PRG-1", ...args, "--json"]);
+      const saved = JSON.parse(stdout(await update("--progress", "Done; next: review"))).task;
+      expect(saved).toMatchObject({ progressNote: "Done; next: review", progressUpdatedBy: "cli", status: "backlog" });
+      expect(saved.progressUpdatedAt).toEqual(expect.any(String));
+      for (const mode of [[], ["--brief"]]) {
+        const shown = JSON.parse(stdout(await harness.runCli(["show", "PRG-1", ...mode, "--json"])));
+        expect(shown.task.progressNote).toBe(saved.progressNote);
+        expect(shown.commentCount).toBe(0);
+        expect(stdout(await harness.runCli(["show", "PRG-1", ...mode]))).toContain("Current state (updated");
+      }
+      const file = join(dir, "state.md");
+      await writeFile(file, "From file");
+      expect(JSON.parse(stdout(await update("--progress-file", file))).task.progressNote).toBe("From file");
+      expect((await update("--progress", "é".repeat(2049))).stderr).toContain("4 KB");
+      expect((await update("--progress", `ghp_${"a".repeat(36)}`)).exitCode).toBe(1);
+      expect(JSON.parse(stdout(await update("--clear-progress"))).task).toMatchObject({ progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null });
+      expect((await update("--clear-progress", "--progress", "conflict")).exitCode).toBe(1);
+      const agentUpdate = await harness.runCli(["update", "PRG-1", "--progress", "Handoff", "--json"], { threadId: "thr_responsible" });
+      expect(JSON.parse(stdout(agentUpdate)).task.progressUpdatedBy).toBe("thr_responsible");
+    } finally { await harness.dispose(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it("shows a brief task and pages its comments newest first", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);
@@ -145,7 +235,7 @@ describe("bb work-board CLI", () => {
     const brief = JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--brief", "--json"])));
     expect(brief).toMatchObject({ task: { description: "Keep this." }, comments: [], commentCount: 3, commentsOmitted: 3 });
     expect(brief).not.toHaveProperty("evidence");
-    expect(stdout(await harness.runCli(["show", "BRF-1", "--brief"]))).toContain("3 of 3 comment(s) not shown; read them with `bb work-board comment list BRF-1`");
+    expect(stdout(await harness.runCli(["show", "BRF-1", "--brief"]))).toContain("3 of 3 comment(s) not shown; read them with `bb work-board comment list BRF-1 --kind user --kind agent --kind system`");
     const latest = JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--comments", "1", "--json"])));
     expect(latest.comments.map((comment: { body: string }) => comment.body)).toEqual(["three"]);
     expect(JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--json"]))).comments).toHaveLength(3);
