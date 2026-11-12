@@ -278,6 +278,13 @@ describe('reply pools and inbox',()=>{
   expect((await call('recipients')).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['b',2],['a',0]]);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
  });
+ it('keeps the open chat listed without items, but not once its thread is archived',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a');
+  const ids=async(selected:string)=>((await harness.behavior.callRpc('recipients',{selected})) as any).recipients.map((r:any)=>r.threadId);
+  expect(await ids('fresh')).toEqual(['a','fresh']);
+  db.prepare("INSERT INTO archived_threads VALUES ('fresh')").run();
+  expect(await ids('fresh')).toEqual(['a']);
+ });
  it('keeps recipient output across threads and projects',async()=>{
   const {harness,db}=setup();
   for(const [id,kind,thread,project] of [['ans_a','mine','a','p1'],['ans_b','for_me','b','p2'],['ans_c','mine','b','p2'],['ans_d','for_me','c','p1']] as const) {

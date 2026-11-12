@@ -179,6 +179,9 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
+  // Archiving or deleting the open thread (here or in bb) drops it from the sidebar; the chat closes with it.
+  const seenOpen = useRef<string | null>(null);
+  useEffect(() => { if (!selected) return; if (sidebarThreads.some(t => t.id === selected)) seenOpen.current = selected; else if (seenOpen.current === selected) { seenOpen.current = null; setSelected(undefined); } }, [selected, sidebarThreads]);
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} }), recipientsError = useSteadyError(result.error);
   // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
   // and the server's invalidation refreshes the rest when that changed something.

@@ -255,7 +255,8 @@ export default function plugin(bb: BbPluginApi) {
           SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
           ORDER BY CASE WHEN ${contactAttention.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
         )`).all(p.selected ?? '',p.selected ?? '') as Row[];
-      if (p.selected && !rows.some(r=>r.thread_id===p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
+      // The open chat stays listed even without items yet, unless it was archived or deleted.
+      if (p.selected && !rows.some(r=>r.thread_id===p.selected) && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM items WHERE thread_id=? AND thread_deleted=1').get(p.selected,p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await displayThreads(rows.map(r=>r.thread_id)) : [];
       const projects=rows.length ? await displayProjects() : [];
