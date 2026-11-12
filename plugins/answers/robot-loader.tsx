@@ -146,7 +146,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <line x1="15.5" y1="15" x2="26.6" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="25.8" y1="15" x2="25.8" y2="21.5" />
       <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" />
       <path d="M20 6.2 L25.6 5 V12.8 L20 11.6 Z" /><path d="M25.6 5 L26.4 5.4 V12.4 L25.6 12.8" /><line x1="23.2" y1="12.3" x2="23.2" y2="14.4" /><ellipse cx="23.2" cy="14.5" rx="1.5" ry=".4" fill="currentColor" stroke="none" />
-      <rect x="18.4" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="20.1" cy="17.6" r=".3" fill="currentColor" stroke="none" />
+      <rect x="21.5" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="23.2" cy="17.6" r=".3" fill="currentColor" stroke="none" />
       <line className="ar-glow" x1="21" y1="7.44" x2="24.4" y2="7.08" /><line className="ar-glow b" x1="21" y1="8.9" x2="23.8" y2="8.9" /><line className="ar-glow c" x1="21" y1="10.36" x2="23.2" y2="10.59" />
     </g>;
     case 'terminal': return <>
