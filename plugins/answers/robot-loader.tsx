@@ -105,7 +105,7 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   </g>
 </g>;
 
-// In profile the arm comes from the shoulder, the other hand tucked behind the back, and the magnifier, seen nearly
+// In profile the arm comes from the shoulder, the far arm showing from behind the back, and the magnifier, seen nearly
 // edge-on, is tipped forward so it stays clear of the head; each time the robot turns to a side it leans,
 // at random, back to look up or forward to look down, bending at the hip with the legs planted. Facing us the lens sits
 // over one eye, which looks huge through it. The robot turns right, front, left, front.
@@ -114,7 +114,7 @@ const aim = () => Math.random() < .5 ? 'up' : 'down';
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
   const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
-    <line x1="11.6" y1="13.2" x2="9" y2="16.4" />
+    <line x1="9.5" y1="13.4" x2="8.3" y2="16.3" />
     <g className="ar-scan"><line x1="12" y1="13" x2="16.4" y2="12.6" /><line x1="16.4" y1="12.6" x2="18.2" y2="10.46" strokeWidth="1.4" />
       <ellipse cx="19.74" cy="8.62" rx="1.3" ry="2.4" strokeWidth="1.1" transform="rotate(40 19.74 8.62)" /></g>
     </g></>;
