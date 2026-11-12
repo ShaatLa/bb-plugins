@@ -497,7 +497,8 @@ export function useRememberedPagePanel() {
     if (!restored.current) {
       restored.current = true;
       const saved = localStorage.getItem(PANEL_KEY);
-      if (saved && !open && tabs.some(tab => tab.key === saved)) panel.selectTab(saved);
+      // Only where there is room for it: on a phone (even in landscape) the panel would take half the page.
+      if (saved && !open && tabs.some(tab => tab.key === saved) && window.matchMedia?.('(min-width: 1024px)').matches) panel.selectTab(saved);
       return;
     }
     if (open && selectedKey) localStorage.setItem(PANEL_KEY, selectedKey); else localStorage.removeItem(PANEL_KEY);
