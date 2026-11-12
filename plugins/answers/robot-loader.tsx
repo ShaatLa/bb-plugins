@@ -154,10 +154,10 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
     case 'search': return <SearchScene />;
     case 'read': {
       // Facing us over an open book held low and tipped toward its face; its right hand turns the right page over to the left.
-      // In perspective: the far (top) edge is narrower than the near one, and the page block's edge shows below.
+      // In perspective: the far (top) edge is narrower than the near one, the lines arch like the pages, and the page block's edge shows below.
       const outer = (y: number) => 5.6 + 1.4 * (y - 14.4) / 3.8;
       const page = (side: 1 | -1) => <><path d={`M12 14.4 Q${12 + side * 2.8} 13.8 ${12 + side * 5.6} 14.4 L${12 + side * 7} 18.2 Q${12 + side * 3.5} 17.5 12 18.2 Z`} className="ar-solid" />
-        {[15.3, 16.3, 17.2].map(y => <line key={y} x1={12 + side * 1.2} y1={y} x2={12 + side * (outer(y) - (y === 17.2 ? 2.4 : .9))} y2={y} strokeWidth=".6" />)}</>;
+        {[15.3, 16.3, 17.2].map(y => { const end = outer(y) - (y === 17.2 ? 2.4 : .9); return <path key={y} d={`M${12 + side * 1.2} ${y} Q${12 + side * (1.2 + end) / 2} ${y - .55} ${12 + side * end} ${y}`} strokeWidth=".6" />; })}</>;
       const turn = { dur: '2.4s', repeatCount: 'indefinite', keyTimes: '0;.55;.9;1', calcMode: 'spline', keySplines: '0 0 1 1;.42 0 .58 1;0 0 1 1' } as const;
       return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" />
         <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
