@@ -37,7 +37,7 @@ const css = `
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
-.ar-scratch{transform-box:view-box;transform-origin:16.8px 15.2px;animation:ar-scratch .3s ease-in-out infinite alternate}
+.ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
@@ -77,7 +77,7 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // back quickly (ar-quick) instead of pausing to face us.
 const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
-    : <><line x1="12" y1="13" x2="16.8" y2="15.2" /><line className="ar-scratch" x1="16.8" y1="15.2" x2="15.6" y2="11.5" /></>}</g>
+    : <><line x1="12" y1="13" x2="16" y2="14.4" /><line className="ar-scratch" x1="16" y1="14.4" x2="15.3" y2="11.8" /></>}</g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
     <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
