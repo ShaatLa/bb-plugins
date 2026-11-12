@@ -141,6 +141,22 @@ describe("Slots deterministic engine", () => {
     expect(h.state.leases).toHaveLength(1);
   });
 
+  it("does not message a holder whose acquire is waiting for the grant", () => {
+    const h = harness(); h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "a tests", estMs: minute });
+    h.request("b");
+    const notices = [...h.open().effects, ...h.open().effects].flatMap(e => e.type === "notify" && e.reason === "grant" ? [e.threadId] : []);
+    expect(h.state.leases.map(l => l.holderThreadId)).toEqual(["a", "b"]);
+    expect(notices).toEqual(["b"]);
+  });
+
+  it("does not message the thread whose own done releases the lease", () => {
+    const h = harness(); const useId = (h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "a tests", estMs: minute }).result as { data: { useId: string } }).data.useId;
+    h.open();
+    const freed = h.send({ type: "done", threadId: "a", useId });
+    expect(h.state.leases).toEqual([]);
+    expect(freed.effects.filter(e => e.type === "notify")).toEqual([]);
+  });
+
   it("grants plain requests with JSON-safe use fields", () => {
     const h = harness(); h.request("a"); h.open();
     expect(h.state.leases[0]).toMatchObject({ uses: [], autoRelease: false, graceUntil: null });

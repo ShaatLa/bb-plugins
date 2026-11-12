@@ -123,12 +123,12 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       return false;
     });
   };
-  const free = (l: Lease, type: "release" | "expire" | "revoke", reason: string) => {
+  const free = (l: Lease, type: "release" | "expire" | "revoke", reason: string, by: string | null = null) => {
     if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
     const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
-    const initiator = type === "release" && reason === "released" ? l.ownerThreadId : null; // the CLI already showed the owner its release
+    const initiator = by; // the thread that released (CLI release, or its own last `done`) already knows
     for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
@@ -155,7 +155,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     reset(hostId);
     audit("grant", { ...fields(lease), manual });
     const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
-    notify(lease.holderThreadId, "grant", message);
+    // A live use means a waiter (slots-run, acquire RPC) already sees the grant; a message would only cost a turn.
+    if (!lease.uses?.length) notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
   };
@@ -168,7 +169,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const result = { released: [] as string[], returned: [] as string[], canceled: [] as string[] };
     for (const l of [...state.leases]) {
       if (leaseId !== undefined && l.id !== leaseId) continue;
-      if (l.ownerThreadId === threadId) { free(l, "release", reason); result.released.push(l.id); }
+      if (l.ownerThreadId === threadId) { free(l, "release", reason, reason === "released" ? threadId : null); result.released.push(l.id); }
       else if (l.holderThreadId === threadId) {
         for (const use of l.uses ?? []) audit("use-dropped", { ...fields(l), reason: use.id });
         l.uses = []; l.holderThreadId = l.ownerThreadId; refresh(l);
@@ -253,7 +254,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         target.uses = target.uses!.filter(u => u.id !== use.id);
         if (target.autoRelease && !target.uses.length) {
           if (input.type === "detach") target.graceUntil = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
-          else if (lease) free(lease, "release", "last use completed");
+          else if (lease) free(lease, "release", "last use completed", input.threadId);
           else release(input.threadId, target.id, "last use completed");
         }
         if (input.type === "detach") data = { kind: "queued", position: sorted(state).filter(r => r.hostId === target.hostId && r.pool === target.pool).findIndex(r => r.id === target.id) + 1 };
