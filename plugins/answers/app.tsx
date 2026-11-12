@@ -300,13 +300,15 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
     {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
     {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot says the work goes on; afterwards a clock marks the reply as interim. */}
-      {item.status === 'deferred' ? <span title="Interim reply: the agent is still working and will report back" className="flex w-fit px-2 text-muted-foreground"><RobotLoader label="Interim reply, work in progress" /></span>
+      {item.status === 'deferred' ? <span title="Interim reply: the agent is still working and will report back" className="flex w-fit px-2 text-muted-foreground"><RobotLoader className="h-8" label="Interim reply, work in progress" /></span>
         : <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</div>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
     {item.snoozedUntil !== null && <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground">Snoozed until {new Date(item.snoozedUntil).toLocaleString()} <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('snooze', { id: last.id, until: null }))}>Unsnooze</Button></div>}
     {item.taskKey && <UrlLink href={`/plugins/work-board/work-board/task/${encodeURIComponent(item.taskKey)}`} className="mx-2 text-xs">{item.taskKey}</UrlLink>}
     </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
+    {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
+    {chat && part !== 'question' && item.status === 'waiting' && item.failedAt === null && <div title="Waiting for the answer" className="px-2 text-muted-foreground"><RobotLoader className="h-8" label="Waiting for the answer" /></div>}
     {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
       {item.kind === 'for_me' && replyButton}
       {item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
@@ -323,8 +325,6 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
         </div>, document.body)}
       </div>
       {item.kind !== 'for_me' && replyButton}
-      {/* Only the running glyph says something; raw statuses ('open', 'replied', 'deferred') told the owner nothing. */}
-      {chat && item.status === 'waiting' && item.failedAt === null && <span className="ml-1 inline-flex items-center text-xs">{status}</span>}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}

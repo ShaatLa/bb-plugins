@@ -26,9 +26,9 @@ const side = <>
   <line className="ar-leg" x1="11" y1="18" x2="11" y2="21.5" /><line className="ar-leg b" x1="13" y1="18" x2="13" y2="21.5" />
 </>;
 
-export function RobotLoader({ className = '', label = 'Still working' }: { className?: string; label?: string }) {
+export function RobotLoader({ className = 'h-5', label = 'Still working' }: { className?: string; label?: string }) {
   return <span role="img" aria-label={label} className="inline-flex items-center"><span aria-hidden className="hidden items-center motion-reduce:inline-flex"><ThreadStatusGlyph indicator="runtime" size="compact" /></span>
-  <svg aria-hidden viewBox="-10 -6 44 28" className={`h-5 w-auto overflow-visible motion-reduce:hidden ${className}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+  <svg aria-hidden viewBox="-10 -6 44 28" className={`w-auto overflow-visible motion-reduce:hidden ${className}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
     <style>{css}</style>
     <g className="ar-move">
       <g className="ar-right">{side}</g>
