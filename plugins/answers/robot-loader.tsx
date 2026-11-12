@@ -74,7 +74,7 @@ const sideBody = <rect x="9.5" y="12" width="5" height="6" rx="1" />;
 const standingLegs = <><line x1="12" y1="18" x2="12" y2="21.5" /><line x1="12.4" y1="18" x2="12.4" y2="21.5" /></>;
 const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" /><circle cx="14" cy="7.5" r=".9" />
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
-const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".35" fill="currentColor" stroke="none" /></>;
+const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin; the wait scene dribbles a pebble ahead and turns
 // back quickly (ar-quick) instead of pausing to face us.
@@ -90,7 +90,7 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
-    {bubble && <><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</>}
+    {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
   </g>
 </g>;
 
