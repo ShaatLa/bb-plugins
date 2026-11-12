@@ -327,6 +327,14 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     for (const name of events) node.addEventListener(name, release, { passive: true });
     return () => { observer?.disconnect(); for (const name of events) node.removeEventListener(name, release); };
   }, [selected]);
+  // Like a chat app (and bb's chat): when the visible area shrinks or grows (the phone keyboard opens or closes, the
+  // window is resized), the bottom edge of the conversation stays put instead of the top.
+  useEffect(() => {
+    const node = scroll.current; if (!node || typeof ResizeObserver === 'undefined') return;
+    let height = node.clientHeight;
+    const observer = new ResizeObserver(() => { const next = node.clientHeight; if (next !== height && !pin.current) node.scrollTop += height - next; height = next; });
+    observer.observe(node); return () => observer.disconnect();
+  }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {
     const node = popup.current, box = scroll.current; if (!draft || draft.above === undefined || !node || !box) return;
