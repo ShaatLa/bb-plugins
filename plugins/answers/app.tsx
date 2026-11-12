@@ -10,6 +10,7 @@ import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { Button } from './components/ui/button';
 import { useUsageKeeper } from './contacts-footer';
+import { RobotLoader } from './robot-loader';
 import { useStoredState } from './lib/stored-state';
 import { parseInlineComments } from './inline-comments';
 
@@ -298,8 +299,8 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
     {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
-    {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, bb's running glyph says the work goes on; afterwards a clock marks the reply as interim. */}
-      {item.status === 'deferred' ? <span title="Interim reply: the agent is still working and will report back" className="flex w-fit px-2"><ThreadStatusGlyph indicator="runtime" size="compact" /><span className="sr-only">Interim reply, work in progress</span></span>
+    {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot says the work goes on; afterwards a clock marks the reply as interim. */}
+      {item.status === 'deferred' ? <span title="Interim reply: the agent is still working and will report back" className="flex w-fit px-2 text-muted-foreground"><RobotLoader label="Interim reply, work in progress" /></span>
         : <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</div>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
