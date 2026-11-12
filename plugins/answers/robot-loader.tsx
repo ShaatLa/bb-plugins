@@ -36,7 +36,12 @@ const css = `
 .ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
+.ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-solid{fill:var(--background,#fff)}
+@keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
+@keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
+@keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
+@keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -66,14 +71,15 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".35" fill="currentColor" stroke="none" /></>;
 
-// Walking in profile: legs scissor from one hip while the body bobs; the wait scene dribbles a pebble ahead.
+// Walking in profile: legs scissor from one hip while the body bobs; the wait scene dribbles a pebble ahead and turns
+// back quickly (ar-quick) instead of pausing to face us.
 const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}<line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" /></g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
     <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
-const pacing = (bubble: boolean, pebble: boolean) => <g className="ar-move">
+const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
   <g className="ar-right">{walker(pebble)}</g>
   <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
@@ -118,7 +124,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
       const side = <>{sideHead}{sideBody}{standingLegs}
         <g className="ar-scan"><line x1="14.5" y1="13.2" x2="17.2" y2="11.6" /><line x1="17.2" y1="11.6" x2="18.4" y2="9.6" strokeWidth="1.4" />
-          <circle cx="19.8" cy="7.4" r="2.4" strokeWidth="1.1" /><path d="M18.6 6.6 A1.4 1.4 0 0 1 19.8 5.9" /></g></>;
+          <circle cx="19.8" cy="7.4" r="2.4" strokeWidth="1.1" /></g></>;
       return <g className="ar-look">
         <g className="ar-right">{side}</g>
         <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side}</g></g>
