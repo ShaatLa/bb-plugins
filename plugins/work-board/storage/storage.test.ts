@@ -41,8 +41,8 @@ it("cleans old unreachable rows/files, preserving archived data, exclusions, act
     h.db.prepare("INSERT INTO task_activity_claims VALUES (?, ?, ?)").run(thread, h.task.id, "turn");
     h.db.prepare("INSERT INTO task_activity_queue VALUES (?, ?, ?)").run(thread, `queue-${thread}`, h.task.id);
   }
-  h.db.prepare("INSERT INTO git_pr_snapshots VALUES (?, ?, ?, NULL)").run(h.project.id, "unlinked", "{}");
-  h.db.prepare("INSERT INTO git_pr_snapshots VALUES (?, ?, ?, NULL)").run(h.project.id, "excluded", "{}");
+  h.db.prepare("INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, NULL)").run(h.project.id, "unlinked", "{}");
+  h.db.prepare("INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, NULL)").run(h.project.id, "excluded", "{}");
   h.db.prepare("INSERT INTO task_pr_links VALUES (?, ?, ?)").run(h.task.id, "excluded", JSON.stringify({ excluded: true }));
   const old = await orphan(h.root, "old"), active = await orphan(h.root, "active");
   const release = protectBlob(active);

@@ -211,11 +211,12 @@ export function HistoryChart({ chart, workflow, event: eventChoice, options, sel
 function ChevronSelect({ id, label, value, onChange, className, children }: {
   id?: string; label: string; value: string; onChange: (value: string) => void; className: string; children: ReactNode;
 }) {
-  return <span className="relative inline-flex max-w-full items-center">
+  // Padding on both sides of the hover background; the negative margin keeps the text aligned with the lines below.
+  return <span className="relative -ml-1 inline-flex max-w-full items-center">
     <select id={id} aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} style={{ fieldSizing: "content" } as CSSProperties}
-      className={`max-w-full cursor-pointer appearance-none truncate rounded-sm bg-transparent py-0.5 pr-5 outline-none hover:bg-state-hover focus-visible:bg-state-hover ${className}`}>
+      className={`max-w-full cursor-pointer appearance-none truncate rounded-sm bg-transparent py-0.5 pl-1 pr-6 outline-none hover:bg-state-hover focus-visible:bg-state-hover ${className}`}>
       {children}
     </select>
-    <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 ${chevronClass}`} />
+    <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 ${chevronClass}`} />
   </span>;
 }

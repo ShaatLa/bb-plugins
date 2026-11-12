@@ -148,7 +148,7 @@ function SlotsPage() {
           <Icon name="ArrowReloadHorizontal" fallback="RotateCcw" aria-hidden className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`} />
         </Button></div>
       </header>
-      {error && <div role="alert" className="text-sm text-destructive">Unable to refresh status.{view && " Showing the last successful status."}<span className="block text-xs">Retrying automatically every 10 seconds while visible.</span></div>}
+      {error && <div role="alert" className="text-sm text-destructive">Unable to refresh status.{view && " Showing the last successful status."}<span className="block text-xs">Retrying automatically every 30 seconds while visible.</span></div>}
       {!view && !error && <LoadingSkeleton label="Loading Slots status…"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{[0, 1, 2, 3, 4].map(key => <Card key={key} className="space-y-3 p-4"><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-24" /><Skeleton className="h-3 w-3/4" /></Card>)}</div></LoadingSkeleton>}
       {view && <StatusContent view={view} now={now} />}
     </div>

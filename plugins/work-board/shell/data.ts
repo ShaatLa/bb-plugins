@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import {
@@ -15,7 +15,7 @@ import {
   readQuerySnapshot,
   writeQuerySnapshot,
 } from "./query-snapshot.js";
-import { invalidateTaskDatasets } from "./task-dataset";
+import { forgetTaskReads, getSharedTask, invalidateTaskDatasets } from "./task-dataset";
 import { useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
@@ -23,8 +23,55 @@ import {
   type TaskSignal,
 } from "./signal-scheduler.js";
 
+const readFlights = new Map<string, Promise<unknown>>();
+// Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
+function forgetReads() {
+  readFlights.clear();
+  forgetTaskReads();
+}
+let rpcUsers = 0;
+const readMethods = new Set<string>([
+  "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
+  "getBoardPreferences", "listProjects", "listQuestions", "questionCounts",
+  "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
+  "listComments", "listAttachments", "listTaskThreads", "listTaskCardMeta",
+  "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
+  "listBbProjects", "getNavigationBadgeCriteria", "navigationBadge",
+  "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",
+]);
+
 export function useTasksRpc() {
-  return useRpc<TasksRpcContract>();
+  const rpc = useRpc<TasksRpcContract>();
+  useEffect(() => {
+    rpcUsers++;
+    return () => {
+      if (--rpcUsers === 0) readFlights.clear();
+    };
+  }, []);
+  return useMemo(() => {
+    const flights = readFlights;
+    return {
+      ...rpc,
+      call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
+        if (!readMethods.has(method)) {
+          forgetReads();
+          const write = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+          void write.finally(forgetReads).catch(() => undefined);
+          return write;
+        }
+        const key = JSON.stringify([method, args], (_key, value: unknown) =>
+          value && typeof value === "object" && !Array.isArray(value)
+            ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+            : value);
+        const existing = flights.get(key);
+        if (existing) return existing;
+        const read = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
+        flights.set(key, read);
+        void read.finally(() => { if (flights.get(key) === read) flights.delete(key); }).catch(() => undefined);
+        return read;
+      }) as typeof rpc.call,
+    };
+  }, [rpc]);
 }
 
 export type TasksRpc = ReturnType<typeof useTasksRpc>;
@@ -96,11 +143,12 @@ export async function patchTasks(
   current: readonly Task[],
   taskIds: readonly string[],
   belongs: (task: Task) => boolean,
-): Promise<Task[]> {
+): Promise<Task[] | null> {
   if (taskIds.length === 0) return [...current];
+  if (taskIds.length > 25) return null;
   const fetched = await Promise.all(
     taskIds.map(async (taskId) => {
-      const { task } = await rpc.call("getTask", { taskId });
+      const task = await getSharedTask(rpc, taskId);
       return [taskId, task] as const;
     }),
   );
@@ -127,6 +175,7 @@ interface TasksQuery<T> {
   isLoading: boolean;
   isFetching: boolean;
   refresh: () => void;
+  patch: (update: (rpc: TasksRpc, current: T) => Promise<T>) => Promise<void>;
 }
 
 interface TasksQuerySnapshot<T> {
@@ -152,6 +201,7 @@ export function useTasksQuery<T>(
     snapshot?: TasksQuerySnapshot<T>;
     applySignals?: ApplySignals<T>;
     relevantTaskIds?: readonly string[];
+    signalDelayMs?: (channel: InvalidationChannel) => number;
   } = {},
 ): TasksQuery<T> {
   const rpc = useTasksRpc();
@@ -187,6 +237,7 @@ export function useTasksQuery<T>(
   const signalStateRef = useRef<{
     channels: readonly InvalidationChannel[];
     relevantTaskIds: readonly string[] | undefined;
+    signalDelayMs?: (channel: InvalidationChannel) => number;
     refresh: () => Promise<void>;
     preparePatch: (signals: TaskSignal[]) => (() => Promise<void>) | null;
   }>({
@@ -199,6 +250,7 @@ export function useTasksQuery<T>(
     createTaskSignalScheduler({
       channels: () => signalStateRef.current.channels,
       relevantTaskIds: () => signalStateRef.current.relevantTaskIds,
+      signalDelayMs: (channel) => signalStateRef.current.signalDelayMs?.(channel) ?? 50,
       isHidden: () => document.visibilityState === "hidden",
       setTimer: (callback, delayMs) => {
         const timer = setTimeout(callback, delayMs);
@@ -259,6 +311,17 @@ export function useTasksQuery<T>(
       ),
     );
   }, [rpc, depsKey, dataScopeKey, scheduler]);
+  const patch = useCallback(async (update: (rpc: TasksRpc, current: T) => Promise<T>) => {
+    const current = dataRef.current;
+    if (!enabledRef.current || current === undefined) return;
+    const seq = seqRef.current;
+    const next = await update(rpc, current);
+    if (seq !== seqRef.current || next === current) return;
+    dataRef.current = next;
+    const snapshot = snapshotRef.current;
+    if (snapshot) writeQuerySnapshot(snapshot.name, next, claimQuerySnapshotRevision(snapshot.name));
+    setState((previous) => ({ ...previous, data: next }));
+  }, [rpc]);
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
@@ -315,6 +378,7 @@ export function useTasksQuery<T>(
   signalStateRef.current = {
     channels,
     relevantTaskIds: options.relevantTaskIds,
+    signalDelayMs: options.signalDelayMs,
     refresh,
     preparePatch,
   };
@@ -326,25 +390,23 @@ export function useTasksQuery<T>(
     };
   }, [scheduler]);
   useRealtime("tasks:changed", (payload) => {
+    forgetReads();
     invalidateTaskDatasets();
     scheduler.push("tasks:changed", payload);
   });
   useRealtime("projects:changed", (payload) => {
+    forgetReads();
     invalidateTaskDatasets();
     scheduler.push("projects:changed", payload);
   });
-  useRealtime("comments:changed", (payload) =>
-    scheduler.push("comments:changed", payload),
-  );
-  useRealtime("threads:changed", (payload) =>
-    scheduler.push("threads:changed", payload),
-  );
-  useRealtime("prs:changed", (payload) => scheduler.push("prs:changed", payload));
-  useRealtime("locks:changed", (payload) => scheduler.push("locks:changed", payload));
-  useRealtime("badge:changed", (payload) => scheduler.push("badge:changed", payload));
-  useRealtime("schedules:changed", (payload) => scheduler.push("schedules:changed", payload));
+  useRealtime("comments:changed", (payload) => { forgetReads(); scheduler.push("comments:changed", payload); });
+  useRealtime("threads:changed", (payload) => { forgetReads(); scheduler.push("threads:changed", payload); });
+  useRealtime("prs:changed", (payload) => { forgetReads(); scheduler.push("prs:changed", payload); });
+  useRealtime("locks:changed", (payload) => { forgetReads(); scheduler.push("locks:changed", payload); });
+  useRealtime("badge:changed", (payload) => { forgetReads(); scheduler.push("badge:changed", payload); });
+  useRealtime("schedules:changed", (payload) => { forgetReads(); scheduler.push("schedules:changed", payload); });
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
-  return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh };
+  return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh, patch };
 }
 
 const foldersSnapshot = {
@@ -392,37 +454,71 @@ export function useSidebarSummary() {
     async (rpc) => (await rpc.call("sidebarSummary")).projects,
     ["tasks:changed", "projects:changed", "threads:changed"],
     [],
-    { snapshot: sidebarSummarySnapshot },
+    { snapshot: sidebarSummarySnapshot, signalDelayMs: sidebarSignalDelay },
   );
+}
+
+const MENTION_DEBOUNCE_MS = 150;
+
+interface MentionBurst {
+  promise: Promise<MentionItem[]>;
+  resolve: (result: Promise<MentionItem[]>) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export function useMentionItems() {
   const rpc = useTasksRpc();
+  const newest = useRef<Promise<MentionItem[]>>(Promise.resolve([]));
+  const burst = useRef<MentionBurst | null>(null);
   return useCallback(
-    async (query: string): Promise<MentionItem[]> => {
+    (query: string): Promise<MentionItem[]> => {
       const trimmed = query.trim();
-      const [taskResult, threadResult] = await Promise.all([
-        rpc.call("listTasks", {
-          ...(trimmed ? { search: trimmed } : {}),
-          limit: 8,
-        }),
-        rpc
-          .call("searchThreads", { query: trimmed, limit: 5 })
-          .catch(() => ({ threads: [] })),
-      ]);
-      return [
-        ...taskResult.tasks.slice(0, 8).map((task) => ({
-          type: "task" as const,
-          id: task.id,
-          key: task.key,
-          title: task.title,
-        })),
-        ...threadResult.threads.map((thread) => ({
-          type: "thread" as const,
-          id: thread.id,
-          title: thread.title,
-        })),
-      ];
+      const search = (): Promise<MentionItem[]> => {
+        const run: Promise<MentionItem[]> = Promise.all([
+          rpc.call("listTasks", {
+            ...(trimmed ? { search: trimmed } : {}),
+            limit: 8,
+          }),
+          rpc
+            .call("searchThreads", { query: trimmed, limit: 5 })
+            .catch(() => ({ threads: [] })),
+        ]).then(([taskResult, threadResult]) => {
+          // A slower, older response hands off to the newest search instead of overwriting it.
+          if (run !== newest.current) return newest.current;
+          return [
+            ...taskResult.tasks.slice(0, 8).map((task) => ({
+              type: "task" as const,
+              id: task.id,
+              key: task.key,
+              title: task.title,
+            })),
+            ...threadResult.threads.map((thread) => ({
+              type: "thread" as const,
+              id: thread.id,
+              title: thread.title,
+            })),
+          ];
+        });
+        newest.current = run;
+        return run;
+      };
+      // Keystrokes within one debounce window share a promise, so superseded callers still resolve.
+      if (!burst.current) {
+        let resolve!: MentionBurst["resolve"];
+        const promise = new Promise<MentionItem[]>((done) => {
+          resolve = done;
+        });
+        burst.current = { promise, resolve };
+      }
+      const current = burst.current;
+      clearTimeout(current.timer);
+      const flush = () => {
+        burst.current = null;
+        current.resolve(search());
+      };
+      if (trimmed) current.timer = setTimeout(flush, MENTION_DEBOUNCE_MS);
+      else flush();
+      return current.promise;
     },
     [rpc],
   );
@@ -431,6 +527,11 @@ export function useMentionItems() {
 export function useActiveTasks() {
   return useTasksQuery(
     async (rpc) => listAllTasks(rpc, { activeOnly: true }),
-    ["tasks:changed", "threads:changed"],
+    ["tasks:changed", "threads:changed", "projects:changed"],
+    [],
+    { signalDelayMs: sidebarSignalDelay },
   );
 }
+
+const sidebarSignalDelay = (channel: InvalidationChannel) =>
+  channel === "projects:changed" ? 0 : 1500;

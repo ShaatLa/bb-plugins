@@ -1,5 +1,8 @@
+import { createGithubClient, githubToken } from "../git-sync/github";
+import { waitForPrCi } from "../git-sync/ci-wait";
 import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
+import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -63,7 +66,6 @@ import { scheduledCliCommands } from "../scheduled/cli";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
-const ACTIVE_THREAD_STATUSES = new Set(["starting", "working"]);
 const DEFAULT_PROJECT_COLOR = "blue";
 const DEFAULT_LABEL_COLOR = "gray";
 
@@ -938,13 +940,26 @@ export function registerTasksCli(
             ].join("\n");
           }); },
         })])),
-        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done)", [["add KEY --blocked-by KEY", "Add a predecessor"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["list KEY", "Show both directions"]]),
+        dependency: groupCommand("dependency", "Manage task blockers (warnings only; predecessors must be Done) and related links", [["add KEY --blocked-by KEY", "Add a predecessor"], ["add KEY --relates-to KEY", "Link a related task (no blocking)"], ["remove KEY --blocked-by KEY", "Remove a predecessor"], ["remove KEY --relates-to KEY", "Remove a related link"], ["list KEY", "Show blockers, dependents and related tasks"]]),
         ...Object.fromEntries((["add", "remove", "list"] as const).map(action => [`dependency ${action}`, cliCommand({
           summary: `${action} task dependencies; only Done satisfies a predecessor`,
           positionals: [KEY_POSITIONAL],
-          options: { json: JSON_OPTION, ...(action === "list" ? {} : { "blocked-by": { type: "string" as const, required: true as const, description: "Predecessor task key or ID (same project)" } }) },
+          options: { json: JSON_OPTION, ...(action === "list" ? {} : {
+            "blocked-by": { type: "string" as const, description: "Predecessor task key or ID (same project)" },
+            "relates-to": { type: "string" as const, description: "Related task key or ID (same project); never blocks" },
+          }) },
           run(input, ctx) { return guard(async () => {
             const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            if (action !== "list" && (input.options["blocked-by"] === undefined) === (input.options["relates-to"] === undefined))
+              throw new Error("Pass exactly one of --blocked-by or --relates-to");
+            if (action !== "list" && input.options["relates-to"] !== undefined) {
+              const other = await resolveTask(domain, String(input.options["relates-to"]));
+              const args = { taskId: task.id, relatedTaskId: other.id, authorName: taskAuthor(ctx) };
+              const result = action === "add"
+                ? await domain.addTaskRelation(tasksRpcContract.addTaskRelation.input.parse(args))
+                : await domain.removeTaskRelation(tasksRpcContract.removeTaskRelation.input.parse(args));
+              return input.options.json ? JSON.stringify(result) : `${task.key}: ${action === "add" ? "related to" : "no longer related to"} ${other.key}${result.changed ? "" : " (unchanged)"}`;
+            }
             if (action !== "list") {
               const blocker = await resolveTask(domain, String(input.options["blocked-by"]));
               const args = { taskId: task.id, blockingTaskId: blocker.id, authorName: taskAuthor(ctx) };
@@ -957,6 +972,7 @@ export function registerTasksCli(
             return input.options.json ? JSON.stringify(result) : [
               `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
               `Blocks: ${result.blocks.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
+              `Related: ${result.related.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
             ].join("\n");
           }); },
         })])),
@@ -990,7 +1006,37 @@ export function registerTasksCli(
         }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
-        pr: groupCommand("pr", "Manage persistent task-to-PR links", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"]]),
+        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
+        "pr wait": cliCommand({
+          summary: "Block until every required check of a PR head settles; exit 0 green, 1 red, 2 cancelled or superseded, 3 no verdict",
+          options: {
+            url: { type: "string", required: true, description: "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123" },
+            head: { type: "string", description: "Full 40-character head SHA to judge (default: the PR head when the wait starts)" },
+            timeout: { type: "duration", defaultUnit: "m", default: 45 * 60_000, min: 60_000, max: 60 * 60_000, description: "How long to wait, 1 to 60 min (default 45 min)" },
+            json: JSON_OPTION,
+          },
+          run(input, ctx) { return guard(async () => {
+            const match = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/.exec(input.options.url.trim());
+            if (!match) throw new CliError(`"${input.options.url}" is not a GitHub pull request URL`);
+            const head = input.options.head?.toLowerCase();
+            if (head !== undefined && !/^[0-9a-f]{40}$/.test(head))
+              throw new PluginCliError(`--head needs the full 40-character SHA, got "${input.options.head}"`, { code: "sha_not_full", hint: 'Pass --head "$(git rev-parse HEAD)".' });
+            const signal = ctx.signal ?? new AbortController().signal;
+            let token: { at: number; value: Promise<string | undefined> } | undefined;
+            const client = createGithubClient({ signal, token: () => {
+              if (!token || Date.now() - token.at > 60_000) token = { at: Date.now(), value: githubToken(signal) };
+              return token.value;
+            } });
+            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout }, signal);
+            const from = head ? "--head" : "the PR head";
+            return {
+              exitCode: result.exitCode,
+              stdout: input.options.json
+                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], waitedMs: result.waitedMs })
+                : `${match[1]}#${match[2]} at ${result.sha || "unknown head"} (from ${from}), waited ${Math.round(result.waitedMs / 60_000)} min\n${result.message}`,
+            };
+          }); },
+        }),
         ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({
           summary: action === "list" ? "List persistent PR links and their cached status" : action === "link" ? "Link or confirm a PR with an explicit role" : "Exclude a PR (survives discovery)",
           positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" } } : {}) },
@@ -1798,6 +1844,7 @@ export function registerTasksCli(
             },
           ],
           options: {
+            "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
             "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
@@ -1855,8 +1902,16 @@ export function registerTasksCli(
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
                 try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
-              } else if (input.options.machine) throw new CliError("--machine requires --statuses-file");
+              } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
+              let workflowPolicy;
+              if (input.options["workflow-policy-file"]) {
+                const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
+                const text = await readTextOption(bb, ctx, hostId, undefined, input.options["workflow-policy-file"]);
+                try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
+                catch { throw new CliError("Invalid workflow policy file"); }
+              }
               const changes = {
+                workflowPolicy,
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
@@ -1874,6 +1929,7 @@ export function registerTasksCli(
                 changes.name === undefined &&
                 changes.color === undefined &&
                 changes.folderId === undefined &&
+                changes.workflowPolicy === undefined &&
                 changes.statuses === undefined &&
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
@@ -1895,6 +1951,7 @@ export function registerTasksCli(
                 changes.name !== undefined ||
                 changes.color !== undefined ||
                 changes.folderId !== undefined ||
+                changes.workflowPolicy !== undefined ||
                 changes.statuses !== undefined ||
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
@@ -1917,6 +1974,7 @@ export function registerTasksCli(
               const updated = store.transaction(() =>
                 store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
+                  workflowPolicy: updateInput?.workflowPolicy,
                   statuses: updateInput?.statuses,
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
@@ -2389,6 +2447,7 @@ export function registerTasksCli(
               description:
                 "Keep only these workflow statuses; repeat the flag or pass a comma-separated list",
             },
+            "stale-status": { type: "boolean", description: "Only tasks with stale status diagnostics based on recorded observations" },
             "exclude-status": {
               type: "string",
               placeholder: "status-id",
@@ -2514,6 +2573,7 @@ export function registerTasksCli(
                         : undefined,
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
+                    staleStatus: input.options["stale-status"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2523,6 +2583,7 @@ export function registerTasksCli(
                 ),
               );
               const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
+              const flags = new Map(metadata.map((row) => [row.taskId, row.staleStatusFlags]));
               const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
               const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
@@ -2532,23 +2593,14 @@ export function registerTasksCli(
               );
               const tasks = [];
               for (const task of result.tasks) {
-                const threadResult =
-                  tasksRpcContract.listTaskThreads.output.parse(
-                    await domain.listTaskThreads(
-                      tasksRpcContract.listTaskThreads.input.parse({
-                        taskId: task.id,
-                      }),
-                    ),
-                  );
                 tasks.push({
                   ...task,
                   labels: task.labelIds.map(
                     (id) => labelById.get(id)?.name ?? id,
                   ),
-                  agentsWorking: threadResult.taskThreads.filter((thread) =>
-                    ACTIVE_THREAD_STATUSES.has(thread.liveStatus),
-                  ).length,
+                  agentsWorking: metadata.find((row) => row.taskId === task.id)?.taskThreads.length ?? 0,
                   threadHealth: health.get(task.id),
+                  staleStatusFlags: flags.get(task.id) ?? [],
                   blockedBy: blockedBy.get(task.id) ?? [],
                   advisories: advisories.get(task.id) ?? [],
                 });
@@ -2570,6 +2622,7 @@ export function registerTasksCli(
                   "TITLE",
                   "LABELS",
                   "AGENTS",
+                  "STALE STATUS",
                   "BLOCKED BY",
                   "ADVISORIES",
                 ],
@@ -2582,6 +2635,7 @@ export function registerTasksCli(
                   task.title,
                   task.labels.join(", ") || "-",
                   task.agentsWorking,
+                  task.staleStatusFlags.join(", ") || "-",
                   task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
                   task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
                 ]),
@@ -2672,6 +2726,7 @@ export function registerTasksCli(
                   attachments,
                   taskThreads,
                   threadHealth,
+                  staleStatusFlags: cardMeta.staleStatusFlags,
                   activity,
                   advisories: cardMeta.advisories ?? [],
                   dependencies,
@@ -2709,6 +2764,7 @@ export function registerTasksCli(
                   ["Status", task.status],
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
+                  ["Related", dependencies.related.map(other => `${other.key} (${other.status})`).join(", ") || "-"],
                   ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),
                   ["Priority", task.priority],
                   ["Due", task.dueDate ?? "-"],

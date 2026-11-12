@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeHostResponse, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -270,7 +270,7 @@ it.each(["thread.archived", "thread.deleted"] as const)("clears and audits an en
   await h.harness.behavior.emitThreadEvent(event, { thread: h.threads.get("a")! });
   expect(await h.invoke("observer", {})).toMatchObject({ data: { threadId: null } });
   expect(h.send).not.toHaveBeenCalled();
-  expect((await h.view()).audit.at(-1)).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
+  expect((await h.view()).audit[0]).toMatchObject({ type: "observer", reason: expect.stringContaining("a → none") });
 });
 it("startup clears a dead configured observer", async () => {
   const h = await setup(undefined, undefined, { observerThreadId: "missing" });
@@ -282,6 +282,8 @@ it("returns the SDK machine display name and tolerates a failed name lookup", as
   const h = await setup();
   expect((await h.view()).localHostName).toBe("Work laptop");
   h.harness.sdk.stub("hosts.get", async () => { throw new Error("offline"); });
+  expect((await h.view()).localHostName).toBe("Work laptop");
+  h.advance(300001);
   expect((await h.view()).localHostName).toBeNull();
 });
 
@@ -448,7 +450,8 @@ it("acquire resolves a grant at its deadline and cleans up on abort", async () =
   const lease = { id: "lease-2", requestId: "req-1" };
   const invoke = vi.fn(async (method: string) => {
     if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1" }, useId: "use-3" } };
-    if (method === "status") return { ok: true, data: { hostSettings: { other: { heartbeatIntervalMs: 120000 }, local: { heartbeatIntervalMs: 600000 } } } };
+    if (method === "status") return { ok: true, data: { hostSettings: { other: { heartbeatIntervalMs: 120000 }, local: { heartbeatIntervalMs: 600000 } },
+      pools: [{ leases: [], queue: [{ id: "req-1", uses: [{ id: "use-3" }] }] }] } };
     if (method === "heartbeatUse") return { ok: true, data: { kind: "queued", useId: "use-3" } };
     if (method === "detach") return { ok: true, data: { kind: "leased", lease, useId: "use-3" } };
     return { ok: true, data: null };
@@ -534,4 +537,122 @@ it("watcher initialization errors leave the loop running for recovery", async ()
 it("formats structured notifications as short readable Markdown", () => {
   expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("**Machine Slots** · `Idle heavy slot`\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
   expect(formatNotification({ title: "Slot granted", lines: [] })).not.toContain("[Slots]");
+});
+
+it("deduplicates restored state and publishes settings-only changes", async () => {
+  const h = await setup(); await h.view();
+  const save = vi.spyOn(h.runtime.store, "save");
+  const before = h.harness.inspection.realtimeSignals.length;
+  await h.configure({ loadMax: 10 });
+  expect(h.harness.inspection.realtimeSignals.length).toBeGreaterThan(before);
+  expect(save).not.toHaveBeenCalled();
+  await h.invoke("gate", { threadId: "a", hostId: "local" });
+  expect(save).toHaveBeenCalled();
+});
+
+it("retries a failed state save and remembers a loaded serialization", async () => {
+  const h = await setup(); await h.view();
+  const store = h.runtime.store;
+  const saved = store.lastSaved;
+  await mkdir(join(h.path, "state.json.tmp"));
+  await expect(store.save('{"changed":true}')).rejects.toThrow();
+  expect(store.lastSaved).toBe(saved);
+  await rm(join(h.path, "state.json.tmp"), { recursive: true });
+  await store.save('{"changed":true}');
+  const restored = new DiskStore(h.path); await restored.load();
+  expect(restored.lastSaved).toBe('{"changed":true}');
+});
+
+
+it("caches the host name and initializes before a host-requiring tool", async () => {
+  const h = await setup();
+  const get = vi.fn(async () => ({ ...makeHostResponse({ id: "local", name: "Work laptop" }), connectMachineId: null, threadStorageRootPath: null }));
+  h.harness.sdk.stub("hosts.get", get);
+  const result = JSON.parse(await h.harness.behavior.callAgentTool("slots_gate", {}, { threadId: "a" }) as string);
+  expect(result.ok).toBe(true);
+  for (let i = 0; i < 10; i++) await h.view();
+  expect(get).toHaveBeenCalledTimes(1);
+});
+
+it("times out a hung lookup without ending the lease or applying a late result", async () => {
+  const h = await setup(); await h.grant();
+  let finish!: (value: ReturnType<typeof makeThreadResponse>) => void;
+  h.harness.sdk.stub("threads.get", () => new Promise(resolve => { finish = resolve; }));
+  vi.useFakeTimers();
+  try {
+    const pending = h.invoke("release", { threadId: "a" });
+    await vi.advanceTimersByTimeAsync(10001);
+    expect(await pending).toMatchObject({ ok: false, error: { message: expect.stringContaining("timed out") } });
+    finish(makeThreadResponse({ id: "a", environmentId: "env" }));
+    await Promise.resolve();
+  } finally { vi.useRealTimers(); }
+  h.harness.sdk.stub("threads.get", async () => h.threads.get("a")!);
+  expect((await h.view()).pools[0].leases).toHaveLength(1);
+});
+
+it("throttles active holder heartbeats across sampler ticks", async () => {
+  const h = await setup(); const lease = await h.grant();
+  const get = vi.fn(async () => makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+  h.harness.sdk.stub("threads.get", get);
+  for (let i = 1; i <= 8; i++) {
+    h.advance(15000); const count = h.metrics.mock.calls.length;
+    const service = h.harness.behavior.runService("sampler");
+    try { await vi.waitFor(() => expect(h.metrics.mock.calls.length).toBeGreaterThan(count)); }
+    finally { service.controller.abort(); await service.done; }
+    expect(get).toHaveBeenCalledTimes(Math.floor(i / 4));
+  }
+  expect((await h.view()).pools[0].leases[0].lastHeartbeatAt).toBe(lease.lastHeartbeatAt + 120000);
+});
+
+it("keeps active holders ahead of the 30 minute TTL and 29 minute warning boundary", async () => {
+  const h = await setup(); await h.configure({ leaseTtlMinutes: 30, heartbeatIntervalMinutes: 29 });
+  await h.grant(); h.send.mockClear();
+  h.harness.sdk.stub("threads.get", async () => makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+  for (let i = 0; i < 12; i++) {
+    h.advance(15000); const count = h.metrics.mock.calls.length;
+    const service = h.harness.behavior.runService("sampler");
+    try { await vi.waitFor(() => expect(h.metrics.mock.calls.length).toBeGreaterThan(count)); }
+    finally { service.controller.abort(); await service.done; }
+  }
+  const lease = (await h.view()).pools[0].leases[0];
+  expect(lease.warnedAt).toBeNull();
+  expect(h.send).not.toHaveBeenCalledWith(expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("to keep it") })] }));
+});
+
+it("continues the sampler after a holder lookup times out without late mutation", async () => {
+  const h = await setup(); await h.grant(); h.advance(60000);
+  let finish!: (thread: ReturnType<typeof makeThreadResponse>) => void;
+  const get = vi.fn(() => new Promise<ReturnType<typeof makeThreadResponse>>(resolve => { finish = resolve; }));
+  const prune = vi.spyOn(h.runtime.store, "prune"); h.metrics.mockClear();
+  h.harness.sdk.stub("threads.get", get);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const service = h.harness.behavior.runService("sampler");
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10001);
+    h.harness.sdk.stub("threads.get", async () => h.threads.get("a")!);
+    // Queue a read behind the sampler: it completes only after tick and sample.
+    const view = await h.view();
+    expect(view.pools[0].leases).toHaveLength(1);
+    expect(h.metrics).toHaveBeenCalled();
+    expect(prune).toHaveBeenCalled();
+    const before = await readFile(join(h.path, "state.json"), "utf8");
+    finish(makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await readFile(join(h.path, "state.json"), "utf8")).toBe(before);
+  } finally { service.controller.abort(); await service.done; vi.useRealTimers(); }
+});
+
+it("uses a short null cache after a host name timeout", async () => {
+  const h = await setup(); await h.view(); h.advance(300001); let calls = 0;
+  h.harness.sdk.stub("hosts.get", () => { calls++; return calls === 1 ? new Promise(() => {}) : Promise.resolve(makeHostResponse({ id: "local", name: "Recovered" })); });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const pending = h.view(); await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1); await vi.advanceTimersByTimeAsync(10001);
+    expect((await pending).localHostName).toBeNull();
+    h.advance(29999); expect((await h.view()).localHostName).toBeNull(); expect(calls).toBe(1);
+    h.advance(1); expect((await h.view()).localHostName).toBe("Recovered"); expect(calls).toBe(2);
+  } finally { vi.useRealTimers(); }
 });

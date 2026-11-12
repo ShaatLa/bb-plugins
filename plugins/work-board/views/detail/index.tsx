@@ -1,9 +1,9 @@
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
+import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
-import { ShareTaskButton } from "../../components/share-task-button";
 import { ClaimsLine } from "../../components/claims-line";
-import { PullRequestsSection } from "../../components/pr-links";
+import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
@@ -100,7 +100,7 @@ function SubTaskDonut({
   );
 }
 
-function CopyTaskKey({
+function CopyTaskLink({
   taskKey,
   onError,
 }: {
@@ -114,11 +114,11 @@ function CopyTaskKey({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const copyKey = async () => {
+  const copyLink = async () => {
     try {
       if (
         !(await experimental_copyToClipboard({
-          text: taskKey,
+          text: `[${taskKey}](/plugins/work-board/work-board/task/${encodeURIComponent(taskKey)})`,
         }))
       ) {
         throw new Error("Clipboard write failed");
@@ -126,7 +126,7 @@ function CopyTaskKey({
       setCopied(true);
     } catch {
       setCopied(false);
-      onError("Could not copy task key. Please try again.");
+      onError("Could not copy task link. Please try again.");
     }
   };
 
@@ -140,19 +140,19 @@ function CopyTaskKey({
               variant="ghost"
               size="icon"
               className="size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
-              aria-label="Copy task key"
-              onClick={() => void copyKey()}
+              aria-label="Copy task link"
+              onClick={() => void copyLink()}
             >
               <Icon name={copied ? "Check" : "Copy"} className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            {copied ? "Copied" : "Copy task key"}
+            {copied ? "Copied" : "Copy task link"}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <span role="status" className="sr-only">
-        {copied ? "Task key copied" : ""}
+        {copied ? "Task link copied. Paste it into the agent chat." : ""}
       </span>
     </>
   );
@@ -313,7 +313,8 @@ function TaskDetail({
   const subtasksRef = useRef<HTMLElement>(null);
   const [addingQuestion, setAddingQuestion] = useState<string | null>(null);
 
-  const [draft, setDraft] = useState<{ taskId: string; markdown: string }>();
+  // A ref, not state: typing must not rerender the whole detail subtree.
+  const draftRef = useRef<{ taskId: string; markdown: string } | undefined>(undefined);
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
   const pushRef = useRef(push);
@@ -355,7 +356,9 @@ function TaskDetail({
       epicId ? (await query.call("getTask", { taskId: epicId })).task : null,
     ["tasks:changed"],
     [epicId],
+    { relevantTaskIds: epicId ? [epicId] : [] },
   );
+  const subtaskIdsRef = useRef<string[]>([]);
   const subtasks = useTasksQuery(
     async (query) =>
       listAllTasks(
@@ -364,7 +367,10 @@ function TaskDetail({
       ),
     ["tasks:changed"],
     [task.id, task.type],
+    // A new subtask is announced on its parent too (publishTasksChanged), so the parent id covers creations elsewhere.
+    { relevantTaskIds: [task.id, ...subtaskIdsRef.current] },
   );
+  subtaskIdsRef.current = (subtasks.data ?? []).map((subtask) => subtask.id);
   const labels = useTasksQuery(
     async (query) =>
       (await query.call("listLabels", { projectId: task.projectId })).labels,
@@ -398,7 +404,7 @@ function TaskDetail({
     async query => query.call("listTaskDependencies", { taskId: task.id }),
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
   );
-  useActivityPoll(activity.refresh, activity.isFetching, !!threads.data?.length);
+  useActivityPoll(activity.refresh, activity.isFetching, !!activity.data?.activity?.attachedCount || !!activity.data?.taskThreads.some(isActiveThread));
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
@@ -465,7 +471,7 @@ function TaskDetail({
   };
 
   const onDescriptionChange = (markdown: string) => {
-    setDraft({ taskId: task.id, markdown });
+    draftRef.current = { taskId: task.id, markdown };
     saverRef.current?.onChange(task.id, markdown);
   };
 
@@ -515,6 +521,7 @@ function TaskDetail({
   const mentionItems = useMentionItems();
   const navigate = useBbNavigate();
 
+  const draft = draftRef.current;
   const descriptionValue =
     draft && draft.taskId === task.id
       ? draft.markdown
@@ -528,11 +535,12 @@ function TaskDetail({
   </>;
 
   return (
+    <PrLinksProvider taskId={task.id}>
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
         <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
-            <><CopyTaskKey key={task.id} taskKey={task.key} onError={push} /><ShareTaskButton taskKey={task.key} /></>,
+            <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
           <ScheduledSourceBanner task={task} />
           {task.type === "epic" ||
@@ -610,6 +618,7 @@ function TaskDetail({
           <TasksEditor
             value={descriptionValue}
             onChange={onDescriptionChange}
+            deferChange
             variant="doc"
             className="min-h-24"
             placeholder={
@@ -620,6 +629,7 @@ function TaskDetail({
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenUrl={(url) => navigate.openUrl(url)}
           />
 
           <div className="mb-1 mt-3 flex items-center gap-1">
@@ -732,6 +742,7 @@ function TaskDetail({
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />
     </div>
+    </PrLinksProvider>
   );
 }
 
@@ -742,11 +753,18 @@ export function DetailView({
   backLabel = "Back (Esc)",
   headerActions,
 }: DetailViewProps) {
+  // Before the first load the id is unknown, so every event refetches.
+  const [loaded, setLoaded] = useState<{ taskKey: string; id: string } | null>(null);
   const query = useTasksQuery(
     async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
     ["tasks:changed"],
     [taskKey],
+    { relevantTaskIds: loaded?.taskKey === taskKey ? [loaded.id] : undefined },
   );
+  const loadedId = query.data?.id;
+  useEffect(() => {
+    setLoaded(loadedId ? { taskKey, id: loadedId } : null);
+  }, [taskKey, loadedId]);
   const canonicalKey = query.data?.key;
   useEffect(() => {
     if (canonicalKey) onCanonicalKey?.(canonicalKey);

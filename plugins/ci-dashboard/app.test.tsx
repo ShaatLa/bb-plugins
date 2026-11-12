@@ -1436,3 +1436,51 @@ test("CI run timings default to the workflow's main event and list every event's
     expect(within(card).getByRole("list", { name: "Workflow timings" }).textContent).toContain("merge_group 30m 0s · n 3pull_request 10m 0s · n 5");
   } finally { slot.lifecycle.unmount(); }
 });
+
+test("compact signals retain open and newest recent resolved incidents", async () => {
+  const { compactSignalsRow, repositorySignalsSchema, signalsOutputSchema } = await import("./ci-signals-contract");
+  const resolved = Array.from({ length: 12 }, (_, i) => jobSignal(`r${i}`, "flake", "info", i, {}, { open: false, until: ago(i) }));
+  const row = repositorySignalsSchema.parse(jobRepo({ failureCountsByEvent: {}, poolTimings: {}, poolTimingsByEvent: {}, failureCounts: { ...jobRepo().failureCounts, refused: 0 }, reruns: [], signals: [jobSignal("open", "flake", "info", 1, {}), ...resolved.reverse(), jobSignal("old", "flake", "info", 1, {}, { open: false, until: ago(8 * 24 * 60) })] }));
+  const compact = compactSignalsRow(row, Date.now());
+  expect(compact.signals.map((s) => s.id)).toEqual(["open", ...Array.from({ length: 10 }, (_, i) => `r${i}`)]);
+  expect(compact).not.toHaveProperty("failures");
+  expect(compact).not.toHaveProperty("poolTimings");
+  expect(compact).not.toHaveProperty("poolTimingsByEvent");
+  expect(compact).not.toHaveProperty("failureCountsByEvent");
+  expect(signalsOutputSchema.safeParse({ repositories: [compact], actors }).success).toBe(true);
+});
+
+test("signals events filter repositories and coalesce in-flight refreshes", async () => {
+  let finish!: (value: unknown) => void;
+  const signals = vi.fn((_input: unknown) => new Promise((resolve) => { finish = resolve; }));
+  const slot = healthSlot(signals, failingMain(), await freshPanels());
+  try {
+    await vi.waitFor(() => expect(signals).toHaveBeenCalledTimes(1));
+    expect(signals.mock.calls[0][0]).toMatchObject({ repository: "acme/widgets", compact: true });
+    await slot.behavior.emitRealtime("signals-changed", { repository: "acme/other" });
+    expect(signals).toHaveBeenCalledTimes(1);
+    await slot.behavior.emitRealtime("signals-changed", { repository: "acme/widgets" });
+    await slot.behavior.emitRealtime("signals-changed", {});
+    expect(signals).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ repositories: [jobRepo()], actors }));
+    await vi.waitFor(() => expect(signals).toHaveBeenCalledTimes(2));
+    await act(async () => finish({ repositories: [jobRepo()], actors }));
+    expect(signals).toHaveBeenCalledTimes(2);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("range changes keep open problems but hide old failure counts", async () => {
+  const month = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 30 }), ciInsights: failingMain() }] };
+  let calls = 0;
+  const signals = vi.fn(() => ++calls === 1 ? { repositories: [jobRepo({ problems: [problem("range", "critical", 1)] })], actors } : new Promise(() => {}));
+  const slot = renderSlot((await freshPanels())[0], { subPath: "" }, { rpc: { snapshot: (selection: unknown) => (selection as { days: number }).days === 30 ? month : null, metrics: (selection: unknown) => (selection as { days: number }).days === 30 ? month : ({ ...data, repositories: [{ ...repo, ciInsights: failingMain() }] }), signals }, settings: {} });
+  try {
+    await slot.findByText("Title range");
+    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    await slot.findByText("Last 30 days");
+    await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(slot.getByText("Title range")).toBeTruthy();
+    fireEvent.click(slot.getByText("Details"));
+    expect(slot.getByLabelText("Loading failure causes")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});

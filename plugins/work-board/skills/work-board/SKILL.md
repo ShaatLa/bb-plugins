@@ -150,7 +150,12 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
 
 3. Do the work. Post one substantive comment at each meaningful milestone,
    such as a completed investigation, an implementation ready for validation,
-   or a concrete blocker:
+   or a concrete blocker. Only the session responsible for the task (the
+   attached worker) comments on it; a sub-session you spawned reports to you,
+   its parent thread, never to the task, and you fold its result into your own
+   milestone comment. Keep a comment to the outcome, evidence and next step:
+   agent comments over 8 KB are refused, so attach a long report as a file
+   (`attachment add`, step 4) and comment a short summary that points to it:
 
    ```sh
    bb work-board comment ABC-12 --body "Implemented the change; focused validation now passes."
@@ -209,6 +214,16 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    ```sh
    bb work-board detach ABC-12 --thread thr_dead_predecessor
    ```
+
+### Taking, handing off and finishing a task
+
+One task has one responsible worker session at a time; the board shows it as the attached thread.
+
+- **Take.** When you start real work on a task you were not delegated from Work Board, `bb work-board attach KEY` first, then move it to the project's in-progress status (`bb work-board update KEY --status in_progress`, or the status the project's workflow names). Delegated sessions are already attached; still set the status when work actually starts.
+- **Hand off.** If you stop before the completion criteria (passing it to another session, or blocked on the owner), comment the exact state and next step, leave the status accurate, and `bb work-board detach KEY` unless you stay responsible. Do not leave a task attached to a session that will not continue it.
+- **Finish.** Set `done` or `in_review` per the completion criteria. No detach is needed: links stay as history.
+- **Sub-sessions** (reviewers, researchers, fix sessions you spawn) do not comment on, attach to, or change the status of the task; they reply to their parent thread, and the responsible session records the result on the task once. Every comment is kept forever and travels with Git snapshots, so many writers on one card make it slow to read and too large to export.
+- **Orchestrators** (a manager session that only delegates) do not attach themselves to the tasks they hand out. If a worker session disappears while its task is unfinished, Work Board attaches the worker's parent as **Parent thread** so the task stays accountable; a new worker attaching replaces it, and finishing the task (done or canceled) releases it automatically. Project-specific status rules (who moves a task to review, testing or done) belong to the project's own workflow docs and Work Board workflow policy, not to this skill.
 
 ## Link tasks in responses
 
@@ -345,6 +360,33 @@ Configured post-merge push workflows are tracked on the merge SHA/base branch. A
 
 Export v8 adds project.json.gitSync and per-record pullRequests, including exclusions and immutable task/PR identifiers; live CI caches and tokens stay local. Legacy imports preserve local links/config when absent. New conflicts need explicit --overwrite; imports make no GitHub request. Only activate v8 after downstream strict format checkers accept the exact schema and sample.
 
+## Waiting for PR CI (0.30.0)
+
+```
+bb work-board pr wait --url https://github.com/OWNER/REPO/pull/N [--head <full 40-hex SHA>] [--timeout 45m] [--json]
+```
+
+Blocks until every **required** check of the PR head settles and exits with a verdict. It runs on the bb server with the server's `gh` login, so it works from the agent sandbox where `gh` cannot reach GitHub. It polls every 20 s (independent of the 5-minute background sync) and stops at `--timeout` (1–60 min, default 45 min).
+
+- **Which head.** `--head` takes the full SHA (`git rev-parse HEAD`); a short one is refused. Without it the wait judges the PR head at the moment it starts. If the head moves while waiting, the result is superseded (exit 2); if the requested SHA never becomes the head within 2 minutes, exit 3.
+- **What is green.** The required set is read from GitHub for the PR's base branch (branch protection plus rulesets), never hard-coded. Green means every required check passed (skipped/neutral count, as on GitHub) on that exact head **and** no workflow run for the head is still running. A single summary job such as `CI complete` passing alone is not enough when other checks are required.
+- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. A PR that is still a draft after 2 minutes gives exit 3.
+- **Complete listing.** Checks come from the head's check runs and commit statuses (all pages), not from `gh run view --json jobs`, which can omit jobs.
+
+| Exit | Verdict | Meaning |
+|---|---|---|
+| 0 | green | every required check passed on the judged head |
+| 1 | red | a required check failed; names are printed (`failed` in `--json`) |
+| 2 | cancelled | a required check or run was cancelled, or the head moved (superseded). Terminal for that head: report it, do not re-wait the same SHA |
+| 3 | no-verdict | PR DIRTY or closed, still a draft, no run 2 min after the head was first seen/marked ready, the required set is unknown or empty, timeout, or GitHub failed 5 polls in a row |
+
+`--json` prints `{url, repository, number, sha, shaFrom, verdict, exitCode, message, failed, waitedMs}` when the command returns.
+
+**How to wait without blocking your turn badly.** Output arrives only when the command returns, and CI usually takes 9–12 minutes.
+- **Claude:** run it with Bash `run_in_background` and a tool timeout of at least 3600000 ms; act on the completion notification instead of polling.
+- **Codex, Antigravity:** no background command wakes the thread, so run it in the foreground within the turn.
+- Read the command's own exit code, never a wrapper's (`cmd; echo` reports the `echo`). A plugin reload aborts waits in flight.
+
 ## Building a hierarchy without burning provider limits
 
 By default every child turn wakes its parent, so status pings burn the parent's provider quota.
@@ -389,6 +431,8 @@ Read `bb work-board dependency list KEY --json` before starting a task. Add `bb 
 
 Use the Dependencies section in the task UI to search/add/remove links or open either endpoint. Board/list Blocked badges identify unfinished predecessors. Links are within one project; self-links and cycles are rejected. Move all connected endpoints together in a task family or remove the links before a project move. Exports store each task's outgoing dependency IDs, validates the graph and restores it atomically. Older imports preserve local links; conflicting imported sets need --overwrite. No merge condition or automatic workflow moves are inferred.
 
+Related links (0.29.0) connect tasks that share context without blocking either one: `bb work-board dependency add ABC-2 --relates-to ABC-1`, `dependency remove ABC-2 --relates-to ABC-1`. The link is symmetric and same-project; `dependency list` and `show --json` return it under `dependencies.related`. Use it instead of a blocker when a task only needs to be read alongside another. Export v15 carries related links; imports accept v1–v14.
+
 
 ## Storage maintenance (0.22.2)
 
@@ -415,3 +459,6 @@ Abandoned requires recorded work AND a confirmed lost assignment (archived/delet
 ## Sharing task context
 
 The UI Share button copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status. A scheduled task shares its template key; agents can inspect/change it with `schedule show KEY` and `schedule edit KEY`, and use ordinary task commands for attachments/questions/comments. Selected scheduled targets display the thread title; an unavailable thread is not silently replaced.
+Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
+
+Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.

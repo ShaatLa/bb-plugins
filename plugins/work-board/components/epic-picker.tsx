@@ -38,6 +38,8 @@ export function EpicPicker({
         : Promise.resolve([]),
     ["tasks:changed"],
     [projectId],
+    // Closed: only the selected epic matters; the list is re-read when opened.
+    { relevantTaskIds: open ? undefined : value ? [value] : [] },
   );
   const epics = (query.data ?? []).filter(
     (task) => task.type === "epic" && task.projectId === projectId,
@@ -45,7 +47,10 @@ export function EpicPicker({
   const selected = epics.find((epic) => epic.id === value);
   return (
     <div className="relative min-w-0 max-w-full">
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={(next) => {
+        setOpen(next);
+        if (next) query.refresh();
+      }}>
         <PopoverTrigger asChild>
           <button
             type="button"

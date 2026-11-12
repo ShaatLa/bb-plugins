@@ -74,7 +74,7 @@ const outcomeLabels: Record<string, string> = { success: "passed", failure: "fai
 /** Job-level part of the CI health "Details": failure causes plus secondary blocks that only render when they have rows. */
 export function CiJobCauses({ repo, signals, part }: { repo: Metrics; signals: JobSignals; part: "causes" | "details" }) {
   const { repo: job, now } = signals;
-  if (signals.loading) return part === "details" ? null : <LoadingSkeleton label="Loading failure causes" className="grid grid-cols-2 gap-3 space-y-0 border-t border-border pt-3 lg:border-t-0 lg:pt-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton>;
+  if (signals.loading && part === "causes") return <LoadingSkeleton label="Loading failure causes" className="grid grid-cols-2 gap-3 space-y-0 border-t border-border pt-3 lg:border-t-0 lg:pt-0">{[0, 1, 2, 3].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-16" /><Skeleton className="h-6 w-12" /></div>)}</LoadingSkeleton>;
   if (!job) return null;
   const counts = job.failureCounts, n = (key: string) => (counts as Record<string, number>)[key] ?? 0;
   const causes = [["Runner losses", n("runner_loss")], ["Flaky jobs", n("flake")], ["Network/tool errors", n("transient")], ["Real failures", n("real")]] as const;
@@ -111,18 +111,18 @@ export function CiJobCauses({ repo, signals, part }: { repo: Metrics; signals: J
       {busy.map((pool) => <p key={pool.pool} className={`text-sm ${stalled.has(pool.pool) ? "text-destructive-text" : ""}`}>{pool.pool} · {pool.inProgress.toLocaleString()} running · {pool.queued.toLocaleString()} waiting</p>)}
       {idle.length > 0 && <p className="text-xs text-muted-foreground">Idle: {idle.map((pool) => pool.pool).join(", ")}</p>}
     </>)}
-    {block("Runner losses", lossCount, topJob && `mostly ${topJob}`, lossGroups.map(([label, rows]) => <div key={label} className="space-y-1"><p className="text-xs text-muted-foreground">{label}</p>
+    {!signals.loading && block("Runner losses", lossCount, topJob && `mostly ${topJob}`, lossGroups.map(([label, rows]) => <div key={label} className="space-y-1"><p className="text-xs text-muted-foreground">{label}</p>
       {rows.map(([name, tally]) => <p key={name} className="break-words text-sm">{name} <span className="text-xs text-muted-foreground">— {plural(tally.count, "loss", "losses")} · {duration(tally.runnerMs)} runner time</span></p>)}</div>))}
-    {block("Reruns", job.reruns.length, stillFailing ? `${stillFailing} still failing` : "all passed after rerun", job.reruns.slice(0, 10).map((run) => <p key={run.runId} className="text-sm">
+    {!signals.loading && block("Reruns", job.reruns.length, stillFailing ? `${stillFailing} still failing` : "all passed after rerun", job.reruns.slice(0, 10).map((run) => <p key={run.runId} className="text-sm">
       <UrlLink href={run.url} className="break-words hover:underline">{run.workflowName} #{run.runId}</UrlLink>
       <span className="text-xs text-muted-foreground"> ({run.headBranch ?? "unknown branch"}) {run.outcomes.map((outcome) => outcomeLabels[outcome ?? ""] ?? "unknown").join(" → ")} · {duration(run.repeatedRunnerMs)} repeated</span>
     </p>))}
     {block("Lower-priority events", lower.length, undefined, lowerKinds.map(([kind, count]) => <p key={kind} className="text-sm">{kindLabels[kind as Signal["kind"]]} <span className="text-xs text-muted-foreground">— {count.toLocaleString()} open</span></p>))}
-    {block("Resolved incidents", resolved.length, undefined, resolved.slice(0, 10).map((signal) => <p key={signal.id} className="text-sm">
+    {!signals.loading && block("Resolved incidents", resolved.length, undefined, resolved.slice(0, 10).map((signal) => <p key={signal.id} className="text-sm">
       <UrlLink href={signal.where.url ?? `https://github.com/${repo.repository}/actions`} className="break-words hover:underline">{signalTitle(signal)}</UrlLink>
       <span className="text-xs text-muted-foreground"> — resolved {ago(signal.until ?? signal.since, now)}</span>
     </p>))}
-    {block("Mass runner losses", job.massCancels.length, undefined, job.massCancels.map((incident) => <p key={incident.since} className="text-sm" title={`Runners: ${incident.runners.join(", ")}`}>
+    {!signals.loading && block("Mass runner losses", job.massCancels.length, undefined, job.massCancels.map((incident) => <p key={incident.since} className="text-sm" title={`Runners: ${incident.runners.join(", ")}`}>
       {when(incident.since, now)}–{dayDiff(new Date(incident.since), Date.parse(incident.until)) === 0 ? clock(new Date(incident.until)) : when(incident.until, now)} · {plural(incident.runners.length, "runner")} · {plural(incident.runIds.length, "run")}
     </p>))}
   </>;

@@ -1,5 +1,6 @@
 import type { TaskAdvisory } from "../../shared/task-advisories";
-import { useActivityPoll } from "../../shell/activity-poll";
+import { samePolledMetadata, useActivityPoll } from "../../shell/activity-poll";
+import { useEffect, useRef } from "react";
 import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth, type DependencyTask } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
 import {
@@ -7,7 +8,7 @@ import {
   type TaskSignal,
 } from "../../shell/signal-scheduler.js";
 import { taskBatches } from "../../shell/task-batches";
-import { loadTaskDataset, taskDatasetEpoch } from "../../shell/task-dataset";
+import { getSharedTask, loadTaskDataset, taskDatasetEpoch } from "../../shell/task-dataset";
 import { isActiveThread } from "../detail/meta.js";
 
 import type { TaskActivity } from "../../shared/task-activity.js";
@@ -84,13 +85,40 @@ export async function fetchBoard(rpc: TasksRpc, projectId: string, publish?: Que
 }
 
 type MetadataRow = (typeof tasksRpcContract.listTaskCardMeta.output._output.metadata)[number];
+async function readBoardMeta(rpc: TasksRpc, taskIds: string[]) {
+  return taskBatches(taskIds, async (batch) => (await rpc.call("listTaskCardMeta", { taskIds: batch })).metadata);
+}
+
+export async function pollBoardMetadata(rpc: TasksRpc, current: MetadataRow[]): Promise<MetadataRow[]> {
+  const activeIds = current.filter((row) => (row.activity?.attachedCount ?? 0) > 0 || row.taskThreads.some(isActiveThread)).map((row) => row.taskId);
+  if (!activeIds.length) return current;
+  const next = new Map(current.map((row) => [row.taskId, row]));
+  for (const row of await readBoardMeta(rpc, activeIds)) next.set(row.taskId, row);
+  const result = [...next.values()];
+  return samePolledMetadata(result, current) ? current : result;
+}
+
+export async function syncBoardMetadata(rpc: TasksRpc, current: MetadataRow[], ids: string[]): Promise<MetadataRow[]> {
+  const present = new Set(current.map((row) => row.taskId));
+  const added = ids.filter((id) => !present.has(id));
+  if (!added.length && current.every((row) => ids.includes(row.taskId))) return current;
+  const next = new Map(current.filter((row) => ids.includes(row.taskId)).map((row) => [row.taskId, row]));
+  for (const row of await readBoardMeta(rpc, added)) next.set(row.taskId, row);
+  return [...next.values()];
+}
+
 export function useBoardMetadata(tasks: readonly Task[], projectId: string, enabled: boolean) {
   const ids = tasks.map((task) => task.id).sort();
-  const read = (rpc: TasksRpc, taskIds: string[]) => taskBatches(taskIds, async (batch) => (await rpc.call("listTaskCardMeta", { taskIds: batch })).metadata);
+  const idsKey = ids.join();
+  const previousIds = useRef<{ projectId: string; ids: string[] } | null>(null);
   const query = useTasksQuery<MetadataRow[]>(
-    (rpc) => read(rpc, ids),
+    async (rpc) => {
+      const rows = await readBoardMeta(rpc, ids);
+      previousIds.current = { projectId, ids };
+      return rows;
+    },
     enabled ? ["tasks:changed", "threads:changed", "prs:changed"] : [],
-    [projectId, ids.join()],
+    [projectId],
     {
       enabled,
       dataScope: projectId,
@@ -98,15 +126,28 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
       relevantTaskIds: ids,
       applySignals: async (rpc, current, signals) => {
         const changed = [...new Set([...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "prs:changed")])].filter((id) => ids.includes(id));
-        const rows = await read(rpc, changed);
+        const rows = await readBoardMeta(rpc, changed);
         const next = new Map(current.map((row) => [row.taskId, row]));
         for (const id of changed) next.delete(id);
         for (const row of rows) next.set(row.taskId, row);
-        return [...next.values()];
+        const result = [...next.values()];
+        return samePolledMetadata(result, current) ? current : result;
       },
     },
   );
-  useActivityPoll(query.refresh, query.isFetching, enabled && !!query.data?.some((row) => (row.activity?.attachedCount ?? 0) > 0));
+  useEffect(() => {
+    if (!enabled || query.isFetching || !query.data) return;
+    const previous = previousIds.current;
+    previousIds.current = { projectId, ids };
+    if (!previous || previous.projectId !== projectId) return;
+    const added = ids.filter((id) => !previous.ids.includes(id));
+    if (!added.length && previous.ids.length === ids.length) return;
+    void query.patch((rpc, current) => syncBoardMetadata(rpc, current, ids)).catch(() => query.refresh());
+  }, [projectId, idsKey, enabled, query.isFetching, query.data, query.patch]);
+  const hasActive = !!query.data?.some((row) => (row.activity?.attachedCount ?? 0) > 0 || row.taskThreads.some(isActiveThread));
+  useActivityPoll(() => {
+    void query.patch(pollBoardMetadata).catch(() => query.refresh());
+  }, query.isFetching, enabled && hasActive);
   return query;
 }
 
@@ -137,9 +178,11 @@ export async function patchBoard(
     return null;
   }
   const changedIds = signalTaskIds(signals, "tasks:changed");
+  if (changedIds.length > 25) return null;
+  if (!changedIds.length && !refreshMetadata) return current;
   const fetched = await Promise.all(
     changedIds.map(async (taskId) => {
-      const { task } = await rpc.call("getTask", { taskId });
+      const task = await getSharedTask(rpc, taskId);
       return [taskId, task] as const;
     }),
   );

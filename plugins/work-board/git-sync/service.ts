@@ -2,7 +2,9 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { environmentPullRequests } from "./environment-prs";
 import type { TasksApiStore } from "../api";
 import type { tasksRpcContract } from "../shared/contract";
-import { publishProjectsChanged } from "../api";
+import { publishProjectsChanged, publishTasksChanged } from "../api";
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import {
   gitSyncConfigSchema,
   repositorySchema,
@@ -66,6 +68,7 @@ export function createGitSyncService(
     string,
     { at: number; promise: ReturnType<GithubClient["discover"]> }
   >();
+  const deadlineWarnings = new Map<string, number>();
   const requireTask = (taskId: string) => {
     const task = store.tasks.getTask(taskId);
     if (!task) throw new Error("Task not found");
@@ -266,11 +269,22 @@ export function createGitSyncService(
       // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
       let filesChanged = false;
       const unique = new Map<string, PrLink>();
-      for (const link of data.linksForProject(projectId))
-          if (!link.excluded && config.repositories.includes(link.repository))
-            unique.set(prIdentity(link), link);
-      for (const link of unique.values()) {
+      const projectLinks = data.linksForProject(projectId);
+      const linksByPr = new Map<string, PrLink[]>();
+      for (const link of projectLinks) {
+        const identity = prIdentity(link);
+        if (!linksByPr.has(identity)) linksByPr.set(identity, []);
+        linksByPr.get(identity)!.push(link);
+        if (!link.excluded && config.repositories.includes(link.repository)) unique.set(identity, link);
+      }
+      const attempts = data.attempts(projectId);
+      const ordered = [...unique.values()].sort((left, right) =>
+        (attempts.get(prIdentity(left))?.lastAttemptAt ?? 0) - (attempts.get(prIdentity(right))?.lastAttemptAt ?? 0));
+      for (const link of ordered) {
         if (!current()) break;
+        const attempt = attempts.get(prIdentity(link));
+        const delay = [300_000, 900_000, 3_600_000, 21_600_000][Math.min((attempt?.failureCount ?? 0) - 1, 3)];
+        if (!force && attempt?.failureCount && attempt.lastAttemptAt && Date.now() - attempt.lastAttemptAt < delay) continue;
         const previous = data.snapshot(projectId, link);
         if (!force && !previous.error && previous.snapshot) {
           const value = previous.snapshot;
@@ -290,6 +304,7 @@ export function createGitSyncService(
             continue;
         }
         try {
+          data.markAttempt(projectId, link);
           const snapshot = await client.snapshot(
             link.repository,
             link.number,
@@ -325,23 +340,42 @@ export function createGitSyncService(
               publishProjectsChanged(bb, projectId);
             }
           });
-          refreshed.add(prIdentity(link));
-          refreshed.add(prIdentity(snapshot));
+          if (snapshot.state === "open" || snapshot.state === "draft") {
+            const latestProject = store.tasks.getProject(projectId);
+            if (latestProject && current()) {
+              const policy = getWorkflowPolicy(latestProject);
+              const statuses = latestProject.statuses ?? DEFAULT_TASK_STATUSES;
+              const target = statuses.findIndex((status) => status.id === policy.reviewStatus);
+              for (const attached of linksByPr.get(prIdentity(link)) ?? []) {
+                if (!current()) break;
+                if (prIdentity(attached) !== prIdentity(snapshot) || attached.excluded || !attached.confirmed || attached.role !== "delivers") continue;
+                const task = store.tasks.getTask(attached.taskId);
+                if (!task || task.projectId !== projectId || task.archivedAt || !policy.earlyStatuses.includes(task.status) ||
+                    [policy.bugfixStatus, policy.doneStatus, "canceled"].includes(task.status) ||
+                    target < 0 || statuses.findIndex((status) => status.id === task.status) >= target) continue;
+                store.tasks.updateTask(task.id, { status: policy.reviewStatus! });
+                publishTasksChanged(bb, task.id, projectId);
+              }
+            }
+          }
+          const { observedAt: _previousObservedAt, ...oldVisible } = previous.snapshot ?? { observedAt: undefined };
+          const { observedAt: _observedAt, ...visible } = snapshot;
+          if (previous.error || JSON.stringify(oldVisible) !== JSON.stringify(visible)) refreshed.add(prIdentity(link));
           if (snapshot.headSha !== previous.snapshot?.headSha || snapshot.baseSha !== previous.snapshot?.baseSha) filesChanged = true;
           checked++;
         } catch (error) {
           if (!current()) break;
           const message = report(link.repository, error);
-          refreshed.add(prIdentity(link));
+          if (previous.error !== message) refreshed.add(prIdentity(link));
           data.fail(projectId, link, message);
           errors.push(message);
         }
       }
       if (current()) {
-        if (filesChanged) publishProjectPrs(projectId);
+        if (filesChanged) publishPrs(projectId, projectLinks.map((link) => link.taskId));
         else {
-          const linked = new Set(data.linksForProject(projectId).filter((link) => !link.excluded && refreshed.has(prIdentity(link))).map((link) => link.taskId));
-          publishPrs(projectId, linked);
+          const linked = new Set([...refreshed].flatMap((identity) => (linksByPr.get(identity) ?? []).filter((link) => !link.excluded).map((link) => link.taskId)));
+          if (linked.size) publishPrs(projectId, linked);
         }
       }
       return { checked, errors: [...new Set(errors)] };
@@ -350,7 +384,10 @@ export function createGitSyncService(
     const deadline = new Promise<{ checked: number; errors: string[] }>((resolve) => {
       timer = setTimeout(() => {
         run.abort();
-        bb.log.warn(`Git sync for project ${projectId} exceeded ${SYNC_DEADLINE_MS / 60_000} min during ${phase}; abandoned`);
+        if (!deadlineWarnings.has(projectId) || Date.now() - deadlineWarnings.get(projectId)! >= 3_600_000) {
+          deadlineWarnings.set(projectId, Date.now());
+          bb.log.warn(`Git sync for project ${projectId} exceeded ${SYNC_DEADLINE_MS / 60_000} min during ${phase}; abandoned`);
+        }
         resolve({ checked: 0, errors: [`Git synchronization timed out during ${phase}; retry later`] });
       }, SYNC_DEADLINE_MS);
     });

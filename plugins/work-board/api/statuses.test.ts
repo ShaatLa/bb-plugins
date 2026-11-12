@@ -290,3 +290,24 @@ it("rebuilds the legacy status constraint without dropping task relationships, i
       .get()!.revision,
   ).toBeGreaterThan(before);
 });
+
+it("enforces customizable workflow transitions for RPC, board and CLI", async () => {
+  const { harness, store, project, statuses } = setup();
+  statuses.push({ id: "bugfix", name: "Bugfix" });
+  await harness.callRpc("updateProject", { projectId: project.id, statuses, workflowPolicy: { bugfixStatus: "bugfix" } });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Fix", status: "bugfix" });
+  await expect(harness.callRpc("updateTask", { taskId: task.id, status: "done" })).rejects.toThrow(/review or testing/);
+  await expect(harness.callRpc("boardMove", { taskId: task.id, status: "done" })).rejects.toThrow(/review or testing/);
+  const result = await harness.runCli(["update", `WF-${task.number}`, "--status", "done"]);
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr + result.stdout).toMatch(/review or testing/);
+  expect(store.tasks.updateTask(task.id, { title: "Still editable" }).status).toBe("bugfix");
+  expect(store.tasks.updateTask(task.id, { status: "in_testing" }).status).toBe("in_testing");
+  store.tasks.updateTask(task.id, { status: "bugfix" });
+  await harness.callRpc("updateProject", { projectId: project.id, workflowPolicy: { bugfixStatus: "in_testing" } });
+  expect(store.tasks.updateTask(task.id, { status: "done" }).status).toBe("done");
+  store.tasks.updateTask(task.id, { status: "in_testing" });
+  expect(() => store.tasks.updateTask(task.id, { status: "done" })).toThrow(/review or testing/);
+  await harness.callRpc("updateProject", { projectId: project.id, workflowPolicy: { bugfixStatus: null } });
+  expect(store.tasks.updateTask(task.id, { status: "done" }).status).toBe("done");
+});

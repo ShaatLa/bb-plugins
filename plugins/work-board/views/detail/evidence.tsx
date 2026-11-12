@@ -2,7 +2,7 @@ import { UrlLink, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Comment, TaskPullRequest } from "../../shared/contract";
 import { evidenceFlags, evidenceIndex } from "../../structured/evidence";
 import { useMemo, useState } from "react";
-import { useTasksQuery } from "../../shell/data";
+import { usePrLinks } from "../../components/pr-links";
 import { Button } from "@/components/ui/button";
 
 export function EvidenceSection({
@@ -16,9 +16,9 @@ export function EvidenceSection({
 }) {
   const navigate = useBbNavigate();
   const [visibleCount, setVisibleCount] = useState(15);
-  const links = useTasksQuery(async (rpc) => taskId ? (await rpc.call("listPrLinks", { taskId })).links : [], ["tasks:changed", "prs:changed"], [taskId]);
+  const links = usePrLinks(taskId);
   const index = useMemo(() => evidenceIndex(comments), [comments]);
-  const flags = evidenceFlags(index.records, pullRequests, links.data ?? []);
+  const flags = evidenceFlags(index.records, pullRequests, links.data?.links ?? []);
   const records = useMemo(() => {
     const latest = new Set([...index.records]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.commentId.localeCompare(a.commentId))

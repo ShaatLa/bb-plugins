@@ -26,6 +26,8 @@ export const jobMigrations = [
   "CREATE TABLE IF NOT EXISTS ci_attempts (repository TEXT NOT NULL, run_id INTEGER NOT NULL, attempt INTEGER NOT NULL, completed INTEGER NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (repository, run_id, attempt))",
   // The run's age, so an attempt row is pruned together with its jobs (fetched_at only says when we looked).
   "ALTER TABLE ci_attempts ADD COLUMN created_at TEXT",
+  // pushedAt and passedAtHead look jobs up by commit; ci_jobs_query starts with created_at. Migrations only ever append.
+  "CREATE INDEX IF NOT EXISTS ci_jobs_head ON ci_jobs (repository, head_sha)",
 ];
 type Columns = { repository: string; run_id: number; attempt: number; job_id: number; created_at: string; pool: string | null; conclusion: string | null; head_sha: string; data: string };
 // Fields already held by columns are not repeated in `data`, and default values are omitted; `toRecord` restores both.
@@ -128,7 +130,8 @@ async function artifactEvidence(request: GitHubRequest, repository: string, run:
   const key = `${repository}#${run.id}#${run.attempt}#${config.hash}`;
   if (cache.has(key)) return cache.get(key)!;
   let report = false, reportHit: SignatureHit | null = null, textHit: SignatureHit | null = null, build: string | null = null;
-  for (const a of await attemptArtifacts(request, repository, run, attemptJobs, config.artifacts)) {
+  // The listing is newest first; like failedTests, only the newest 5 are downloaded.
+  for (const a of (await attemptArtifacts(request, repository, run, attemptJobs, config.artifacts)).slice(0, 5)) {
     const found = scanZip(await fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES), config.rules);
     if (found.report) { report = true; reportHit ??= found.hit; build ??= found.build; } else textHit ??= found.hit;
   }
@@ -197,7 +200,7 @@ export function logExcerpt(text: string): string | null {
 export function createLogFetcher(token: string, signal: AbortSignal): FetchText {
   return async (path, scan) => {
     const response = await fetch(`https://api.github.com${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, redirect: "follow", signal: AbortSignal.any([signal, AbortSignal.timeout(scan ? 60_000 : 20_000)]) });
-    if (!response.ok) throw new Error(`Log fetch ${response.status}`);
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`Log fetch ${response.status}`); }
     if (!response.body) return "";
     const reader = response.body.getReader(), decoder = new TextDecoder();
     // The excerpt stops at the first error or after 2 MB; rules keep scanning up to 8 MB, or until a build failure decides the job.
@@ -245,7 +248,7 @@ export function createArtifactFetcher(token: string, signal: AbortSignal): Fetch
       response = await fetch(url, { redirect: "manual", signal: timeout });
     }
     // No status digits for the blob hop: a storage 403 (expired link) is not a GitHub rate limit.
-    if (!response.ok) throw new Error(url.hostname === "api.github.com" ? `Artifact fetch ${response.status}` : "Artifact download failed");
+    if (!response.ok) { await response.body?.cancel(); throw new Error(url.hostname === "api.github.com" ? `Artifact fetch ${response.status}` : "Artifact download failed"); }
     if (!response.body) return Buffer.alloc(0);
     const reader = response.body.getReader(), chunks: Uint8Array[] = [];
     let size = 0;
@@ -457,6 +460,8 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
         // Attempt by attempt, newest first, saving as it goes: a step's budget never ends with fetched logs and nothing stored.
         const attempts = new Map<string, JobRecord[]>();
         for (const j of pending) attempts.set(attemptKey(j), [...(attempts.get(attemptKey(j)) ?? []), j]);
+        const siblingsOf = new Map<string, JobRecord[]>();
+        for (const x of stored) { const k = attemptKey(x); (siblingsOf.get(k) ?? siblingsOf.set(k, []).get(k)!).push(x); }
         outer: for (const [key, jobs] of attempts) {
           // Phase 1: refresh each log excerpt (runner-loss and transient evidence can sit after the first error) and scan the log.
           const logs = new Map<JobRecord, LogScan>();
@@ -468,7 +473,7 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
             } catch (error) { if (fail(j, error)) break outer; }
           }
           // Phase 2: a job the fresh excerpt turned into a runner loss is no candidate, so a sibling can become the lone candidate a report is attributed to.
-          const siblings = stored.filter((x) => attemptKey(x) === key);
+          const siblings = siblingsOf.get(key) ?? [];
           const fresh = new Set(candidates(classifyJobs(siblings, { ...config.classify, flakeRules: config.rules, flakeHash: config.hash })).map((j) => j.jobId));
           for (const [j, log] of logs) {
             try {

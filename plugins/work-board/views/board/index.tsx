@@ -23,8 +23,9 @@ import { NewTaskDialog } from "../manage/new-task-dialog.js";
 import {
   applyBoardMove,
   BOARD_STATUSES,
-  dropIndexForPointer,
+  dropIndexForLayout,
   dropNeighborsForIndex,
+  updateDragState,
   visibleBoardStatuses,
 } from "./drop-position.js";
 import { cardLayout, cardWindow } from "./card-window";
@@ -368,11 +369,11 @@ export function BoardView({ projectId }: BoardViewProps) {
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);
   const [columns, setColumns] = useState<ColumnMap | undefined>(undefined);
-  const prSummaries = usePrSummaries(board.data?.tasks ?? []);
+  const prSummaries = usePrSummaries(board.data?.tasks ?? [], !board.isFetching && board.data !== undefined, projectId);
   const questionCounts = useQuestionCounts([
     ...(board.data?.tasks ?? []),
     ...(board.data?.subtasks ?? []),
-  ]);
+  ], !board.isFetching && board.data !== undefined, projectId);
   const subtasksByParent = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const child of board.data?.subtasks ?? []) {
@@ -503,18 +504,8 @@ export function BoardView({ projectId }: BoardViewProps) {
       if (!columnElement) continue;
       const rect = columnElement.getBoundingClientRect();
       if (x < rect.left - 6 || x > rect.right + 6) continue;
-      const centers = current[status]
-        .map((task, index) => {
-          if (task.id === draggedTaskId) return null;
-          const cardElement = cardRefs.current.get(task.id);
-          if (!cardElement) {
-            const layout = layoutsRef.current.get(status)!;
-            return rect.top + 4 - columnElement.scrollTop + layout.offsets[index]! + layout.heights[index]! / 2;
-          }
-          const cardRect = cardElement.getBoundingClientRect();
-          return cardRect.top + cardRect.height / 2;
-        }).filter((center): center is number => center !== null);
-      return { status, index: dropIndexForPointer(centers, y) };
+      const layout = layoutsRef.current.get(status)!;
+      return { status, index: dropIndexForLayout(layout, y - rect.top - 4 + columnElement.scrollTop, draggedTaskId) };
     }
     return null;
   };
@@ -576,23 +567,27 @@ export function BoardView({ projectId }: BoardViewProps) {
       width: rect.width,
     };
     let active = false;
+    let lastDrag: DragState | null = null;
 
-    const updateDrag = (moveEvent: PointerEvent) => {
+    let frame: number | null = null;
+    let pendingPosition = { x: start.x, y: start.y };
+    const updateDrag = (x: number, y: number) => {
       const target = findDropTarget(
-        moveEvent.clientX,
-        moveEvent.clientY,
+        x,
+        y,
         task.id,
       );
-      setDrag({
+      const next: DragState = {
         taskId: task.id,
-        x: moveEvent.clientX,
-        y: moveEvent.clientY,
+        x,
+        y,
         offsetX: start.offsetX,
         offsetY: start.offsetY,
         width: start.width,
         overStatus: target?.status ?? null,
         dropIndex: target?.index ?? 0,
-      });
+      };
+      lastDrag = updateDragState(lastDrag, next, setDrag);
     };
 
     const onMove = (moveEvent: PointerEvent) => {
@@ -605,7 +600,11 @@ export function BoardView({ projectId }: BoardViewProps) {
         active = true;
       }
       moveEvent.preventDefault();
-      updateDrag(moveEvent);
+      pendingPosition = { x: moveEvent.clientX, y: moveEvent.clientY };
+      if (frame === null) frame = requestAnimationFrame(() => {
+        frame = null;
+        updateDrag(pendingPosition.x, pendingPosition.y);
+      });
     };
     const finish = (upEvent: PointerEvent | null) => {
       dragCleanupRef.current?.();
@@ -632,6 +631,7 @@ export function BoardView({ projectId }: BoardViewProps) {
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
     dragCleanupRef.current = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);

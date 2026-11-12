@@ -43,7 +43,7 @@ describe("Slots deterministic engine", () => {
 
   it("counts spaced passing samples, audits fast ones, resets on failure and on every grant", () => {
     const h = harness(); h.request("a"); h.request("b");
-    h.sample(); h.now = 14_999; h.sample();
+    h.sample(); h.now = 10_000; h.sample();
     expect(h.state.hosts.h.gate.streak).toBe(1);
     expect(h.state.audit.filter(e => e.type === "gate")).toHaveLength(0);
     expect(h.sample().effects).toContainEqual(expect.objectContaining({ type: "audit", event: expect.objectContaining({ type: "gate" }) }));
@@ -134,6 +134,32 @@ describe("Slots deterministic engine", () => {
       expect(h.state.leases).toEqual([]);
       expect(freed.effects).toContainEqual(expect.objectContaining({ type: "notify", threadId: "child" }));
     }
+  });
+
+  it("counts gate readings that arrive slightly before the interval", () => {
+    const h = harness(); h.request("a"); h.sample(50, 1); h.now += 14_976; h.sample(50, 1);
+    expect(h.state.leases).toHaveLength(1);
+  });
+
+  it("does not message a holder whose acquire is waiting for the grant", () => {
+    const h = harness(); h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "a tests", estMs: minute });
+    h.request("b");
+    const notices = [...h.open().effects, ...h.open().effects].flatMap(e => e.type === "notify" && e.reason === "grant" ? [e.threadId] : []);
+    expect(h.state.leases.map(l => l.holderThreadId)).toEqual(["a", "b"]);
+    expect(notices).toEqual(["b"]);
+  });
+
+  it("does not message the thread whose own done releases the lease", () => {
+    const h = harness(); const useId = (h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "a tests", estMs: minute }).result as { data: { useId: string } }).data.useId;
+    h.open();
+    const freed = h.send({ type: "done", threadId: "a", useId });
+    expect(h.state.leases).toEqual([]);
+    expect(freed.effects.filter(e => e.type === "notify")).toEqual([]);
+  });
+
+  it("grants plain requests with JSON-safe use fields", () => {
+    const h = harness(); h.request("a"); h.open();
+    expect(h.state.leases[0]).toMatchObject({ uses: [], autoRelease: false, graceUntil: null });
   });
 
   it("releases a granted lease by its request id", () => {
@@ -229,6 +255,10 @@ describe("Slots deterministic engine", () => {
     expect(h.state.leases[0].lastHeartbeatAt).toBe(h.now);
     for (let i = 0; i < 55; i++) h.send({ type: "prioritize", requestId: h.state.requests[0].id, priority: "normal" });
     expect(h.state.audit).toHaveLength(50);
+    const audit = statusSnapshot(h.state, { now: h.now, settings: h.settings }).audit;
+    expect(audit).toHaveLength(15);
+    expect(audit.every(e => e.type !== "gate")).toBe(true);
+    expect(audit.map(e => e.seq)).toEqual([...audit.map(e => e.seq)].sort((a, b) => b - a));
     expect(logSince(h.state, { since: h.now, limit: 2 })).toHaveLength(2);
     expect(logSince(h.state, { since: h.now + 1 })).toEqual([]);
     expect(logSince(h.state, { limit: 0 })).toEqual([]);

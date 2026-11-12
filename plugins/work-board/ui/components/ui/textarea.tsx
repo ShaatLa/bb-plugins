@@ -8,10 +8,11 @@ const Textarea = React.forwardRef<
   HTMLTextAreaElement,
   React.ComponentProps<"textarea">
 >(({ className, ...props }, ref) => {
+  // Grows with its text like the chat composer, up to 40% of the viewport, then scrolls.
   return (
     <textarea
       className={cn(
-        `flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 ${CONTROL_HOVER_TRANSITION} placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`,
+        `flex min-h-[60px] max-h-[40vh] w-full overflow-y-auto [field-sizing:content] rounded-md border border-input bg-transparent px-3 py-2 ${CONTROL_HOVER_TRANSITION} placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`,
         COARSE_POINTER_TEXT_BASE_CLASS,
         className,
       )}

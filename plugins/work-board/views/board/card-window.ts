@@ -4,8 +4,9 @@ export const ESTIMATED_CARD_HEIGHT = 112;
 export function cardLayout(ids: readonly string[], sizes: ReadonlyMap<string, number>) {
   const offsets = [0];
   const heights = ids.map((id) => sizes.get(id) ?? ESTIMATED_CARD_HEIGHT);
+  const indices = new Map(ids.map((id, index) => [id, index]));
   for (const height of heights) offsets.push(offsets.at(-1)! + height + CARD_GAP);
-  return { offsets, heights, total: Math.max(0, offsets.at(-1)! - CARD_GAP) };
+  return { offsets, heights, indices, total: Math.max(0, offsets.at(-1)! - CARD_GAP) };
 }
 
 export function cardWindow(layout: ReturnType<typeof cardLayout>, scrollTop: number, viewportHeight: number) {

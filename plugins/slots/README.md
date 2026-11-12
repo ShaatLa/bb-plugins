@@ -6,6 +6,10 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.5.1 sends no "Slot granted" message when the grant goes to a waiting `acquire` (slots-run, plugin RPC), and no "Slot released" message to the thread whose own last `done` freed the lease; plain requests still get grant messages.
+Version 0.5.0 cuts steady-state work: state.json is written and `slots.changed` published only when state changes; queued `acquire` polls read-only status and renews its use every max(30 s, TTL/3); the sidebar coalesces events, polls every 30 s only as a fallback, and Settings saves numbers on blur or Enter; status returns the newest 15 events; SDK calls have a 10 s deadline.
+Version 0.4.8 counts gate readings up to 10% early, so sampler jitter no longer doubles the wait after a grant.
+Version 0.4.7 fixes the sidebar status failing while a plain request’s lease is held.
 Version 0.4.6 releases a granted lease when `release` gets its request ID.
 Version 0.4.5 steers only urgent notices (expiry warning, revoke, expiry, release by someone else, load without a slot) into a running turn; grants, transfers and manager notices wait for the turn to end. A thread no longer gets a message about its own release.
 Version 0.4.4 shows the notification state as a monospace chip, such as `Slot released`, and omits end reasons that repeat it.
@@ -228,3 +232,5 @@ storage. No plugin installation, live three-thread demo or deployment is part
 of this phase. The sidebar is covered by SDK frontend harness tests.
 
 A heavy lease also covers the holder’s child threads; open browser-automation sessions in the family count as activity for idle notices. Transfer is the clean way to assign work.
+
+Status views return the newest 15 non-gate audit events, ordered by time and sequence descending. Disk logs and the 50-event state ring are unchanged.

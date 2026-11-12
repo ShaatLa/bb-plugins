@@ -30,10 +30,13 @@ export function rowWindows({
   viewportHeight,
 }: RowWindowInput): RowRange[] {
   const ranges: RowRange[] = [];
+  // Window by the whole list, not per group: many mid-size groups add up to
+  // hundreds of offscreen rows. Small lists keep rendering in full.
+  const windowed = counts.reduce((sum, count) => sum + count, 0) >= ROW_WINDOW_THRESHOLD;
   let top = 0;
   for (const count of counts) {
     top += headerHeight;
-    if (count < ROW_WINDOW_THRESHOLD) {
+    if (!windowed) {
       ranges.push([0, count]);
     } else if (viewportHeight <= 0 || rowHeight <= 0) {
       ranges.push([0, Math.min(count, ROW_WINDOW_FALLBACK_ROWS)]);

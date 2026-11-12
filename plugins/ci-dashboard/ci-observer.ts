@@ -205,7 +205,7 @@ const FINAL = new Set(["success", "failure", "error"]);
  */
 /** How a failed deployment's run failed: only on a by-design gate step (refused, with the step), on anything else, or not stored yet (null). */
 export type DeployRunOutcome = (runId: number) => { refused: string } | "failed" | null;
-const DEPLOY_WAIT_MS = 10 * 60_000;
+const DEPLOY_WAIT_MS = 10 * 60_000, DEPLOY_SLOW_AFTER_MS = 3_600_000, DEPLOY_GIVE_UP_MS = 24 * 3_600_000;
 /** Classifies a deployment run from its classified jobs: a run that failed only on refusal steps (plus their consequences) was refused, not broken. */
 export function deployRunOutcome(classified: ClassifiedJob[]): DeployRunOutcome {
   return (runId) => {
@@ -219,14 +219,20 @@ export async function deploymentEvents({ request, repository, state, since, now,
   const list = z.array(deploymentRow).parse((await request(`/repos/${repository}/deployments?per_page=30`)).body);
   for (const [id, seen] of Object.entries(state.deploys)) if (seen < since) delete state.deploys[id];
   const events: ObserverEvent[] = [];
-  const open = list.filter((d) => Date.parse(d.created_at) >= since && state.deploys[String(d.id)] === undefined).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, maxStatuses);
+  // A deployment without a final status is asked every loop for its first hour, then every 10 minutes (`wait:<id>` holds the last ask), and dropped after a day.
+  const open = list.filter((d) => Date.parse(d.created_at) >= since && state.deploys[String(d.id)] === undefined && now - (state.deploys[`wait:${d.id}`] ?? -Infinity) >= DEPLOY_WAIT_MS).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, maxStatuses);
   for (const d of open) {
     let status: z.infer<typeof statusRow> | undefined;
     try { status = z.array(statusRow).parse((await request(`/repos/${repository}/deployments/${d.id}/statuses?per_page=1`)).body)[0]; }
     catch (error) { if (/Budget exhausted|403|429/.test(String(error))) break; continue; }
-    if (!status) continue;
+    if (!status || (status.state !== "inactive" && !FINAL.has(status.state))) {
+      const age = now - Date.parse(d.created_at);
+      if (age > DEPLOY_GIVE_UP_MS) { state.deploys[String(d.id)] = now; delete state.deploys[`wait:${d.id}`]; }
+      else if (age > DEPLOY_SLOW_AFTER_MS) state.deploys[`wait:${d.id}`] = now;
+      continue;
+    }
+    delete state.deploys[`wait:${d.id}`];
     if (status.state === "inactive") { state.deploys[String(d.id)] = now; continue; }
-    if (!FINAL.has(status.state)) continue;
     const environment = d.environment || "unknown", url = status.log_url && /^https:\/\//.test(status.log_url) ? status.log_url : undefined;
     let label = status.state;
     if (status.state !== "success") {

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useBbNavigate, useRealtime, useRpc, useSdk, type StandardSchemaV1 } from "@get-bb/plugin-sdk/app";
 import { SLOTS_CHANGED, type SettingKey, type SettingsFormView, type RpcMethods } from "./contract";
 import { Button } from "./components/ui/button";
@@ -8,7 +8,7 @@ import { Switch } from "./components/ui/switch";
 import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton } from "./components/ui/skeleton";
 import { ThreadPickerDialog } from "./thread-picker-dialog";
-import { useStatus } from "./use-status";
+import { debounce, useStatus } from "./use-status";
 
 type Contract = { [K in "settingsRead" | "settingsWrite"]: { input: StandardSchemaV1<RpcMethods[K]["input"]>; output: StandardSchemaV1<RpcMethods[K]["output"]> } };
 const events = [
@@ -28,25 +28,68 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   return <Card role="region" aria-label={title} className="space-y-4 p-4"><h3 className="text-sm font-medium">{title}</h3>{children}</Card>;
 }
 
+// Keeps typing local; commits on blur or Enter so each keystroke does not save config.
+function NumberField({ label, value, min, max, step, hint, reset, onCommit, onReset }: {
+  label: string; value: number | string; min: number; max: number; step: number; hint?: string; reset: boolean;
+  onCommit: (value: number) => Promise<void>; onReset: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const committing = useRef(false);
+  async function commit() {
+    if (draft === null || committing.current) return;
+    const next = draft === "" ? NaN : Number(draft);
+    if (!Number.isFinite(next) || next < min || next > max || (step === 1 && !Number.isInteger(next)) || next === Number(value)) { setDraft(null); return; }
+    committing.current = true;
+    try { await onCommit(next); } finally { committing.current = false; setDraft(null); }
+  }
+  return <div className="space-y-1">
+    <label className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{label}</span><Input aria-label={label} type="number" min={min} max={max} step={step} className="w-24" value={draft ?? value}
+      onChange={event => setDraft(event.target.value)} onBlur={() => { void commit(); }} onKeyDown={event => { if (event.key === "Enter") void commit(); }} /></label>
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">{hint && <p>{hint}</p>}{reset && <Button type="button" size="sm" variant="link" className="h-auto p-0 text-xs" aria-label={`Reset ${label} to default`} onMouseDown={event => event.preventDefault()} onClick={() => { setDraft(null); onReset(); }}>Reset to default</Button>}</div>
+  </div>;
+}
+
 export function SlotsSettings() {
   const rpc = useRpc<Contract>(), sdk = useSdk(), navigate = useBbNavigate();
-  const { view } = useStatus();
+  const { view } = useStatus({ clock: false });
   const [data, setData] = useState<SettingsFormView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
   const [observerTitle, setObserverTitle] = useState("Observer thread");
+  const eventRef = useRef<() => void>(() => {});
+  useRealtime(SLOTS_CHANGED, () => eventRef.current());
   useEffect(() => {
     let disposed = false;
-    rpc.call("settingsRead", {}).then(result => {
-      if (disposed) return;
-      if (result.ok) setData(result.data); else setError(result.error.message);
-    }).catch(cause => { if (!disposed) setError(String(cause)); });
-    return () => { disposed = true; };
+    let pending = false;
+    let again = false;
+    let stale = false;
+    async function read(initial = false) {
+      // An event received while hidden is remembered and refetched when visible.
+      if (!initial && document.visibilityState === "hidden") { stale = true; return; }
+      if (pending) { again = true; return; }
+      pending = true;
+      stale = false;
+      try {
+        const result = await rpc.call("settingsRead", {});
+        if (disposed) return;
+        if (result.ok) setData(result.data); else if (initial) setError(result.error.message);
+      } catch (cause) { if (!disposed && initial) setError(String(cause)); }
+      pending = false;
+      if (!disposed && again) { again = false; void read(); }
+    }
+    const events = debounce(() => { void read(); });
+    eventRef.current = events.call;
+    const onVisibility = () => { if (stale && document.visibilityState !== "hidden") { events.cancel(); void read(); } };
+    document.addEventListener("visibilitychange", onVisibility);
+    void read(true);
+    return () => {
+      disposed = true;
+      events.cancel();
+      eventRef.current = () => {};
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [rpc]);
-  useRealtime(SLOTS_CHANGED, () => {
-    void rpc.call("settingsRead", {}).then(result => { if (result.ok) setData(result.data); }).catch(() => {});
-  });
   const observer = String(data?.values.observerThreadId ?? "");
   useEffect(() => {
     let disposed = false;
@@ -67,14 +110,9 @@ export function SlotsSettings() {
   if (!data) return <>{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : <LoadingSkeleton label="Loading Slots settings…" />}</>;
   const { values, cores, heavyDefault } = data;
   const latest = view?.gates[view.localHostId]?.latest;
-  const number = (key: SettingKey, label: string, min: number, max: number, hint?: string, reset = false, step = 1) => <div className="space-y-1" key={key}>
-    <label className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{label}</span><Input aria-label={label} type="number" min={min} max={max} step={step} className="w-24" value={values[key]} onChange={event => {
-      if (event.target.value === "") return;
-      const value = event.target.valueAsNumber;
-      if (Number.isFinite(value) && value >= min && value <= max && (step !== 1 || Number.isInteger(value))) apply(key, value);
-    }} /></label>
-    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">{hint && <p>{hint}</p>}{reset && <Button type="button" size="sm" variant="link" className="h-auto p-0 text-xs" aria-label={`Reset ${label} to default`} onClick={() => apply(key, null)}>Reset to default</Button>}</div>
-  </div>;
+  const number = (key: SettingKey, label: string, min: number, max: number, hint?: string, reset = false, step = 1) =>
+    <NumberField key={key} label={label} value={values[key]} min={min} max={max} step={step} hint={hint} reset={reset}
+      onCommit={value => save(key, value).catch(() => {})} onReset={() => apply(key, null)} />;
   const selected = String(values.observerEvents).split(",").filter(Boolean);
   return <div className="max-w-2xl space-y-3">
     <p className="text-xs text-muted-foreground">Changes apply immediately.</p>

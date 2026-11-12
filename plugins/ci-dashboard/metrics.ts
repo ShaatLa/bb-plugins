@@ -87,45 +87,91 @@ export type HistoricalRecords = z.infer<typeof historicalRecordsSchema>;
 
 // Share the budget across repositories and interval/background refreshes.
 let activeRequests = 0;
-const waitingRequests: (() => void)[] = [];
-async function limitedRequest<T>(operation: () => Promise<T>): Promise<T> {
-  if (activeRequests >= 4) await new Promise<void>((resolve) => waitingRequests.push(resolve));
+const waitingRequests: { resolve: () => void; interactive: boolean }[] = [];
+async function limitedRequest<T>(operation: () => Promise<T>, interactive = false): Promise<T> {
+  if (activeRequests >= 4) await new Promise<void>((resolve) => {
+    const index = interactive ? waitingRequests.findIndex((waiter) => !waiter.interactive) : -1;
+    if (index < 0) waitingRequests.push({ resolve, interactive });
+    else waitingRequests.splice(index, 0, { resolve, interactive });
+  });
   else activeRequests++;
   try { return await operation(); }
   finally {
     const next = waitingRequests.shift();
-    if (next) next();
+    if (next) next.resolve();
     else activeRequests--;
   }
 }
 
 export type GitHubResponse = { body: unknown; hasNext: boolean; etag?: string };
-export type GitHubRequest = (path: string, init?: Pick<RequestInit, "method" | "body">) => Promise<GitHubResponse>;
-export async function githubRequest(path: string, token: string | undefined, signal: AbortSignal, init?: Pick<RequestInit, "method" | "body">, previous?: GitHubResponse): Promise<GitHubResponse> {
-  return limitedRequest(async () => {
+/** `options.check` runs inside the request slot and throws to drop a request whose load already failed. */
+export type GitHubRequest = (path: string, init?: Pick<RequestInit, "method" | "body">, options?: { check?: () => void; volatile?: boolean }) => Promise<GitHubResponse>;
+let blockedUntil = 0;
+const transportFailure = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return error.name === "TimeoutError" || (error instanceof TypeError && error.message === "fetch failed") || /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket/i.test(String(error.cause ?? ""));
+};
+const hardFailure = (error: unknown) => transportFailure(error) || (error instanceof Error && /^GitHub (returned 5\d\d|rate limit reached)/.test(error.message));
+const retryAfter = (value: string | null) => {
+  if (!value) return 0;
+  const seconds = Number(value);
+  return Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : (Date.parse(value) || 0) - Date.now());
+};
+export async function githubRequest(path: string, token: string | undefined, signal: AbortSignal, init?: Pick<RequestInit, "method" | "body">, previous?: GitHubResponse, options?: { interactive?: boolean; check?: () => void }): Promise<GitHubResponse> {
+  const idempotent = !init?.method || init.method.toUpperCase() === "GET" || (init.method.toUpperCase() === "POST" && path === "/graphql");
+  for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted();
-    const response = await fetch(`https://api.github.com${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2026-03-10",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(previous?.etag ? { "If-None-Match": previous.etag } : {}),
-      },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
-      redirect: "error",
-    });
-    if (response.status === 304 && previous?.etag) return { ...previous, ...(response.headers.has("link") ? { hasNext: /rel="next"/.test(response.headers.get("link")!) } : {}) };
-    if (!response.ok) {
-      const hint = response.status === 401 ? "Check the access token."
-        : response.status === 404 ? "Check the repository and token permissions."
-        : response.status === 403 || response.status === 429 ? "Check token permissions or the GitHub rate limit."
-        : "Try again at the next refresh.";
-      throw new Error(`GitHub returned ${response.status}. ${hint}`);
+    if (Date.now() < blockedUntil) throw new Error(`GitHub rate limit reached; requests resume at ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC.`);
+    let delay = 0;
+    try {
+      return await limitedRequest(async () => {
+        signal.throwIfAborted();
+        options?.check?.();
+        if (Date.now() < blockedUntil) throw new Error(`GitHub rate limit reached; requests resume at ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC.`);
+        const response = await fetch(`https://api.github.com${path}`, {
+          ...init,
+          headers: {
+            Accept: "application/vnd.github+json", "Content-Type": "application/json", "X-GitHub-Api-Version": "2026-03-10",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(previous?.etag ? { "If-None-Match": previous.etag } : {}),
+          },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]), redirect: "error",
+        });
+        if (response.status === 304 && previous?.etag) return { ...previous, ...(response.headers.has("link") ? { hasNext: /rel="next"/.test(response.headers.get("link")!) } : {}) };
+        if (!response.ok) {
+          const retry = response.headers.get("retry-after");
+          const reset = response.headers.get("x-ratelimit-reset");
+          // GitHub sends x-ratelimit-reset on every response: only an exhausted quota, a 429 or a Retry-After (secondary limit) blocks, never a permission 403.
+          const exhausted = response.headers.get("x-ratelimit-remaining") === "0";
+          if ((response.status === 403 || response.status === 429) && (exhausted || retry || response.status === 429)) {
+            blockedUntil = Math.max(blockedUntil, Date.now() + 60_000, Date.now() + retryAfter(retry), exhausted ? (Number(reset) || 0) * 1000 : 0);
+            await response.body?.cancel();
+            throw new Error(`GitHub rate limit reached; requests resume at ${new Date(blockedUntil).toISOString().slice(11, 16)} UTC.`);
+          }
+          delay = Math.min(10_000, retryAfter(retry));
+          const hint = response.status === 401 ? "Check the access token."
+            : response.status === 404 ? "Check the repository and token permissions."
+            : response.status === 403 || response.status === 429 ? "Check token permissions or the GitHub rate limit."
+            : "Try again at the next refresh.";
+          await response.body?.cancel();
+          const error = new Error(`GitHub returned ${response.status}. ${hint}`);
+          if ([502, 503, 504].includes(response.status)) Object.assign(error, { retryable: true });
+          throw error;
+        }
+        return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? ""), ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : {}) };
+      }, options?.interactive);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!idempotent || attempt >= 2 || !(transportFailure(error) || (error as { retryable?: boolean })?.retryable)) throw error;
+      delay = Math.max(delay, (attempt === 0 ? 500 : 2000) * (0.8 + Math.random() * 0.4));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, delay);
+        const abort = () => { clearTimeout(timer); reject(signal.reason); };
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
     }
-    return { body: await response.json(), hasNext: /rel="next"/.test(response.headers.get("link") ?? ""), ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : {}) };
-  });
+  }
 }
 
 export type LoadOptions = {
@@ -158,7 +204,14 @@ export async function loadMetrics(repository: string, token: string | undefined,
     const time = Date.parse(timestamp);
     return time < cutoff || time > end ? -1 : Math.min(bucketCount - 1, Math.floor((time - anchor) / range.bucketMs));
   };
-  const request: GitHubRequest = options.request ?? ((path, init) => githubRequest(path, token, signal, init));
+  let failure: unknown;
+  const check = () => { if (failure) throw failure; };
+  const baseRequest: GitHubRequest = options.request ?? ((path, init) => githubRequest(path, token, signal, init, undefined, { check }));
+  const request: GitHubRequest = async (path, init, options) => {
+    check();
+    try { return await baseRequest(path, init, { ...options, check }); }
+    catch (error) { if (hardFailure(error)) failure ??= error; throw error; }
+  };
   const deploymentPages = new Map<number, ReturnType<typeof request>>();
   const deploymentFingerprints = new Set<string>();
   function deploymentPage(page: number) {
@@ -202,7 +255,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     if (cached && created && options.localOnly) return cached.metrics.range.since === since && cached.metrics.range.until === range.until
       ? cached.metrics.pullRequestsCreated : { value: null, detail: "Loading created PR count…", error: null, series: null, seriesError: null };
     const query = encodeURIComponent(`repo:${repository} is:pr ${created ? `created:${since}..${range.until}` : "is:open"}`);
-    const { body } = await request(`/search/issues?q=${query}&per_page=1`);
+    const { body } = await request(`/search/issues?q=${query}&per_page=1`, undefined, { volatile: created });
     const result = searchSchema.parse(body);
     if (result.incomplete_results) throw new Error("GitHub returned an incomplete PR count; try again.");
     return { value: result.total_count, detail: created ? `Created · ${range.label} · all states, includes drafts` : "Open now · includes drafts", error: null, series: null, seriesError: null };
@@ -241,8 +294,8 @@ export async function loadMetrics(repository: string, token: string | undefined,
     // Partitioned loads read pages per window, so page 1 here only supplies total_count: ask for one row once history is known to be large.
     const canPartition = Boolean(options.partitionCi) && historyEnd - historyStart > day;
     const probe = canPartition && (options.previous?.runs.length ?? 0) > 1000;
-    const first = cached ? null : await request(probe ? `${path}&status=completed&per_page=1&page=1` : `${completedPath}&page=1`);
-    const completed = cached ? cached.records.runs.length : countSchema.parse(first!.body).total_count;
+    const first = cached || probe ? null : await request(`${completedPath}&page=1`, undefined, { volatile: historyEnd >= now.getTime() - 60_000 });
+    const completed = cached ? cached.records.runs.length : probe ? options.previous!.runs.length : countSchema.parse(first!.body).total_count;
     function summary(total: number, successful: number) {
       if (total < 0 || successful > total) throw new Error("GitHub run counts changed during refresh; try again.");
       return {
@@ -261,7 +314,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
     }
     async function history(start: number, finish: number, response?: Awaited<ReturnType<typeof request>>, parallel = true, retried = false): Promise<Map<number, z.infer<typeof runSchema>>> {
       const filteredPath = `/repos/${repository}/actions/runs?created=${encodeURIComponent(`${new Date(start).toISOString()}..${new Date(finish).toISOString()}`)}&status=completed&per_page=100`;
-      const initial = response ?? await request(`${filteredPath}&page=1`);
+      const initial = response ?? await request(`${filteredPath}&page=1`, undefined, { volatile: finish === historyEnd && historyEnd >= now.getTime() - 60_000 });
       const total = countSchema.parse(initial.body).total_count;
       if (total > 1000) {
         // GitHub caps each filtered search at 1,000 and may truncate total_count at 2,500.
@@ -280,7 +333,7 @@ export async function loadMetrics(repository: string, token: string | undefined,
       const rows = new Map<number, z.infer<typeof runSchema>>();
       const pages = [initial, ...await Promise.all(Array.from(
         { length: Math.max(0, Math.ceil(total / 100) - 1) },
-        (_, index) => request(`${response ? completedPath : filteredPath}&page=${index + 2}`),
+        (_, index) => request(`${response ? completedPath : filteredPath}&page=${index + 2}`, undefined, { volatile: finish === historyEnd && historyEnd >= now.getTime() - 60_000 }),
       ))];
       try {
         for (const page of pages) {
@@ -305,13 +358,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
         for (let start = historyStart; start <= historyEnd;) {
           const weekEnd = (Math.floor(start / (7 * day)) + 1) * 7 * day - 1;
           // Only the open week is cut into days: closed windows keep stable cache keys and only today's window ends at `now`.
-          const finish = Math.min(historyEnd, weekEnd > historyEnd ? (Math.floor(start / day) + 1) * day - 1 : weekEnd);
+          const openDay = Math.floor(historyEnd / day) * day;
+          const unit = start >= openDay ? 6 * 3_600_000 : day;
+          const finish = Math.min(historyEnd, weekEnd > historyEnd ? (Math.floor(start / unit) + 1) * unit - 1 : weekEnd);
           windows.push([start, finish]);
           start = finish + 1;
         }
         const reuse = options.reuse, stored = options.previous?.runs, current = now.getTime();
         // Accepted staleness: runs older than 48 h can still change (reruns) but are revalidated only hourly.
-        const reusable = ([start, finish]: [number, number]) => Boolean(reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(`${start}-${finish}`) ?? -Infinity) < 3_600_000);
+        const reusable = ([start, finish]: [number, number]) => Boolean(reuse && stored && finish < current - 2 * day && Date.parse(reuse.coverage.since) <= start && finish <= Date.parse(reuse.coverage.until) && current - (reuse.checked.get(`${start}-${finish}`) ?? -Infinity) < (finish < current - 7 * day ? 6 : 1) * 3_600_000);
         // Progress counts only windows that hit the network, so routine refreshes that reuse stored history report little.
         const progress = { runs: 0, done: 0, total: windows.filter((window) => !reusable(window)).length };
         const report = () => { if (progress.total) { result.loading = { ...progress }; options.onProgress?.({ ...result }); } };
@@ -343,12 +398,13 @@ export async function loadMetrics(repository: string, token: string | undefined,
         ? new Map(cached.records.runs.filter((row) => bucket(row.created_at) >= 0).map((row) => [row.id, row]))
         : await completeHistory();
       const previous = new Map(options.previous?.runs.map((run) => [run.id, run]));
-      let unchecked = 0;
-      await Promise.all([...rows.values()].filter((run) => draftCandidate(run, options.draftRules)).map(async (run) => {
+      let unchecked = 0, scheduled = 0;
+      await Promise.all([...rows.values()].filter((run) => draftCandidate(run, options.draftRules)).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).map(async (run) => {
         const old = previous.get(run.id);
         if (run.draftDeferred === undefined && old?.updated_at === run.updated_at && old?.run_attempt === run.run_attempt) run.draftDeferred = old?.draftDeferred;
         if (run.draftDeferred !== undefined) return;
-        if (options.localOnly) { unchecked++; return; }
+        if (options.localOnly || scheduled >= 60) { unchecked++; return; }
+        scheduled++;
         try { run.draftDeferred = await classifyDraft(run, repository, request, options.draftRules); }
         catch { signal.throwIfAborted(); unchecked++; }
       }));
@@ -379,10 +435,15 @@ export async function loadMetrics(repository: string, token: string | undefined,
   }
   function errorMessage(reason: unknown) {
     const message = reason instanceof Error ? reason.message : "";
-    return message.startsWith("GitHub") || message.startsWith("More than")
-      ? message : "Unable to load this data. Check connectivity and try again.";
+    if (message.startsWith("GitHub") || message.startsWith("More than")) return message;
+    // A slow GitHub or a dropped connection is transient: say so instead of blaming the user's connectivity.
+    if (reason instanceof Error && (reason.name === "TimeoutError" || /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket/i.test(`${message} ${String(reason.cause ?? "")}`)))
+      return "GitHub did not respond in time or the connection dropped. The next refresh retries.";
+    return "Unable to load this data. Check connectivity and try again.";
   }
-  function failedMetric(reason: unknown) {
+  function failedMetric(field: string, reason: unknown) {
+    // The card only shows a summary; the log keeps the actual cause.
+    if (!signal.aborted) options.onWarning?.(`${field}: ${reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason)}`);
     return { value: null, detail: "Unavailable", series: null, seriesError: null, error: errorMessage(reason) };
   }
   const empty = { value: null, detail: "Loading…", error: null, series: null, seriesError: null };
@@ -419,16 +480,17 @@ export async function loadMetrics(repository: string, token: string | undefined,
     historyData.head = head;
   }, options.previous).then(() => summarizeCommitActivity(historyData.commits!.filter((row) => Date.parse(row.committedDate) >= cutoff && Date.parse(row.committedDate) <= end), historyData.branch!));
   await Promise.all([
-    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric(reason) })),
-    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric(reason) })),
-    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric(reason), ciOutcomes: null })),
+    settle("deployments", deployments().then((deployments) => ({ deployments })), (reason) => ({ deployments: failedMetric("deployments", reason) })),
+    settle("pullRequests", pullRequests().then((pullRequests) => ({ pullRequests })), (reason) => ({ pullRequests: failedMetric("pullRequests", reason) })),
+    settle("ci", ci().then(({ metric: ci, outcomes: ciOutcomes }) => ({ ci, ciOutcomes })), (reason) => ({ ci: failedMetric("ci", reason), ciOutcomes: null })),
     settle("reviewQueue", reviews().then((reviewQueue) => ({ reviewQueue })), (reason) => ({ reviewQueue: { total: null, items: [], error: errorMessage(reason) } })),
     settle("production", production().then((production) => ({ production })), (reason) => ({ production: { deployment: null, error: errorMessage(reason) } })),
-    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric(reason) })),
+    settle("pullRequestsCreated", pullRequests(true).then((pullRequestsCreated) => ({ pullRequestsCreated })), (reason) => ({ pullRequestsCreated: failedMetric("pullRequestsCreated", reason) })),
     settle("commitActivity", commits.then((commitActivity) => { commitsComplete = true; return { commitActivity }; }), (reason) => ({ commitActivity: { commits: null, additions: null, deletions: null, branch: null, error: errorMessage(reason) } })),
   ]);
   if (options.localOnly && cached?.records.runs.some((run) => draftCandidate(run, options.draftRules) && run.draftDeferred === undefined)) result.pending = [...(result.pending ?? []), "ci"];
   if (options.localOnly && result.pullRequestsCreated.value === null && !result.pullRequestsCreated.error) result.pending = [...(result.pending ?? []), "pullRequestsCreated"];
+  // Only a complete load is stored: a stored coverage claims deployments and commits for its whole span.
   if (!cached && result.deployments.error === null && result.ciOutcomes !== null && commitsComplete) onHistory?.(historicalRecordsSchema.parse(historyData));
   return result;
 }

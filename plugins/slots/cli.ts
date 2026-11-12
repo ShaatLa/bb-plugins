@@ -163,10 +163,23 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       if (c.signal?.aborted) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json); }
       if (initial.kind === "leased") return success(initial);
       const deadline = Date.now() + timeout;
+      const requestId = initial.kind === "queued" ? initial.request.id : "";
+      const renewMs = renew * 1000;
+      let lastRenew = Date.now();
       try {
         while (Date.now() < deadline) {
           await sleep(Math.min(3000, deadline - Date.now()), undefined, { signal: c.signal });
+          // Poll read-only status; heartbeatUse (a mutating, persisted call) only on grant, on renewal, or when the use vanished.
+          const polled = await invoke("status", {});
+          if (c.signal?.aborted) throw new Error("canceled");
+          if (!polled.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", polled, !!o.json); }
+          const pools = (polled.data as StatusView).pools;
+          const lease = pools.flatMap(p => p.leases).find(l => l.requestId === requestId);
+          const target = lease ?? pools.flatMap(p => p.queue).find(r => r.id === requestId);
+          const useAlive = !!target?.uses?.some(u => u.id === useId);
+          if (!lease && useAlive && Date.now() - lastRenew < renewMs) continue;
           result = await invoke("heartbeatUse", { threadId: caller, useId });
+          lastRenew = Date.now();
           if (c.signal?.aborted) throw new Error("canceled");
           if (!result.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", result, !!o.json); }
           if ((result.data as UseOutcome).kind === "leased") return success(result.data as UseOutcome);

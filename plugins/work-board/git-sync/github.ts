@@ -44,6 +44,43 @@ const workflowRun = z.object({
   head_repository: z.object({ id: z.number() }).nullable(),
 });
 type WorkflowRun = z.infer<typeof workflowRun>;
+type CheckState = PrSnapshot["checks"][number]["state"];
+/** GitHub check-run status/conclusion as the state Work Board shows. */
+function checkRunState(status: string, conclusion: string | null): CheckState {
+  if (status !== "completed") return "pending";
+  if (conclusion === "success") return "passed";
+  if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion ?? "")) return "failed";
+  if (conclusion === "skipped") return "skipped";
+  if (conclusion === "neutral") return "neutral";
+  if (conclusion === "cancelled") return "cancelled";
+  return "unknown";
+}
+const rawCheckRun = z.object({
+  name: z.string(),
+  head_sha: sha,
+  status: z.string(),
+  conclusion: z.string().nullable(),
+  html_url: z.string().url().nullable(),
+  started_at: z.string().nullable(),
+  completed_at: z.string().nullable(),
+  id: z.number(),
+  app: z.object({ id: z.number(), slug: z.string().optional() }).nullable(),
+});
+const rawStatus = z.object({ context: z.string(), state: z.string(), target_url: z.string().url().nullable() });
+const statusState = (state: string): CheckState =>
+  state === "success" ? "passed" : ["error", "failure"].includes(state) ? "failed" : "pending";
+export type RequiredRule = { context: string; appId: number | null };
+/** One required-check rule set for a PR's CI wait; `required` is null when GitHub would not say. */
+export type CiState = {
+  url: string;
+  headSha: string;
+  state: "open" | "draft" | "closed" | "merged";
+  dirty: boolean;
+  readyAt: string | null;
+  required: RequiredRule[] | null;
+  checks: { name: string; app: string; appId: number | null; state: CheckState; url: string | null; startedAt: string | null }[];
+  runs: { id: number; name: string | null; status: string; conclusion: string | null; url: string; createdAt: string }[];
+};
 export class GithubError extends Error {
   constructor(
     public readonly status: number,
@@ -204,7 +241,12 @@ export function createGithubClient(options: {
     const existing = branchRequirements.get(key);
     if (existing && existing.expires > Date.now()) return existing.value;
     const value = Promise.all([
-      optional(`/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`),
+      // 404 means no classic protection or no required checks there (rulesets may still require some); only 401/403 is unknown.
+      request(`/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`).catch((error: unknown) => {
+        if (error instanceof GithubError && error.status === 404) return { contexts: [], checks: [] };
+        if (error instanceof GithubError && [401, 403].includes(error.status)) return null;
+        throw error;
+      }),
       optionalPages(`/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`),
     ]).then(([protection, rules]) => ({ protection, rules }));
     branchRequirements.set(key, { expires: Date.now() + 30_000, value });
@@ -216,6 +258,111 @@ export function createGithubClient(options: {
       if (branchRequirements.get(key)?.value === value) branchRequirements.delete(key);
       throw error;
     }
+  }
+  /** Required status checks for a base branch: configured names, or branch protection plus rulesets. */
+  async function requiredRules(repo: string, baseRef: string, configured: readonly string[]) {
+    let requirementsKnown = configured.length > 0;
+    let required: RequiredRule[] | null = configured.length
+      ? configured.map((context) => ({ context, appId: null }))
+      : null;
+    if (required === null) {
+      const { protection, rules } = await requirements(repo, baseRef);
+      requirementsKnown = protection !== null && rules !== null;
+      if (protection !== null || rules !== null) {
+        required = [];
+        if (protection) {
+          const value = z
+            .object({
+              contexts: z.array(z.string()).default([]),
+              checks: z
+                .array(
+                  z.object({
+                    context: z.string(),
+                    app_id: z.number().nullable(),
+                  }),
+                )
+                .default([]),
+            })
+            .parse(protection);
+          required.push(
+            ...(value.checks.length
+              ? value.checks.map((check) => ({
+                  context: check.context,
+                  appId: check.app_id,
+                }))
+              : value.contexts.map((context) => ({ context, appId: null }))),
+          );
+        }
+        if (rules)
+          for (const value of z
+            .array(
+              z.object({
+                type: z.string(),
+                parameters: z.unknown().optional(),
+              }),
+            )
+            .parse(rules))
+            if (value.type === "required_status_checks")
+              required.push(
+                ...z
+                  .object({
+                    required_status_checks: z.array(
+                      z.object({
+                        context: z.string(),
+                        integration_id: z.number().nullable().optional(),
+                      }),
+                    ),
+                  })
+                  .parse(value.parameters)
+                  .required_status_checks.map((check) => ({
+                    context: check.context,
+                    appId: check.integration_id ?? null,
+                  })),
+              );
+      }
+    }
+    return { required, requirementsKnown };
+  }
+  /** The PR state a CI wait judges: head, required rules, latest checks and workflow runs of that head. */
+  async function ciState(repository: string, number: number): Promise<CiState> {
+    const pr = pull.parse(await request(`/repos/${repository}/pulls/${number}`));
+    const repo = pr.base.repo.full_name, head = pr.head.sha;
+    const latest = new Map<string, { id: number; check: CiState["checks"][number] }>();
+    for (const raw of await pages(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")) {
+      const check = rawCheckRun.parse(raw);
+      if (check.head_sha !== head) continue;
+      const key = `${check.app?.id ?? "unknown"}:${check.name}`;
+      if ((latest.get(key)?.id ?? -1) > check.id) continue;
+      latest.set(key, { id: check.id, check: { name: check.name, app: check.app?.slug ?? "unknown", appId: check.app?.id ?? null, state: checkRunState(check.status, check.conclusion), url: check.html_url, startedAt: check.started_at } });
+    }
+    const checks = [...latest.values()].map((value) => value.check);
+    const contexts = new Set<string>();
+    for (const raw of await pages(`/repos/${repo}/commits/${head}/statuses`)) {
+      const value = rawStatus.parse(raw);
+      if (contexts.has(value.context)) continue;
+      contexts.add(value.context);
+      checks.push({ name: value.context, app: "commit-status", appId: null, state: statusState(value.state), url: value.target_url, startedAt: null });
+    }
+    const { required, requirementsKnown } = await requiredRules(repo, pr.base.ref, []);
+    const runs = z.object({ workflow_runs: z.array(workflowRun) })
+      .parse(await request(`/repos/${repo}/actions/runs?head_sha=${head}&per_page=100`)).workflow_runs
+      .filter((value) => value.head_sha === head)
+      .map((value) => ({ id: value.id, name: value.name, status: value.status, conclusion: value.conclusion, url: value.html_url, createdAt: value.created_at }));
+    let readyAt: string | null = null;
+    for (const raw of await pages(`/repos/${repo}/issues/${number}/events`)) {
+      const event = z.object({ event: z.string(), created_at: z.string() }).safeParse(raw);
+      if (event.success && event.data.event === "ready_for_review" && (readyAt === null || event.data.created_at > readyAt)) readyAt = event.data.created_at;
+    }
+    return {
+      url: pr.html_url,
+      headSha: head,
+      state: pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open",
+      dirty: pr.mergeable_state === "dirty",
+      readyAt,
+      required: requirementsKnown ? required ?? [] : null,
+      checks,
+      runs,
+    };
   }
   async function discover(repository: string, days: number) {
     const rows = new Map<number, z.infer<typeof pull>>();
@@ -410,42 +557,13 @@ export function createGithubClient(options: {
       `/repos/${repo}/commits/${pr.head.sha}/check-runs?filter=latest`,
       "check_runs",
     );
-    const rawCheck = z.object({
-      name: z.string(),
-      head_sha: sha,
-      status: z.string(),
-      conclusion: z.string().nullable(),
-      html_url: z.string().url().nullable(),
-      started_at: z.string().nullable(),
-      completed_at: z.string().nullable(),
-      id: z.number(),
-      app: z.object({ id: z.number(), slug: z.string().optional() }).nullable(),
-    });
     for (const raw of checkData) {
-      const check = rawCheck.parse(raw);
+      const check = rawCheckRun.parse(raw);
       if (check.head_sha !== pr.head.sha) continue;
       const key = `${check.app?.id ?? "unknown"}:${check.name}`;
       const before = latest.get(key);
       if (before && before.order > check.id) continue;
-      const state =
-        check.status !== "completed"
-          ? "pending"
-          : check.conclusion === "success"
-            ? "passed"
-            : [
-                  "failure",
-                  "timed_out",
-                  "action_required",
-                  "startup_failure",
-                ].includes(check.conclusion ?? "")
-              ? "failed"
-              : check.conclusion === "skipped"
-                ? "skipped"
-                : check.conclusion === "neutral"
-                  ? "neutral"
-                  : check.conclusion === "cancelled"
-                    ? "cancelled"
-                    : "unknown";
+      const state = checkRunState(check.status, check.conclusion);
       latest.set(key, {
         order: check.id,
         check: {
@@ -465,13 +583,7 @@ export function createGithubClient(options: {
     );
     const contexts = new Set<string>();
     for (const raw of statuses) {
-      const value = z
-        .object({
-          context: z.string(),
-          state: z.string(),
-          target_url: z.string().url().nullable(),
-        })
-        .parse(raw);
+      const value = rawStatus.parse(raw);
       if (contexts.has(value.context)) continue;
       contexts.add(value.context);
       checks.push({
@@ -480,76 +592,11 @@ export function createGithubClient(options: {
         appId: null,
         sha: pr.head.sha,
         url: value.target_url,
-        state:
-          value.state === "success"
-            ? "passed"
-            : ["error", "failure"].includes(value.state)
-              ? "failed"
-              : "pending",
+        state: statusState(value.state),
         required: null,
       });
     }
-    let requirementsKnown = config.requiredChecks.length > 0;
-    let required: { context: string; appId: number | null }[] | null = config
-      .requiredChecks.length
-      ? config.requiredChecks.map((context) => ({ context, appId: null }))
-      : null;
-    if (required === null) {
-      const { protection, rules } = await requirements(repo, pr.base.ref);
-      requirementsKnown = protection !== null && rules !== null;
-      if (protection !== null || rules !== null) {
-        required = [];
-        if (protection) {
-          const value = z
-            .object({
-              contexts: z.array(z.string()).default([]),
-              checks: z
-                .array(
-                  z.object({
-                    context: z.string(),
-                    app_id: z.number().nullable(),
-                  }),
-                )
-                .default([]),
-            })
-            .parse(protection);
-          required.push(
-            ...(value.checks.length
-              ? value.checks.map((check) => ({
-                  context: check.context,
-                  appId: check.app_id,
-                }))
-              : value.contexts.map((context) => ({ context, appId: null }))),
-          );
-        }
-        if (rules)
-          for (const value of z
-            .array(
-              z.object({
-                type: z.string(),
-                parameters: z.unknown().optional(),
-              }),
-            )
-            .parse(rules))
-            if (value.type === "required_status_checks")
-              required.push(
-                ...z
-                  .object({
-                    required_status_checks: z.array(
-                      z.object({
-                        context: z.string(),
-                        integration_id: z.number().nullable().optional(),
-                      }),
-                    ),
-                  })
-                  .parse(value.parameters)
-                  .required_status_checks.map((check) => ({
-                    context: check.context,
-                    appId: check.integration_id ?? null,
-                  })),
-              );
-      }
-    }
+    const { required, requirementsKnown } = await requiredRules(repo, pr.base.ref, config.requiredChecks);
     if (required) {
       for (const check of checks)
         check.required = required.some(
@@ -689,7 +736,7 @@ export function createGithubClient(options: {
     }).parse(await request(`/repos/${repository}/pulls/${number}`));
     return [pr.title, pr.head.ref, pr.body ?? ""].join("\n");
   }
-  return { discover, snapshot, referenceText };
+  return { discover, snapshot, referenceText, ciState };
   }
   return { ...withSignal(options.signal), withSignal };
 }

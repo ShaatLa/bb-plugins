@@ -282,6 +282,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
             readOnly
             variant="comment"
             onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenUrl={(url) => navigate.openUrl(url)}
           />
         ) : (
           <Markdown
@@ -379,6 +380,7 @@ export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
         className="min-h-11"
         mentionItems={mentionItems}
         onOpenThread={(threadId) => navigate.toThread(threadId)}
+        onOpenUrl={(url) => navigate.openUrl(url)}
         onSubmit={() => void send()}
         onAttachFiles={(files) =>
           setPendingFiles((current) => [...current, ...stageFiles(files)])

@@ -144,3 +144,17 @@ test("stored workflow runs keep their display title and stored deployments keep 
     expect(ciRunSchema.parse(run).display_title).toBe(run.display_title);
   } finally { vi.unstubAllGlobals(); await harness.lifecycle.dispose(); }
 });
+
+test("volatile requests deduplicate without persisting while stable keys retain ETags", async () => {
+  const { database, harness } = cacheDatabase();
+  const fetchMock = vi.fn().mockImplementation(async () => Response.json({ total_count: 0 }, { headers: { etag: '"a"' } }));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const request = createGitHubCache(database)("config", undefined, new AbortController().signal, 300_000, false, () => true);
+    await Promise.all([request("/volatile", undefined, { volatile: true }), request("/volatile", undefined, { volatile: true })]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM github_responses").get()).toEqual({ n: 0 });
+    await request("/stable");
+    expect(database.prepare("SELECT COUNT(*) AS n FROM github_responses").get()).toEqual({ n: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});

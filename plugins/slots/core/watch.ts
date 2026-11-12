@@ -26,7 +26,8 @@ export function updateWatch(host: HostState, leases: Lease[], input: Extract<Inp
   }
   for (const [key, s] of Object.entries(w.subjects)) {
     if (!accepted || resets.has(key) || !input.subjects.some(g => g.key === key)) { s.intervals = []; s.episode = false; }
-    if (!input.subjects.some(g => g.key === key) && input.endAt - s.seenAt >= 86400000) delete w.subjects[key];
+    // Absence resets idle and episode tracking; only an unexpired alert cooldown needs retention.
+    if (!input.subjects.some(g => g.key === key) && (s.lastAlertAt === null || input.endAt - s.lastAlertAt >= 1800000)) delete w.subjects[key];
   }
   for (const subject of input.subjects) {
     const s = w.subjects[subject.key] ??= { threadIds: [], intervals: [], episode: false, lastAlertAt: null, seenAt: input.endAt };

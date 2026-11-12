@@ -52,19 +52,21 @@ export function attachNamedTaskThread(bb: BbPluginApi, store: TasksApiStore, thr
   }
 }
 
-const discoveries = new WeakMap<TasksApiStore, { until: number; pending: boolean; promise: Promise<boolean> }>();
+type Discovery = { at: number; ok: boolean; pending: boolean; dirty: boolean; promise: Promise<boolean> };
+const discoveries = new WeakMap<TasksApiStore, Discovery>();
+const subscribed = new WeakSet<TasksApiStore>();
 
-/** Share a bounded running-thread read across polling views; never scan idle thread history. */
-export function discoverRunningTaskThreads(bb: BbPluginApi, store: TasksApiStore): Promise<boolean> {
-  const cached = discoveries.get(store);
-  if (cached && (cached.pending || cached.until > Date.now())) return cached.promise;
+const REFRESH_MIN_MS = 10_000; // an event-invalidated snapshot is rebuilt at most this often
+const REFRESH_MAX_MS = 60_000; // safety net for changes with no event, e.g. a session renamed to carry a task key
+
+/** Runs one bounded scan of the running threads; the entry stays usable while it is in flight. */
+function refresh(bb: BbPluginApi, store: TasksApiStore, entry: Discovery): void {
   const linkedProjects = new Set(store.tasks.listProjects().map((project) => project.linkedBbProjectId).filter((id) => id !== null));
-  if (!linkedProjects.size) return Promise.resolve(true);
-  const entry = { until: 0, pending: true, promise: Promise.resolve(true) };
-  discoveries.set(store, entry);
+  entry.pending = true;
+  entry.dirty = false;
   entry.promise = (async () => {
     const signal = AbortSignal.timeout(2_000);
-    const running = await bb.sdk.threads.listRunning({ signal });
+    const running = linkedProjects.size ? await bb.sdk.threads.listRunning({ signal }) : [];
     for (let offset = 0; offset < running.length; offset += 200) {
       const ids = running.slice(offset, offset + 200).map((thread) => thread.id);
       const threads = await bb.sdk.threads.list({ threadIds: ids, limit: ids.length, includeHidden: true, signal });
@@ -74,6 +76,31 @@ export function discoverRunningTaskThreads(bb: BbPluginApi, store: TasksApiStore
     }
     return true;
   })().catch((error) => { bb.log.warn(`Could not discover task sessions: ${errorMessage(error)}`); return false; })
-    .finally(() => { entry.pending = false; entry.until = Date.now() + 10_000; });
-  return entry.promise;
+    // Without a linked project the entry expires at once: the next call rescans, which costs no SDK read.
+    .then((ok) => { entry.ok = ok; entry.pending = false; entry.at = linkedProjects.size ? Date.now() : 0; return ok; });
+}
+
+/**
+ * Share a bounded running-thread scan across polling views; never scan idle thread history.
+ * A good result is reused until a thread lifecycle event or the safety interval makes it stale; then it keeps
+ * being served while a refresh runs in the background. Only the first scan and a retry after a failure are awaited.
+ */
+export function discoverRunningTaskThreads(bb: BbPluginApi, store: TasksApiStore): Promise<boolean> {
+  if (!subscribed.has(store)) {
+    subscribed.add(store);
+    for (const type of ["thread.created", "thread.active", "thread.idle", "thread.failed", "thread.deleted", "thread.archived", "thread.unarchived"] as const)
+      bb.events.on(type, () => { const entry = discoveries.get(store); if (entry) entry.dirty = true; });
+  }
+  let entry = discoveries.get(store);
+  if (!entry) {
+    entry = { at: 0, ok: false, pending: false, dirty: false, promise: Promise.resolve(true) };
+    discoveries.set(store, entry);
+    refresh(bb, store, entry);
+    return entry.promise;
+  }
+  if (!entry.pending) {
+    const age = Date.now() - entry.at;
+    if (entry.ok ? age >= REFRESH_MAX_MS || (entry.dirty && age >= REFRESH_MIN_MS) : age >= REFRESH_MIN_MS) refresh(bb, store, entry);
+  }
+  return entry.ok ? (entry.pending ? Promise.resolve(true) : entry.promise) : entry.promise;
 }

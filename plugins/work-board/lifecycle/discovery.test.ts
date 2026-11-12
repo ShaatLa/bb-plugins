@@ -130,9 +130,54 @@ it("shares in-flight discovery and refreshes a title that appeared after the tur
   expect(f.store.tasks.listTaskThreads(f.task.id)).toEqual([]);
   f.thread.title = title;
   f.harness.sdk.stub("threads.listRunning", async () => [{ id: f.thread.id, hostId: null }]);
-  vi.setSystemTime(Date.now() + 10_001);
+  // No event: the snapshot is reused until the safety interval, then refreshed without blocking the caller.
+  vi.setSystemTime(Date.now() + 59_000);
   await discoverRunningTaskThreads(f.bb, f.store);
-  expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(1);
+  expect(f.store.tasks.listTaskThreads(f.task.id)).toEqual([]);
+  vi.setSystemTime(Date.now() + 1_001);
+  await discoverRunningTaskThreads(f.bb, f.store);
+  await vi.waitFor(() => expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(1));
+});
+
+it("reuses the snapshot until a lifecycle event, serving it while the refresh runs", async () => {
+  const f = setup();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const running = () => f.harness.sdk.callsTo("threads.listRunning").length;
+  await discoverRunningTaskThreads(f.bb, f.store);
+  vi.setSystemTime(Date.now() + 30_000);
+  await discoverRunningTaskThreads(f.bb, f.store);
+  expect(running()).toBe(1);
+  await f.harness.emitThreadEvent("thread.created", { thread: f.thread });
+  await discoverRunningTaskThreads(f.bb, f.store);
+  expect(running()).toBe(2);
+  await new Promise((resolve) => setTimeout(resolve, 10)); // let the background refresh settle
+  let release!: (value: { id: string; hostId: null }[]) => void;
+  f.harness.sdk.stub("threads.listRunning", () => new Promise((resolve) => { release = resolve; }));
+  vi.setSystemTime(Date.now() + 61_000);
+  await expect(discoverRunningTaskThreads(f.bb, f.store)).resolves.toBe(true); // not blocked on the pending refresh
+  release([]);
+});
+
+it("retries a failed discovery after 10 s instead of serving it for a minute", async () => {
+  const f = setup();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  f.harness.sdk.stub("threads.listRunning", async () => { throw new Error("offline"); });
+  expect(await discoverRunningTaskThreads(f.bb, f.store)).toBe(false);
+  expect(await discoverRunningTaskThreads(f.bb, f.store)).toBe(false);
+  expect(f.harness.sdk.callsTo("threads.listRunning")).toHaveLength(1);
+  f.harness.sdk.stub("threads.listRunning", async () => []);
+  vi.setSystemTime(Date.now() + 10_001);
+  expect(await discoverRunningTaskThreads(f.bb, f.store)).toBe(true);
+});
+
+it("measures SDK calls for 60 card-meta polls spaced 5 s apart", async () => {
+  const f = setup();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  for (let i = 0; i < 60; i++) { await f.meta(); vi.setSystemTime(Date.now() + 5_000); }
+  await vi.waitFor(() => expect(f.harness.sdk.callsTo("threads.listRunning").length).toBeGreaterThan(0));
+  const scans = f.harness.sdk.callsTo("threads.listRunning").length;
+  expect(scans).toBe(5); // was 30 with the 10 s window
+
 });
 
 it("batches running ids in groups of 200 without scanning project history", async () => {
