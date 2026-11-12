@@ -31,7 +31,12 @@ const css = `
 .ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
 .ar-lens{animation:ar-lens 2s ease-in-out infinite alternate}
 .ar-paper{animation:ar-paper 1.6s linear infinite}
-.ar-pebble{animation:ar-pebble .5s ease-out infinite}
+.ar-pebble{animation:ar-pebble 1s ease-out infinite}
+.ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1s ease-in-out infinite}
+.ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1s ease-in-out infinite}
+.ar-sweep{transform-box:view-box;transform-origin:12px 13px;animation:ar-sweep 1.8s ease-in-out infinite alternate}
+.ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
+.ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -46,7 +51,11 @@ const css = `
 @keyframes ar-wrench{from{transform:rotate(-28deg)}to{transform:rotate(22deg)}}
 @keyframes ar-lens{0%{transform:translate(-1px,1px)}50%{transform:translate(2px,-1px)}100%{transform:translate(5px,1px)}}
 @keyframes ar-paper{from{transform:translateY(0)}to{transform:translateY(2.4px)}}
-@keyframes ar-pebble{0%{transform:translate(0,0)}40%{transform:translate(2px,-1.6px)}100%{transform:translate(3.5px,0)}}
+@keyframes ar-pebble{0%,20%{transform:translate(0,0)}45%{transform:translate(2.6px,-2px)}70%,100%{transform:translate(4.5px,0)}}
+@keyframes ar-kick{0%{transform:rotate(10deg)}25%{transform:rotate(-55deg)}45%{transform:rotate(0)}70%,100%{transform:rotate(10deg)}}
+@keyframes ar-plant{0%,45%{transform:rotate(-8deg)}70%{transform:rotate(14deg)}100%{transform:rotate(-8deg)}}
+@keyframes ar-sweep{from{transform:rotate(-12deg)}to{transform:rotate(14deg)}}
+@keyframes ar-ask{from{transform:translateY(0);opacity:.5}to{transform:translateY(-1px);opacity:1}}
 `;
 
 const antenna = <line x1="12" y1="2.5" x2="12" y2="4" />;
@@ -61,8 +70,9 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // Walking in profile: legs scissor from one hip while the body bobs; the wait scene dribbles a pebble ahead.
 const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}<line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" /></g>
-  <line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" />
-  {pebble && <circle className="ar-pebble" cx="14.6" cy="21.3" r=".6" fill="currentColor" stroke="none" />}
+  {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
+    <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
+    : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className="ar-move">
   <g className="ar-right">{walker(pebble)}</g>
@@ -79,18 +89,20 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       {/* Sitting on a stool at a desk, typing on a desktop computer whose screen fills with lines. */}
       {sideHead}{sideBody}<line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="10.5" y1="18.6" x2="10.5" y2="21.5" />
       <path d="M12.4 18 H15.2 V21.5" /><line className="ar-type" x1="12" y1="13" x2="16.8" y2="14.4" />
-      <line x1="15.5" y1="15" x2="28" y2="15" /><line x1="27" y1="15" x2="27" y2="21.5" /><line x1="16.4" y1="14.6" x2="19.6" y2="14.6" />
-      <rect x="20" y="6" width="8" height="6" rx=".8" /><line x1="24" y1="12" x2="24" y2="15" />
-      <line className="ar-glow" x1="21.5" y1="7.8" x2="26" y2="7.8" /><line className="ar-glow b" x1="21.5" y1="9.4" x2="25" y2="9.4" /><line className="ar-glow c" x1="21.5" y1="11" x2="24" y2="11" />
+      <line x1="15.5" y1="15" x2="29" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="28" y1="15" x2="28" y2="21.5" />
+      <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" /><rect x="21.4" y="13.8" width="1.4" height=".8" rx=".4" />
+      <rect x="20" y="5.4" width="8.6" height="6.6" rx=".8" /><rect x="20.8" y="6.2" width="7" height="5" rx=".3" /><line x1="24.3" y1="12" x2="24.3" y2="13.6" /><line x1="22.8" y1="13.6" x2="25.8" y2="13.6" />
+      <rect x="23.6" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="25.3" cy="17.6" r=".3" fill="currentColor" stroke="none" />
+      <line className="ar-glow" x1="21.8" y1="7.6" x2="26.4" y2="7.6" /><line className="ar-glow b" x1="21.8" y1="9" x2="25.6" y2="9" /><line className="ar-glow c" x1="21.8" y1="10.4" x2="24.4" y2="10.4" />
     </g>;
     case 'terminal': return <>
       {/* Back to us at a wide screen; output scrolls up inside it. */}
-      <defs><clipPath id="ar-screen"><rect x="0.6" y="-5.4" width="22.8" height="8.3" /></clipPath></defs>
-      <rect x="0" y="-6" width="24" height="9.5" rx="1" />
-      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[16, 10, 19, 7, 13, 17, 9].map((end, i) => <line key={i} x1="2" y1={-3.5 + i * 2} x2={end} y2={-3.5 + i * 2} />)}</g></g>
-      {antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><rect x="8.5" y="12" width="7" height="6" rx="1" />
-      <line className="ar-tap l" x1="6.5" y1="13" x2="5" y2="10.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
-      <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+      <defs><clipPath id="ar-screen"><rect x="3.6" y="-2.4" width="18.8" height="8.8" /></clipPath></defs>
+      <rect x="3" y="-3" width="20" height="10" rx="1" />
+      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 7, 12, 16, 8].map((end, i) => <line key={i} x1="5" y1={-0.5 + i * 2} x2={end + 3} y2={-0.5 + i * 2} />)}</g></g>
+      <g transform="translate(-4 0)">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
+        <line className="ar-tap l" x1="6.5" y1="13" x2="5" y2="10.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
+        <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
       {/* In profile, hammering a nail into a block. */}
@@ -103,9 +115,12 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <g className="ar-wrench"><line x1="22" y1="14.5" x2="18.6" y2="16.4" /><path d="M23.4 13.4 A1.8 1.8 0 1 0 23.4 15.6" /></g>
     </>;
     case 'search': return <>
-      {/* Facing us, sweeping a magnifier from side to side. */}
-      {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" />
-      <g className="ar-lens"><line x1="17.5" y1="13" x2="19.6" y2="13.8" /><circle cx="21.6" cy="14.6" r="2.2" /><line x1="20.9" y1="13.6" x2="22.1" y2="13.3" /></g>
+      {/* In profile, sweeping a big magnifier (thick rim, long handle) over the ground; a question mark bobs above. */}
+      {sideHead}{sideBody}{standingLegs}<line x1="13" y1="21.5" x2="30" y2="21.5" />
+      <circle cx="21" cy="21" r=".35" fill="currentColor" stroke="none" /><circle cx="25.5" cy="21" r=".35" fill="currentColor" stroke="none" />
+      <g className="ar-sweep"><line x1="12" y1="13" x2="16.2" y2="15.6" /><line x1="16.2" y1="15.6" x2="18.2" y2="16.8" strokeWidth="1.6" />
+        <circle cx="20.4" cy="18.1" r="2.5" strokeWidth="1.3" /><path d="M19.1 17.2 A1.6 1.6 0 0 1 20.4 16.4" /></g>
+      <g className="ar-ask"><path d="M17.6 0.6 A1.3 1.3 0 1 1 18.9 1.9 V2.9" /><circle cx="18.9" cy="4.1" r=".3" fill="currentColor" stroke="none" /></g>
     </>;
     case 'read': return <>
       {/* In profile, leafing through a paper scroll that runs down to the floor and on. */}
