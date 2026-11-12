@@ -155,7 +155,7 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
     // A tagged script waking its own thread: bb's automation icon; a plugin that is not installed any more: its bare id.
     : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? [trigger.kind === 'other' ? 'Repeat' : 'Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
   if (!body && !time) return null;
-  return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{body && <span className="inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap">{body}</span>}{time && <span className="shrink-0 text-xs text-muted-foreground">{body && '· '}{time}</span>}</div>;
+  return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{(body || time) && <span className="inline-flex min-w-0 max-w-full items-baseline overflow-hidden whitespace-nowrap">{body}{time && <span className="shrink-0 whitespace-pre text-muted-foreground [&_time]:text-sm">{body && ' · '}{time}</span>}</span>}</div>;
 }
 // A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
