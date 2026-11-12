@@ -181,11 +181,12 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   for (const t of sidebarThreads) if (t.parentThreadId) children.set(t.parentThreadId, [...(children.get(t.parentThreadId) ?? []), t]);
   const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
+  const ownWorking = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).isWorking;
   // A contact with sub-sessions previews their tally instead of the last message: direct and deeper ones, working and idle.
   const subTally = (id: string) => {
     const direct = children.get(id)?.length ?? 0, all = descendants(id);
     if (!all.length) return null;
-    const working = all.filter(t => resolveThreadStatus({ thread: t, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).isWorking).length;
+    const working = all.filter(ownWorking).length;
     return [`${direct} sub${all.length > direct ? ` + ${all.length - direct} nested` : ''}`, working && `${working} working`, all.length > working && `${all.length - working} idle`].filter(Boolean).join(' · ');
   };
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
@@ -284,7 +285,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   const openThread = sidebarThreads.find(t => t.id === selected);
   const working = openThread ? statusOf(openThread).isWorking : false;
   // What the agent does right now picks the robot's scene (thinking, typing, terminal, fixing, searching, reading, waiting).
-  const activity = useAgentActivity(selected, working, visible);
+  // Its turn over while sub-sessions still run, the agent is waiting on them, not resting.
+  const ownActivity = useAgentActivity(selected, working, visible), activity = ownActivity === 'rest' && openThread && descendants(openThread.id).some(ownWorking) ? 'wait' : ownActivity;
   useEffect(() => { if (!selected) { setContext(null); return; } if (!visible) return; let active = true; const read = () => { void sdk.threads.context({ threadId: selected }).then(value => { if (active) setContext(value); }).catch(() => { if (active) setContext(null); }); }; read(); const timer = working ? setInterval(read, 30000) : undefined; return () => { active = false; clearInterval(timer); }; }, [sdk, selected, visible, working]);
   async function queueAction(action: () => Promise<unknown>) { try { await action(); setQueueVersion(n => n + 1); refresh(); } catch (e) { setQueueError(errorText(e)); } }
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
