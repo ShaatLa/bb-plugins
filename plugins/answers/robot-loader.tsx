@@ -43,7 +43,7 @@ export function RobotLoader({ className = 'h-5', label = 'Still working' }: { cl
         {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
         <circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" />
         <rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />
-        <circle className="ar-dot" cx="20.8" cy="-3.25" r=".5" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx="23" cy="-3.25" r=".5" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx="25.2" cy="-3.25" r=".5" fill="currentColor" stroke="none" />
+        <circle className="ar-dot" cx="20.8" cy="-3.25" r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx="23" cy="-3.25" r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx="25.2" cy="-3.25" r=".35" fill="currentColor" stroke="none" />
       </g>
     </g>
   </svg></span>;
