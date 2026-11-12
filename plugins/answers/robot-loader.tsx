@@ -23,7 +23,7 @@ const css = `
 .ar-leg.b,.ar-arm{animation:ar-step .5s ease-in-out infinite alternate-reverse}
 .ar-dot{animation:ar-dot 1.2s ease-in-out infinite;opacity:.2}
 .ar-dot.b{animation-delay:.2s}.ar-dot.c{animation-delay:.4s}
-.ar-type{transform-box:view-box;transform-origin:12px 13px;animation:ar-type .22s ease-in-out infinite alternate}
+.ar-type{transform-box:view-box;transform-origin:12px 13px;animation:ar-type .22s ease-in-out infinite alternate}.ar-type.b{animation-direction:alternate-reverse}
 .ar-glow{animation:ar-dot .9s ease-in-out infinite;opacity:.2}.ar-glow.b{animation-delay:.3s}.ar-glow.c{animation-delay:.6s}
 .ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
@@ -137,7 +137,8 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
       {/* Sitting on a stool at a desk, typing on a desktop computer turned three-quarters toward it (its near edge, to the right, taller), the screen filling with lines. */}
-      {sideHead}{sideBody}<line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="9.6" y1="18.6" x2="9.6" y2="21.5" /><line x1="12.9" y1="18.6" x2="12.9" y2="21.5" />
+      {/* The far arm reaches the keys from behind the (solid) body and taps out of step with the near one. */}
+      <line className="ar-type b" x1="12" y1="13.4" x2="17.8" y2="14.3" />{sideHead}<rect className="ar-solid" x="9.5" y="12" width="5" height="6" rx="1" /><line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="9.6" y1="18.6" x2="9.6" y2="21.5" /><line x1="12.9" y1="18.6" x2="12.9" y2="21.5" />
       <path d="M12.4 18 H15.2 V21.5" /><line className="ar-type" x1="12" y1="13" x2="16.8" y2="14.4" />
       <line x1="15.5" y1="15" x2="26.6" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="25.8" y1="15" x2="25.8" y2="21.5" />
       <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" />
