@@ -390,7 +390,8 @@ it('shows a sent quote reply in the conversation at once, before the thread even
   fireEvent.mouseUp(body);
   change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Quick note' } });
   fireEvent.click(slot.getByRole('button', { name: 'Send' }));
-  const bubble = await waitFor(() => slot.getAllByRole('status').find(node => /Quick note/.test(node.textContent ?? ''))!);
+  const bubble = await waitFor(() => slot.getByRole('list', { name: 'Sending' }));
+  expect(bubble.textContent).toContain('Quick note');
   expect(bubble.textContent).toContain('The answer');
 });
 it('renders stacked pools and preserves notes on uncertain delivery', async () => {
