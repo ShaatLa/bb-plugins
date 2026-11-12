@@ -102,7 +102,8 @@ export const evidenceSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("review"),
       recordedByThread: evidenceThreadSchema.nullable().optional(),
-      pr: z.number().int().positive(),
+      // Optional: sessions review a frozen head before its PR exists; the index then associates the head with a PR.
+      pr: z.number().int().positive().optional(),
       head: shaSchema,
       verdict: z.enum(["approve", "changes"]),
       thread: evidenceThreadSchema,
