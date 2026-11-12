@@ -4,9 +4,10 @@ import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plu
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
 // terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench; search — looks
-// around through a magnifier; read — pulls an endless paper scroll up from roll to roll; wait — walks to and fro, kicking a pebble.
+// around through a magnifier; read — pulls an endless paper scroll up from roll to roll; wait — walks to and fro, kicking a pebble;
+// rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising.
 // With reduced motion bb's own spinner shows instead.
-export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait';
+export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait' | 'rest';
 
 // What the open chat's agent is doing now (see useAgentActivity); robots without their own activity follow it.
 export const ActivityContext = createContext<Activity>('think');
@@ -39,6 +40,8 @@ const css = `
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-pull{transform-box:view-box;transform-origin:12px 13px;animation:ar-pull .8s ease-in-out infinite}
+.ar-breathe{animation:ar-bob 1.6s ease-in-out infinite alternate}
+.ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
@@ -46,6 +49,7 @@ const css = `
 @keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
 @keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
 @keyframes ar-pull{0%,100%{transform:rotate(0)}50%{transform:rotate(-14deg)}}
+@keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -149,6 +153,15 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <rect className="ar-solid" x="16.2" y="7" width="7.8" height="1.3" rx=".65" /><rect className="ar-solid" x="16.2" y="18.7" width="7.8" height="1.3" rx=".65" />
     </>;
     case 'wait': return pacing(false, true);
+    case 'rest': return <>
+      {/* On its back on a couch, eyes shut, chest rising and falling; Zzz drift up from the head. */}
+      <rect x="1" y="10" width="24" height="6" rx="1.2" /><line x1="2" y1="19.5" x2="2" y2="21.5" /><line x1="24" y1="19.5" x2="24" y2="21.5" />
+      <g className="ar-breathe"><line x1="0.9" y1="11.9" x2="2.4" y2="11.9" /><rect className="ar-solid" x="2.4" y="8.6" width="7" height="6.6" rx="2" /><path d="M4.4 10.6 Q5.3 11.4 6.2 10.6" />
+        <rect className="ar-solid" x="10" y="10.2" width="6.4" height="5" rx="1" /><line x1="11" y1="10.2" x2="15" y2="9.4" /></g>
+      <line x1="16.4" y1="13" x2="23" y2="13" /><line x1="16.4" y1="14.3" x2="23" y2="14.3" />
+      <rect className="ar-solid" x="0" y="15.4" width="26" height="4.1" rx="1" /><rect className="ar-solid" x="-1" y="13" width="3" height="6.5" rx="1" /><rect className="ar-solid" x="24" y="13" width="3" height="6.5" rx="1" />
+      {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M7 5 h1.4 l-1.4 1.4 h1.4" />)}
+    </>;
     default: return pacing(true, false);
   }
 }

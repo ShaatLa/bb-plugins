@@ -23,11 +23,11 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
 }
 
 /** What a working agent does now, from its newest top-level events (newest first): the open item's scene, thinking
- *  between items, waiting once the turn is over (children, background work). */
+ *  between items, resting once the turn is over while background work still runs. */
 export function activityOf(events: Row[]): Activity {
   for (const event of events) {
     if (event.data?.parentToolCallId) continue;
-    if (event.type === 'turn/completed') return 'wait';
+    if (event.type === 'turn/completed') return 'rest';
     if (event.type === 'turn/started' || event.type === 'item/completed') return 'think';
     if (event.type === 'item/started' && event.data?.item) return sceneOf(event.data.item);
   }

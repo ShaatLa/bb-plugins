@@ -11,6 +11,6 @@ it.each([
 it('reads the newest top-level event: an open item, thinking between items, waiting after the turn', () => {
   expect(activityOf([started({ type: 'commandExecution', command: 'npm run build' }), { type: 'item/completed', data: {} }])).toBe('terminal');
   expect(activityOf([{ type: 'item/completed', data: {} }, started({ type: 'fileChange' })])).toBe('think');
-  expect(activityOf([{ type: 'turn/completed', data: {} }])).toBe('wait');
+  expect(activityOf([{ type: 'turn/completed', data: {} }])).toBe('rest');
   expect(activityOf([{ type: 'item/started', data: { item: { type: 'fileRead' }, parentToolCallId: 'x' } }, started({ type: 'agentMessage' })])).toBe('write');
 });
