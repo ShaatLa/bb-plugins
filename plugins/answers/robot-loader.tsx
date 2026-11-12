@@ -4,7 +4,7 @@ import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plu
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
 // terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench; search — looks
-// around through a magnifier; read — pulls an endless paper scroll up from roll to roll; wait — walks to and fro, kicking a pebble;
+// around through a magnifier; read — faces us over an open book, turning its pages; wait — walks to and fro, kicking a pebble;
 // rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising.
 // With reduced motion bb's own spinner shows instead.
 export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait' | 'rest';
@@ -30,7 +30,6 @@ const css = `
 .ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer .7s cubic-bezier(.6,0,.9,.5) infinite}
 .ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
-.ar-paper{animation:ar-paper 1.6s linear infinite}
 .ar-pebble{animation:ar-pebble 1.5s ease-in-out infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1.5s ease-in-out infinite}
 .ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1.5s ease-in-out infinite}
@@ -39,7 +38,7 @@ const css = `
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
-.ar-pull{transform-box:view-box;transform-origin:12px 13px;animation:ar-pull .8s ease-in-out infinite}
+.ar-flip{transform-box:view-box;transform-origin:12px 0;animation:ar-flip 2.4s ease-in-out infinite}
 .ar-breathe{animation:ar-bob 1.6s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-solid{fill:var(--background,#fff)}
@@ -48,7 +47,7 @@ const css = `
 @keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
 @keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
 @keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
-@keyframes ar-pull{0%,100%{transform:rotate(0)}50%{transform:rotate(-14deg)}}
+@keyframes ar-flip{0%,55%{transform:scaleX(1)}90%,100%{transform:scaleX(-1)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
@@ -62,7 +61,6 @@ const css = `
 @keyframes ar-tap{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-40deg)}70%{transform:rotate(28deg)}100%{transform:rotate(-40deg)}}
 @keyframes ar-wrench{from{transform:rotate(-28deg)}to{transform:rotate(22deg)}}
-@keyframes ar-paper{from{transform:translateY(0)}to{transform:translateY(-2.4px)}}
 @keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(2.6px,-2.2px)}45%{transform:translate(5px,0)}100%{transform:translate(0,0)}}
 @keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
 @keyframes ar-plant{0%{transform:rotate(0)}18%{transform:rotate(8deg)}32%{transform:rotate(0)}50%{transform:rotate(-20deg)}67%{transform:rotate(20deg)}84%{transform:rotate(-20deg)}100%{transform:rotate(0)}}
@@ -144,14 +142,14 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>
       </g>;
     }
-    case 'read': return <>
-      {/* In profile, pulling an endless paper scroll up from its bottom roll onto the top one; the lines run upward. */}
-      {sideHead}{sideBody}{standingLegs}<line className="ar-pull" x1="12" y1="13" x2="16.8" y2="14.6" />
-      <line x1="16.8" y1="8.2" x2="16.8" y2="18.8" /><line x1="23.4" y1="8.2" x2="23.4" y2="18.8" />
-      <defs><clipPath id="ar-paper"><rect x="16.8" y="8.2" width="6.6" height="10.6" /></clipPath></defs>
-      <g clipPath="url(#ar-paper)"><g className="ar-paper">{[0, 1, 2, 3, 4, 5].map(i => <line key={i} x1="18.2" y1={9.4 + i * 2.4} x2={i % 2 ? 20.8 : 22} y2={9.4 + i * 2.4} />)}</g></g>
-      <rect className="ar-solid" x="16.2" y="7" width="7.8" height="1.3" rx=".65" /><rect className="ar-solid" x="16.2" y="18.7" width="7.8" height="1.3" rx=".65" />
-    </>;
+    case 'read': {
+      // Facing us behind an open book, eyes down on it; every couple of seconds the right page turns over to the left.
+      const page = (side: 1 | -1) => <><path d={`M12 12.6 Q${12 + side * 3.5} 11.6 ${12 + side * 7} 12.6 V18.4 Q${12 + side * 3.5} 17.4 12 18.4 Z`} className="ar-solid" />
+        {[14, 15.4, 16.8].map(y => <line key={y} x1={12 + side * 1.4} y1={y} x2={12 + side * (y === 16.8 ? 4.4 : 5.6)} y2={y} strokeWidth=".6" />)}</>;
+      return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" />
+        <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+        {page(-1)}{page(1)}<g className="ar-flip">{page(1)}</g></>;
+    }
     case 'wait': return pacing(false, true);
     case 'rest': return <>
       {/* On its back on a couch, eyes shut, chest rising and falling; Zzz drift up from the head. */}
