@@ -169,19 +169,25 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   const key = items[0]!.id, [open, setOpenState] = useState(() => openGroups().includes(key)), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
-  const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it. Opening it
-  // scrolls its top into view (below the chat's sticky header), so the first update reads without scrolling back up.
-  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="scroll-mt-16 py-3">
+  // keeps the latest update where its preview was; the earlier ones open above it, like older messages in a chat.
+  const preview = useRef<HTMLParagraphElement>(null);
+  const keepLatestAt = (top: number | undefined) => {
+    const latest = row.current?.querySelector('ul')?.lastElementChild as HTMLElement | null | undefined; if (top === undefined || !latest) return;
+    let box = row.current?.parentElement ?? null; while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+    if (box) box.scrollTop += latest.getBoundingClientRect().top - top;
+  };
+  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
     <div className="overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
-      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { setOpen(!open); if (!open) requestAnimationFrame(() => row.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })); }} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
+      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { if (open) { setOpen(false); return; } const at = preview.current?.getBoundingClientRect().top; setOpen(true); requestAnimationFrame(() => keepLatestAt(at)); }} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
         <Icon name="ListTodo" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">Background updates</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span>
         <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="line-clamp-2 break-words border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="line-clamp-2 break-words border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{previewText}</p>}
     </div>
   </li>;
 }
