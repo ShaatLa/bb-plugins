@@ -159,7 +159,7 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{(body || time) && <span className="inline-flex min-w-0 max-w-full items-baseline overflow-hidden whitespace-nowrap">{body}{time && <span className="shrink-0 whitespace-pre text-muted-foreground [&_time]:text-sm">{body && ' · '}{time}</span>}</span>}</div>;
 }
-// A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a one-line preview of the
+// A run of agent updates that ask nothing, collapsed like bb's "N threads updated" batch row, with a two-line preview of the
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
 const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
 const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
@@ -180,7 +180,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="truncate border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="line-clamp-2 break-words border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{preview}</p>}
     </div>
   </li>;
 }
