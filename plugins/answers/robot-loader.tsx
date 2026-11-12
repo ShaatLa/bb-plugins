@@ -29,6 +29,7 @@ const css = `
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-pebble{animation:ar-pebble 2.2s ease-in-out infinite}
+.ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 2.2s linear infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 2.2s ease-in-out infinite}
 .ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 2.2s ease-in-out infinite}
 .ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
@@ -49,6 +50,7 @@ const css = `
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
 @keyframes ar-spark{0%,19%{opacity:0;transform:scale(.4)}21%{opacity:1;transform:scale(1)}36%,100%{opacity:0;transform:scale(1.3)}}
+@keyframes ar-spin{0%,15%{transform:rotate(0)}45%,100%{transform:rotate(360deg)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -82,7 +84,7 @@ const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
     : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
-    <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
+    <g className="ar-pebble"><path className="ar-spin" d="M13.7 21.15 Q13.6 20.5 14.45 20.35 Q15.45 20.3 15.6 20.9 Q15.65 21.5 14.75 21.55 Q13.8 21.6 13.7 21.15 Z" fill="currentColor" stroke="none" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
