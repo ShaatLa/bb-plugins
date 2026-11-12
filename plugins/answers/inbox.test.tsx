@@ -120,6 +120,12 @@ it('spins the usage refresh icon until a manual refresh lands', async () => {
   await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('true')); expect(button.querySelector('.animate-spin')).not.toBeNull();
   land(await usageLimits.getMockImplementation()!()); await waitFor(() => expect(slot.getByRole('button', { name:'Refresh usage' }).getAttribute('aria-busy')).toBe('false'));
 });
+it('shows the robot at the end of the chat while the agent works with nothing of the owner pending', async () => {
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[] } }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Question one');
+  expect(slot.getByRole('img', { name:'The agent is working' })).toBeTruthy();
+});
 it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   const save = vi.fn(() => ({ id:'ans_saved', created:true })), writeText = vi.fn(async () => {});
   Object.assign(navigator, { clipboard: { writeText } });
