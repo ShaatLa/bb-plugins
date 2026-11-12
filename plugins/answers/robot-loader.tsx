@@ -35,7 +35,7 @@ const css = `
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
-.ar-leg.slow{animation-duration:.7s}
+.ar-leg.slow,.ar-arm.slow{animation-duration:.65s;animation-delay:.374s}
 .ar-down{animation:ar-down 13s ease-in-out infinite}.ar-walking{animation:ar-walking 13s step-end infinite}.ar-kicking{animation:ar-kicking 13s step-end infinite;opacity:0}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 13s ease-in-out infinite}
 .ar-pebble{transform:translate(8.5px,20.7px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
@@ -51,13 +51,13 @@ const css = `
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
 @keyframes ar-spark{0%,19%{opacity:0;transform:scale(.4)}21%{opacity:1;transform:scale(1)}36%,100%{opacity:0;transform:scale(1.3)}}
-@keyframes ar-down{0%,5.375%{transform:translateY(0)}6.875%,9.875%{transform:translateY(1.1px)}11.375%,51.375%{transform:translateY(0)}52.875%,55.875%{transform:translateY(1.1px)}57.375%,100%{transform:translateY(0)}}
-@keyframes ar-walking{0%{opacity:1}5.375%{opacity:0}10.375%{opacity:1}51.375%{opacity:0}56.375%{opacity:1}}
-@keyframes ar-kicking{0%{opacity:0}5.375%{opacity:1}10.375%{opacity:0}51.375%{opacity:1}56.375%{opacity:0}}
-@keyframes ar-kick{0%,5.375%{transform:rotate(10deg)}7.875%{transform:rotate(-55deg)}10.375%,51.375%{transform:rotate(10deg)}53.875%{transform:rotate(-55deg)}56.375%,100%{transform:rotate(10deg)}}
-@keyframes ar-pebble{0%,7.875%{transform:translate(8.5px,20.7px)}12.475%,53.875%{transform:translate(15.5px,20.7px)}58.475%,100%{transform:translate(8.5px,20.7px)}}
-@keyframes ar-hop{0%,7.875%{transform:translateY(0);animation-timing-function:ease-out}10.175%{transform:translateY(-2.2px);animation-timing-function:ease-in}12.475%,53.875%{transform:translateY(0);animation-timing-function:ease-out}56.175%{transform:translateY(-2.2px);animation-timing-function:ease-in}58.475%,100%{transform:translateY(0)}}
-@keyframes ar-spin{0%,7.875%{transform:rotate(0)}12.475%,53.875%{transform:rotate(360deg)}58.475%,100%{transform:rotate(0)}}
+@keyframes ar-down{0%,5.377%{transform:translateY(0)}6.877%,9.877%{transform:translateY(1.1px)}11.377%,50.377%{transform:translateY(0)}51.877%,54.877%{transform:translateY(1.1px)}56.377%,100%{transform:translateY(0)}}
+@keyframes ar-walking{0%{opacity:1}5.377%{opacity:0}10.377%{opacity:1}50.377%{opacity:0}55.377%{opacity:1}}
+@keyframes ar-kicking{0%{opacity:0}5.377%{opacity:1}10.377%{opacity:0}50.377%{opacity:1}55.377%{opacity:0}}
+@keyframes ar-kick{0%,5.377%{transform:rotate(0)}7.877%{transform:rotate(-55deg)}10.377%,50.377%{transform:rotate(0)}52.877%{transform:rotate(-55deg)}55.377%,100%{transform:rotate(0)}}
+@keyframes ar-pebble{0%,7.877%{transform:translate(8.5px,20.7px)}12.477%,52.877%{transform:translate(15.5px,20.7px)}57.477%,100%{transform:translate(8.5px,20.7px)}}
+@keyframes ar-hop{0%,7.877%{transform:translateY(0);animation-timing-function:ease-out}10.177%{transform:translateY(-2.2px);animation-timing-function:ease-in}12.477%,52.877%{transform:translateY(0);animation-timing-function:ease-out}55.177%{transform:translateY(-2.2px);animation-timing-function:ease-in}57.477%,100%{transform:translateY(0)}}
+@keyframes ar-spin{0%,7.877%{transform:rotate(0)}12.477%,52.877%{transform:rotate(360deg)}57.477%,100%{transform:rotate(0)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -84,13 +84,15 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin. The wait scene
 // walks slower (ar-quick: 13 s a lap, a quick turn at the right end; at the left end it checks its watch) past a pebble lying on the ground: once
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
-// the walk back will meet it. Kick times follow from the walk: rightward at 7.875% (x = -5, the pebble at 8.5), leftward
-// at 53.875% (x = 5, the pebble at 15.5); each walk takes 42% of the lap.
+// the walk back will meet it. Kick times follow from the walk: rightward at 7.877% (x = -5, the pebble at 8.5), leftward
+// at 52.877% (x = 5.4, the pebble at 15.5); each walk takes 42% of the lap. Legs and the arm swing together in .65 s
+// half-strides phased so the legs pass vertical exactly as each kick window opens and closes (the kicking pair starts and
+// ends vertical too), so a kick never cuts a step short.
 const walker = (pebble: boolean) => <>
-  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></> : sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
+  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></> : sideHead}{sideBody}{pebble ? <line className="ar-arm slow" x1="12" y1="13" x2="12" y2="16.5" />
     : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
-    <g className="ar-kicking"><line x1="12" y1="18" x2="11.2" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
+    <g className="ar-kicking"><line x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
