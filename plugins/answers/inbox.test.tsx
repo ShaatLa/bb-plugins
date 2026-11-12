@@ -115,6 +115,13 @@ it('shows one reply that answers an older question and a new one once, echoing t
   const home = document.querySelector('[data-history-ids="ans_new ans_old:answer"]')!;
   expect(home.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question');
 });
+it('notes the files of an echoed question on its bubble', async () => {
+  const older = { ...base, id:'ans_old', question:'Older question', questionSeq:1, attachments:[{ type:'localFile' as const, path:'a.log', name:'a.log' }, { type:'localFile' as const, path:'b.log', name:'b.log' }], answer:'Shared reply', answerSeq:50, createdAt:asked, answeredAt:asked + 40 * minute };
+  const newer = { ...base, id:'ans_new', question:'New question', questionSeq:5, answer:'Shared reply', answerSeq:50, createdAt:asked + 39 * minute, answeredAt:asked + 40 * minute };
+  const { slot, recipients } = setup({ list: () => ({ items:[newer, older, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('New question');
+  expect(document.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question2 files');
+});
 it('spins the usage refresh icon until a manual refresh lands', async () => {
   let land: (value: unknown) => void = () => {};
   const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:10, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } }));

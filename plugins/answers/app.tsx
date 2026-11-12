@@ -25,6 +25,12 @@ const emptyCopy: Record<View, [IconName, string, string]> = {
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+// The echo of a question shows no files; a short note says they are there (on the question itself above).
+function AttachmentNote({ attachments }: { attachments: ItemAttachment[] }) {
+  const images = attachments.filter(attachment => attachment.type === 'localImage').length, files = attachments.length - images;
+  const text = [images && `${images} ${images === 1 ? 'image' : 'images'}`, files && `${files} ${files === 1 ? 'file' : 'files'}`].filter(Boolean).join(', ');
+  return <span className="mt-1 flex items-center gap-1 text-xs"><Icon name="Paperclip" aria-hidden className="size-3.5" />{text}</span>;
+}
 function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachment[]; projectId: string | null }) {
   const sdk = useSdk(), [urls, setUrls] = useState<Record<number, string>>({}), [open, setOpen] = useState<number | null>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -48,7 +54,8 @@ function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachme
     });
     targets.forEach(target => { if (observer) observer.observe(target); else read(Number(target.dataset.answersImage)); });
     return () => { active = false; observer?.disconnect(); loaded.forEach(url => URL.revokeObjectURL(url)); };
-  }, [attachments, projectId, sdk]);
+  // Keyed by content: a refetch hands over an equal but new array, which must not revoke the images already shown.
+  }, [JSON.stringify(attachments), projectId, sdk]);
   const download = async (attachment: ItemAttachment) => {
     const owner = attachment.sourceProjectId ?? projectId;
     if (!owner) return;
@@ -209,7 +216,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
   const { refresh } = experimental_useRpcRefresh();
   const group = members?.length ? members : [item], last = group.at(-1)!;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
-  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground")} block cursor-pointer text-left`} onClick={() => onJump?.(member.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{member.question}</span></button>;
+  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground")} block cursor-pointer text-left`} onClick={() => onJump?.(member.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{member.question}</span>{member.attachments.length > 0 && <AttachmentNote attachments={member.attachments} />}</button>;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | 'robot' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null), robotButton = useRef<HTMLButtonElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
