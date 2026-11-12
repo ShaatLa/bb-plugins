@@ -28,14 +28,14 @@ const css = `
 .ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
-.ar-pebble{animation:ar-pebble 2.2s ease-in-out infinite}
+.ar-pebble{animation:ar-pebble 2.2s linear infinite}.ar-hop{animation:ar-hop 2.2s infinite}
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 2.2s linear infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 2.2s ease-in-out infinite}
 .ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 2.2s ease-in-out infinite}
 .ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
-.ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:11s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
+.ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -62,7 +62,8 @@ const css = `
 @keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-40deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(14deg);animation-timing-function:ease-in-out}100%{transform:rotate(-40deg)}}
-@keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(1.9px,-1.8px)}45%{transform:translate(3.4px,0)}100%{transform:translate(0,0)}}
+@keyframes ar-pebble{0%{transform:translateX(.88px)}15%{transform:translateX(0)}45%{transform:translateX(4.12px)}100%{transform:translateX(.88px)}}
+@keyframes ar-hop{0%,15%{transform:translateY(0);animation-timing-function:ease-out}30%{transform:translateY(-1.8px);animation-timing-function:ease-in}45%,100%{transform:translateY(0)}}
 @keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
 @keyframes ar-plant{0%{transform:rotate(0)}18%{transform:rotate(8deg)}32%{transform:rotate(0)}50%{transform:rotate(-20deg)}67%{transform:rotate(20deg)}84%{transform:rotate(-20deg)}100%{transform:rotate(0)}}
 @keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
@@ -78,13 +79,15 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
+// The pebble lies still on the ground between kicks: relative to the walker it drifts back at exactly the walking speed
+// (16 units over 46% of 13 s), and each kick carries it as far as the walker goes in one 2.2 s step cycle.
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin; the wait scene dribbles a pebble ahead and turns
 // back quickly (ar-quick) instead of pausing to face us.
 const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
     : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
-    <g className="ar-pebble"><path className="ar-spin" d="M13.7 21.15 Q13.6 20.5 14.45 20.35 Q15.45 20.3 15.6 20.9 Q15.65 21.5 14.75 21.55 Q13.8 21.6 13.7 21.15 Z" fill="currentColor" stroke="none" /></g></>
+    <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M13.7 21.15 Q13.6 20.5 14.45 20.35 Q15.45 20.3 15.6 20.9 Q15.65 21.5 14.75 21.55 Q13.8 21.6 13.7 21.15 Z" fill="currentColor" stroke="none" /></g></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
