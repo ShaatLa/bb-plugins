@@ -39,7 +39,7 @@ const css = `
 .ar-leg.slow{animation-duration:.7s}
 .ar-walking{animation:ar-walking 13s step-end infinite}.ar-kicking{animation:ar-kicking 13s step-end infinite;opacity:0}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 13s ease-in-out infinite}
-.ar-pebble{transform:translate(8.5px,20.95px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
+.ar-pebble{transform:translate(8.5px,20.7px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 13s ease-out infinite}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
@@ -54,7 +54,7 @@ const css = `
 @keyframes ar-walking{0%{opacity:1}6.1%{opacity:0}11.1%{opacity:1}56.1%{opacity:0}61.1%{opacity:1}}
 @keyframes ar-kicking{0%{opacity:0}6.1%{opacity:1}11.1%{opacity:0}56.1%{opacity:1}61.1%{opacity:0}}
 @keyframes ar-kick{0%,6.1%{transform:rotate(10deg)}8.6%{transform:rotate(-55deg)}11.1%,56.1%{transform:rotate(10deg)}58.6%{transform:rotate(-55deg)}61.1%,100%{transform:rotate(10deg)}}
-@keyframes ar-pebble{0%,8.6%{transform:translate(8.5px,20.95px)}13.2%,58.6%{transform:translate(15.5px,20.95px)}63.2%,100%{transform:translate(8.5px,20.95px)}}
+@keyframes ar-pebble{0%,8.6%{transform:translate(8.5px,20.7px)}13.2%,58.6%{transform:translate(15.5px,20.7px)}63.2%,100%{transform:translate(8.5px,20.7px)}}
 @keyframes ar-hop{0%,8.6%{transform:translateY(0);animation-timing-function:ease-out}10.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}13.2%,58.6%{transform:translateY(0);animation-timing-function:ease-out}60.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}63.2%,100%{transform:translateY(0)}}
 @keyframes ar-spin{0%,8.6%{transform:rotate(0)}13.2%,58.6%{transform:rotate(360deg)}63.2%,100%{transform:rotate(0)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
@@ -93,7 +93,7 @@ const walker = (pebble: boolean) => <>
     <g className="ar-kicking"><line x1="12" y1="18" x2="11.2" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
-const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-.9 .2 Q-1 -.45 -.15 -.6 Q.85 -.65 1 -.05 Q1.05 .55 .15 .6 Q-.8 .65 -.9 .2 Z" fill="currentColor" stroke="none" /></g></g>;
+const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
   <g className="ar-right">{walker(pebble)}</g>
   <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
