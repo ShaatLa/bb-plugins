@@ -38,9 +38,20 @@ const PERIOD: Record<string, string> = { weekly: '7d', 'five-hour': '5h', daily:
 export const windowLabel = (w: Window) => { const label = w.label.replace(/\u2063/g, '').trim(), period = w.kind ? PERIOD[w.kind] : undefined; return !period || label.startsWith(period) ? label : /limit/i.test(label) ? period : `${period} · ${label}`; };
 
 // Limit windows that reset (local models have none). The cached value paints immediately when revealed.
+const USAGE_CACHE = 'bb-plugin-answers:page:usage-cache';
+// The page mounts with the cached usage so the panel shows at once; the always-mounted nav badge keeps that cache fresh
+// while the page is away, so returning to it no longer flashes numbers from the last visit.
+export function useUsageKeeper() {
+  const sdk = useSdk(), enabled = (useSettings().values?.usage ?? 'auto') !== 'never';
+  useEffect(() => {
+    if (!enabled) return;
+    const keep = () => { if (document.visibilityState === 'visible') void Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { try { localStorage.setItem(USAGE_CACHE, JSON.stringify(data)); } catch { /* storage unavailable */ } }).catch(() => {}); };
+    keep(); const timer = setInterval(keep, 120000); return () => clearInterval(timer);
+  }, [sdk, enabled]);
+}
 function useUsage(enabled: boolean) {
   // bb unmounts the page when switching plugins; the last numbers show at once while a fresh load runs.
-  const sdk = useSdk(), [usage, setUsage] = useStoredState<Record<string, Provider> | null>('bb-plugin-answers:page:usage-cache', null), [tick, setTick] = useState(0), [reloading, setReloading] = useState(false);
+  const sdk = useSdk(), [usage, setUsage] = useStoredState<Record<string, Provider> | null>(USAGE_CACHE, null), [tick, setTick] = useState(0), [reloading, setReloading] = useState(false);
   useEffect(() => {
     if (!enabled) return;
     let live = true;

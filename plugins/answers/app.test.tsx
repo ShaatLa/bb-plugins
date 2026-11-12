@@ -729,3 +729,14 @@ it('loads earlier messages when the top comes into view, with a spinner instead 
     view.rerender(<EarlierLoader loading onLoad={onLoad} />); expect(view.getByLabelText('Loading earlier messages')).toBeTruthy();
   } finally { vi.unstubAllGlobals(); }
 });
+
+it('keeps the usage cache fresh from the always-mounted nav badge', async () => {
+  localStorage.removeItem('bb-plugin-answers:page:usage-cache');
+  const app = await loadPluginApp(() => import('./app'));
+  const useBadge = app.navPanels[0]!.experimental_useBadge!;
+  function Badge() { useBadge(); return null; }
+  const fresh = { codex: { status: 'ok', windows: [{ label: 'Weekly limit', usedPercent: 42, resetsAt: null }] } };
+  const slot = renderSlot({ component: Badge }, {}, { rpc: { counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) }, sdk: { system: { usageLimits: async () => fresh } } } as any);
+  await waitFor(() => expect(JSON.parse(localStorage.getItem('bb-plugin-answers:page:usage-cache') ?? 'null')).toEqual(fresh));
+  slot.unmount();
+});
