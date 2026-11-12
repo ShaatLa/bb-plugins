@@ -28,13 +28,13 @@ const css = `
 .ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
-.ar-pebble{animation:ar-pebble 1.5s ease-in-out infinite}
-.ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1.5s ease-in-out infinite}
-.ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1.5s ease-in-out infinite}
+.ar-pebble{animation:ar-pebble 2.2s ease-in-out infinite}
+.ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 2.2s ease-in-out infinite}
+.ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 2.2s ease-in-out infinite}
 .ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
-.ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
+.ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:11s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -60,7 +60,7 @@ const css = `
 @keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-40deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(14deg);animation-timing-function:ease-in-out}100%{transform:rotate(-40deg)}}
-@keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(2.6px,-2.2px)}45%{transform:translate(5px,0)}100%{transform:translate(0,0)}}
+@keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(1.9px,-1.8px)}45%{transform:translate(3.4px,0)}100%{transform:translate(0,0)}}
 @keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
 @keyframes ar-plant{0%{transform:rotate(0)}18%{transform:rotate(8deg)}32%{transform:rotate(0)}50%{transform:rotate(-20deg)}67%{transform:rotate(20deg)}84%{transform:rotate(-20deg)}100%{transform:rotate(0)}}
 @keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
