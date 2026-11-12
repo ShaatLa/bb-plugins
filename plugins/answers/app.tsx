@@ -200,15 +200,17 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
   const group = members?.length ? members : [item], last = group.at(-1)!;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground")} block cursor-pointer text-left`} onClick={() => onJump?.(member.id)}><span className="line-clamp-2 whitespace-pre-wrap break-words">{member.question}</span></button>;
-  const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | 'robot' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null), robotButton = useRef<HTMLButtonElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
   useEffect(() => {
     if (!menu) return;
-    const place = () => { const r = moreButton.current?.getBoundingClientRect(); if (r) setMenuAt(r.top > 240 ? { left: r.left, bottom: window.innerHeight - r.top + 4 } : { left: r.left, top: r.bottom + 4 }); };
-    const close = (event: Event) => { if (!menuBox.current?.contains(event.target as Node)) setMenu(null); };
-    place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place);
-    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); setMenuAt(null); };
+    // The robot opens its own one-item menu under itself; the rest follow the More button.
+    const anchor = menu === 'robot' ? robotButton.current : moreButton.current;
+    const place = () => { const r = anchor?.getBoundingClientRect(); if (r) setMenuAt(r.top > 240 ? { left: r.left, bottom: window.innerHeight - r.top + 4 } : { left: r.left, top: r.bottom + 4 }); };
+    const close = (event: Event) => { if (!menuBox.current?.contains(event.target as Node) && !(event.type === 'pointerdown' && anchor?.contains(event.target as Node))) setMenu(null); };
+    place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place); document.addEventListener('pointerdown', close, true);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); document.removeEventListener('pointerdown', close, true); setMenuAt(null); };
   }, [menu]);
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const [expanded, setExpanded] = useState(false);
@@ -270,6 +272,9 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
     : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
+  // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
+  const robot = chat && item.kind === 'mine' && item.dismissedAt === null && ((item.status === 'waiting' && item.failedAt === null) || (item.status === 'deferred' && !!item.interim));
+  const robotProps = { ref: robotButton, type: 'button' as const, 'aria-haspopup': 'menu' as const, 'aria-expanded': menu === 'robot', className: 'cursor-pointer rounded-md', onClick: () => setMenu(menu === 'robot' ? null : 'robot') };
   // bb's own working spinner while the answer is pending; a failed turn shows its own notice instead.
   const replyButton = item.kind !== 'saved' && item.kind !== 'update' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>;
   const status = item.status === 'waiting' && item.failedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center text-muted-foreground"><RobotLoader label="Waiting for the answer" /></span> : item.status;
@@ -300,7 +305,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
     {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
     {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot says the work goes on; afterwards a clock marks the reply as interim. */}
-      {item.status === 'deferred' ? <span title="Interim reply: the agent is still working and will report back" className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100"><RobotLoader className="h-8" label="Interim reply, work in progress" /></span>
+      {item.status === 'deferred' ? <span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span>
         : <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</div>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
@@ -308,19 +313,20 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {item.taskKey && <UrlLink href={`/plugins/work-board/work-board/task/${encodeURIComponent(item.taskKey)}`} className="mx-2 text-xs">{item.taskKey}</UrlLink>}
     </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
-    {chat && part !== 'question' && item.status === 'waiting' && item.failedAt === null && <div title="Waiting for the answer" className="px-2 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100"><RobotLoader className="h-8" label="Waiting for the answer" /></div>}
+    {chat && part !== 'question' && item.status === 'waiting' && item.failedAt === null && <div className="px-2 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></div>}
     {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
       {item.kind === 'for_me' && replyButton}
       {item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
       <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && !menuBox.current?.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
         <Button ref={moreButton} size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
-        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); moreButton.current?.focus(); } }}>
-          {menu === 'main' ? <>
+        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current && event.relatedTarget !== robotButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); (menu === 'robot' ? robotButton : moreButton).current?.focus(); } }}>
+          {menu === 'robot' ? dismiss && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setDismissed', { id: last.id, dismissed: true })); }}><Icon name={dismiss[1]} aria-hidden className="size-4 text-muted-foreground" />{dismiss[0]}</button>
+          : menu === 'main' ? <>
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setPinned', { id: last.id, pinned: !item.pinned })); }}>{item.pinned ? 'Remove from Saved' : 'Save'}</button>}
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('snooze')}>Remind later</button>}
             {item.kind !== 'saved' && workBoard?.available && <button type="button" role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('task')}>Create task</button>}
-            {dismiss && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setDismissed', { id: last.id, dismissed: true })); }}>{dismiss[0]}</button>}
+            {dismiss && !robot && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setDismissed', { id: last.id, dismissed: true })); }}>{dismiss[0]}</button>}
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
         </div>, document.body)}
       </div>

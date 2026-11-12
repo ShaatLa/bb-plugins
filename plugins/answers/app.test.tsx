@@ -50,9 +50,10 @@ describe('Answers app', () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));
     const { slot } = await setup({ list: () => ({ items: [item, waiting], nextCursor: null }), setDismissed });
-    fireEvent.click(slot.getAllByRole('button', { name: 'More' })[0]!);
-    expect(slot.getAllByRole('menuitem', { name: 'Stop waiting' })).toHaveLength(1);
+    // In the chat Stop waiting moved from More to the robot that stands for the pending answer.
+    for (const more of slot.getAllByRole('button', { name: 'More' })) { fireEvent.click(more); expect(slot.queryByRole('menuitem', { name: 'Stop waiting' })).toBeNull(); fireEvent.click(more); }
     expect(slot.queryByRole('button', { name: 'Done' })).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name: 'Waiting for the answer' }));
     fireEvent.click(slot.getByRole('menuitem', { name: 'Stop waiting' }));
     await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_wait', dismissed: true }));
   });
