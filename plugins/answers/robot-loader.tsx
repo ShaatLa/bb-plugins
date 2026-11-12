@@ -54,9 +54,9 @@ const css = `
 @keyframes ar-walking{0%{opacity:1}6.1%{opacity:0}11.1%{opacity:1}56.1%{opacity:0}61.1%{opacity:1}}
 @keyframes ar-kicking{0%{opacity:0}6.1%{opacity:1}11.1%{opacity:0}56.1%{opacity:1}61.1%{opacity:0}}
 @keyframes ar-kick{0%,6.1%{transform:rotate(10deg)}8.6%{transform:rotate(-55deg)}11.1%,56.1%{transform:rotate(10deg)}58.6%{transform:rotate(-55deg)}61.1%,100%{transform:rotate(10deg)}}
-@keyframes ar-pebble{0%,8.6%{transform:translate(8.5px,20.95px)}20%,58.6%{transform:translate(15.5px,20.95px)}70%,100%{transform:translate(8.5px,20.95px)}}
-@keyframes ar-hop{0%,8.6%{transform:translateY(0);animation-timing-function:ease-out}14.3%{transform:translateY(-2.2px);animation-timing-function:ease-in}20%,58.6%{transform:translateY(0);animation-timing-function:ease-out}64.3%{transform:translateY(-2.2px);animation-timing-function:ease-in}70%,100%{transform:translateY(0)}}
-@keyframes ar-spin{0%,8.6%{transform:rotate(0)}20%,58.6%{transform:rotate(360deg)}70%,100%{transform:rotate(0)}}
+@keyframes ar-pebble{0%,8.6%{transform:translate(8.5px,20.95px)}13.2%,58.6%{transform:translate(15.5px,20.95px)}63.2%,100%{transform:translate(8.5px,20.95px)}}
+@keyframes ar-hop{0%,8.6%{transform:translateY(0);animation-timing-function:ease-out}10.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}13.2%,58.6%{transform:translateY(0);animation-timing-function:ease-out}60.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}63.2%,100%{transform:translateY(0)}}
+@keyframes ar-spin{0%,8.6%{transform:rotate(0)}13.2%,58.6%{transform:rotate(360deg)}63.2%,100%{transform:rotate(0)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
