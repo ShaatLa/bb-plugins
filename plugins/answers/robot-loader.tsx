@@ -31,7 +31,7 @@ const css = `
 .ar-scan{transform-box:view-box;transform-origin:12px 13px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
-.ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
+.ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
 .ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -42,21 +42,22 @@ const css = `
 .ar-pebble{transform:translate(8.5px,20.7px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 13s ease-out infinite}
 .ar-solid{fill:var(--background,#fff)}
-@keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
-@keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
-@keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
-@keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
+@keyframes ar-move-q{0%{transform:translateX(-8px)}42%,46%{transform:translateX(8px)}88%,100%{transform:translateX(-8px)}}
+@keyframes ar-right-q{0%{opacity:1}42%{opacity:0}}
+@keyframes ar-left-q{0%{opacity:0}46%{opacity:1}88%{opacity:0}}
+@keyframes ar-front-q{0%{opacity:0}42%{opacity:1}46%{opacity:0}}
+@keyframes ar-watch{0%{opacity:0}88%{opacity:1}}
 @keyframes ar-scratch{from{transform:rotate(-10deg)}to{transform:rotate(24deg)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
 @keyframes ar-spark{0%,19%{opacity:0;transform:scale(.4)}21%{opacity:1;transform:scale(1)}36%,100%{opacity:0;transform:scale(1.3)}}
-@keyframes ar-walking{0%{opacity:1}6.1%{opacity:0}11.1%{opacity:1}56.1%{opacity:0}61.1%{opacity:1}}
-@keyframes ar-kicking{0%{opacity:0}6.1%{opacity:1}11.1%{opacity:0}56.1%{opacity:1}61.1%{opacity:0}}
-@keyframes ar-kick{0%,6.1%{transform:rotate(10deg)}8.6%{transform:rotate(-55deg)}11.1%,56.1%{transform:rotate(10deg)}58.6%{transform:rotate(-55deg)}61.1%,100%{transform:rotate(10deg)}}
-@keyframes ar-pebble{0%,8.6%{transform:translate(8.5px,20.7px)}13.2%,58.6%{transform:translate(15.5px,20.7px)}63.2%,100%{transform:translate(8.5px,20.7px)}}
-@keyframes ar-hop{0%,8.6%{transform:translateY(0);animation-timing-function:ease-out}10.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}13.2%,58.6%{transform:translateY(0);animation-timing-function:ease-out}60.9%{transform:translateY(-2.2px);animation-timing-function:ease-in}63.2%,100%{transform:translateY(0)}}
-@keyframes ar-spin{0%,8.6%{transform:rotate(0)}13.2%,58.6%{transform:rotate(360deg)}63.2%,100%{transform:rotate(0)}}
+@keyframes ar-walking{0%{opacity:1}5.375%{opacity:0}10.375%{opacity:1}51.375%{opacity:0}56.375%{opacity:1}}
+@keyframes ar-kicking{0%{opacity:0}5.375%{opacity:1}10.375%{opacity:0}51.375%{opacity:1}56.375%{opacity:0}}
+@keyframes ar-kick{0%,5.375%{transform:rotate(10deg)}7.875%{transform:rotate(-55deg)}10.375%,51.375%{transform:rotate(10deg)}53.875%{transform:rotate(-55deg)}56.375%,100%{transform:rotate(10deg)}}
+@keyframes ar-pebble{0%,7.875%{transform:translate(8.5px,20.7px)}12.475%,53.875%{transform:translate(15.5px,20.7px)}58.475%,100%{transform:translate(8.5px,20.7px)}}
+@keyframes ar-hop{0%,7.875%{transform:translateY(0);animation-timing-function:ease-out}10.175%{transform:translateY(-2.2px);animation-timing-function:ease-in}12.475%,53.875%{transform:translateY(0);animation-timing-function:ease-out}56.175%{transform:translateY(-2.2px);animation-timing-function:ease-in}58.475%,100%{transform:translateY(0)}}
+@keyframes ar-spin{0%,7.875%{transform:rotate(0)}12.475%,53.875%{transform:rotate(360deg)}58.475%,100%{transform:rotate(0)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -82,10 +83,10 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin. The wait scene
-// walks slower (ar-quick: 13 s a lap, a quick turn instead of a pause facing us) past a pebble lying on the ground: once
+// walks slower (ar-quick: 13 s a lap, a quick turn at the right end; at the left end it checks its watch) past a pebble lying on the ground: once
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
-// the walk back will meet it. Kick times follow from the walk: rightward at 8.6% (x = -5, the pebble at 8.5), leftward at
-// 58.6% (x = 5, the pebble at 15.5).
+// the walk back will meet it. Kick times follow from the walk: rightward at 7.875% (x = -5, the pebble at 8.5), leftward
+// at 53.875% (x = 5, the pebble at 15.5); each walk takes 42% of the lap.
 const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
 // The thinking walker carries a question mark over its head, kept unmirrored when it walks left.
 const walker = (pebble: boolean, mirrored = false) => <>
@@ -103,6 +104,10 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
     {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
   </g>
+  {/* Waiting, at the left end it stops facing us, eyes down on the watch on its raised forearm. */}
+  {pebble && <g className="ar-watch">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10.4" cy="9.1" r=".9" /><circle cx="14.4" cy="9.1" r=".9" />
+    <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+    <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><rect className="ar-solid" x="14.2" y="13.4" width="1.6" height="1.3" rx=".35" strokeWidth=".6" /></g>}
 </g>;
 
 // In profile the arm comes from the shoulder, the far arm showing from behind the back, and the magnifier, seen nearly
