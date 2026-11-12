@@ -25,9 +25,8 @@ const css = `
 .ar-dot.b{animation-delay:.2s}.ar-dot.c{animation-delay:.4s}
 .ar-type{transform-box:view-box;transform-origin:12px 13px;animation:ar-type .22s ease-in-out infinite alternate}
 .ar-glow{animation:ar-dot .9s ease-in-out infinite;opacity:.2}.ar-glow.b{animation-delay:.3s}.ar-glow.c{animation-delay:.6s}
-.ar-scroll{animation:ar-scroll 2.4s linear infinite}
-.ar-tap{transform-box:view-box;animation:ar-tap .3s ease-in-out infinite alternate}
-.ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
+.ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
+.ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-pebble{animation:ar-pebble 1.5s ease-in-out infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1.5s ease-in-out infinite}
@@ -58,8 +57,8 @@ const css = `
 @keyframes ar-bob{from{transform:translateY(0)}to{transform:translateY(-.6px)}}
 @keyframes ar-dot{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes ar-type{from{transform:rotate(-4deg)}to{transform:rotate(5deg)}}
-@keyframes ar-scroll{from{transform:translateY(0)}to{transform:translateY(-6px)}}
-@keyframes ar-tap{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
+@keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
+@keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-40deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(14deg);animation-timing-function:ease-in-out}100%{transform:rotate(-40deg)}}
 @keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(2.6px,-2.2px)}45%{transform:translate(5px,0)}100%{transform:translate(0,0)}}
 @keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
@@ -133,12 +132,12 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <line className="ar-glow" x1="21" y1="7.44" x2="24.4" y2="7.08" /><line className="ar-glow b" x1="21" y1="8.9" x2="23.8" y2="8.9" /><line className="ar-glow c" x1="21" y1="10.36" x2="23.2" y2="10.59" />
     </g>;
     case 'terminal': return <>
-      {/* Back to us at a wide screen; output scrolls up inside it. */}
+      {/* Back to us at a wide screen; each press of the right hand scrolls the output up one line (both loops share 0.8 s steps). */}
       <defs><clipPath id="ar-screen"><rect x="3.6" y="3.1" width="18.8" height="8.8" /></clipPath></defs>
       <rect x="3" y="2.5" width="20" height="10" rx="1" />
-      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 7, 12, 16, 8].map((end, i) => <line key={i} x1="5" y1={5 + i * 2} x2={end + 3} y2={5 + i * 2} />)}</g></g>
+      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 15, 9, 18, 15, 9].map((end, i) => <line key={i} x1="5" y1={5 + i * 2} x2={end + 3} y2={5 + i * 2} />)}</g></g>
       <g transform="translate(-4 0)">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
-        <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
+        <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap" x1="17.5" y1="13" x2="19" y2="10.5" />
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
