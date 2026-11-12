@@ -106,11 +106,11 @@ const aim = () => Math.random() < .5 ? 'up' : 'down';
 const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>;
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
-  // The question mark rides above the leaning head but stays upright and unmirrored.
+  // The question mark rides above the head, leaning with it, never mirrored.
   const side = (which: keyof typeof AIMS, mirrored: boolean) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
     <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
       <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
-    <g transform={`rotate(${-AIMS[which]} 12.1 -0.6)${mirrored ? ' translate(24.2 0) scale(-1 1)' : ''}`}>{ask}</g></g></>;
+    <g transform={mirrored ? 'translate(24.2 0) scale(-1 1)' : undefined}>{ask}</g></g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
     <g className="ar-right">{side(aims[0], false)}</g>
