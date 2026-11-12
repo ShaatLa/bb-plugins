@@ -320,7 +320,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
       </span></div>}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
-    {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
+    {/* Where the agent's reply would be, so on its side. */}{part === 'question' && <Button variant="ghost" size="sm" className="flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
     {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
     {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot says the work goes on; afterwards a clock marks the reply as interim. */}
       {item.status === 'deferred' ? <span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span>
