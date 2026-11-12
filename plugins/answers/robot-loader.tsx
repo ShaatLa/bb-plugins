@@ -3,8 +3,8 @@ import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plu
 
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
-// terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench; search — sweeps a
-// magnifier; read — leafs through an endless paper scroll; wait — walks to and fro, kicking a pebble.
+// terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench; search — looks
+// around through a magnifier; read — leafs through an endless paper scroll; wait — walks to and fro, kicking a pebble.
 // With reduced motion bb's own spinner shows instead.
 export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait';
 
@@ -29,12 +29,12 @@ const css = `
 .ar-tap.l{transform-origin:6.5px 13px}.ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer .7s cubic-bezier(.6,0,.9,.5) infinite}
 .ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
-.ar-lens{animation:ar-lens 2s ease-in-out infinite alternate}
 .ar-paper{animation:ar-paper 1.6s linear infinite}
 .ar-pebble{animation:ar-pebble 1s ease-out infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1s ease-in-out infinite}
 .ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1s ease-in-out infinite}
-.ar-sweep{transform-box:view-box;transform-origin:12px 13px;animation:ar-sweep 1.8s ease-in-out infinite alternate}
+.ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
+.ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
@@ -49,12 +49,11 @@ const css = `
 @keyframes ar-tap{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-40deg)}70%{transform:rotate(28deg)}100%{transform:rotate(-40deg)}}
 @keyframes ar-wrench{from{transform:rotate(-28deg)}to{transform:rotate(22deg)}}
-@keyframes ar-lens{0%{transform:translate(-1px,1px)}50%{transform:translate(2px,-1px)}100%{transform:translate(5px,1px)}}
 @keyframes ar-paper{from{transform:translateY(0)}to{transform:translateY(2.4px)}}
 @keyframes ar-pebble{0%,20%{transform:translate(0,0)}45%{transform:translate(2.6px,-2px)}70%,100%{transform:translate(4.5px,0)}}
 @keyframes ar-kick{0%{transform:rotate(10deg)}25%{transform:rotate(-55deg)}45%{transform:rotate(0)}70%,100%{transform:rotate(10deg)}}
 @keyframes ar-plant{0%,45%{transform:rotate(-8deg)}70%{transform:rotate(14deg)}100%{transform:rotate(-8deg)}}
-@keyframes ar-sweep{from{transform:rotate(-12deg)}to{transform:rotate(14deg)}}
+@keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
 @keyframes ar-ask{from{transform:translateY(0);opacity:.5}to{transform:translateY(-1px);opacity:1}}
 `;
 
@@ -114,14 +113,22 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <circle cx="22" cy="14.5" r="1" /><line x1="22" y1="14.5" x2="22" y2="21.5" />
       <g className="ar-wrench"><line x1="22" y1="14.5" x2="18.6" y2="16.4" /><path d="M23.4 13.4 A1.8 1.8 0 1 0 23.4 15.6" /></g>
     </>;
-    case 'search': return <>
-      {/* In profile, sweeping a big magnifier (thick rim, long handle) over the ground; a question mark bobs above. */}
-      {sideHead}{sideBody}{standingLegs}<line x1="13" y1="21.5" x2="30" y2="21.5" />
-      <circle cx="21" cy="21" r=".35" fill="currentColor" stroke="none" /><circle cx="25.5" cy="21" r=".35" fill="currentColor" stroke="none" />
-      <g className="ar-sweep"><line x1="12" y1="13" x2="16.2" y2="15.6" /><line x1="16.2" y1="15.6" x2="18.2" y2="16.8" strokeWidth="1.6" />
-        <circle cx="20.4" cy="18.1" r="2.5" strokeWidth="1.3" /><path d="M19.1 17.2 A1.6 1.6 0 0 1 20.4 16.4" /></g>
-      <g className="ar-ask"><path d="M17.6 0.6 A1.3 1.3 0 1 1 18.9 1.9 V2.9" /><circle cx="18.9" cy="4.1" r=".3" fill="currentColor" stroke="none" /></g>
-    </>;
+    case 'search': {
+      // In profile the magnifier is held out at eye level, the arm swinging it from the shoulder; facing us it sits
+      // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
+      const side = <>{sideHead}{sideBody}{standingLegs}
+        <g className="ar-scan"><line x1="14.5" y1="13.2" x2="17.2" y2="11.6" /><line x1="17.2" y1="11.6" x2="18.4" y2="9.6" strokeWidth="1.4" />
+          <circle cx="19.8" cy="7.4" r="2.4" strokeWidth="1.1" /><path d="M18.6 6.6 A1.4 1.4 0 0 1 19.8 5.9" /></g></>;
+      return <g className="ar-look">
+        <g className="ar-right">{side}</g>
+        <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side}</g></g>
+        <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
+          <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+          <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
+          <circle cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" /></g>
+        <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>
+      </g>;
+    }
     case 'read': return <>
       {/* In profile, leafing through a paper scroll that runs down to the floor and on. */}
       {sideHead}{sideBody}{standingLegs}<line x1="12" y1="13" x2="16" y2="12.6" />
