@@ -154,13 +154,15 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
     case 'search': return <SearchScene />;
     case 'read': {
       // Facing us over an open book held low and tipped toward its face; its right hand turns the right page over to the left.
-      const page = (side: 1 | -1) => <><path d={`M12 14.2 Q${12 + side * 3.5} 13.5 ${12 + side * 7} 14.2 V18.2 Q${12 + side * 3.5} 17.5 12 18.2 Z`} className="ar-solid" />
-        {[15.4, 16.4, 17.3].map(y => <line key={y} x1={12 + side * 1.4} y1={y} x2={12 + side * (y === 17.3 ? 4.4 : 5.6)} y2={y} strokeWidth=".6" />)}</>;
+      // In perspective: the far (top) edge is narrower than the near one, and the page block's edge shows below.
+      const outer = (y: number) => 5.6 + 1.4 * (y - 14.4) / 3.8;
+      const page = (side: 1 | -1) => <><path d={`M12 14.4 Q${12 + side * 2.8} 13.8 ${12 + side * 5.6} 14.4 L${12 + side * 7} 18.2 Q${12 + side * 3.5} 17.5 12 18.2 Z`} className="ar-solid" />
+        {[15.3, 16.3, 17.2].map(y => <line key={y} x1={12 + side * 1.2} y1={y} x2={12 + side * (outer(y) - (y === 17.2 ? 2.4 : .9))} y2={y} strokeWidth=".6" />)}</>;
       const turn = { dur: '2.4s', repeatCount: 'indefinite', keyTimes: '0;.55;.9;1', calcMode: 'spline', keySplines: '0 0 1 1;.42 0 .58 1;0 0 1 1' } as const;
       return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" />
         <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-        {page(-1)}{page(1)}<g transform="translate(12 0)"><g><animateTransform attributeName="transform" type="scale" values="1 1;1 1;-1 1;-1 1" {...turn} /><g transform="translate(-12 0)">{page(1)}</g></g></g>
-        <line x1="15.5" y1="13" x2="19" y2="14.2"><animate attributeName="x2" values="19;19;5;5" {...turn} /></line></>;
+        <path d="M5 18.2 V18.9 Q8.5 18.2 12 18.9 Q15.5 18.2 19 18.9 V18.2" />{page(-1)}{page(1)}<g transform="translate(12 0)"><g><animateTransform attributeName="transform" type="scale" values="1 1;1 1;-1 1;-1 1" {...turn} /><g transform="translate(-12 0)">{page(1)}</g></g></g>
+        <line x1="15.5" y1="13" x2="17.6" y2="14.4"><animate attributeName="x2" values="17.6;17.6;6.4;6.4" {...turn} /></line></>;
     }
     case 'wait': return pacing(false, true);
     case 'rest': return <>
