@@ -37,11 +37,13 @@ const css = `
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
+.ar-scratch{transform-box:view-box;transform-origin:16.8px 15.2px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
 @keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
 @keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
+@keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -71,10 +73,11 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".35" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".35" fill="currentColor" stroke="none" /></>;
 
-// Walking in profile: legs scissor from one hip while the body bobs; the wait scene dribbles a pebble ahead and turns
+// Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin; the wait scene dribbles a pebble ahead and turns
 // back quickly (ar-quick) instead of pausing to face us.
 const walker = (pebble: boolean) => <>
-  <g className="ar-bob">{sideHead}{sideBody}<line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" /></g>
+  <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
+    : <><line x1="12" y1="13" x2="16.8" y2="15.2" /><line className="ar-scratch" x1="16.8" y1="15.2" x2="15.6" y2="11.5" /></>}</g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
     <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
