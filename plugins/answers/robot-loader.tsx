@@ -95,6 +95,28 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   </g>
 </g>;
 
+// In profile the magnifier is held out at eye level, seen nearly edge-on; each time the robot turns to a side it aims it
+// up or down at random (arm raised or lowered at the shoulder, lens tipped at the hand). Facing us it sits over one eye,
+// which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
+const AIMS = { up: [-8, 25], down: [25, 45] } as const;
+const aim = () => Math.random() < .5 ? 'up' : 'down';
+function SearchScene() {
+  const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
+  const side = (which: keyof typeof AIMS) => { const [arm, lens] = AIMS[which]; return <>{sideHead}{sideBody}{standingLegs}
+    <g transform={`rotate(${arm} 14.5 13.2)`}><g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" />
+      <g transform={`rotate(${lens} 19.8 12.6)`}><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" /><ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></g></g></>; };
+  // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
+  return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
+    <g className="ar-right">{side(aims[0])}</g>
+    <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side(aims[1])}</g></g>
+    <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
+      <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+      <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
+      <circle cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" /></g>
+    <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>
+  </g>;
+}
+
 function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench' }) {
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
@@ -126,22 +148,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <circle cx="22" cy="14.5" r="1" /><line x1="22" y1="14.5" x2="22" y2="21.5" />
       <g className="ar-wrench"><line x1="22" y1="14.5" x2="18.6" y2="16.4" /><path d="M23.4 13.4 A1.8 1.8 0 1 0 23.4 15.6" /></g>
     </>;
-    case 'search': {
-      // In profile the magnifier is held out at eye level, seen nearly edge-on, the arm swinging it from the shoulder; facing us it sits
-      // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
-      const side = <>{sideHead}{sideBody}{standingLegs}
-        <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
-          <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></>;
-      return <g className="ar-look">
-        <g className="ar-right">{side}</g>
-        <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side}</g></g>
-        <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
-          <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-          <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
-          <circle cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" /></g>
-        <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>
-      </g>;
-    }
+    case 'search': return <SearchScene />;
     case 'read': {
       // Facing us behind an open book, eyes down on it; every couple of seconds the right page turns over to the left.
       const page = (side: 1 | -1) => <><path d={`M12 12.6 Q${12 + side * 3.5} 11.6 ${12 + side * 7} 12.6 V18.4 Q${12 + side * 3.5} 17.4 12 18.4 Z`} className="ar-solid" />
