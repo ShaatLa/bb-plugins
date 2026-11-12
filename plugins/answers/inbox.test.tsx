@@ -362,6 +362,17 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
+it('keeps a delivered queued message in the queue card until the chat records it', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
+  let rows = [row], emptied = 0;
+  const sendNow = vi.fn(() => { rows = []; return Promise.resolve({}); });
+  const list = () => { if (!rows.length) emptied++; return Promise.resolve(rows); };
+  const { slot, recipients } = setup({ queuedMessages: { list, send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByText('Waiting text')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(emptied).toBeGreaterThan(0));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(slot.getByText('Waiting text')).toBeTruthy();
+});
 it('shows bb system notice icon and text for completed and failed children', async () => {
   const rows = (['child-completed', 'child-failed'] as const).map((kind, n) => ({ id:`q${n}`, threadId:'thr_one', content:[{ type:'text', text:'[bb system] raw report', mentions:[] }], systemNotice:{ kind, subject:{ kind:'thread', threadId:`child${n}`, threadName:`Child ${n}` } }, updatedAt:1 }));
   const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows) } }); fireEvent.click(await recipients.findByRole('option'));
