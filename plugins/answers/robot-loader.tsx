@@ -69,7 +69,7 @@ const css = `
 @keyframes ar-type{from{transform:rotate(-4deg)}to{transform:rotate(5deg)}}
 @keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
-@keyframes ar-hammer{0%{transform:rotate(-40deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(14deg);animation-timing-function:ease-in-out}100%{transform:rotate(-40deg)}}
+@keyframes ar-hammer{0%{transform:rotate(-15deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(29deg);animation-timing-function:ease-in-out}100%{transform:rotate(-15deg)}}
 @keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
 @keyframes ar-ask{from{transform:translateY(0);opacity:.5}to{transform:translateY(-1px);opacity:1}}
 `;
@@ -159,9 +159,9 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
-      {/* In profile, hammering a nail into a block (the arm bent at the elbow, the thinner hammer handle in the hand); at 14° the hammer's face lands on the nail head, sparks fly. */}
+      {/* In profile, hammering a nail into a block (a nearly straight arm, the thinner handle rising from the fist at 35°, the head across it); at 29° the head's face lands on the nail head, sparks fly. */}
       {sideHead}{sideBody}{standingLegs}<rect x="16.8" y="18.2" width="4.6" height="3.3" rx=".4" /><line x1="19.2" y1="16.8" x2="19.2" y2="18.2" /><line x1="18.4" y1="16.8" x2="20" y2="16.8" />
-      <g className="ar-hammer"><path d="M12 13 L14.2 11.7 L16.2 13" /><line x1="16.2" y1="13" x2="18.6" y2="13" strokeWidth=".7" /><rect x="18.6" y="11" width="2.4" height="4" rx=".4" /></g><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g>
+      <g className="ar-hammer"><path d="M12 13 Q14 13.6 16 13.4" /><line x1="16" y1="13.4" x2="18.62" y2="11.56" strokeWidth=".7" /><rect x="-1.2" y="-2" width="2.4" height="4" rx=".4" transform="translate(19.6 10.87) rotate(-35)" /></g><g transform="translate(.7 0)"><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g></g>
     </> : <>
       {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle, the arm bending at the elbow (fixed-length segments, solved per keyframe). */}
       {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="21.8" y1="14.8" x2="21.8" y2="21.5" />
