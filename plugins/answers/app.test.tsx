@@ -716,3 +716,16 @@ it('catches a UI crash, shows its message and logs it to the plugin server', asy
     expect(url).toBe('/api/v1/plugins/answers/rpc/logClientError'); expect(JSON.parse(String(init.body))).toMatchObject({ where: 'page', message: 'bad attachment' });
   } finally { vi.unstubAllGlobals(); quiet.mockRestore(); }
 });
+
+it('loads earlier messages when the top comes into view, with a spinner instead of a button', async () => {
+  const { render } = await import('@testing-library/react');
+  const { EarlierLoader } = await import('./app');
+  let fire: (() => void) | undefined;
+  vi.stubGlobal('IntersectionObserver', class { constructor(cb: (entries: { isIntersecting: boolean }[]) => void) { fire = () => cb([{ isIntersecting: true }]); } observe() {} disconnect() {} });
+  try {
+    const onLoad = vi.fn();
+    const view = render(<EarlierLoader loading={false} onLoad={onLoad} />);
+    expect(view.queryByRole('button')).toBeNull(); fire!(); expect(onLoad).toHaveBeenCalledOnce();
+    view.rerender(<EarlierLoader loading onLoad={onLoad} />); expect(view.getByLabelText('Loading earlier messages')).toBeTruthy();
+  } finally { vi.unstubAllGlobals(); }
+});

@@ -319,6 +319,19 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
   </li>;
 }
 
+// Like bb's chat: earlier messages load by themselves when the reader nears the top, with a small spinner while they
+// come. Without IntersectionObserver (old browsers, tests) a plain Load earlier link stands in.
+export function EarlierLoader({ loading, enabled = true, onLoad }: { loading: boolean; enabled?: boolean; onLoad: () => void }) {
+  const sentinel = useRef<HTMLDivElement>(null), load = useRef(onLoad); load.current = onLoad;
+  const watch = typeof IntersectionObserver !== 'undefined';
+  useEffect(() => {
+    const node = sentinel.current; if (!node || !watch || !enabled || loading) return;
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) load.current(); }, { rootMargin: '600px 0px 0px 0px' });
+    observer.observe(node); return () => observer.disconnect();
+  }, [watch, enabled, loading]);
+  return <div ref={sentinel} className="flex min-h-8 items-center justify-center">{loading ? <Icon name="Spinner" aria-label="Loading earlier messages" className="size-4 animate-spin text-muted-foreground" /> : !watch && <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={onLoad}>Load earlier</Button>}</div>;
+}
+
 function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string; orphans?: Item[][] }) {
   // A thread tab's older pages freeze once loaded, as HistoryPage does, so they stop refetching on every tick.
   const [settled, setSettled] = useState(false);
@@ -334,7 +347,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   // Pages render apart, so a split question older than this page goes on to the earlier one.
   const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
   const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
-  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>{chronological ? 'Load earlier' : 'Load more'}</Button>);
+  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : chronological ? <EarlierLoader loading={false} onLoad={() => setNext(true)} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>Load more</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
