@@ -2,7 +2,7 @@ import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, inlinePreviewSchema, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -220,6 +220,14 @@ export default function plugin(bb: BbPluginApi) {
     },
     // Contact-list preferences live in plugin settings, so they follow the user across devices.
     async setPreferences(raw:z.infer<typeof inputs.setPreferences>) {await notifier.settings.experimental_set(inputs.setPreferences.parse(raw)); return {ok:true as const};},
+    // bb's Markdown for plugins does not render message directives, so the chat asks the built-in inline-vis plugin for
+    // the page an ::inline-vis directive names (it resolves and validates the path and size exactly as bb's chat does).
+    async inlinePreview(raw:z.infer<typeof inputs.inlinePreview>) {
+      const p=inputs.inlinePreview.parse(raw);
+      const outputSchema=z.object({kind:z.string()}).passthrough();
+      try {const result=await bb.sdk.plugins.callRpc({pluginId:'inline-vis',method:'preparePreview',input:{threadId:p.threadId,file:p.file,source:p.source},outputSchema}); const parsed=inlinePreviewSchema.safeParse(result); return parsed.success ? parsed.data : {kind:'error' as const,message:'Unexpected preview'};}
+      catch (e) {return {kind:'error' as const,message:(e instanceof Error ? e.message : String(e)).slice(0,500)};}
+    },
     async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
       inputs.workBoardProjects.parse(raw);
       const outputSchema=z.object({projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))});

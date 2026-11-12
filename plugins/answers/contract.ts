@@ -17,6 +17,12 @@ const attachments = z.array(attachmentSchema).max(10, 'At most 10 attachments');
 // How a reply leaves, mirroring bb's send menu: queue (default), steer the running turn, hold as a draft, or send later.
 export const sendOptionsSchema = z.object({mode:z.enum(['queue','steer','draft']),sendAt:z.number().int().positive().optional()}).strict();
 export const poolEntrySchema = z.object({id:poolIdSchema,threadId,quote:poolQuote,quoteSeq:time.nullable(),itemId:idSchema.nullable(),note:z.string().max(8000),attachments:z.array(attachmentSchema),revision:time,createdAt:time,updatedAt:time});
+// An inline-vis page as the built-in inline-vis plugin prepares it (see inlinePreview in server.ts).
+export const inlinePreviewSchema = z.discriminatedUnion('kind',[
+  z.object({kind:z.literal('html'),url:z.string(),content:z.string()}),
+  z.object({kind:z.literal('markdown'),content:z.string(),rootPath:z.string(),target:z.union([z.object({kind:z.literal('workspace'),environmentId:z.string(),path:z.string()}),z.object({kind:z.literal('thread-storage'),threadId:z.string(),path:z.string()})])}),
+  z.object({kind:z.literal('not-found')}), z.object({kind:z.literal('error'),message:z.string()})]);
+export type InlinePreview = z.infer<typeof inlinePreviewSchema>;
 export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
 const bulkRead=z.object({ok:z.literal(true),batch:z.string().nullable(),count:time});
@@ -25,6 +31,7 @@ export const inputs = {
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
  workBoardProjects:z.object({}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
+ inlinePreview:z.object({threadId,file:z.string().min(1).max(1000),source:z.enum(['workspace','thread-storage']).default('workspace')}).strict(),
  recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(), queueStamp:z.object({threadId}).strict(), logClientError:z.object({where:z.string().max(100),message:z.string().max(2000),stack:z.string().max(8000).optional()}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),attachments:attachments.optional(),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
@@ -42,6 +49,7 @@ export const rpcContract=defineRpcContract({
  setPreferences:{input:inputs.setPreferences,output:z.object({ok:z.literal(true)})},
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
+ inlinePreview:{input:inputs.inlinePreview,output:inlinePreviewSchema},
  recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, queueStamp:{tags:()=>[QUEUE_TAG],input:inputs.queueStamp,output:z.object({stamp:z.number()})}, logClientError:{input:inputs.logClientError,output:z.object({ok:z.literal(true)})}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},

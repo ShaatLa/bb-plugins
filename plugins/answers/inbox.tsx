@@ -283,7 +283,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
       if (result.ok && result.delivery === 'queued') setOptimistic(old => old.filter(b => b.id !== optimisticId));
       if (JSON.stringify(drafts[threadId]) === JSON.stringify(sent)) { delete drafts[threadId]; saveDrafts(); }
       if (selectedRef.current === threadId) setCompose(current => JSON.stringify(current) === JSON.stringify(sent) ? { text: '', files: [] } : current);
-      setQueueVersion(n => n + 1); refresh(); requestAnimationFrame(() => scroll.current?.scrollTo({ top: scroll.current.scrollHeight }));
+      setQueueVersion(n => n + 1); refresh(); requestAnimationFrame(() => scroll.current?.scrollTo?.({ top: scroll.current.scrollHeight }));
     } catch (e) { setOptimistic(old => old.filter(b => b.id !== optimisticId)); if (selectedRef.current === threadId) setComposeError(`Delivery uncertain — check the thread before retrying. ${errorText(e)}`); }
     finally { setComposePending(false); }
   }
