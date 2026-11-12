@@ -35,7 +35,7 @@ const css = `
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:11s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
-.ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
+.ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
@@ -80,7 +80,7 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // back quickly (ar-quick) instead of pausing to face us.
 const walker = (pebble: boolean) => <>
   <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
-    : <><line x1="12" y1="13" x2="16" y2="14.4" /><line className="ar-scratch" x1="16" y1="14.4" x2="15.3" y2="11.8" /></>}</g>
+    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
   {pebble ? <><line className="ar-plant" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" />
     <circle className="ar-pebble" cx="14.4" cy="21.3" r=".6" fill="currentColor" stroke="none" /></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
