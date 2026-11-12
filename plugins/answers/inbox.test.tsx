@@ -109,6 +109,17 @@ it('shows one reply that answers an older question and a new one once, echoing t
   const home = document.querySelector('[data-history-ids="ans_new ans_old:answer"]')!;
   expect(home.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question');
 });
+it('spins the usage refresh icon until a manual refresh lands', async () => {
+  let land: (value: unknown) => void = () => {};
+  const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:10, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } }));
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
+  const button = await slot.findByRole('button', { name:'Refresh usage' });
+  await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('false'));
+  usageLimits.mockImplementationOnce(() => new Promise(resolve => { land = resolve; }) as any);
+  fireEvent.click(button);
+  await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('true')); expect(button.querySelector('.animate-spin')).not.toBeNull();
+  land(await usageLimits.getMockImplementation()!()); await waitFor(() => expect(slot.getByRole('button', { name:'Refresh usage' }).getAttribute('aria-busy')).toBe('false'));
+});
 it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   const save = vi.fn(() => ({ id:'ans_saved', created:true })), writeText = vi.fn(async () => {});
   Object.assign(navigator, { clipboard: { writeText } });
