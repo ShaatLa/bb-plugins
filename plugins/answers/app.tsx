@@ -170,10 +170,11 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
   const at = activityAt(last), age = ago(at), preview = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
-  // The stack-card look of "Active child threads", so the group stands out from the caption rows around it.
-  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
+  // The stack-card look of "Active child threads", so the group stands out from the caption rows around it. Opening it
+  // scrolls its top into view (below the chat's sticky header), so the first update reads without scrolling back up.
+  return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="scroll-mt-16 py-3">
     <div className="overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
-      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => setOpen(!open)} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
+      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { setOpen(!open); if (!open) requestAnimationFrame(() => row.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })); }} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
         <Icon name="ListTodo" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">Background updates</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span>
         <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
