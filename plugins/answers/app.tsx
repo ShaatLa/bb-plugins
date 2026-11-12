@@ -12,6 +12,7 @@ import { Button } from './components/ui/button';
 import { useUsageKeeper } from './contacts-footer';
 import { RobotLoader } from './robot-loader';
 import { AgentMarkdown } from './inline-vis';
+import { deliveryError } from './delivery';
 import { useStoredState } from './lib/stored-state';
 import { parseInlineComments } from './inline-comments';
 
@@ -269,7 +270,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
       const result = await rpc.call('reply', { id: last.id, text: quick ?? text, ...(files.length ? { attachments: files } : {}), ...(options ? { send: options } : {}) });
       refresh(); setFeedback(options?.mode === 'draft' ? 'Draft saved' : options?.sendAt ? 'Scheduled' : result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setFiles([]); setReplying(false);
     } catch (cause) {
-      setError(`Delivery uncertain — check the thread before retrying. ${message(cause)}`);
+      setError(deliveryError(cause));
     } finally { sending.current = false; setPending(false); }
   }
   const seq = last.answerSeq ?? last.questionSeq;

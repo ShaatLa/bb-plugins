@@ -2,6 +2,7 @@ import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { deliveryError } from './delivery';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, inlinePreviewSchema, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
@@ -168,9 +169,9 @@ export default function plugin(bb: BbPluginApi) {
     try {return await send();} finally {sending.delete(threadId);}
   }
   async function deliver(threadId:string,text:string,files:Attachment[]=[],opts:SendOptions={mode:'queue'}) {
-    if (opts.sendAt!==undefined && opts.sendAt<=Date.now()) throw new Error('That time has passed — pick another');
-    if (text.length>32000) throw new Error('Message exceeds 32,000 characters — split the pool');
-    if (files.length>20) throw new Error('At most 20 attachments per message — split the pool');
+    if (opts.sendAt!==undefined && opts.sendAt<=Date.now()) throw new Error('Not sent: that time has passed — pick another');
+    if (text.length>32000) throw new Error('Not sent: the message exceeds 32,000 characters — split the pool');
+    if (files.length>20) throw new Error('Not sent: at most 20 attachments per message — split the pool');
     const inputs=files.map(f=>f.type==='localImage' ? {type:'localImage' as const,path:f.path,...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})} : {type:'localFile' as const,path:f.path,name:f.name,...(f.mimeType ? {mimeType:f.mimeType} : {}),...(f.sizeBytes ? {sizeBytes:f.sizeBytes} : {}),...(f.sourceProjectId ? {sourceProjectId:f.sourceProjectId} : {})});
     const labels = new Map<string, { label: string; projectId?: string }>();
     await Promise.all(Array.from(text.matchAll(threadToken), async match => { try { const thread = await bb.sdk.threads.get({ threadId: match[1] }); labels.set(match[1], { label: thread.title ?? match[1], projectId: thread.projectId }); } catch { /* retain the token id */ } }));
@@ -178,7 +179,7 @@ export default function plugin(bb: BbPluginApi) {
       const result=await bb.sdk.threads.send({threadId,mode:opts.mode==='steer' ? 'steer-if-active' : 'queue-if-active',input:[...(text.trim() ? [{type:'text' as const,mentions:mentionsForText(text, id => labels.get(id)),text}] : []),...inputs],...(opts.sendAt ? {sendAt:opts.sendAt} : {}),...(opts.mode==='draft' ? {pluginSubmission:{pluginId:bb.pluginId,data:{kind:'draft'}}} : {})});
       if (!result.ok) throw new Error('send failed');
       return {delivery:result.delivery};
-    } catch {throw new Error('Delivery uncertain — check the thread before retrying');}
+    } catch (e) {throw new Error(deliveryError(e));}
   }
   function checkSources(threadId:string,entries:Row[]) {
     for (const entry of entries) if (entry.item_id) {
