@@ -30,7 +30,6 @@ const css = `
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-scan{transform-box:view-box;transform-origin:12px 13px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
-.ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
 .ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
@@ -71,7 +70,6 @@ const css = `
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-15deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(29deg);animation-timing-function:ease-in-out}100%{transform:rotate(-15deg)}}
 @keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
-@keyframes ar-ask{from{transform:translateY(0);opacity:.5}to{transform:translateY(-1px);opacity:1}}
 `;
 
 const antenna = <line x1="12" y1="2.5" x2="12" y2="4" />;
@@ -88,11 +86,9 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
 // the walk back will meet it. Kick times follow from the walk: rightward at 7.875% (x = -5, the pebble at 8.5), leftward
 // at 53.875% (x = 5, the pebble at 15.5); each walk takes 42% of the lap.
-const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
-// The thinking walker carries a question mark over its head, kept unmirrored when it walks left.
-const walker = (pebble: boolean, mirrored = false) => <>
+const walker = (pebble: boolean) => <>
   <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></> : sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
-    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /><g transform={mirrored ? 'translate(24.2 0) scale(-1 1)' : undefined}>{ask}</g></>}</g>
+    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
     <g className="ar-kicking"><line x1="12" y1="18" x2="11.2" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
@@ -100,7 +96,7 @@ const walker = (pebble: boolean, mirrored = false) => <>
 const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
   <g className="ar-right">{walker(pebble)}</g>
-  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble, true)}</g></g>
+  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
     {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
