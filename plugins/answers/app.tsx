@@ -187,7 +187,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="line-clamp-2 break-words border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground">{previewText}</p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="border-t border-border-hairline px-3 py-2 text-sm text-muted-foreground"><span className="line-clamp-2 break-words">{previewText}</span></p>}
     </div>
   </li>;
 }
