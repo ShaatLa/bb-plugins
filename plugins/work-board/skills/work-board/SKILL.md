@@ -138,7 +138,7 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
 
    Long cards carry hundreds of comments, so save context: start with
    `bb work-board show ABC-12 --brief`, which keeps the fields, description,
-   dependencies, subtasks, threads, PR states and open questions but leaves out
+   dependencies, subtasks, threads, PR states and questions but leaves out
    comments, evidence records, question history and per-check PR details (it
    reports how many comments it skipped). Add `--comments N` for the latest N
    comments. Read older history a page at a time, newest page first:
