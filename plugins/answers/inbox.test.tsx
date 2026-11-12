@@ -380,7 +380,7 @@ it('answers an open agent question of the conversation from the bottom stack, ou
   const { slot, recipients, list } = setup({ list: (input: any) => ({ items: input.view === 'for_me' ? [open] : [base], nextCursor:null }), rpc: { reply } });
   fireEvent.click(await recipients.findByRole('option'));
   const card = await slot.findByRole('region', { name:'Questions for you' });
-  expect(card.closest('[data-promptbox-shell]')?.closest('.sticky')).toBeTruthy();
+  expect(card.closest('[data-promptbox-shell]')?.closest('[data-composer-stack]')).toBeTruthy();
   expect(within(card).getByText('Question for you')).toBeTruthy();
   expect(within(slot.getByRole('list', { name:'History' })).queryByText('Ship it?')).toBeNull();
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ view:'for_me', threadId:'thr_one' }));
