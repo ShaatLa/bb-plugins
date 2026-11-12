@@ -120,7 +120,7 @@ it('notes the files of an echoed question on its bubble', async () => {
   const newer = { ...base, id:'ans_new', question:'New question', questionSeq:5, answer:'Shared reply', answerSeq:50, createdAt:asked + 39 * minute, answeredAt:asked + 40 * minute };
   const { slot, recipients } = setup({ list: () => ({ items:[newer, older, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('New question');
-  expect(document.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question2 files');
+  expect(document.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question· 2 files');
 });
 it('spins the usage refresh icon until a manual refresh lands', async () => {
   let land: (value: unknown) => void = () => {};
