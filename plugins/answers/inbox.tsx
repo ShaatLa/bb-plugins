@@ -348,8 +348,14 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     // have clamped scrollTop, so it cannot be derived then.
     let height = node.clientHeight, gap = node.scrollHeight - node.scrollTop - height;
     const track = () => { if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; };
-    const observer = new ResizeObserver(() => { const next = node.clientHeight; if (next !== height && !pin.current) node.scrollTop = node.scrollHeight - next - gap; height = next; });
-    observer.observe(node); node.addEventListener('scroll', track, { passive: true });
+    // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
+    // a reader who was at the bottom stays there.
+    const observer = new ResizeObserver(() => {
+      const next = node.clientHeight;
+      if (!pin.current) { if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24) node.scrollTop = node.scrollHeight - next; }
+      height = next; gap = node.scrollHeight - node.scrollTop - next;
+    });
+    observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true });
     return () => { observer.disconnect(); node.removeEventListener('scroll', track); };
   }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
