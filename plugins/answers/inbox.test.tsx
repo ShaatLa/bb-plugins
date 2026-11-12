@@ -109,6 +109,15 @@ it('shows one reply that answers an older question and a new one once, echoing t
   const home = document.querySelector('[data-history-ids="ans_new ans_old:answer"]')!;
   expect(home.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question');
 });
+it('offers Copy and Save under the owner\'s own message, like bb', async () => {
+  const save = vi.fn(() => ({ id:'ans_saved', created:true })), writeText = vi.fn(async () => {});
+  Object.assign(navigator, { clipboard: { writeText } });
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, questionSeq:7 }], nextCursor:null }), rpc: { save } }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Question one');
+  fireEvent.click(slot.getByRole('button', { name:'Copy' })); expect(writeText).toHaveBeenCalledWith('Question one');
+  fireEvent.click(slot.getByRole('button', { name:'Save to Answers' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
+});
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final answer');

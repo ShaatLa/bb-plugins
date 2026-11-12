@@ -226,7 +226,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
   const [pending, setPending] = useState(false);
   const sending = useRef(false);
   const [feedback, setFeedback] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(''), [copied, setCopied] = useState(false), [savedOwn, setSavedOwn] = useState(false);
   async function act(write: () => Promise<unknown>) {
     setError('');
     try { await write(); } catch (cause) { setError(message(cause)); }
@@ -279,8 +279,12 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
-      {chat && <div className="flex items-center gap-2 text-xs text-muted-foreground">{time}</div>}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
+      {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
+      {chat && <div className="flex items-center gap-0.5 text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        <Button size="sm" {...iconProps(copied ? 'Copied' : 'Copy')} onClick={() => void navigator.clipboard?.writeText(group.map(member => member.question).filter(Boolean).join('\n\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}><Icon name={copied ? 'Check' : 'Copy'} aria-hidden /></Button>
+        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Answers' : 'Save to Answers')} onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
+      </span></div>}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}
     {part === 'question' && <Button variant="ghost" size="sm" className="ml-auto flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
