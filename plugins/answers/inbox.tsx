@@ -209,6 +209,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     void rpc.call('setPreferences', { projectOrder: next.join(',') }).catch(e => { setProjectOrder(null); setError(errorText(e)); });
   }
 
+  // Once a thread's reply pool holds an entry, quote replies keep collecting into it (see poolFirst).
+  const pools = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
@@ -419,7 +421,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
       {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
         <Composer label="Quote reply text" className="shadow-lg" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={draft.projectId} pending={pending} sendDisabled={draft.quote.length > 20000} onSend={options => void send(false, options)}
           header={<div className="flex items-start gap-2 pl-4 pr-2 pt-2"><div className="mt-1 max-h-32 min-w-0 flex-1 overflow-auto border-l-2 border-border-seam pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><Button type="button" size="icon" variant="ghost" className="size-7 shrink-0 text-muted-foreground" aria-label="Close" onClick={() => setDraft(null)}><Icon name="X" aria-hidden /></Button></div>}
-          onPool={draft.quote.length > 20000 ? undefined : () => void send(true)} />
+          onPool={draft.quote.length > 20000 ? undefined : () => void send(true)} poolFirst={!!pools.data?.pools.some(pool => pool.threadId === draft.threadId && pool.entries.length)} />
         {error && <p role="alert" className="mt-1 rounded-md bg-background px-2 text-xs text-destructive">{error}</p>}
       </div>}
       {!draft && error && <p role="alert">{error}</p>}

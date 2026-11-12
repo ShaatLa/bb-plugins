@@ -25,10 +25,11 @@ type Props = {
   editMode?: boolean; onCancel?: () => void;
   // The thread is working: like bb, an empty box turns Send into Stop.
   onStop?: () => void;
+  poolFirst?: boolean;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
@@ -90,12 +91,12 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {/* The host voice control sits beside Send in both grid layouts. */}
     <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
       <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
-      <RichEditor insertRef={insertText} editorRef={editor} label={label} value={value} onChange={onChange} onSend={() => submit()} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className={`block w-full overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none ${tall ? '' : 'pr-10'}`} />
+      <RichEditor insertRef={insertText} editorRef={editor} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className={`block w-full overflow-y-auto bg-transparent px-2 py-1.5 text-sm leading-relaxed outline-none ${tall ? '' : 'pr-10'}`} />
       {/* bb insets its mic 4px inside this box: that makes the 8px bottom of the other buttons and their 4px gap. */}
       <div className={`absolute bottom-1 right-[var(--mic-r)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
-        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}
@@ -106,20 +107,24 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
  * bb's split send button: the main part queues; the menu steers, saves a draft held in the
  * thread's queue, or schedules. Children are the main part's content (an icon or a label).
  */
-export function SendButton({ label, disabled, onSend, onPool, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; onPool?: () => void; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
+// poolFirst: the owner is collecting into a reply pool, so the main button (and Enter) adds to it and Send now moves to the menu.
+export function SendButton({ label, disabled, onSend, onPool, poolFirst = false, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; onPool?: () => void; poolFirst?: boolean; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
+  const pooling = poolFirst && !!onPool;
   const [menu, setMenu] = useState(false), [later, setLater] = useState<string | null>(null), [error, setError] = useState('');
   const close = () => { setMenu(false); setLater(null); setError(''); };
   const item = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
-    <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onClick={() => onSend()}>{children}</Button>
+    {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" onClick={() => onPool!()}><Icon name="ListEnd" aria-hidden /></Button>
+      : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onClick={() => onSend()}>{children}</Button>}
     <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled && !onPool} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>
     {menu && <div role="menu" className={`absolute right-0 z-20 w-56 rounded-lg border border-border bg-background p-1 shadow-lg ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
       {later === null ? <>
         {/* Adding to the pool needs no text, so it stays available while sending is blocked. */}
+        {pooling && <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend(); }}><Icon name="ArrowUp" aria-hidden className="size-4 text-muted-foreground" />Send now</button>}
         <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'steer' }); }}><Icon name="CornerDownRight" aria-hidden className="size-4 text-muted-foreground" />Steer</button>
         <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'draft' }); }}><Icon name="EditFile" aria-hidden className="size-4 text-muted-foreground" />Save draft</button>
         <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => setLater(nextHour())}><Icon name="TimeSchedule" aria-hidden className="size-4 text-muted-foreground" />Send later…</button>
-        {onPool && <button type="button" role="menuitem" className={item} onClick={() => { close(); onPool(); }}><Icon name="ListEnd" aria-hidden className="size-4 text-muted-foreground" />Add to reply pool</button>}
+        {onPool && !pooling && <button type="button" role="menuitem" className={item} onClick={() => { close(); onPool(); }}><Icon name="ListEnd" aria-hidden className="size-4 text-muted-foreground" />Add to reply pool</button>}
       </> : <div className="space-y-2 p-1.5">
         <input type="datetime-local" aria-label="Send at" autoFocus className="w-full rounded-md border border-border-seam bg-transparent px-2 py-1 text-sm" value={later} onChange={event => setLater(event.target.value)} />
         {error && <p role="alert" className="text-xs text-destructive">{error}</p>}

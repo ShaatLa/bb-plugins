@@ -165,3 +165,13 @@ it('turns Send into Stop while the thread works and the box is empty, like bb', 
   const typed = view('More');
   expect(typed.queryByRole('button', { name: 'Stop' })).toBeNull(); expect(typed.getByRole('button', { name: 'Send' })).toBeTruthy();
 });
+
+it('collects into the reply pool on Enter and the main button once pooling, with Send now in the menu', () => {
+  const onPool = vi.fn(), onSend = vi.fn();
+  const slot = renderSlot({ component: () => <Composer label="Reply" value="Note" onChange={() => {}} attachments={[]} onAttachments={() => {}} projectId="p" onSend={onSend} onPool={onPool} poolFirst /> }, {});
+  fireEvent.keyDown(slot.getByRole('textbox', { name:'Reply' }), { key:'Enter' }); expect(onPool).toHaveBeenCalledTimes(1);
+  fireEvent.click(slot.getByRole('button', { name:'Add to reply pool' })); expect(onPool).toHaveBeenCalledTimes(2); expect(onSend).not.toHaveBeenCalled();
+  fireEvent.click(slot.getByRole('button', { name:'More send options' }));
+  expect(slot.queryByRole('menuitem', { name:'Add to reply pool' })).toBeNull();
+  fireEvent.click(slot.getByRole('menuitem', { name:'Send now' })); expect(onSend).toHaveBeenCalledWith(undefined);
+});
