@@ -201,6 +201,8 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
   for (const t of sidebarThreads) if (t.parentThreadId) children.set(t.parentThreadId, [...(children.get(t.parentThreadId) ?? []), t]);
   const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
+  // A plain send to a thread whose turn is running joins its queue (queue-if-active), so it shows there, not as a chat bubble.
+  const willQueue = (threadId: string, options?: SendOptions) => options?.mode !== 'steer' && ['active', 'pending', 'starting', 'stopping'].includes(sidebarThreads.find(t => t.id === threadId)?.status ?? '');
   const ownWorking = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).isWorking;
   // A contact with sub-sessions previews their tally instead of the last message: direct and deeper ones, working and idle.
   const subTally = (id: string) => {
@@ -280,13 +282,13 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     if (!selected || composePending || (!compose.text.trim() && !compose.files.length)) return;
     const threadId = selected, sent = compose;
     setComposePending(true); setComposeError('');
-    const optimisticId = Date.now() + Math.random(), showBubble = options?.mode !== 'draft' && !options?.sendAt && !!sent.text.trim();
+    const optimisticId = Date.now() + Math.random(), showBubble = options?.mode !== 'draft' && !options?.sendAt && !!sent.text.trim() && !willQueue(threadId, options);
     if (showBubble) setOptimistic(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     try {
       const input = [...(sent.text.trim() ? [{ type: 'text' as const, mentions: mentionsForText(sent.text, id => { const thread = sidebarThreads.find(t => t.id === id); return thread ? { label: thread.displayTitle, projectId: thread.projectId } : undefined; }), text: sent.text }] : []), ...sent.files.map(f => f.type === 'localImage' ? { type: 'localImage' as const, path: f.path, ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) } : { type: 'localFile' as const, path: f.path, name: f.name, ...(f.mimeType ? { mimeType: f.mimeType } : {}), ...(f.sizeBytes ? { sizeBytes: f.sizeBytes } : {}), ...(f.sourceProjectId ? { sourceProjectId: f.sourceProjectId } : {}) })];
       const result = await sdk.threads.send({ threadId, mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'answers', data: { kind: 'draft' } } } : {}) });
       // A queued message lives in the queue card until bb delivers it, as in bb's own chat; a bubble would show it twice.
-      if (result.ok && result.delivery === 'queued') setOptimistic(old => old.filter(b => b.id !== optimisticId));
+      if (result.ok && result.delivery === 'queued') { setOptimistic(old => old.filter(b => b.id !== optimisticId)); setQueueVersion(n => n + 1); }
       if (JSON.stringify(drafts[threadId]) === JSON.stringify(sent)) { delete drafts[threadId]; saveDrafts(); }
       if (selectedRef.current === threadId) setCompose(current => JSON.stringify(current) === JSON.stringify(sent) ? { text: '', files: [] } : current);
       setQueueVersion(n => n + 1); refresh(); requestAnimationFrame(() => scroll.current?.scrollTo?.({ top: scroll.current.scrollHeight }));
@@ -443,7 +445,7 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     if (!draft || pending || draft.quote.length > 20000) return;
     setPending(true); setError('');
     // Like the composer: show the sent quote reply at once instead of waiting for the thread's events to be ingested.
-    const optimisticId = Date.now() + Math.random(), threadId = draft.threadId, bubble = !pool && options?.mode !== 'draft' && !options?.sendAt ? buildReplyMessage([{ quote: draft.quote, note: text }]).trim() : '';
+    const optimisticId = Date.now() + Math.random(), threadId = draft.threadId, bubble = !pool && options?.mode !== 'draft' && !options?.sendAt && !willQueue(threadId, options) ? buildReplyMessage([{ quote: draft.quote, note: text }]).trim() : '';
     if (bubble) setOptimistic(old => [...old, { threadId, text: bubble, id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     try {
       if (pool) { await rpc.call('poolAdd', { threadId: draft.threadId, quote: draft.quote, itemId: draft.itemId, ...(draft.quoteSeq === undefined ? {} : { quoteSeq: draft.quoteSeq }), note: text, ...(files.length ? { attachments: files } : {}) }); panel.openTab({ tab: poolsTab }); }
