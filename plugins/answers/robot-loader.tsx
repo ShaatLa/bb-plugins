@@ -41,6 +41,7 @@ const css = `
 .ar-flip{transform-box:view-box;transform-origin:12px 0;animation:ar-flip 2.4s ease-in-out infinite}
 .ar-breathe{animation:ar-bob 1.6s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
+.ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
@@ -49,6 +50,8 @@ const css = `
 @keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
 @keyframes ar-flip{0%,55%{transform:scaleX(1)}90%,100%{transform:scaleX(-1)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
+@keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
+@keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.35)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -100,20 +103,23 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
 // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
 const AIMS = { up: -14, down: 20 } as const;
 const aim = () => Math.random() < .5 ? 'up' : 'down';
+const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>;
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
-  const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
+  // The question mark rides above the leaning head but stays upright and unmirrored.
+  const side = (which: keyof typeof AIMS, mirrored: boolean) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
     <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
-      <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></g></>;
+      <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
+    <g transform={`rotate(${-AIMS[which]} 12.1 -0.6)${mirrored ? ' translate(24.2 0) scale(-1 1)' : ''}`}>{ask}</g></g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
-    <g className="ar-right">{side(aims[0])}</g>
-    <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side(aims[1])}</g></g>
+    <g className="ar-right">{side(aims[0], false)}</g>
+    <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side(aims[1], true)}</g></g>
+    {/* Facing us the lens moves to and from the eye, which swells and shrinks behind it. */}
     <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
       <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
       <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
-      <circle cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" /></g>
-    <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>
+      <circle className="ar-near" cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle className="ar-near eye" cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" />{ask}</g>
   </g>;
 }
 
