@@ -95,16 +95,16 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   </g>
 </g>;
 
-// In profile the magnifier is held out at eye level, seen nearly edge-on; each time the robot turns to a side it aims it
-// up or down at random (arm raised or lowered at the shoulder, lens tipped at the hand). Facing us it sits over one eye,
-// which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
-const AIMS = { up: [-8, 25], down: [25, 45] } as const;
+// In profile the magnifier is held out at eye level, seen nearly edge-on; each time the robot turns to a side it leans,
+// at random, back to look up or forward to look down, bending at the hip with the legs planted. Facing us the lens sits
+// over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
+const AIMS = { up: -14, down: 20 } as const;
 const aim = () => Math.random() < .5 ? 'up' : 'down';
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
-  const side = (which: keyof typeof AIMS) => { const [arm, lens] = AIMS[which]; return <>{sideHead}{sideBody}{standingLegs}
-    <g transform={`rotate(${arm} 14.5 13.2)`}><g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" />
-      <g transform={`rotate(${lens} 19.8 12.6)`}><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" /><ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></g></g></>; };
+  const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
+    <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
+      <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
     <g className="ar-right">{side(aims[0])}</g>
