@@ -23,10 +23,12 @@ type Props = {
   editableWhilePending?: boolean;
   sendLabel?: string; header?: ReactNode; className?: string;
   editMode?: boolean; onCancel?: () => void;
+  // The thread is working: like bb, an empty box turns Send into Stop.
+  onStop?: () => void;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
@@ -93,7 +95,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       <div className={`absolute bottom-1 right-[var(--mic-r)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
       <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
         {actions}
-        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool}><Icon name="ArrowUp" aria-hidden /></SendButton>}
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}

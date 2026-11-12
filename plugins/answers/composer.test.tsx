@@ -155,3 +155,13 @@ it('revokes an uploaded image preview when the attachment is removed, and on unm
   cleanup();
   expect(revoke).toHaveBeenLastCalledWith('blob:two'); expect(revoke).toHaveBeenCalledTimes(2);
 });
+
+it('turns Send into Stop while the thread works and the box is empty, like bb', () => {
+  const onStop = vi.fn(), onSend = vi.fn();
+  const view = (value: string) => renderSlot({ component: () => <Composer label="Reply" value={value} onChange={() => {}} attachments={[]} onAttachments={() => {}} projectId="p" onSend={onSend} onStop={onStop} /> }, {});
+  const empty = view('');
+  fireEvent.click(empty.getByRole('button', { name: 'Stop' })); expect(onStop).toHaveBeenCalledOnce();
+  expect(empty.queryByRole('button', { name: 'Send' })).toBeNull(); empty.unmount();
+  const typed = view('More');
+  expect(typed.queryByRole('button', { name: 'Stop' })).toBeNull(); expect(typed.getByRole('button', { name: 'Send' })).toBeTruthy();
+});
