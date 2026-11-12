@@ -161,7 +161,7 @@ describe("bb work-board CLI", () => {
     }
     const preview = await list("--preview", "--after", first.id);
     expect(preview.comments).toEqual([{ id: last.id, createdAt: last.createdAt, kind: "agent", author: "Agent", bytes: Buffer.byteLength(body), preview: body.replace(/\s+/g, " ").trim().slice(0, 200), truncated: true }]);
-    expect(preview.more[last.id]).toBe(`bb work-board comment show ${last.id}`);
+    expect(preview.more.comment).toBe("bb work-board comment show <ID>");
     expect((await list("--preview", "--cursor", system.id)).comments[0].truncated).toBe(false);
     const full = JSON.parse(stdout(await harness.runCli(["comment", "show", last.id, "--json"])));
     expect(full).toMatchObject({ comment: { id: last.id, body, threadTitle: null, provider: null }, attachments: [{ id: attachment.id, fileName: "note.txt", sizeBytes: 4 }] });

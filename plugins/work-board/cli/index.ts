@@ -2744,7 +2744,7 @@ export function registerTasksCli(
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
               if (brief && questions.some(q => q.answeredBy !== null || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
-              if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json`;
+              if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
@@ -2819,7 +2819,7 @@ ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thre
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 `Description\n${task.description || "(none)"}`,
-                `Current state (updated ${task.progressUpdatedAt ?? "-"} by ${task.progressUpdatedBy ?? "-"})\n${task.progressNote ?? "(none)"}`,
+                task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],
                   subtasks.map((subtask) => [
@@ -3184,11 +3184,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 preview: oneLine(comment.body).slice(0, 200),
                 truncated: oneLine(comment.body).length > 200,
               }));
-              const more = input.options.preview ? Object.fromEntries(page.map(c => [c.id, `bb work-board comment show ${c.id}`])) : {};
+              const more: Record<string, string> = input.options.preview && page.length ? { comment: "bb work-board comment show <ID>" } : {};
               if (hiddenSystem) more.system = `bb work-board comment list ${task.key} --kind system${input.options.after ? ` --after ${input.options.after}` : ""}${input.options.cursor ? ` --cursor ${input.options.cursor}` : ""}`;
               if (input.options.json) return JSON.stringify({ comments: input.options.preview ? previews : page, total: comments.length, nextCursor, latestCommentId, hiddenSystem, ...(Object.keys(more).length ? { more } : {}) });
               const rendered = input.options.preview ? table(["ID", "TIME", "KIND", "AUTHOR", "SIZE", "PREVIEW"], previews.map(c => [c.id, c.createdAt, c.kind, c.author, bytes(c.bytes), c.preview]), "(none)") : commentsTable(page);
-              return `${rendered}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}${hiddenSystem ? `\n${hiddenSystem} system comment(s) hidden; read with \`${more.system}\`` : ""}${input.options.preview ? page.map(c => `\nFull comment and attachments: \`bb work-board comment show ${c.id}\``).join("") : ""}`;
+              return `${rendered}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}${hiddenSystem ? `\n${hiddenSystem} system comment(s) hidden; read with \`${more.system}\`` : ""}${more.comment ? `\nFull comment and attachments: \`${more.comment}\`` : ""}`;
             });
           },
         }),

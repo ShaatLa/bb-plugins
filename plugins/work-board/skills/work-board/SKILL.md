@@ -140,7 +140,7 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    command. Start with `bb work-board show ABC-12 --brief` before any comments.
    It includes Current state, full open questions and compact answered questions.
    Omission hints name commands for comments, evidence, full questions/history
-   (`question list ABC-12`) and per-check PR details (`show ABC-12 --json`). JSON puts
+   (`question list ABC-12`) and per-check PR details (`show ABC-12 --json --comments 0`). JSON puts
    those commands in `more`. Add `--comments N` for the latest N of all kinds.
 
    The responsible session replaces Current state at each milestone and hand-off:
