@@ -28,7 +28,7 @@ const css = `
 .ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
-.ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
+.ar-scan{transform-box:view-box;transform-origin:12px 13px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
@@ -105,7 +105,8 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   </g>
 </g>;
 
-// In profile the magnifier is held out at eye level, seen nearly edge-on; each time the robot turns to a side it leans,
+// In profile the arm comes from the shoulder, the other hand tucked behind the back, and the magnifier, seen nearly
+// edge-on, is tipped forward so it stays clear of the head; each time the robot turns to a side it leans,
 // at random, back to look up or forward to look down, bending at the hip with the legs planted. Facing us the lens sits
 // over one eye, which looks huge through it. The robot turns right, front, left, front.
 const AIMS = { up: -14, down: 20 } as const;
@@ -113,8 +114,9 @@ const aim = () => Math.random() < .5 ? 'up' : 'down';
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
   const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
-    <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
-      <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
+    <line x1="11.6" y1="13.2" x2="9" y2="16.4" />
+    <g className="ar-scan"><line x1="12" y1="13" x2="16.4" y2="12.6" /><line x1="16.4" y1="12.6" x2="18.2" y2="10.46" strokeWidth="1.4" />
+      <ellipse cx="19.74" cy="8.62" rx="1.3" ry="2.4" strokeWidth="1.1" transform="rotate(40 19.74 8.62)" /></g>
     </g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
