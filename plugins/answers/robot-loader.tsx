@@ -86,9 +86,11 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
 // the walk back will meet it. Kick times follow from the walk: rightward at 8.6% (x = -5, the pebble at 8.5), leftward at
 // 58.6% (x = 5, the pebble at 15.5).
-const walker = (pebble: boolean) => <>
+const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
+// The thinking walker carries a question mark over its head, kept unmirrored when it walks left.
+const walker = (pebble: boolean, mirrored = false) => <>
   <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
-    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
+    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /><g transform={mirrored ? 'translate(24.2 0) scale(-1 1)' : undefined}>{ask}</g></>}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
     <g className="ar-kicking"><line x1="12" y1="18" x2="11.2" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
@@ -96,7 +98,7 @@ const walker = (pebble: boolean) => <>
 const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
 const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
   <g className="ar-right">{walker(pebble)}</g>
-  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
+  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble, true)}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
     {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
@@ -105,26 +107,24 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
 
 // In profile the magnifier is held out at eye level, seen nearly edge-on; each time the robot turns to a side it leans,
 // at random, back to look up or forward to look down, bending at the hip with the legs planted. Facing us the lens sits
-// over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
+// over one eye, which looks huge through it. The robot turns right, front, left, front.
 const AIMS = { up: -14, down: 20 } as const;
 const aim = () => Math.random() < .5 ? 'up' : 'down';
-const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
-  // The question mark rides above the head, leaning with it, never mirrored.
-  const side = (which: keyof typeof AIMS, mirrored: boolean) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
+  const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
     <g className="ar-scan"><line x1="14.5" y1="13.2" x2="19.8" y2="12.6" /><line x1="19.8" y1="12.6" x2="19.8" y2="9.8" strokeWidth="1.4" />
       <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
-    <g transform={mirrored ? 'translate(24.2 0) scale(-1 1)' : undefined}>{ask}</g></g></>;
+    </g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
-    <g className="ar-right">{side(aims[0], false)}</g>
-    <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side(aims[1], true)}</g></g>
+    <g className="ar-right">{side(aims[0])}</g>
+    <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side(aims[1])}</g></g>
     {/* Facing us the lens moves to and from the eye, which swells and shrinks behind it. */}
     <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
       <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
       <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
-      <circle className="ar-near" cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle className="ar-near eye" cx="14" cy="7.5" r=".95" fill="currentColor" stroke="none" />{ask}</g>
+      <circle className="ar-near" cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle className="ar-near eye" cx="14" cy="7.5" r=".95" fill="currentColor" stroke="none" /></g>
   </g>;
 }
 
