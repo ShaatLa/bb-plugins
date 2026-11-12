@@ -184,15 +184,15 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   };
   const expand = () => { const top = preview.current?.getBoundingClientRect().top; setOpen(true); requestAnimationFrame(() => keepLatestAt(top)); };
   return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
-    <div className="overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
-      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { if (open) setOpen(false); else expand(); }} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
+    <div className="group/card overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
+      <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { if (open) setOpen(false); else expand(); }} className={`flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground ${open ? 'hover:bg-state-hover' : 'group-hover/card:bg-state-hover'}`}>
         <Icon name="ListTodo" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">Background updates</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span>
         <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground" onClick={expand}><span className="line-clamp-2 break-words">{previewText}</span></p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words">{previewText}</span></p>}
     </div>
   </li>;
 }
