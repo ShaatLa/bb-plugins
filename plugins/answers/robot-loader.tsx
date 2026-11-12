@@ -37,7 +37,7 @@ const css = `
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
 .ar-leg.slow{animation-duration:.7s}
-.ar-walking{animation:ar-walking 13s step-end infinite}.ar-kicking{animation:ar-kicking 13s step-end infinite;opacity:0}
+.ar-down{animation:ar-down 13s ease-in-out infinite}.ar-walking{animation:ar-walking 13s step-end infinite}.ar-kicking{animation:ar-kicking 13s step-end infinite;opacity:0}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 13s ease-in-out infinite}
 .ar-pebble{transform:translate(8.5px,20.7px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 13s ease-out infinite}
@@ -52,6 +52,7 @@ const css = `
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
 @keyframes ar-spark{0%,19%{opacity:0;transform:scale(.4)}21%{opacity:1;transform:scale(1)}36%,100%{opacity:0;transform:scale(1.3)}}
+@keyframes ar-down{0%,5.375%{transform:translateY(0)}6.875%,9.875%{transform:translateY(1.1px)}11.375%,51.375%{transform:translateY(0)}52.875%,55.875%{transform:translateY(1.1px)}57.375%,100%{transform:translateY(0)}}
 @keyframes ar-walking{0%{opacity:1}5.375%{opacity:0}10.375%{opacity:1}51.375%{opacity:0}56.375%{opacity:1}}
 @keyframes ar-kicking{0%{opacity:0}5.375%{opacity:1}10.375%{opacity:0}51.375%{opacity:1}56.375%{opacity:0}}
 @keyframes ar-kick{0%,5.375%{transform:rotate(10deg)}7.875%{transform:rotate(-55deg)}10.375%,51.375%{transform:rotate(10deg)}53.875%{transform:rotate(-55deg)}56.375%,100%{transform:rotate(10deg)}}
@@ -90,7 +91,7 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
 // The thinking walker carries a question mark over its head, kept unmirrored when it walks left.
 const walker = (pebble: boolean, mirrored = false) => <>
-  <g className="ar-bob">{sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
+  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></> : sideHead}{sideBody}{pebble ? <line className="ar-arm" x1="12" y1="13" x2="12" y2="16.5" />
     : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /><g transform={mirrored ? 'translate(24.2 0) scale(-1 1)' : undefined}>{ask}</g></>}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
     <g className="ar-kicking"><line x1="12" y1="18" x2="11.2" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
@@ -104,10 +105,11 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
     {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
   </g>
-  {/* Waiting, at the left end it stops facing us, eyes down on the watch on its raised forearm. */}
+  {/* Waiting, at the left end it stops facing us, eyes down on the round watch on its raised forearm; at each kick it
+      looks down at the pebble (ar-down). */}
   {pebble && <g className="ar-watch">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10.4" cy="9.1" r=".9" /><circle cx="14.4" cy="9.1" r=".9" />
     <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-    <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><rect className="ar-solid" x="14.2" y="13.4" width="1.6" height="1.3" rx=".35" strokeWidth=".6" /></g>}
+    <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><circle className="ar-solid" cx="15" cy="14.05" r=".8" strokeWidth=".6" /></g>}
 </g>;
 
 // In profile the arm comes from the shoulder, the far arm showing from behind the back, and the magnifier, seen nearly
