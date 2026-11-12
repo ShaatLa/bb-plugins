@@ -135,6 +135,31 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("shows a brief task and pages its comments newest first", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Brief", "--prefix", "BRF"]);
+    await harness.runCli(["create", "--project", "BRF", "--title", "Long card", "--description", "Keep this."]);
+    for (const body of ["one", "two", "three"]) await harness.runCli(["comment", "BRF-1", "--body", body]);
+
+    const brief = JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--brief", "--json"])));
+    expect(brief).toMatchObject({ task: { description: "Keep this." }, comments: [], commentCount: 3, commentsOmitted: 3 });
+    expect(brief).not.toHaveProperty("evidence");
+    expect(stdout(await harness.runCli(["show", "BRF-1", "--brief"]))).toContain("3 of 3 comment(s) not shown; read them with `bb work-board comment list BRF-1`");
+    const latest = JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--comments", "1", "--json"])));
+    expect(latest.comments.map((comment: { body: string }) => comment.body)).toEqual(["three"]);
+    expect(JSON.parse(stdout(await harness.runCli(["show", "BRF-1", "--json"]))).comments).toHaveLength(3);
+
+    const first = JSON.parse(stdout(await harness.runCli(["comment", "list", "BRF-1", "--limit", "2", "--json"])));
+    expect(first.comments.map((comment: { body: string }) => comment.body)).toEqual(["two", "three"]);
+    expect(first.total).toBe(3);
+    const second = JSON.parse(stdout(await harness.runCli(["comment", "list", "BRF-1", "--limit", "2", "--cursor", first.nextCursor, "--json"])));
+    expect(second).toMatchObject({ comments: [{ body: "one" }], nextCursor: null });
+    expect(JSON.parse(stdout(await harness.runCli(["comment", "list", "BRF-1", "--kind", "system", "--json"])))).toMatchObject({ comments: [], total: 0 });
+    await expect(harness.runCli(["comment", "list", "BRF-1", "--cursor", "nope"])).resolves.toMatchObject({ exitCode: 1 });
+    await harness.dispose();
+  });
+
   it("runs create, list, show, update, and comment through case-insensitive key addressing", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "work-board",

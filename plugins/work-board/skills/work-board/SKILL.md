@@ -136,6 +136,20 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    open/draft/merged/closed). Use
    `bb work-board show ABC-12 --json` when the result will drive commands or code.
 
+   Long cards carry hundreds of comments, so save context: start with
+   `bb work-board show ABC-12 --brief`, which keeps the fields, description,
+   dependencies, subtasks, threads, PR states and open questions but leaves out
+   comments, evidence records, question history and per-check PR details (it
+   reports how many comments it skipped). Add `--comments N` for the latest N
+   comments. Read older history a page at a time, newest page first:
+
+   ```sh
+   bb work-board comment list ABC-12 --limit 20 [--kind user --kind agent] [--cursor <nextCursor>] --json
+   ```
+
+   Each page returns `nextCursor` (null on the oldest page); pass it back with
+   the same `--kind` filters. Use the full `show` only when you need everything.
+
    For project-wide discovery, `bb work-board list` returns at most 100 rows by
    default. Pass `--limit 1-500`; in JSON, continue with `nextCursor` via the
    same filters/sort and `--cursor <value>` (human output prints the exact

@@ -137,6 +137,16 @@ function friendlyError(error: unknown): string {
   return message;
 }
 
+const COMMENTS_PAGE_MAX = 500;
+
+function commentsTable(comments: readonly { createdAt: string; kind: string; threadTitle: string | null; authorName: string; provider: { name: string } | null; body: string }[]): string {
+  return table(
+    ["TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
+    comments.map((comment) => [comment.createdAt, comment.kind, comment.threadTitle ?? comment.authorName, comment.provider?.name ?? "-", comment.body]),
+    "(none)",
+  );
+}
+
 async function guard(
   action: () => Promise<string | PluginCliResult>,
 ): Promise<PluginCliResult> {
@@ -2653,7 +2663,11 @@ export function registerTasksCli(
           aliases: ["get"],
           suggestFor: ["view", "read", "info", "detail", "details", "describe"],
           positionals: [KEY_POSITIONAL],
-          options: { json: JSON_OPTION },
+          options: {
+            brief: { type: "boolean", description: "Leave out comments, evidence records, question history and per-check PR details; counts stay" },
+            comments: { type: "integer", min: 0, max: COMMENTS_PAGE_MAX, description: "Include only the latest N comments (default: all, or none with --brief)" },
+            json: JSON_OPTION,
+          },
           run(input) {
             return guard(async () => {
               const task = await resolveTask(
@@ -2700,6 +2714,11 @@ export function registerTasksCli(
                 task.id,
                 comments,
               );
+              const brief = input.options.brief === true;
+              const keep = input.options.comments ?? (brief ? 0 : comments.length);
+              const shownComments = keep ? comments.slice(-keep) : [];
+              const omittedComments = comments.length - shownComments.length;
+              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => question) : questions;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
               const activity = cardMeta.activity;
               const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
@@ -2711,7 +2730,10 @@ export function registerTasksCli(
                     }),
                   ),
                 );
-              const { links: prLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const { links: allPrLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const prLinks = brief
+                ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
+                : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
               if (input.options.json) {
                 return JSON.stringify({
@@ -2733,9 +2755,11 @@ export function registerTasksCli(
                   blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
-                  comments,
-                  questions,
-                  evidence: evidence.records,
+                  comments: shownComments,
+                  commentCount: comments.length,
+                  ...(omittedComments ? { commentsOmitted: omittedComments } : {}),
+                  questions: shownQuestions,
+                  ...(brief ? {} : { evidence: evidence.records }),
                   evidenceSummary: evidence.summary,
                   evidenceFlags: evidenceFlags(evidence.records, pullRequests, prLinks),
                 });
@@ -2826,19 +2850,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
-                `Questions\n${JSON.stringify(questions, null, 2)}`,
-                `Evidence\n${evidenceText(evidence)}`,
-                `Comments\n${table(
-                  ["TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
-                  comments.map((comment) => [
-                    comment.createdAt,
-                    comment.kind,
-                    comment.threadTitle ?? comment.authorName,
-                    comment.provider?.name ?? "-",
-                    comment.body,
-                  ]),
-                  "(none)",
-                )}`,
+                `Questions\n${JSON.stringify(shownQuestions, null, 2)}`,
+                brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
+                `Comments\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key}\`` : ""}`,
               ].join("\n\n");
             });
           },
@@ -3092,6 +3106,32 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               return moved.key === task.key
                 ? `${task.key} is already in ${project.prefix}`
                 : `Moved ${task.key} to ${moved.key}  ${moved.title}`;
+            });
+          },
+        }),
+
+        "comment list": cliCommand({
+          summary: "List a task's comments one page at a time, newest page first",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            limit: { type: "integer", min: 1, max: COMMENTS_PAGE_MAX, description: "Comments per page (default 20)" },
+            cursor: { type: "string", description: "nextCursor from the previous page: comments older than that one" },
+            kind: { type: "enum", values: ["user", "agent", "system"] as const, repeatable: true, description: "Only these comment kinds; repeat to include several" },
+            json: JSON_OPTION,
+          },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const kinds: readonly string[] = input.options.kind ?? [];
+              const comments = tasksRpcContract.listComments.output.parse(
+                await domain.listComments(tasksRpcContract.listComments.input.parse({ taskId: task.id })),
+              ).comments.filter((comment) => !kinds.length || kinds.includes(comment.kind));
+              const end = input.options.cursor ? comments.findIndex((comment) => comment.id === input.options.cursor) : comments.length;
+              if (end < 0) throw new CliError(`cursor not found: ${input.options.cursor}; the comment was deleted or the filters changed, so start again without --cursor`);
+              const page = comments.slice(Math.max(0, end - (input.options.limit ?? 20)), end);
+              const nextCursor = end > page.length ? page[0]!.id : null;
+              if (input.options.json) return JSON.stringify({ comments: page, total: comments.length, nextCursor });
+              return `${commentsTable(page)}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}`;
             });
           },
         }),
