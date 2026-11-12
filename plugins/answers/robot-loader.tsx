@@ -37,7 +37,6 @@ const css = `
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
-.ar-breathe{animation:ar-bob 1.6s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-solid{fill:var(--background,#fff)}
@@ -166,13 +165,13 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
     }
     case 'wait': return pacing(false, true);
     case 'rest': return <>
-      {/* On its back on a couch, eyes shut, chest rising and falling; Zzz drift up from the head. */}
+      {/* On its back on a couch, eyes shut, still; Zzz drift up toward the middle. */}
       <rect x="1" y="10.6" width="24" height="5.4" rx="1.2" /><line x1="2" y1="18" x2="2" y2="21" /><line x1="24" y1="18" x2="24" y2="21" />
-      <g className="ar-breathe"><line x1="0.9" y1="11.9" x2="2.4" y2="11.9" /><rect className="ar-solid" x="2.4" y="8.6" width="7" height="6.6" rx="2" /><path d="M5.6 10 Q4.8 10.9 5.6 11.8" />
+      <g><line x1="0.9" y1="11.9" x2="2.4" y2="11.9" /><rect className="ar-solid" x="2.4" y="8.6" width="7" height="6.6" rx="2" /><path d="M5.6 10 Q4.8 10.9 5.6 11.8" />
         <rect className="ar-solid" x="10" y="10.2" width="6.4" height="5" rx="1" /><line x1="11" y1="10.2" x2="15" y2="9.4" /></g>
       <line x1="16.4" y1="13" x2="23" y2="13" /><line x1="16.4" y1="14.3" x2="23" y2="14.3" />
       <rect className="ar-solid" x="0" y="15.4" width="26" height="2.6" rx="1" /><rect className="ar-solid" x="-1" y="13.4" width="2.6" height="4.6" rx="1" /><rect className="ar-solid" x="24.4" y="13.4" width="2.6" height="4.6" rx="1" />
-      {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M7 5 h1.4 l-1.4 1.4 h1.4" />)}
+      {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M10.5 5 h1.4 l-1.4 1.4 h1.4" />)}
     </>;
     default: return pacing(true, false);
   }
