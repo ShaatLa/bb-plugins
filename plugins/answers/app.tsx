@@ -171,18 +171,23 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
   const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
-  // The stack-card look of "Active child threads", so the group stands out from the caption rows around it. Opening it
-  // keeps the latest update where its preview was; the earlier ones open above it, like older messages in a chat.
-  const preview = useRef<HTMLParagraphElement>(null);
-  const keepLatestAt = (top: number | undefined) => {
-    const latest = row.current?.querySelector('ul')?.lastElementChild as HTMLElement | null | undefined; if (top === undefined || !latest) return;
+  // The stack-card look of "Active child threads", so the group stands out from the caption rows around it; the earlier
+  // updates open above the latest, like older messages in a chat.
+  // Opening shows the latest update whole: its end just above the composer, or its start under the chat's header when it
+  // is taller than the view. Cards above it finish rendering (markdown, images) a little later, so this holds briefly.
+  const showLatest = () => {
     let box = row.current?.parentElement ?? null; while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
     if (!box) return;
-    // Cards above it finish rendering (markdown, images) a little later; keep it in place for a moment.
-    const until = Date.now() + 400, hold = () => { box!.scrollTop += latest.getBoundingClientRect().top - top; if (Date.now() < until) requestAnimationFrame(hold); };
+    const until = Date.now() + 400, hold = () => {
+      const latest = row.current?.querySelector('ul')?.lastElementChild as HTMLElement | null | undefined; if (!latest) return;
+      const view = box!.getBoundingClientRect(), header = box!.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0;
+      const top = view.top + header, bottom = box!.querySelector<HTMLElement>('[data-composer-stack]')?.getBoundingClientRect().top ?? view.bottom, card = latest.getBoundingClientRect();
+      box!.scrollTop += card.height > bottom - top ? card.top - top : card.bottom > bottom ? card.bottom - bottom : card.top < top ? card.top - top : 0;
+      if (Date.now() < until) requestAnimationFrame(hold);
+    };
     hold();
   };
-  const expand = () => { const top = preview.current?.getBoundingClientRect().top; setOpen(true); requestAnimationFrame(() => keepLatestAt(top)); };
+  const expand = () => { setOpen(true); requestAnimationFrame(showLatest); };
   return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
     <div className="group/card overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
       <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { if (open) setOpen(false); else expand(); }} className={`flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground ${open ? 'hover:bg-state-hover' : 'group-hover/card:bg-state-hover'}`}>
@@ -192,7 +197,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p ref={preview} className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words">{previewText}</span></p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words">{previewText}</span></p>}
     </div>
   </li>;
 }
