@@ -39,6 +39,7 @@ const css = `
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
+.ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
 .ar-solid{fill:var(--background,#fff)}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}46%,50%{transform:translateX(8px)}96%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}46%{opacity:0}}
@@ -48,6 +49,7 @@ const css = `
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
 @keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
+@keyframes ar-spark{0%,19%{opacity:0;transform:scale(.4)}21%{opacity:1;transform:scale(1)}36%,100%{opacity:0;transform:scale(1.3)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -140,9 +142,9 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
-      {/* In profile, hammering a nail into a block; at 14° the hammer's face lands on the nail head. */}
+      {/* In profile, hammering a nail into a block; at 14° the hammer's face lands on the nail head, sparks fly. */}
       {sideHead}{sideBody}{standingLegs}<rect x="16.8" y="18.2" width="4.6" height="3.3" rx=".4" /><line x1="19.2" y1="16.8" x2="19.2" y2="18.2" /><line x1="18.4" y1="16.8" x2="20" y2="16.8" />
-      <g className="ar-hammer"><line x1="12" y1="13" x2="19.6" y2="13" /><rect x="18.6" y="11" width="2.4" height="4" rx=".4" /></g>
+      <g className="ar-hammer"><line x1="12" y1="13" x2="19.6" y2="13" /><rect x="18.6" y="11" width="2.4" height="4" rx=".4" /></g><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g>
     </> : <>
       {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle. */}
       {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="23" y1="15.6" x2="23" y2="21.5" />
