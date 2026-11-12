@@ -99,7 +99,7 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
 // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
 const AIMS = { up: -14, down: 20 } as const;
 const aim = () => Math.random() < .5 ? 'up' : 'down';
-const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.1" r=".3" fill="currentColor" stroke="none" /></g>;
+const ask = <g className="ar-ask"><path d="M10.8 -2.4 A1.3 1.3 0 1 1 12.1 -1.1 V-0.1" /><circle cx="12.1" cy="1.2" r=".45" fill="currentColor" stroke="none" /></g>;
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
   // The question mark rides above the head, leaning with it, never mirrored.
