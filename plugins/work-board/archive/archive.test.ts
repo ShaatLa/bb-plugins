@@ -825,7 +825,7 @@ it("round-trips owner execution and requester by ID in the latest format and def
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(15);
+  expect(manifest.version).toBe(16);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(
@@ -866,7 +866,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(15);
+  expect(manifest.version).toBe(16);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -967,7 +967,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(15);
+    expect(manifest.version).toBe(16);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1092,4 +1092,30 @@ describe("archive v13 scheduled tasks", () => {
     await expect(importProject(f.bb, f.store, out, true)).rejects.toThrow(/active scheduled run/);
     expect(f.scheduled.run(f.queued.id)).toMatchObject({ queueId: "q_live", reason: null });
   });
+});
+
+it("round-trips v16 current state and imports v15 without it", async () => {
+  const source = await seed();
+  source.store.tasks.updateTask(source.task.id, { progressNote: "Ready for review", authorName: "thr_responsible" });
+  const out = join(await directory(), "progress-v16");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  expect(manifest.version).toBe(16);
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
+  manifest.version = 15;
+  await writeFile(manifestPath, jsonText(manifest));
+  for (const id of manifest.taskIds) {
+    const path = join(out, "tasks", `${id}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    delete record.task.progressNote;
+    delete record.task.progressUpdatedAt;
+    delete record.task.progressUpdatedBy;
+    await writeFile(path, jsonText(record));
+  }
+  const legacy = setup();
+  await importProject(legacy.bb, legacy.store, out, false);
+  expect(legacy.store.tasks.getTask(source.task.id)).toMatchObject({ progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null });
 });

@@ -55,6 +55,9 @@ export interface Task {
   key: string;
   title: string;
   description: string;
+  progressNote: string | null;
+  progressUpdatedAt: string | null;
+  progressUpdatedBy: string | null;
   status: TaskStatus;
   priority: TaskPriority;
   dueDate: string | null;
@@ -184,6 +187,8 @@ export interface CreateTaskInput {
 }
 
 export interface UpdateTaskInput {
+  progressNote?: string | null;
+  authorName?: string;
   requesterThreadId?: string | null;
   title?: string;
   description?: string;

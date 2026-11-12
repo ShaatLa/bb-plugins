@@ -321,6 +321,9 @@ export const taskSchema = z
     key: z.string(),
     title: z.string(),
     description: z.string(),
+    progressNote: z.string().nullable().default(null),
+    progressUpdatedAt: z.string().nullable().default(null),
+    progressUpdatedBy: z.string().nullable().default(null),
     status: taskStatusSchema,
     archivedAt: z.iso.datetime({ precision: 3 }).nullable().optional(),
     ordinaryVisible: z.boolean().optional(),
@@ -530,6 +533,7 @@ const updateTaskInputSchema = z
     taskId: idSchema,
     title: nonBlankStringSchema.optional(),
     description: z.string().optional(),
+    progressNote: z.string().nullable().optional(),
     status: taskStatusSchema.optional(),
     priority: taskPrioritySchema.optional(),
     dueDate: dueDateSchema.nullable().optional(),
@@ -546,6 +550,7 @@ const updateTaskInputSchema = z
     (input) =>
       input.title !== undefined ||
       input.description !== undefined ||
+      input.progressNote !== undefined ||
       input.status !== undefined ||
       input.priority !== undefined ||
       input.dueDate !== undefined ||

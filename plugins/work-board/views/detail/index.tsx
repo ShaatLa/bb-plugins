@@ -1,3 +1,4 @@
+import { CurrentState } from "./current-state";
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
@@ -631,6 +632,8 @@ function TaskDetail({
             onOpenThread={(threadId) => navigate.toThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
+
+          <CurrentState key={task.id} task={task} />
 
           <div className="mb-1 mt-3 flex items-center gap-1">
             <button

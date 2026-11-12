@@ -888,6 +888,8 @@ export function registerHandlers(
           const updated = store.tasks.updateTask(current.id, {
             title: input.title,
             description: input.description,
+            progressNote: input.progressNote,
+            authorName: input.authorName,
             status: input.status,
             priority: input.priority,
             dueDate: input.dueDate,

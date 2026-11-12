@@ -519,6 +519,9 @@ describe("delegation seed prompt", () => {
       number: 1,
       key: "TASK-1",
       title: "Delegate work",
+      progressNote: null,
+      progressUpdatedAt: null,
+      progressUpdatedBy: null,
       description:
         "Implement **preset-driven** delegation.\n\nKeep the prompt useful.",
       status: "todo",

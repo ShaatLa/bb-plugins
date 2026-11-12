@@ -60,7 +60,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 15,
+      version: 16,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -210,6 +210,9 @@ export function restoreProject(
   for (const record of archive.records) {
     assertNoSecrets(record.task.title, "title");
     assertNoSecrets(record.task.description, "description");
+    assertNoSecrets(record.task.progressNote ?? undefined, "current state");
+    if (record.task.progressNote != null && Buffer.byteLength(record.task.progressNote, "utf8") > 4096)
+      throw new Error("Current state exceeds 4 KB; keep it to current state and move details to a comment or attachment");
     for (const comment of record.comments)
       assertNoSecrets(comment.body, "comment body");
     for (const comment of record.comments)
@@ -374,7 +377,7 @@ export function restoreProject(
         throw new Error(
           `Import conflict: task labels ${task.id}; use --overwrite`,
         );
-      plan("tasks", dbRow({ ...task, archivedAt: task.archivedAt ?? null }), ["id"], ["project_id"]);
+      plan("tasks", dbRow({ ...task, ...(manifest.version < 16 ? { progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null } : {}), archivedAt: task.archivedAt ?? null }), ["id"], ["project_id"]);
       for (const comment of record.comments)
         plan(
           "comments",
