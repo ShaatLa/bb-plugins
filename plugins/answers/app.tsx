@@ -182,7 +182,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
     const until = Date.now() + 400, hold = () => {
       const latest = row.current?.querySelector('ul')?.lastElementChild as HTMLElement | null | undefined; if (!latest) return;
       const view = box!.getBoundingClientRect(), header = box!.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0;
-      const top = view.top + header, bottom = view.bottom, card = latest.getBoundingClientRect();
+      const top = view.top + header, bottom = box!.parentElement?.querySelector<HTMLElement>('[data-composer-stack]')?.getBoundingClientRect().top ?? view.bottom, card = latest.getBoundingClientRect();
       box!.scrollTop += card.height > bottom - top ? card.top - top : card.bottom > bottom ? card.bottom - bottom : card.top < top ? card.top - top : 0;
       if (Date.now() < until) requestAnimationFrame(hold);
     };
