@@ -57,6 +57,15 @@ describe('Answers app', () => {
     fireEvent.click(slot.getByRole('menuitem', { name: 'Stop waiting' }));
     await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_wait', dismissed: true }));
   });
+  it('opens saved messages from the page\'s Saved section', async () => {
+    const app = await loadPluginApp(() => import('./app'));
+    const list = vi.fn((input: any) => ({ items: input.view === 'saved' ? [{ ...item, id: 'ans_kept', kind: 'saved', status: 'saved', question: '', answer: 'Kept message' }] : [], nextCursor: null }));
+    const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+    fireEvent.click(slot.getByRole('button', { name: 'Saved' }));
+    expect(await slot.findByText('Kept message')).toBeTruthy();
+    expect(slot.getByRole('searchbox', { name: 'Search answers' })).toBeTruthy();
+    slot.unmount(); localStorage.removeItem('bb-plugin-answers:page:saved-tab');
+  });
   it('keeps the selected page section after the page is unmounted', async () => {
     const app = await loadPluginApp(() => import('./app'));
     const rpc = { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) };

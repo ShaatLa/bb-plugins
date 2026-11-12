@@ -440,14 +440,18 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const rpc = useRpc<AnswersRpcContract>();
   const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
-  const view = !threadId ? 'inbox' : stored === 'pinned' ? 'saved' : stored === 'for_me' ? 'unread' : stored; // Pinned merged into Saved
+  // Page sections: Chats, Questions, Saved (messages kept with Save; the thread tab reaches them through its view picker).
+  const [savedTab, setSavedTab] = useStoredState(threadId ? null : 'bb-plugin-answers:page:saved-tab', false);
+  const view = !threadId ? (savedTab ? 'saved' : 'inbox') : stored === 'pinned' ? 'saved' : stored === 'for_me' ? 'unread' : stored; // Pinned merged into Saved
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [searchQuery, setSearchQuery] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
   const bbChat = useSettings().values?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   // Page only: the Questions section replaces the chats; a stored 'Asked of you' view (now removed) opens it.
-  const [questions, setQuestions] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
+  const [questionsTab, setQuestionsTab] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
+  const questions = questionsTab && !savedTab, setQuestions = (on: boolean) => { setQuestionsTab(on); setSavedTab(false); };
+  const section = savedTab ? 'saved' : questions ? 'questions' : 'chats', setSection = (next: typeof section) => { setQuestionsTab(next === 'questions'); setSavedTab(next === 'saved'); };
   // Opening a thread's conversation: the Chats view picks the stored selection up when it mounts.
   const openChat = (id: string) => { try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } setQuestions(false); };
   // A link from bb's chat (?thread=) opens that conversation once; the parameter is dropped so a reload keeps the user's place.
@@ -468,7 +472,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
       <div className="flex items-center gap-1">
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
           // Markup of bb's Preview/Source switch.
-          : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', false], ['Questions', true]] as const).map(([label, on]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={questions === on} onClick={() => setQuestions(on)}>{label}{on && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
+          : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', 'chats'], ['Questions', 'questions'], ['Saved', 'saved']] as const).map(([label, key]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={section === key} onClick={() => setSection(key)}>{label}{key === 'questions' && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
         <span className="flex-1" />
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
         {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
@@ -478,7 +482,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
         {!threadId && <select aria-label="Project" className="max-w-40 rounded-md border border-border-seam bg-background px-2 py-1 text-sm" value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
       </div>}
     </div>
-    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{threadId && <> · <Button size="sm" variant="ghost" onClick={() => setView('saved')}>Show in Saved</Button></>}</p>}
+    {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{view !== 'saved' && <> · <Button size="sm" variant="ghost" onClick={() => threadId ? setView('saved') : setSection('saved')}>Show in Saved</Button></>}</p>}
     {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox onBulkRead={undo.record} bbChat={bbChat} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
