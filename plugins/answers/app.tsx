@@ -215,9 +215,9 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
   const { refresh } = experimental_useRpcRefresh();
   const group = members?.length ? members : [item], last = group.at(-1)!;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
-  // A question answered here but asked further up: one muted quote line (its first line and any files), not a second bubble;
-  // a click goes to the question.
-  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className="flex max-w-full cursor-pointer items-center gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground" onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{member.question.split('\n').find(line => line.trim()) ?? ''}</span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
+  // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
+  // files), without time or buttons; a click goes to the question.
+  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground").replace("py-2.5", "py-1.5")} flex cursor-pointer items-center gap-1.5 text-left hover:text-foreground`} onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{member.question.split('\n').find(line => line.trim()) ?? ''}</span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | 'robot' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null), robotButton = useRef<HTMLButtonElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
@@ -310,7 +310,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="flex min-w-0 flex-col items-start gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
