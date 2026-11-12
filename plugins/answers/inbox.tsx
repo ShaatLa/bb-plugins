@@ -92,14 +92,15 @@ function interactionTitle(row: Interaction) {
   return subject.kind === 'command' ? subject.command : subject.kind === 'file_change' ? 'File changes pending approval' : subject.kind === 'plan' ? 'Plan ready for review' : subject.kind === 'permission_grant' ? subject.toolName ?? 'Permission request' : subject.presentation.title ?? 'Approval needed';
 }
 // Slides its content out from under the composer (or back under it) while the height follows, so the chat above moves
-// smoothly instead of jumping. The content stays mounted while it slides away.
+// smoothly instead of jumping. The content stays mounted while it slides away. The column is capped (minmax(0,1fr)) so a
+// long unwrapped line cannot widen the card past the composer.
 function Reveal({ show, children }: { show: boolean; children: ReactNode }) {
   const last = useRef(children), [gone, setGone] = useState(!show);
   if (show) last.current = children;
   useEffect(() => { if (show) { setGone(false); return; } const timer = setTimeout(() => setGone(true), 200); return () => clearTimeout(timer); }, [show]);
   if (!show && gone) return null;
-  return <div className={`grid transition-[grid-template-rows] duration-200 ease-out starting:grid-rows-[0fr] motion-reduce:transition-none ${show ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-    <div className="min-h-0 overflow-clip [overflow-clip-margin:8px]"><div className={`transition-transform duration-200 ease-out starting:translate-y-full motion-reduce:transition-none ${show ? '' : 'translate-y-full'}`}>{show ? children : last.current}</div></div></div>;
+  return <div className={`grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows] duration-200 ease-out starting:grid-rows-[0fr] motion-reduce:transition-none ${show ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+    <div className="min-h-0 min-w-0 overflow-clip [overflow-clip-margin:8px]"><div className={`transition-transform duration-200 ease-out starting:translate-y-full motion-reduce:transition-none ${show ? '' : 'translate-y-full'}`}>{show ? children : last.current}</div></div></div>;
 }
 const stackShell = 'mb-2 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift';
 // bb previews a queued message as one truncated line of inline Markdown: blocks flatten to spans, links read as text, code stays a chip.
