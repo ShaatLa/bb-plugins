@@ -1,5 +1,6 @@
+import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plugin-sdk/app';
 // A small line-art robot for "still working": it walks right in profile, stops facing front with a thought bubble,
-// walks back left and thinks again. One 8 s loop of pure CSS; with reduced motion it just stands facing front.
+// walks back left and thinks again. One 8 s loop of pure CSS; with reduced motion bb's own spinner shows instead.
 const css = `
 .ar-move{animation:ar-move 8s linear infinite}
 .ar-right{animation:ar-right 8s step-end infinite}
@@ -16,7 +17,6 @@ const css = `
 @keyframes ar-front{0%{opacity:0}35%{opacity:1}50%{opacity:0}85%{opacity:1}}
 @keyframes ar-step{from{transform:rotate(-22deg)}to{transform:rotate(22deg)}}
 @keyframes ar-dot{0%,100%{opacity:.2}50%{opacity:1}}
-@media (prefers-reduced-motion:reduce){.ar-move,.ar-leg,.ar-arm,.ar-dot{animation:none}.ar-right,.ar-left{animation:none;opacity:0}.ar-front{animation:none;opacity:1}}
 `;
 
 // Profile facing right; the left-facing one mirrors it.
@@ -27,7 +27,8 @@ const side = <>
 </>;
 
 export function RobotLoader({ className = '', label = 'Still working' }: { className?: string; label?: string }) {
-  return <svg role="img" aria-label={label} viewBox="-10 -6 44 28" className={`h-5 w-auto overflow-visible ${className}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+  return <span role="img" aria-label={label} className="inline-flex items-center"><span aria-hidden className="hidden items-center motion-reduce:inline-flex"><ThreadStatusGlyph indicator="runtime" size="compact" /></span>
+  <svg aria-hidden viewBox="-10 -6 44 28" className={`h-5 w-auto overflow-visible motion-reduce:hidden ${className}`} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
     <style>{css}</style>
     <g className="ar-move">
       <g className="ar-right">{side}</g>
@@ -42,5 +43,5 @@ export function RobotLoader({ className = '', label = 'Still working' }: { class
         <circle className="ar-dot" cx="20.8" cy="-3.25" r=".5" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx="23" cy="-3.25" r=".5" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx="25.2" cy="-3.25" r=".5" fill="currentColor" stroke="none" />
       </g>
     </g>
-  </svg>;
+  </svg></span>;
 }
