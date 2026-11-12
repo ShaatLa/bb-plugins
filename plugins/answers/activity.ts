@@ -16,7 +16,7 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
     case 'webSearch': case 'listFiles': case 'search': return 'search';
     case 'delegation': case 'backgroundTask': return 'wait';
     // A shell command that only looks or reads gets that scene; anything else is terminal work.
-    case 'commandExecution': { const command = item.command ?? ''; return SEARCH.test(command) ? 'search' : /^\s*(?:cat|head|tail|less|more|sed -n|bat|jq|wc)\b/.test(command) ? 'read' : 'terminal'; }
+    case 'commandExecution': { const command = item.command ?? ''; return /(?:^|[\s|;&(])(?:rg|grep|egrep|ag|find|fd|locate)\s/.test(command) ? 'search' : /^\s*(?:cat|head|tail|less|more|sed -n|bat|jq|wc)\b/.test(command) ? 'read' : 'terminal'; }
     case 'toolCall': case 'mcpToolCall': { const tool = `${item.server ?? ''} ${item.tool ?? ''}`; return SEARCH.test(tool) ? 'search' : READ.test(tool) ? 'read' : 'terminal'; }
     default: return 'think';
   }
