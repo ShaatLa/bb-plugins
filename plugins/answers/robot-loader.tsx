@@ -126,14 +126,14 @@ function SearchScene() {
 function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench' }) {
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
-      {/* Sitting on a stool at a desk, typing on a desktop computer whose screen fills with lines. */}
+      {/* Sitting on a stool at a desk, typing on a desktop computer turned three-quarters toward it, its screen filling with lines. */}
       {sideHead}{sideBody}<line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="10.5" y1="18.6" x2="10.5" y2="21.5" />
       <path d="M12.4 18 H15.2 V21.5" /><line className="ar-type" x1="12" y1="13" x2="16.8" y2="14.4" />
       <line x1="15.5" y1="15" x2="29" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="28" y1="15" x2="28" y2="21.5" />
       <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" /><rect x="21.4" y="13.8" width="1.4" height=".8" rx=".4" />
-      <rect x="20" y="5.4" width="8.6" height="6.6" rx=".8" /><rect x="20.8" y="6.2" width="7" height="5" rx=".3" /><line x1="24.3" y1="12" x2="24.3" y2="13.6" /><line x1="22.8" y1="13.6" x2="25.8" y2="13.6" />
+      <path d="M20 5 L25.6 6.2 V11.6 L20 12.8 Z" strokeLinejoin="round" /><path d="M25.6 6.2 L26.5 6.6 V11.2 L25.6 11.6" /><line x1="23" y1="12.2" x2="23" y2="13.6" /><line x1="21.4" y1="13.6" x2="24.6" y2="13.6" />
       <rect x="23.6" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="25.3" cy="17.6" r=".3" fill="currentColor" stroke="none" />
-      <line className="ar-glow" x1="21.8" y1="7.6" x2="26.4" y2="7.6" /><line className="ar-glow b" x1="21.8" y1="9" x2="25.6" y2="9" /><line className="ar-glow c" x1="21.8" y1="10.4" x2="24.4" y2="10.4" />
+      <line className="ar-glow" x1="21.6" y1="7.4" x2="24" y2="7.85" /><line className="ar-glow b" x1="21.6" y1="8.9" x2="23.6" y2="8.9" /><line className="ar-glow c" x1="21.6" y1="10.4" x2="23.2" y2="10.05" />
     </g>;
     case 'terminal': return <>
       {/* Back to us at a wide screen; output scrolls up inside it. */}
