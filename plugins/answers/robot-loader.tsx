@@ -30,9 +30,9 @@ const css = `
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer .7s cubic-bezier(.6,0,.9,.5) infinite}
 .ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
 .ar-paper{animation:ar-paper 1.6s linear infinite}
-.ar-pebble{animation:ar-pebble 1s ease-out infinite}
-.ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1s ease-in-out infinite}
-.ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1s ease-in-out infinite}
+.ar-pebble{animation:ar-pebble 1.5s ease-in-out infinite}
+.ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1.5s ease-in-out infinite}
+.ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1.5s ease-in-out infinite}
 .ar-scan{transform-box:view-box;transform-origin:14.5px 13.2px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
@@ -50,9 +50,9 @@ const css = `
 @keyframes ar-hammer{0%{transform:rotate(-40deg)}70%{transform:rotate(28deg)}100%{transform:rotate(-40deg)}}
 @keyframes ar-wrench{from{transform:rotate(-28deg)}to{transform:rotate(22deg)}}
 @keyframes ar-paper{from{transform:translateY(0)}to{transform:translateY(2.4px)}}
-@keyframes ar-pebble{0%,20%{transform:translate(0,0)}45%{transform:translate(2.6px,-2px)}70%,100%{transform:translate(4.5px,0)}}
-@keyframes ar-kick{0%{transform:rotate(10deg)}25%{transform:rotate(-55deg)}45%{transform:rotate(0)}70%,100%{transform:rotate(10deg)}}
-@keyframes ar-plant{0%,45%{transform:rotate(-8deg)}70%{transform:rotate(14deg)}100%{transform:rotate(-8deg)}}
+@keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(2.6px,-2.2px)}45%{transform:translate(5px,0)}100%{transform:translate(0,0)}}
+@keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
+@keyframes ar-plant{0%{transform:rotate(0)}18%{transform:rotate(8deg)}32%{transform:rotate(0)}50%{transform:rotate(-20deg)}67%{transform:rotate(20deg)}84%{transform:rotate(-20deg)}100%{transform:rotate(0)}}
 @keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
 @keyframes ar-ask{from{transform:translateY(0);opacity:.5}to{transform:translateY(-1px);opacity:1}}
 `;
