@@ -494,13 +494,17 @@ export function useRememberedPagePanel() {
   const { open, selectedKey, tabs } = experimental_usePanelTabs();
   const restored = useRef(false);
   useEffect(() => {
+    // A phone (even in landscape) has no room for the panel: bb may restore it there, so the page closes it on arrival,
+    // and the phone's panel state never overwrites the one remembered for wide screens.
+    const wide = window.matchMedia?.('(min-width: 1024px)').matches ?? true;
     if (!restored.current) {
       restored.current = true;
+      if (!wide) { if (open) panel.close(); return; }
       const saved = localStorage.getItem(PANEL_KEY);
-      // Only where there is room for it: on a phone (even in landscape) the panel would take half the page.
-      if (saved && !open && tabs.some(tab => tab.key === saved) && window.matchMedia?.('(min-width: 1024px)').matches) panel.selectTab(saved);
+      if (saved && !open && tabs.some(tab => tab.key === saved)) panel.selectTab(saved);
       return;
     }
+    if (!wide) return;
     if (open && selectedKey) localStorage.setItem(PANEL_KEY, selectedKey); else localStorage.removeItem(PANEL_KEY);
   }, [open, selectedKey, tabs, panel]);
 }
