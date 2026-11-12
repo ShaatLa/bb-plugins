@@ -3,7 +3,7 @@ import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plu
 
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
-// terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench; search — looks
+// terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench on a bolt; search — looks
 // around through a magnifier; read — faces us over an open book, turning its pages; wait — walks to and fro, kicking a pebble;
 // rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising.
 // With reduced motion bb's own spinner shows instead.
@@ -28,8 +28,7 @@ const css = `
 .ar-scroll{animation:ar-scroll 2.4s linear infinite}
 .ar-tap{transform-box:view-box;animation:ar-tap .3s ease-in-out infinite alternate}
 .ar-tap.r{transform-origin:17.5px 13px;animation-direction:alternate-reverse}
-.ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer .7s cubic-bezier(.6,0,.9,.5) infinite}
-.ar-wrench{transform-box:view-box;transform-origin:22px 14.5px;animation:ar-wrench 1.1s ease-in-out infinite alternate}
+.ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-pebble{animation:ar-pebble 1.5s ease-in-out infinite}
 .ar-kick{transform-box:fill-box;transform-origin:50% 0;animation:ar-kick 1.5s ease-in-out infinite}
 .ar-plant{transform-box:fill-box;transform-origin:50% 0;animation:ar-plant 1.5s ease-in-out infinite}
@@ -38,7 +37,6 @@ const css = `
 .ar-ask{animation:ar-ask 1.8s ease-in-out infinite alternate}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}
 .ar-scratch{transform-box:view-box;transform-origin:16px 14.4px;animation:ar-scratch .3s ease-in-out infinite alternate}
-.ar-flip{transform-box:view-box;transform-origin:12px 0;animation:ar-flip 2.4s ease-in-out infinite}
 .ar-breathe{animation:ar-bob 1.6s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -48,10 +46,9 @@ const css = `
 @keyframes ar-left-q{0%{opacity:0}50%{opacity:1}96%{opacity:0}}
 @keyframes ar-front-q{0%{opacity:0}46%{opacity:1}50%{opacity:0}96%{opacity:1}}
 @keyframes ar-scratch{from{transform:rotate(-12deg)}to{transform:rotate(6deg)}}
-@keyframes ar-flip{0%,55%{transform:scaleX(1)}90%,100%{transform:scaleX(-1)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
-@keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.35)}}
+@keyframes ar-near-eye{from{transform:scale(1)}to{transform:scale(1.25)}}
 @keyframes ar-move{0%{transform:translateX(-8px)}35%,50%{transform:translateX(8px)}85%,100%{transform:translateX(-8px)}}
 @keyframes ar-right{0%{opacity:1}35%{opacity:0}}
 @keyframes ar-left{0%{opacity:0}50%{opacity:1}85%{opacity:0}}
@@ -62,8 +59,7 @@ const css = `
 @keyframes ar-type{from{transform:rotate(-4deg)}to{transform:rotate(5deg)}}
 @keyframes ar-scroll{from{transform:translateY(0)}to{transform:translateY(-6px)}}
 @keyframes ar-tap{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
-@keyframes ar-hammer{0%{transform:rotate(-40deg)}70%{transform:rotate(28deg)}100%{transform:rotate(-40deg)}}
-@keyframes ar-wrench{from{transform:rotate(-28deg)}to{transform:rotate(22deg)}}
+@keyframes ar-hammer{0%{transform:rotate(-40deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(28deg);animation-timing-function:ease-in-out}100%{transform:rotate(-40deg)}}
 @keyframes ar-pebble{0%,15%{transform:translate(0,0)}28%{transform:translate(2.6px,-2.2px)}45%{transform:translate(5px,0)}100%{transform:translate(0,0)}}
 @keyframes ar-kick{0%{transform:rotate(0)}18%{transform:rotate(-55deg)}32%{transform:rotate(0)}50%{transform:rotate(20deg)}67%{transform:rotate(-20deg)}84%{transform:rotate(20deg)}100%{transform:rotate(0)}}
 @keyframes ar-plant{0%{transform:rotate(0)}18%{transform:rotate(8deg)}32%{transform:rotate(0)}50%{transform:rotate(-20deg)}67%{transform:rotate(20deg)}84%{transform:rotate(-20deg)}100%{transform:rotate(0)}}
@@ -119,27 +115,27 @@ function SearchScene() {
     <g className="ar-front">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" />
       <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
       <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="14" x2="17.5" y2="11.8" /><line x1="17.5" y1="11.8" x2="15.7" y2="9.3" strokeWidth="1.4" />
-      <circle className="ar-near" cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle className="ar-near eye" cx="14" cy="7.5" r="1.2" fill="currentColor" stroke="none" />{ask}</g>
+      <circle className="ar-near" cx="14" cy="7.5" r="2.3" strokeWidth="1.1" /><circle className="ar-near eye" cx="14" cy="7.5" r=".95" fill="currentColor" stroke="none" />{ask}</g>
   </g>;
 }
 
 function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench' }) {
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
-      {/* Sitting on a stool at a desk, typing on a desktop computer turned three-quarters toward it, its screen filling with lines. */}
-      {sideHead}{sideBody}<line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="10.5" y1="18.6" x2="10.5" y2="21.5" />
+      {/* Sitting on a stool at a desk, typing on a desktop computer turned three-quarters toward it (its near edge, to the right, taller), the screen filling with lines. */}
+      {sideHead}{sideBody}<line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="9.6" y1="18.6" x2="9.6" y2="21.5" /><line x1="12.9" y1="18.6" x2="12.9" y2="21.5" />
       <path d="M12.4 18 H15.2 V21.5" /><line className="ar-type" x1="12" y1="13" x2="16.8" y2="14.4" />
-      <line x1="15.5" y1="15" x2="29" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="28" y1="15" x2="28" y2="21.5" />
+      <line x1="15.5" y1="15" x2="26.6" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="25.8" y1="15" x2="25.8" y2="21.5" />
       <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" /><rect x="21.4" y="13.8" width="1.4" height=".8" rx=".4" />
-      <path d="M20 5 L25.6 6.2 V11.6 L20 12.8 Z" strokeLinejoin="round" /><path d="M25.6 6.2 L26.5 6.6 V11.2 L25.6 11.6" /><line x1="23" y1="12.2" x2="23" y2="13.6" /><line x1="21.4" y1="13.6" x2="24.6" y2="13.6" />
-      <rect x="23.6" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="25.3" cy="17.6" r=".3" fill="currentColor" stroke="none" />
-      <line className="ar-glow" x1="21.6" y1="7.4" x2="24" y2="7.85" /><line className="ar-glow b" x1="21.6" y1="8.9" x2="23.6" y2="8.9" /><line className="ar-glow c" x1="21.6" y1="10.4" x2="23.2" y2="10.05" />
+      <path d="M20 6.2 L25.6 5 V12.8 L20 11.6 Z" /><path d="M25.6 5 L26.4 5.4 V12.4 L25.6 12.8" /><line x1="23" y1="12.2" x2="23" y2="13.6" /><line x1="21.4" y1="13.6" x2="24.6" y2="13.6" />
+      <rect x="18.4" y="16.4" width="3.4" height="5.1" rx=".4" /><circle cx="20.1" cy="17.6" r=".3" fill="currentColor" stroke="none" />
+      <line className="ar-glow" x1="21" y1="7.44" x2="24.4" y2="7.08" /><line className="ar-glow b" x1="21" y1="8.9" x2="23.8" y2="8.9" /><line className="ar-glow c" x1="21" y1="10.36" x2="23.2" y2="10.59" />
     </g>;
     case 'terminal': return <>
       {/* Back to us at a wide screen; output scrolls up inside it. */}
-      <defs><clipPath id="ar-screen"><rect x="3.6" y="-2.4" width="18.8" height="8.8" /></clipPath></defs>
-      <rect x="3" y="-3" width="20" height="10" rx="1" />
-      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 7, 12, 16, 8].map((end, i) => <line key={i} x1="5" y1={-0.5 + i * 2} x2={end + 3} y2={-0.5 + i * 2} />)}</g></g>
+      <defs><clipPath id="ar-screen"><rect x="3.6" y="3.1" width="18.8" height="8.8" /></clipPath></defs>
+      <rect x="3" y="2.5" width="20" height="10" rx="1" />
+      <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 7, 12, 16, 8].map((end, i) => <line key={i} x1="5" y1={5 + i * 2} x2={end + 3} y2={5 + i * 2} />)}</g></g>
       <g transform="translate(-4 0)">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
         <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap r" x1="17.5" y1="13" x2="19" y2="10.5" />
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
@@ -149,28 +145,31 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       {sideHead}{sideBody}{standingLegs}<rect x="16.8" y="18.2" width="4.6" height="3.3" rx=".4" /><line x1="19.2" y1="16.8" x2="19.2" y2="18.2" /><line x1="18.4" y1="16.8" x2="20" y2="16.8" />
       <g className="ar-hammer"><line x1="12" y1="13" x2="19.6" y2="13" /><rect x="18.6" y="11" width="2.4" height="4" rx=".4" /></g>
     </> : <>
-      {/* Facing us, turning a wrench on a bolt. */}
-      {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="18.6" y2="16" />
-      <circle cx="22" cy="14.5" r="1" /><line x1="22" y1="14.5" x2="22" y2="21.5" />
-      <g className="ar-wrench"><line x1="22" y1="14.5" x2="18.6" y2="16.4" /><path d="M23.4 13.4 A1.8 1.8 0 1 0 23.4 15.6" /></g>
+      {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle. */}
+      {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="23" y1="15.6" x2="23" y2="21.5" />
+      <line x1="17.5" y1="13" x2="20.11" y2="17.72"><animate attributeName="x2" values="20.11;18.72;17.98;18.72;20.11" dur="2.2s" repeatCount="indefinite" /><animate attributeName="y2" values="17.72;16.29;14.44;16.29;17.72" dur="2.2s" repeatCount="indefinite" /></line>
+      <g><animateTransform attributeName="transform" type="rotate" values="-25 23 13.5;-2.5 23 13.5;20 23 13.5;-2.5 23 13.5;-25 23 13.5" dur="2.2s" repeatCount="indefinite" />
+        <path d="M24 13.5 L23.5 14.37 H22.5 L22 13.5 L22.5 12.63 H23.5 Z" /><line x1="21.28" y1="14.52" x2="18.6" y2="16.1" strokeWidth="1.4" /><path d="M24.89 14.16 A2 2 0 1 1 23.33 11.53" /></g>
     </>;
     case 'search': return <SearchScene />;
     case 'read': {
-      // Facing us behind an open book, eyes down on it; every couple of seconds the right page turns over to the left.
-      const page = (side: 1 | -1) => <><path d={`M12 12.6 Q${12 + side * 3.5} 11.6 ${12 + side * 7} 12.6 V18.4 Q${12 + side * 3.5} 17.4 12 18.4 Z`} className="ar-solid" />
-        {[14, 15.4, 16.8].map(y => <line key={y} x1={12 + side * 1.4} y1={y} x2={12 + side * (y === 16.8 ? 4.4 : 5.6)} y2={y} strokeWidth=".6" />)}</>;
+      // Facing us over an open book held low and tipped toward its face; its right hand turns the right page over to the left.
+      const page = (side: 1 | -1) => <><path d={`M12 14.2 Q${12 + side * 3.5} 13.5 ${12 + side * 7} 14.2 V18.2 Q${12 + side * 3.5} 17.5 12 18.2 Z`} className="ar-solid" />
+        {[15.4, 16.4, 17.3].map(y => <line key={y} x1={12 + side * 1.4} y1={y} x2={12 + side * (y === 17.3 ? 4.4 : 5.6)} y2={y} strokeWidth=".6" />)}</>;
+      const turn = { dur: '2.4s', repeatCount: 'indefinite', keyTimes: '0;.55;.9;1', calcMode: 'spline', keySplines: '0 0 1 1;.42 0 .58 1;0 0 1 1' } as const;
       return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" />
-        <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-        {page(-1)}{page(1)}<g className="ar-flip">{page(1)}</g></>;
+        <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+        {page(-1)}{page(1)}<g transform="translate(12 0)"><g><animateTransform attributeName="transform" type="scale" values="1 1;1 1;-1 1;-1 1" {...turn} /><g transform="translate(-12 0)">{page(1)}</g></g></g>
+        <line x1="15.5" y1="13" x2="19" y2="14.2"><animate attributeName="x2" values="19;19;5;5" {...turn} /></line></>;
     }
     case 'wait': return pacing(false, true);
     case 'rest': return <>
       {/* On its back on a couch, eyes shut, chest rising and falling; Zzz drift up from the head. */}
-      <rect x="1" y="10" width="24" height="6" rx="1.2" /><line x1="2" y1="19.5" x2="2" y2="21.5" /><line x1="24" y1="19.5" x2="24" y2="21.5" />
-      <g className="ar-breathe"><line x1="0.9" y1="11.9" x2="2.4" y2="11.9" /><rect className="ar-solid" x="2.4" y="8.6" width="7" height="6.6" rx="2" /><path d="M4.4 10.6 Q5.3 11.4 6.2 10.6" />
+      <rect x="1" y="10.6" width="24" height="5.4" rx="1.2" /><line x1="2" y1="18" x2="2" y2="21" /><line x1="24" y1="18" x2="24" y2="21" />
+      <g className="ar-breathe"><line x1="0.9" y1="11.9" x2="2.4" y2="11.9" /><rect className="ar-solid" x="2.4" y="8.6" width="7" height="6.6" rx="2" /><path d="M5.6 10 Q4.8 10.9 5.6 11.8" />
         <rect className="ar-solid" x="10" y="10.2" width="6.4" height="5" rx="1" /><line x1="11" y1="10.2" x2="15" y2="9.4" /></g>
       <line x1="16.4" y1="13" x2="23" y2="13" /><line x1="16.4" y1="14.3" x2="23" y2="14.3" />
-      <rect className="ar-solid" x="0" y="15.4" width="26" height="4.1" rx="1" /><rect className="ar-solid" x="-1" y="13" width="3" height="6.5" rx="1" /><rect className="ar-solid" x="24" y="13" width="3" height="6.5" rx="1" />
+      <rect className="ar-solid" x="0" y="15.4" width="26" height="2.6" rx="1" /><rect className="ar-solid" x="-1" y="13.4" width="2.6" height="4.6" rx="1" /><rect className="ar-solid" x="24.4" y="13.4" width="2.6" height="4.6" rx="1" />
       {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M7 5 h1.4 l-1.4 1.4 h1.4" />)}
     </>;
     default: return pacing(true, false);
