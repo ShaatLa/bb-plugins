@@ -9,7 +9,7 @@ const cards = vi.hoisted(() => ({ renders: 0 }));
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
-import { Inbox } from './inbox';
+import { Inbox, groupItems } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -586,4 +586,10 @@ it('keeps only the 50 most recently edited non-empty drafts', async () => {
   const saved = JSON.parse(localStorage.getItem('bb-plugin-answers:page:compose') ?? '{}');
   expect(Object.keys(saved)).toHaveLength(50);
   expect(saved).toHaveProperty('thr_54'); expect(saved).not.toHaveProperty('thr_4'); expect(saved).not.toHaveProperty('thr_empty');
+});
+
+it('groups a waiting question with the steers its turn took into one card', () => {
+  const waiting = { ...base, status:'waiting' as const, turnId:'t1', answer:null, answerSeq:null };
+  const groups = groupItems([waiting, { ...waiting, id:'ans_two', questionSeq:3 }, { ...waiting, id:'ans_three', turnId:'t2', questionSeq:5 }]);
+  expect(groups.map(group => group.map(item => item.id))).toEqual([['ans_one', 'ans_two'], ['ans_three']]);
 });
