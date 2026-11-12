@@ -387,16 +387,24 @@ export function Inbox({ onBulkRead, bbChat = false }: { onBulkRead?: (result: { 
     const node = scroll.current; if (!node || typeof ResizeObserver === 'undefined') return;
     // The distance from the bottom is kept from the last scroll; by the time the observer runs the browser may already
     // have clamped scrollTop, so it cannot be derived then.
-    let height = node.clientHeight, gap = node.scrollHeight - node.scrollTop - height;
-    const track = () => { if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; };
+    let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height, resizedAt = 0;
+    // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
+    // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
+    let anchor: { el: HTMLElement; offset: number } | null = null;
+    const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, offset: el.getBoundingClientRect().top - view } : null; };
+    const track = () => { if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; if (Date.now() - resizedAt > 500) remember(); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
     // a reader who was at the bottom stays there.
     const observer = new ResizeObserver(() => {
       const next = node.clientHeight;
-      if (!pin.current) { if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24) node.scrollTop = node.scrollHeight - next; }
-      height = next; gap = node.scrollHeight - node.scrollTop - next;
+      if (node.clientWidth !== width) { width = node.clientWidth; resizedAt = Date.now(); }
+      if (!pin.current) {
+        if (gap > 24 && Date.now() - resizedAt < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+        else if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24) node.scrollTop = node.scrollHeight - next;
+      }
+      height = next; if (Date.now() - resizedAt >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
-    observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true });
+    observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true }); remember();
     return () => { observer.disconnect(); node.removeEventListener('scroll', track); };
   }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
