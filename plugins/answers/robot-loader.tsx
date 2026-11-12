@@ -120,11 +120,11 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <g className="ar-wrench"><line x1="22" y1="14.5" x2="18.6" y2="16.4" /><path d="M23.4 13.4 A1.8 1.8 0 1 0 23.4 15.6" /></g>
     </>;
     case 'search': {
-      // In profile the magnifier is held out at eye level, the arm swinging it from the shoulder; facing us it sits
+      // In profile the magnifier is held out at eye level, seen nearly edge-on, the arm swinging it from the shoulder; facing us it sits
       // over one eye, which looks huge through it. The robot turns right, front, left, front; a question mark bobs above.
       const side = <>{sideHead}{sideBody}{standingLegs}
-        <g className="ar-scan"><line x1="14.5" y1="13.2" x2="17.2" y2="11.6" /><line x1="17.2" y1="11.6" x2="18.4" y2="9.6" strokeWidth="1.4" />
-          <circle cx="19.8" cy="7.4" r="2.4" strokeWidth="1.1" /></g></>;
+        <g className="ar-scan"><line x1="14.5" y1="13.2" x2="17.2" y2="11.6" /><line x1="17.2" y1="11.6" x2="19.2" y2="9.9" strokeWidth="1.4" />
+          <ellipse cx="19.8" cy="7.4" rx="1.3" ry="2.4" strokeWidth="1.1" /></g></>;
       return <g className="ar-look">
         <g className="ar-right">{side}</g>
         <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{side}</g></g>
