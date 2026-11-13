@@ -1252,7 +1252,7 @@ export function registerTasksCli(
                 }),
               );
               const warnings = !task.progressNote && ["backlog", "todo"].includes(task.status)
-                ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on him."] : [];
+                ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : [];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
                 : { exitCode: 0, stdout: JSON.stringify(result.question, null, 2), stderr: warnings.join("\n") };
