@@ -28,7 +28,6 @@ const css = `
 .ar-scroll{animation:ar-scroll 2.4s ease-out infinite}
 .ar-tap{transform-box:view-box;transform-origin:17.5px 13px;animation:ar-tap .8s ease-in-out infinite}
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
-.ar-scan{transform-box:view-box;transform-origin:12px 13px;animation:ar-scan .9s ease-in-out infinite alternate}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
 .ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .55s ease-in-out infinite alternate}
@@ -69,7 +68,6 @@ const css = `
 @keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
 @keyframes ar-hammer{0%{transform:rotate(-15deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(29deg);animation-timing-function:ease-in-out}100%{transform:rotate(-15deg)}}
-@keyframes ar-scan{from{transform:rotate(-9deg)}to{transform:rotate(7deg)}}
 `;
 
 const antenna = <line x1="12" y1="2.5" x2="12" y2="4" />;
@@ -120,8 +118,8 @@ function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
   const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
     <line x1="9.5" y1="13.4" x2="8.3" y2="16.3" />
-    <g className="ar-scan"><line x1="12" y1="13" x2="16.4" y2="12.6" /><line x1="16.4" y1="12.6" x2="18.2" y2="10.46" strokeWidth="1.4" />
-      <ellipse cx="19.74" cy="8.62" rx="1.3" ry="2.4" strokeWidth="1.1" transform="rotate(40 19.74 8.62)" /></g>
+    {/* The lens stands upright like the face, pushed out and drawn back by an arm bent at the elbow (SMIL keeps hand and lens together). */}
+    <line x1="12" y1="13" x2="14.58" y2="15.05"><animate attributeName="x2" values="14.58;14.76;14.94;15.12;15.28;15.12;14.94;14.76;14.58" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y2" values="15.05;14.81;14.50;14.08;13.37;14.08;14.50;14.81;15.05" dur="1.6s" repeatCount="indefinite" /></line><line x1="14.58" y1="15.05" x2="16.40" y2="12.30"><animate attributeName="x1" values="14.58;14.76;14.94;15.12;15.28;15.12;14.94;14.76;14.58" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y1" values="15.05;14.81;14.50;14.08;13.37;14.08;14.50;14.81;15.05" dur="1.6s" repeatCount="indefinite" /><animate attributeName="x2" values="16.40;16.90;17.40;17.90;18.40;17.90;17.40;16.90;16.40" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y2" values="12.30;12.30;12.30;12.30;12.30;12.30;12.30;12.30;12.30" dur="1.6s" repeatCount="indefinite" /></line><g><animateTransform attributeName="transform" type="translate" values="0 0;0.5 0;1 0;1.5 0;2 0;1.5 0;1 0;0.5 0;0 0" dur="1.6s" repeatCount="indefinite" /><line x1="16.4" y1="12.3" x2="17.6" y2="9.9" strokeWidth="1.4" /><ellipse cx="17.6" cy="7.5" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
     </g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
