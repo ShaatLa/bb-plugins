@@ -150,7 +150,7 @@ export function usePluginBrand(id: string | null) {
 // (bb's "… finished" and "Message from" rows, same classes and icons), or a plugin. bb's quote of the trigger is left out.
 // The notice that woke the agent, as one line after its sender: the text below is the agent's reply to it, not the sender's.
 function notice(text: string, sender: string) {
-  const line = text.split('\n').map(l => l.replace(/[*`_#>]/g, '').trim()).find(Boolean) ?? '';
+  const line = text.replace(/<!--[\s\S]*?-->/g, '').split('\n').map(l => l.replace(/[*`_#>]/g, '').trim()).find(Boolean) ?? '';
   const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
   return rest ? ` · ${rest}` : '';
 }
@@ -312,6 +312,10 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
+    </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
+      {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
+      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={item.question} /></div></div>
+      {time}
     </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}

@@ -197,16 +197,14 @@ it('loads earlier pages by itself while the loaded window holds only quiet updat
   const { recipients, list } = setup({ list: input => input.cursor ? { items:[base], nextCursor:null } : { items:[quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:'1|ans_u1' } }); fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(list.mock.calls.some(([input]: any[]) => input.cursor === '1|ans_u1')).toBe(true));
 });
-it('names a plugin that started an update by its name and icon, not its id', async () => {
+it('shows the message a plugin sent as bb does: a user bubble with all of its text, the reply below', async () => {
   const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI Dashboard** · `Deploy finished` main\n- Run: 42', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
-  const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), plugins: { list: async () => ({ plugins:[{ id:'delivery-dashboard', name:'CI Dashboard', icon:'Activity' }] }) } });
+  const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }) });
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Deployed');
-  const caption = document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]') as HTMLElement;
-  await waitFor(() => expect(caption.textContent).toContain('CI Dashboard'));
-  expect(caption.textContent).not.toContain('delivery-dashboard');
-  // The notice that woke the agent follows the sender, so the reply below does not read as the plugin's own text.
-  expect(caption.textContent).toContain('CI Dashboard · Deploy finished main'); expect(caption.textContent).not.toContain('Run: 42');
+  const bubble = document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]') as HTMLElement;
+  expect(bubble.textContent).toContain('Deploy finished'); expect(bubble.textContent).toContain('Run: 42');
+  expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')).toBeNull();
 });
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });
@@ -364,8 +362,8 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
 });
 it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
-  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
-  expect(await slot.findByText('Held by concurrency-limit · 14 of 14 running on host Mac')).toBeTruthy();
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByText('Held by Concurrency limit · 14 of 14 running on host Mac')).toBeTruthy();
 });
 it('keeps a delivered queued message in the queue card until the chat records it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
