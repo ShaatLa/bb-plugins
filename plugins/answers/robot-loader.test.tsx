@@ -4,7 +4,7 @@ import { act, cleanup } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { RobotLoader } from './robot-loader';
 
-const lap = (node: Element) => { for (const type of ['animationiteration', 'webkitAnimationIteration']) { const event = new Event(type, { bubbles: true }); Object.assign(event, { animationName: 'ar-move-q' }); node.dispatchEvent(event); } };
+const lap = (node: Element, name = 'ar-move-q') => { for (const type of ['animationiteration', 'webkitAnimationIteration']) { const event = new Event(type, { bubbles: true }); Object.assign(event, { animationName: name }); node.dispatchEvent(event); } };
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 it('the waiting robot now and then dances for three seconds when it faces us mid-lap, the walk holding still', () => {
@@ -23,4 +23,12 @@ it('the waiting robot now and then dances for three seconds when it faces us mid
   act(() => { vi.advanceTimersByTime(13000 * .43); });
   expect(document.querySelector('.ar-dance')).toBeNull();
   delete (Element.prototype as any).getAnimations;
+});
+it('the thinking robot picks a mood for each walk every lap: rubbing its raised chin, or hands behind its back', () => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(.1);
+  renderSlot({ component: () => <RobotLoader activity="think" /> }, {});
+  const behind = () => document.querySelectorAll('.ar-move circle[r=".45"]').length;
+  expect(behind()).toBe(0); expect(document.querySelectorAll('.ar-scratch')).toHaveLength(2);
+  random.mockReturnValue(.9); act(() => lap(document.querySelector('.ar-right')!, 'ar-right'));
+  expect(behind()).toBe(2); expect(document.querySelectorAll('.ar-scratch')).toHaveLength(0);
 });

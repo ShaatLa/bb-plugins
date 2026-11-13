@@ -30,7 +30,7 @@ const css = `
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
-.ar-scratch{transform-box:view-box;transform-origin:16.6px 13.6px;animation:ar-scratch .55s ease-in-out infinite alternate}
+.ar-scratch{transform-box:view-box;transform-origin:16.3px 13px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
 .ar-spark{transform-box:view-box;transform-origin:19.2px 16.8px;animation:ar-spark 1.3s linear infinite;opacity:0}
@@ -86,6 +86,19 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
+// Thinking, each walk to a side in one of two moods, picked at random every lap: chin up, rubbing it (the arm raised to
+// reach the lifted chin), or hands clasped behind the back, leaning forward from the hip, head bowed, eyes on the floor.
+type Mood = 'chin' | 'behind';
+const pickMood = (): Mood => Math.random() < .5 ? 'chin' : 'behind';
+const thinker = (mood: Mood) => mood === 'chin'
+  ? <><g transform="rotate(-12 12 11)">{sideHead}</g>{sideBody}<line x1="12" y1="12.8" x2="16.3" y2="13" /><line className="ar-scratch" x1="16.3" y1="13" x2="15.8" y2="10.3" /></>
+  : <g transform="rotate(8 12 18)"><g transform="rotate(12 12 11)">{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="8.3" r=".9" /></g>{sideBody}<path d="M12 13 L11.2 16.2 L7.9 15.5" /><circle cx="7.9" cy="15.5" r=".45" fill="currentColor" stroke="none" /></g>;
+function ThinkScene() {
+  const [moods, setMoods] = useState<[Mood, Mood]>(() => [pickMood(), pickMood()]);
+  // New moods each lap (child animations bubble here too, hence the name check).
+  return <g onAnimationIteration={event => { if (event.animationName === 'ar-right') setMoods([pickMood(), pickMood()]); }}>{pacing(true, false, undefined, moods)}</g>;
+}
+
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin. The wait scene
 // walks slower (ar-quick: 13 s a lap, a quick turn at the right end; at the left end it checks its watch) past a pebble lying on the ground: once
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
@@ -93,17 +106,17 @@ const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy=
 // at 52.877% (x = 5.4, the pebble at 15.5); each walk takes 42% of the lap. Legs and the arm swing together in .65 s
 // half-strides phased so the legs pass vertical exactly as each kick window opens and closes (the kicking pair starts and
 // ends vertical too), so a kick never cuts a step short.
-const walker = (pebble: boolean) => <>
-  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></> : sideHead}{sideBody}{pebble ? <line className="ar-arm slow" x1="12" y1="13" x2="12" y2="16.5" />
-    : <><line x1="12" y1="12.8" x2="16.6" y2="13.6" /><line className="ar-scratch" x1="16.6" y1="13.6" x2="15.9" y2="11.1" /></>}</g>
+const walker = (pebble: boolean, mood: Mood = 'chin') => <>
+  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" />{sideBody}<line className="ar-arm slow" x1="12" y1="13" x2="12" y2="16.5" /></>
+    : thinker(mood)}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
     <g className="ar-kicking"><line x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
-const pacing = (bubble: boolean, pebble: boolean, extra?: ReactNode) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
-  <g className="ar-right">{walker(pebble)}</g>
-  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
+const pacing = (bubble: boolean, pebble: boolean, extra?: ReactNode, moods?: [Mood, Mood]) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
+  <g className="ar-right">{walker(pebble, moods?.[0])}</g>
+  <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble, moods?.[1])}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
     {/* The thought bubble: two rising puffs and a cloud with three pulsing dots. */}
     {bubble && <g strokeWidth=".55"><circle cx="18" cy="2.5" r=".5" /><circle cx="19.5" cy="0.5" r=".8" /><rect x="18.5" y="-5.5" width="9" height="4.5" rx="2.2" />{dots(-3.25, 20.8)}</g>}
@@ -224,7 +237,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <rect className="ar-solid" x="0" y="15.4" width="26" height="2.6" rx="1" /><rect className="ar-solid" x="-1" y="13.4" width="2.6" height="4.6" rx="1" /><rect className="ar-solid" x="24.4" y="13.4" width="2.6" height="4.6" rx="1" />
       {[0, 1, 2].map(i => <path key={i} className="ar-z" style={{ animationDelay: `${i * .8}s` }} d="M10.5 6.6 h2.2 l-2.2 2.2 h2.2" strokeWidth=".6" />)}
     </>;
-    default: return pacing(true, false);
+    default: return <ThinkScene />;
   }
 }
 
