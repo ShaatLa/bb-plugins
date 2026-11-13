@@ -210,7 +210,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
-export function ItemCard({ item, members, late, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
+export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AnswersRpcContract>();
   // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
@@ -292,7 +292,8 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
   // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
-  const robot = chat && item.kind === 'mine' && item.dismissedAt === null && ((item.status === 'waiting' && item.failedAt === null) || (item.status === 'deferred' && !!item.interim));
+  // Only the chat's last card carries a robot (live = false further up); a pending card above keeps Stop waiting in More.
+  const robot = chat && live && item.kind === 'mine' && item.dismissedAt === null && ((item.status === 'waiting' && item.failedAt === null) || (item.status === 'deferred' && !!item.interim));
   const robotProps = { ref: robotButton, type: 'button' as const, 'aria-haspopup': 'menu' as const, 'aria-expanded': menu === 'robot', className: 'cursor-pointer rounded-md', onClick: () => setMenu(menu === 'robot' ? null : 'robot') };
   // bb's own working spinner while the answer is pending; a failed turn shows its own notice instead.
   const replyButton = item.kind !== 'saved' && item.kind !== 'update' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>;
@@ -324,7 +325,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {/* Where the agent's reply would be, so on its side. */}{part === 'question' && <Button variant="ghost" size="sm" className="flex h-6 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}>Answered below</Button>}
     {part !== 'question' && item.answer && agentBody(item.answer, item.answerSeq)}
     {part !== 'answer' && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot says the work goes on; afterwards a clock marks the reply as interim. */}
-      {item.status === 'deferred' ? <span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span>
+      {item.status === 'deferred' && robot ? <span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span>
         : <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</div>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
@@ -332,7 +333,7 @@ export function ItemCard({ item, members, late, chat = false, markable = !chat, 
     {item.taskKey && <UrlLink href={`/plugins/work-board/work-board/task/${encodeURIComponent(item.taskKey)}`} className="mx-2 text-xs">{item.taskKey}</UrlLink>}
     </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap">{item.note}</p>}
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
-    {chat && part !== 'question' && item.status === 'waiting' && item.failedAt === null && <div className="px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></div>}
+    {robot && part !== 'question' && item.status === 'waiting' && <div className="px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></div>}
     {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
       {item.kind === 'for_me' && replyButton}
       {item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
