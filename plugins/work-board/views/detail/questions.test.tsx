@@ -145,6 +145,16 @@ describe("question and evidence UI", () => {
     );
   });
 
+  it("links bare URLs in a question prompt without the trailing punctuation", async () => {
+    const { task, rpc, structured } = setup();
+    const prompt = "Open http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark. Correct?";
+    await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt, mode: "single", options: [] });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const group = await slot.findByRole("group", { name: prompt });
+    const link = within(group).getByRole("link", { name: "http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark" });
+    expect(link.getAttribute("href")).toBe("http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark");
+  });
+
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
     const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,

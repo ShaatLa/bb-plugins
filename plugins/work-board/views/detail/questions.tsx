@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
+import { LinkedText } from "../../components/linked-text";
 
 // shortcut: Honor explicit legacy suffixes until old questions carry recommendation metadata.
 const LEGACY_RECOMMENDATION = /\s*\((?:рекомендую|recommended)\)\s*$/i;
@@ -60,7 +61,7 @@ function QuestionAnswer({
       disabled={saving}
     >
       <legend className="max-w-full px-1 text-sm font-medium break-words">
-        {question.prompt} <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
+        <LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
       </legend>
       <p className="text-xs text-muted-foreground">
         {question.mode === "single"
@@ -161,7 +162,7 @@ function QuestionAnswer({
                   Revision {entry.revision} · {entry.updatedAt}
                 </p>
                 <p className="whitespace-pre-wrap break-words">
-                  {entry.prompt}
+                  <LinkedText text={entry.prompt} />
                 </p>
                 <p>
                   {entry.mode === "single"
