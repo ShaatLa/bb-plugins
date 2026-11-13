@@ -80,6 +80,17 @@ it.each(["text", "json"])("warns on question add in %s without preventing creati
   }
 });
 
+it("warns on long or multi-link question prompts and still saves them", async () => {
+  const f = setup();
+  const task = f.task("Acceptance", { status: "in_progress" });
+  for (const [prompt, warn] of [["Is http://a.test right?", false], ["x".repeat(301), true], ["Compare http://a.test and http://b.test?", true]] as const) {
+    const result = await f.harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", prompt, "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).warnings.join("\n").includes("one decision or one check")).toBe(warn);
+  }
+  expect((await f.harness.callRpc("listQuestions", { taskId: task.id }) as any).questions).toHaveLength(3);
+});
+
 it("excludes tasks without questions", () => {
   const f = setup();
   const older = f.task("Older owner action", { });

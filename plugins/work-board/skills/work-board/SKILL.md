@@ -346,6 +346,14 @@ Recommendations: `question add KEY ... --recommend 1 [--recommendation-reason TE
 Keep the task attached to your agent thread. Set Current state to explain what you need and why, and keep the workflow status accurate.
 Use a decision when you cannot proceed without a choice, or a check when you know the next step and need validation.
 
+Owner rules for questions (2026-11-13; the owner found a 3,600-character acceptance question unreadable):
+1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
+2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link.
+3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
+4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
+
+`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
+
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
 bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'

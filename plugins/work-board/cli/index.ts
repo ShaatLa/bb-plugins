@@ -1181,14 +1181,14 @@ export function registerTasksCli(
           ],
         ),
         "question add": cliCommand({
-          summary: "Add a question with stable option IDs",
+          summary: "Ask the owner one decision or one check (short, one link; details go in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
             prompt: {
               type: "string",
               required: true,
-              description: "Question text",
+              description: "One or two short sentences, at most one link; evidence and history go in a task comment",
             },
             option: {
               type: "string",
@@ -1255,8 +1255,12 @@ export function registerTasksCli(
                   mode: input.options.multiple ? "multiple" : "single",
                 }),
               );
-              const warnings = !task.progressNote && ["backlog", "todo"].includes(task.status)
-                ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : [];
+              const warnings = [
+                ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
+                  ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
+                ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
+                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+              ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
                 : { exitCode: 0, stdout: JSON.stringify(result.question, null, 2), stderr: warnings.join("\n") };
