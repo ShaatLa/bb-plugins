@@ -19,8 +19,6 @@ import { BADGE_CRITERIA } from "./badge.js";
 export { TASK_STATUSES } from "./statuses.js";
 export type { TaskStatusDefinition } from "./statuses.js";
 
-export const EXECUTION_TARGETS = ["agent", "owner"] as const;
-export type ExecutionTarget = (typeof EXECUTION_TARGETS)[number];
 
 export const TASK_TYPES = ["task", "epic"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
@@ -184,11 +182,13 @@ const questionOptionInputSchema = z
 
 const questionStateSchema = z
   .object({
+    kind: z.enum(["decision", "check"]).default("decision"),
+    askedByThread: evidenceThreadSchema.nullable().default(null),
     prompt: nonBlankStringSchema.max(10_000),
     mode: z.enum(["single", "multiple"]),
     options: z
       .array(questionOptionInputSchema.extend({ id: idSchema }))
-      .min(2)
+      .min(1)
       .max(20),
     allowOther: z.boolean().default(false),
     selectedOptionIds: z.array(idSchema),
@@ -229,7 +229,6 @@ const questionStateSchema = z
       new Set(value.selectedOptionIds).size !==
         value.selectedOptionIds.length ||
       value.selectedOptionIds.some((id) => !ids.includes(id)) ||
-      (!value.allowOther && value.answerText !== null) ||
       (value.mode === "single" &&
         value.selectedOptionIds.length + Number(value.answerText !== null) > 1)
     )
@@ -333,8 +332,6 @@ export const taskSchema = z
     dueDate: dueDateSchema.nullable(),
     parentTaskId: idSchema.nullable(),
     type: z.enum(TASK_TYPES).default("task"),
-    executionTarget: z.enum(EXECUTION_TARGETS).default("agent"),
-    requesterThreadId: evidenceThreadSchema.nullable().default(null),
     epicId: idSchema.nullable().default(null),
     position: z.number(),
     createdAt: z.string(),
@@ -487,7 +484,6 @@ const taskMutationResultSchema = z.discriminatedUnion("ok", [
     .object({
       ok: z.literal(true),
       task: taskSchema,
-      notification: z.enum(["sent", "not_sent"]).optional(),
     })
     .strict(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).strict(),
@@ -540,10 +536,9 @@ const updateTaskInputSchema = z
     dueDate: dueDateSchema.nullable().optional(),
     parentTaskId: idSchema.nullable().optional(),
     type: z.enum(TASK_TYPES).optional(),
-    executionTarget: z.enum(EXECUTION_TARGETS).optional(),
     epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
-    requesterThreadId: evidenceThreadSchema.nullable().optional(),
+    agentThreadId: evidenceThreadSchema.nullable().optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()
@@ -557,8 +552,6 @@ const updateTaskInputSchema = z
       input.dueDate !== undefined ||
       input.parentTaskId !== undefined ||
       input.type !== undefined ||
-      input.executionTarget !== undefined ||
-      input.requesterThreadId !== undefined ||
       input.epicId !== undefined ||
       input.labelIds !== undefined,
     { message: "at least one task field must be updated" },
@@ -786,8 +779,6 @@ export const tasksRpcContract = {
         dueDate: dueDateSchema.nullable().default(null),
         parentTaskId: idSchema.nullable().default(null),
         type: z.enum(TASK_TYPES).default("task"),
-        executionTarget: z.enum(EXECUTION_TARGETS).default("agent"),
-        requesterThreadId: evidenceThreadSchema.nullable().default(null),
         epicId: idSchema.nullable().default(null),
         labelIds: taskLabelsSchema.default([]),
         template: nonBlankStringSchema.optional(),
@@ -808,6 +799,8 @@ export const tasksRpcContract = {
             .object({
               taskId: idSchema,
               unanswered: z.number().int().nonnegative(),
+              decisions: z.number().int().nonnegative().default(0),
+              checks: z.number().int().nonnegative().default(0),
               waitingOnOwner: z.boolean().default(false),
               newestUnansweredAt: z.string().nullable().default(null),
             })
@@ -820,6 +813,8 @@ export const tasksRpcContract = {
     input: z
       .object({
         taskId: idSchema,
+        kind: z.enum(["decision", "check"]).default("decision"),
+        askedByThread: evidenceThreadSchema.nullable().default(null),
         prompt: nonBlankStringSchema.max(10_000),
         mode: z.enum(["single", "multiple"]).default("single"),
         allowOther: z.boolean().optional(),
@@ -827,8 +822,8 @@ export const tasksRpcContract = {
           .array(
             z.union([nonBlankStringSchema.max(500), questionOptionInputSchema]),
           )
-          .min(2)
-          .max(20),
+          .min(0)
+          .max(20).default([]),
       })
       .strict(),
     output: z.object({ question: questionSchema }).strict(),
@@ -837,7 +832,7 @@ export const tasksRpcContract = {
     input: z
       .object({
         questionId: idSchema,
-        selectedOptionIds: z.array(idSchema).max(20),
+        selectedOptionIds: z.array(idSchema).max(20).default([]),
         answerText: z.string().trim().max(10_000).nullable().optional(),
         revision: z.number().int().positive(),
         authorName: nonBlankStringSchema.default("You"),
@@ -861,7 +856,7 @@ export const tasksRpcContract = {
         mode: z.enum(["single", "multiple"]),
         options: z
           .array(questionOptionInputSchema.extend({ id: idSchema.optional() }))
-          .min(2)
+          .min(1)
           .max(20),
         allowOther: z.boolean().optional(),
         reopen: z.boolean().optional(),
@@ -935,7 +930,6 @@ export const tasksRpcContract = {
         includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
-        executionTarget: z.enum(EXECUTION_TARGETS).optional(),
         epicId: idSchema.nullable().optional(),
         search: z.string().optional(),
         sort: taskSortSchema.default("manual"),
@@ -964,6 +958,7 @@ export const tasksRpcContract = {
         status: taskStatusSchema,
         beforeTaskId: idSchema.nullable().optional(),
         afterTaskId: idSchema.nullable().optional(),
+        agentThreadId: evidenceThreadSchema.nullable().optional(),
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),

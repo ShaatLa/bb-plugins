@@ -51,7 +51,7 @@ Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plu
 Трекер проектов для совместной работы людей и AI-агентов внутри BB. Основан на встроенном BB Tasks из BB 0.46.1 и сохраняет его проекты, комментарии, вложения, пресеты и связи с тредами.
 
 - Списки и канбан в основной и правой панели, эпики и сабтаски, поиск, фильтры и настраиваемые статусы каждого проекта.
-- Передача задач существующим тредам и отдельные Owner actions для ручных действий владельца.
+- Delegate tasks to existing threads; collect owner decisions and validation through typed questions.
 - Вопросы с одиночным или множественным выбором, рекомендуемыми вариантами и сохранением ответов прямо в задаче.
 - Связи с GitHub PR, наблюдение за CI и push-workflows после merge, структурированные свидетельства ревью и QA, шаблоны описаний.
 - Поисковый архив завершённых задач, ручная и массовая архивация, опциональная автоматическая архивация.
@@ -161,11 +161,11 @@ bb work-board question delete EXA-8 --question <question-id> --revision 3
 Для множественного выбора повторите `--answer`. Вопросы видны в центральной и боковой карточке, в `show --json`, контексте делегирования и упоминаниях задач. Экспорт переносит вопросы вместе с вариантами, выбранными ID, автором ответа и revision. Защита от секретов действует на текст вопросов, вариантов и метаданные ответа.
 
 
-После изменения ответа плагин уведомляет первый закреплённый рабочий тред (активные идут первыми), иначе — последнего ответившего агента. Занятый тред получает сообщение в очередь; повторное сохранение того же ответа не уведомляет снова. Ошибка доставки сохраняет ответ и отображает предупреждение. Перед продолжением агент перечитывает актуальное решение. На карточках и строках показывается иконка вопроса со счётчиком и подсказкой; фильтр **Waiting on me** работает в списке, центральной и правой досках и запоминается для проекта.
+После изменения ответа плагин уведомляет askedByThread, если он задан; иначе первый закреплённый рабочий тред (активные идут первыми), иначе — последнего ответившего агента. Занятый тред получает сообщение в очередь; повторное сохранение того же ответа не уведомляет снова. Ошибка доставки сохраняет ответ и отображает предупреждение. Перед продолжением агент перечитывает актуальное решение. На карточках и строках показывается иконка вопроса со счётчиком и подсказкой; фильтр **Waiting on me** работает в списке, центральной и правой досках и запоминается для проекта.
 
-Свободный ответ: создатель включает **Allow other answer** или `question add --allow-other`. Пользователь выбирает **Other answer**, вводит текст и сохраняет. Для single текст заменяет выбор варианта, для multiple их можно сочетать. CLI: `bb work-board question answer KEY --question ID --revision N --text "Ответ"`. Экспорт v3 сохраняет `allowOther`, `answerText` и `history`; импорт v1/v2 поддерживается.
+Free text is always available. Single choice accepts either one option or text; multiple choice also permits both. Use `bb work-board question answer KEY --question ID --revision N --text "Answer"`.
 
-Редактирование: **Edit question** в карточке, либо `bb work-board question update KEY --question ID --revision N --prompt "Новый текст"`. `--options-file` читает JSON-массив `[{"id":"существующий ULID","label":"Новое название"},{"label":"Новый вариант"}]` на вызывающей машине; существующие ID сохраняйте, для новых вариантов ID не указывайте. `--mode single|multiple`, `--allow-other` / `--no-other` меняют режим. У отвеченного вопроса требуется явное **Clear the saved answer and request a new decision** или `--reopen`: прежний ответ остаётся в **History**, текущий очищается и снова появляется Needs answer. Старая revision отклоняется. Каждое изменение сохраняет прежний снимок; отмена и повторное сохранение одинакового содержимого историю не меняют.
+Редактирование: **Edit question** в карточке, либо `bb work-board question update KEY --question ID --revision N --prompt "Новый текст"`. `--options-file` читает JSON-массив `[{"id":"существующий ULID","label":"Новое название"},{"label":"Новый вариант"}]` на вызывающей машине; существующие ID сохраняйте, для новых вариантов ID не указывайте. `--mode single|multiple` меняет режим. У отвеченного вопроса требуется явное **Clear the saved answer and request a new decision** или `--reopen`: прежний ответ остаётся в **History**, текущий очищается и снова появляется Needs answer. Старая revision отклоняется. Каждое изменение сохраняет прежний снимок; отмена и повторное сохранение одинакового содержимого историю не меняют.
 
 Рекомендуемый вариант показывается жирным, без метки и автоматического выбора. В редакторе включите **Recommend** рядом с вариантом; необязательное поле **Recommendation reason** объясняет рекомендацию. CLI: `bb work-board question add KEY --prompt 'Вопрос?' --option A --option B --recommend 1 --recommendation-reason 'Обоснование'`; номера при создании начинаются с 1. Изменение по постоянному ID: `question update KEY --question ID --revision N --recommend OPTION_ID [--recommendation-reason TEXT]`; повторяйте `--recommend` для multiple, `--no-recommendation` очищает рекомендации. В options JSON допустимы optional `recommended: true` и `recommendationReason`. У single максимум один рекомендуемый вариант, у multiple — несколько; обоснование допустимо только для recommended=true. Секреты проверяются и в обосновании. Экспорт v4 сохраняет эти поля также в history; импорт v1–v3 поддерживается. Старые явные суффиксы «(рекомендую)» / «(recommended)» отображаются жирным без суффикса, сохранённые подписи не меняются автоматически.
 
@@ -261,7 +261,7 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
   attachments/<attachment-id>
 ```
 
-`project.json` содержит маркер формата `bb-work-board`, версию `8`, проект, его метки, родительские папки, список ID задач и `templates`. Файл задачи содержит все сохранённые поля задачи или эпика, Markdown-описание, ID меток, комментарии (включая необязательное `evidence`), `questions`, связи с тредами, старые ключи и метаданные вложений с SHA-256. Имена задач и вложений остаются данными, не используются в путях. Двоичные вложения задач и комментариев находятся в `attachments/` под своими ID. Новых каталогов для вопросов, evidence и шаблонов нет. Локальные пути хранилища и время запуска экспорта не записываются; одинаковые данные дают одинаковые файлы. Импорт поддерживает архивы v1/v2/v3/v4: отсутствующие вопросы, шаблоны и history считаются пустыми, allowOther — false, answerText — null. Архив v5 добавляет в `task` поля `executionTarget` (`agent`/`owner`, по умолчанию `agent`) и `requesterThreadId` (BB thread ID или null, по умолчанию null). Импорт старых архивов подставляет эти значения. Проверки формата в автоматизации должны принимать v5 перед обновлением до 0.5.x.
+`project.json` contains the bb-work-board format marker, version 17, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
 
 Выгрузка сначала собирается во временном каталоге и затем заменяет предыдущую копию. При ошибке записи или замены предыдущая копия сохраняется. Посторонние файлы в каталоге выгрузки запрещены: исходники репозитория нужно хранить за его пределами.
 
@@ -461,22 +461,23 @@ Work Board skill, which directs the worker to read and update the tracked task.
 - Add a command palette entry for Work Board to cmd-K.
 
 
-## Owner action
+## Ask the owner on the task
 
-Исполнитель хранится отдельно от типа задачи: `executionTarget: agent | owner`. Задача для owner может входить в эпик, иметь подзадачи, обычные статусы, приоритет и метки. На доске её выделяют иконка человека, Owner и тонкая цветная полоса; фильтр Executor → All / Agent / Owner работает в списке, основной и боковой досках. Создание и свойства карточки позволяют выбрать исполнителя.
+Keep the task attached to your agent thread. Set Current state to explain what you need and why, and keep the workflow status accurate.
+Use a decision when you cannot proceed without a choice, or a check when you know the next step and need validation.
 
 ```sh
-bb work-board create --project ABC --title 'Выдать доступ к registry' --executor owner   --description 'Агент не может изменить IAM. Готово, когда тестовый pull проходит.'
-bb work-board list --project ABC --executor owner
-bb work-board update ABC-12 --executor owner --requester-thread thr_requester
-bb work-board update ABC-12 --status done
+bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
+bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
 ```
 
-CLI сохраняет инициирующий тред автоматически при создании Owner action или переводе в Owner; `--requester-thread` задаёт его явно. UI использует текущий тред, когда он доступен; в свойствах можно выбрать Use this thread as requester. Ссылка Requester thread открывает инициатора. При создании вне треда получатель может отсутствовать, и уведомление не отправляется.
+Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
 
-Кнопки запуска агента скрыты; оба dispatch API и CLI запрещают запуск Owner action. Перевод задачи с работающим агентом в Owner требует сначала остановить агента. Агент может создать запрос, добавить описание и комментарии, отслеживать результат; не выполняет ручное действие и не подтверждает его за owner. В описании укажите действие, причину обращения и проверяемый результат; отдельной валидации заполнения нет.
+Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear newest first; answered questions are under Earlier in timeline order.
 
-Переход в Done через свойства, список, доску или CLI атомарно записывает комментарий о завершении, затем уведомляет сохранённый тред через queue-if-active. Повторный Done не дублирует уведомление; после переоткрытия новое завершение уведомляет снова. Недоступный тред или ошибка доставки не откатывают статус; предупреждение сохраняется в Activity и возвращается как `notification: not_sent` (при успехе `sent`). Автоматической повторной доставки нет. Импорт только восстанавливает данные, не рассылает уведомления.
+Archive v17 removes the task execution and requester fields. Question records add kind (decision/check) and askedByThread (thread ID or null), including history snapshots. Imports v1–v16 discard the old task fields and default questions to decision with no asking thread. No questions are created by the database migration.
+
+Project status pushes apply to agent and plugin automation changes. Owner changes in the UI or CLI outside an agent thread never send a status push, including Done.
 
 
 ### Исключение статусов в CLI
@@ -515,7 +516,7 @@ Export v7 always includes both archived and live cards, with required `task.arch
 
 The Archive view supports project and text search (key, title or description), inclusive UTC date bounds, a date field (archived, created or updated), and pages of the latest 25/50/100/500 matching cards. Use equal start/end dates for one day. Previous/Next browse further results; restart results if a concurrent write makes a pagination cursor stale.
 
-Agents can combine these with the existing status, executor, type, priority and label filters:
+Agents can combine these with the existing status, type, priority and label filters:
 
 ```sh
 bb work-board show EXA-8 --json
@@ -587,7 +588,7 @@ PR из окружений воркеров читаются через встр
 
 ## Счётчик на значке Work Board (0.15.1)
 
-В настройках Work Board (Settings → Plugins → Work Board или шестерёнка на странице Work Board) свёрнутый блок **Navigation badge** выбирает, что считает значок Work Board в навигации: открытые задачи (по умолчанию), задачи на ревью, задачи с вопросами без ответа, Owner actions, задачи с упавшим тредом и задачи с тредом в простое без обновлений (порог — настройка Flag idle threads without task updates). Можно выбрать несколько вариантов: значок показывает число уникальных задач, совпавших хотя бы с одним из них, задача считается один раз. Подсказка значка показывает разбивку, например «3 tasks: 2 with unanswered questions, 1 for the owner». Без выбранных вариантов значка нет. Учитываются незаархивированные задачи; `done` и `canceled` не считаются нигде. Выбор хранится в данных плагина на сервере и общий для всех устройств; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. Значок обновляется по событиям задач, тредов и смене выбора, а при включённом простое тредов ещё и раз в минуту.
+В настройках Work Board (Settings → Plugins → Work Board или шестерёнка на странице Work Board) свёрнутый блок **Navigation badge** выбирает, что считает значок Work Board в навигации: открытые задачи (по умолчанию), задачи на ревью, задачи с вопросами без ответа, задачи с упавшим тредом и задачи с тредом в простое без обновлений (порог — настройка Flag idle threads without task updates). Можно выбрать несколько вариантов: значок показывает число уникальных задач, совпавших хотя бы с одним из них, задача считается один раз. Подсказка значка показывает разбивку, например «3 tasks: 2 with unanswered questions, 1 in review». Без выбранных вариантов значка нет. Учитываются незаархивированные задачи; `done` и `canceled` не считаются нигде. Выбор хранится в данных плагина на сервере и общий для всех устройств; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. Значок обновляется по событиям задач, тредов и смене выбора, а при включённом простое тредов ещё и раз в минуту.
 
 ### Upgrade and rollback (0.16.0)
 
@@ -606,7 +607,7 @@ Question creation, answer changes, revisions and deletion reconcile the configur
 `bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`; recorded active thread status may be out of date. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
 ## Card activity (0.18.0)
 
-Card activity is separate from task workflow status. An attached session with both thread and runtime status active makes the card Working; idle or host-waiting sessions stay Attached. This applies to every card linked to that session, including parent links. Unattached sessions never imply card work. Accepted request markers and manual activity start/stop claims are diagnostic context only; they cannot hide or fabricate live execution. Pending owner interactions produce Waiting for owner, and queued card dispatches produce Queued when the session is not executing. A failure to read extra event/request metadata does not suppress verified live runtime activity. Missing thread/runtime data is treated as unknown. Observed execution or agent comments records work history; with no remaining sessions it gives Abandoned, except on owner actions and done/canceled cards. Active work on terminal cards is warned about. Archive v10 preserves work history, not live claims or queue identities; imports v1–v9 remain accepted.
+Card activity is separate from task workflow status. An attached session with both thread and runtime status active makes the card Working; idle or host-waiting sessions stay Attached. This applies to every card linked to that session, including parent links. Unattached sessions never imply card work. Accepted request markers and manual activity start/stop claims are diagnostic context only; they cannot hide or fabricate live execution. Pending owner interactions produce Waiting for owner, and queued card dispatches produce Queued when the session is not executing. A failure to read extra event/request metadata does not suppress verified live runtime activity. Missing thread/runtime data is treated as unknown. Observed execution or agent comments records work history; with no remaining sessions it gives Abandoned, except on done/canceled cards. Active work on terminal cards is warned about. Archive v10 preserves work history, not live claims or queue identities; imports v1–v9 remain accepted.
 
 
 ### Activity diagnostics (0.19.0)
@@ -620,14 +621,14 @@ Central and thread task details show the workflow status picker, live activity a
 
 A session created directly in BB is automatically attached to every unfinished agent card explicitly named anywhere in its title, within the linked BB project. Examples: `Designer (Codex): EXA-455 Reference scenes`, `EXA-405, EXA-441`, and `EXA-202+359` (both EXA-202 and EXA-359). Duplicate keys are ignored; existing manual links remain intact.
 
-Created/active lifecycle events attach immediately. Card metadata and thread reads also discover currently running sessions, sharing a bounded read for 10 seconds; titles generated later are picked up on a subsequent refresh. Only running ids are fetched, in batches of at most 200; idle history is not scanned. Manual detachment prevents rediscovery for that card while other named cards can still attach. Archived/done/canceled cards, owner actions, unrelated projects and unavailable/private side-chat sessions are skipped. A system comment records the exact title reference. Runtime activity continues to determine Working versus Attached. Missing/malformed keys are not guessed. Failed discovery marks diagnostics incomplete without hiding verified execution or falsely marking an orphan Abandoned.
+Created/active lifecycle events attach immediately. Card metadata and thread reads also discover currently running sessions, sharing a bounded read for 10 seconds; titles generated later are picked up on a subsequent refresh. Only running ids are fetched, in batches of at most 200; idle history is not scanned. Manual detachment prevents rediscovery for that card while other named cards can still attach. Archived/done/canceled cards, unrelated projects and unavailable/private side-chat sessions are skipped. A system comment records the exact title reference. Runtime activity continues to determine Working versus Attached. Missing/malformed keys are not guessed. Failed discovery marks diagnostics incomplete without hiding verified execution or falsely marking an orphan Abandoned.
 
 
 ### Advisory checks
 
 Cards, task details, and CLI `list` / `show` expose advisory warnings (`advisories` in JSON). An unresolved predecessor with a confirmed delivering PR that has merged prompts an acceptance-criteria or remaining-work check; the evidence includes the predecessor, PR URL, merge SHA, merge time, observation time and expiry. Related, design-only, excluded and unconfirmed links never count. Evidence requires enabled repository sync, a successful snapshot, and freshness within the configured polling interval; missing, failed or stale data remains unknown.
 
-Agent tasks in `in_progress` with complete activity diagnostics and no live attached session prompt reassignment or queueing. Owner actions are excluded. The report includes the latest retained attachment and task activity; removed attachment details may no longer be retained. Session checks expire after one minute. Expired UI advice disappears until a fresh metadata read; there are no extra GitHub requests or per-card network polling. PR refreshes invalidate both predecessor and dependent advice. These checks never move statuses, remove dependency links, block commands or send notifications. Only Done satisfies a dependency; a merged PR alone does not.
+Agent tasks in `in_progress` with complete activity diagnostics and no live attached session prompt reassignment or queueing. The report includes the latest retained attachment and task activity; removed attachment details may no longer be retained. Session checks expire after one minute. Expired UI advice disappears until a fresh metadata read; there are no extra GitHub requests or per-card network polling. PR refreshes invalidate both predecessor and dependent advice. These checks never move statuses, remove dependency links, block commands or send notifications. Only Done satisfies a dependency; a merged PR alone does not.
 
 Управление метками и пресетами доступно из верхней панели: **шестерёнка → Manage labels and presets → Labels**. Пункт **Plugin settings** в том же меню открывает настройки Work Board.
 

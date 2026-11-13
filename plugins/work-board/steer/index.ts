@@ -46,9 +46,8 @@ export async function deliverCommentToLatestAgent(
       (comment) =>
         comment.kind === "system" && comment.body.startsWith("Thread detached"),
     );
-  const ownerRequester = task.executionTarget === "owner" && input.threadId;
   const canUsePreferred =
-    ownerRequester ||
+    input.threadId ||
     (!detached.some((comment) => comment.threadId === preferred) &&
       (links.length > 0 || (previous.length === 0 && detached.length === 0)));
   const candidates = [

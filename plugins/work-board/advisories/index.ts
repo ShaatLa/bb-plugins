@@ -43,7 +43,7 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
   for (const [id, task] of tasks) {
     const warnings: TaskAdvisory[] = (blockers.get(id) ?? []).flatMap(predecessor => merged.get(predecessor.id) ?? []);
     const activity = activities.get(id), checked = Date.parse(activity?.diagnostics?.checkedAt ?? "");
-    if (task.executionTarget === "agent" && task.status === "in_progress" && activity?.diagnostics?.complete && activity.attachedCount === 0 && checked <= now && now - checked < 60_000) {
+    if (task.status === "in_progress" && activity?.diagnostics?.complete && activity.attachedCount === 0 && checked <= now && now - checked < 60_000) {
       const last = [...(threads.get(id) ?? [])].sort((a, b) => b.attachedAt.localeCompare(a.attachedAt) || b.id.localeCompare(a.id))[0];
       warnings.push({ kind: "no-live-session", checkedAt: activity.diagnostics.checkedAt, validUntil: new Date(checked + 60_000).toISOString(), lastActivityAt: task.lastActivityAt, lastAttachment: last ? { threadId: last.threadId, title: last.title, attachedAt: last.attachedAt, updatedAt: last.updatedAt } : null });
     }

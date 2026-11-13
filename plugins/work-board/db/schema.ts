@@ -448,6 +448,11 @@ const MIGRATIONS = [
     if (db.prepare("PRAGMA foreign_key_check").all().length)
       throw new Error("Foreign key check failed during auto-archive migration");
   },
+  (db: PluginDatabase) => {
+    db.exec("ALTER TABLE tasks DROP COLUMN execution_target; ALTER TABLE tasks DROP COLUMN requester_thread_id;");
+    if (db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Foreign key check failed during executor removal");
+  },
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

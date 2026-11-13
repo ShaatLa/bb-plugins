@@ -1,3 +1,4 @@
+import { isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
@@ -35,7 +36,6 @@ import {
   PRESET_PERMISSION_MODES,
   TASK_PRIORITIES,
   TASK_TYPES,
-  EXECUTION_TARGETS,
   ULID_PATTERN,
   EVIDENCE_KINDS,
   evidenceSchema,
@@ -169,6 +169,11 @@ function normalizePrefix(value: string): string {
 function unwrapTask(result: TaskMutationResult): Task {
   if (!result.ok) throw new CliError(result.error.message);
   return result.task;
+}
+
+function rejectExecutors(options: { executor?: unknown; "requester-thread"?: unknown }) {
+  if (options.executor !== undefined || options["requester-thread"] !== undefined)
+    throw new CliError("Work Board no longer has executors: ask the owner with `bb work-board question add KEY --kind check --prompt ...` (or `--kind decision` with options)");
 }
 
 async function resolveClientHostId(
@@ -1179,6 +1184,7 @@ export function registerTasksCli(
           summary: "Add a question with stable option IDs",
           positionals: [KEY_POSITIONAL],
           options: {
+            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
             prompt: {
               type: "string",
               required: true,
@@ -1187,15 +1193,11 @@ export function registerTasksCli(
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat at least twice",
+              description: "Option text; repeat at least once",
             },
             multiple: {
               type: "boolean",
               description: "Allow multiple answers",
-            },
-            "allow-other": {
-              type: "boolean",
-              description: "Allow a free-text answer",
             },
             recommend: {
               type: "string",
@@ -1209,18 +1211,19 @@ export function registerTasksCli(
             },
             json: JSON_OPTION,
           },
-          run(input) {
+          run(input, ctx) {
             return guard(async () => {
               const task = await resolveTask(
                 domain,
                 input.positionals["key-or-id"],
               );
+              const optionLabels = input.options.option.length ? input.options.option : input.options.kind === "check" ? ["Confirmed", "Problem found"] : [];
               const recommended = input.options.recommend.map((value) =>
                 z.coerce.number().int().min(1).max(20).parse(value),
               );
               if (
                 recommended.some(
-                  (number) => number > input.options.option.length,
+                  (number) => number > optionLabels.length,
                 )
               )
                 throw new CliError(
@@ -1236,8 +1239,10 @@ export function registerTasksCli(
               const result = await domain.createQuestion(
                 tasksRpcContract.createQuestion.input.parse({
                   taskId: task.id,
+                  kind: input.options.kind ?? "decision",
+                  askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
-                  options: input.options.option.map((label, index) =>
+                  options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
                       ? {
                           label,
@@ -1248,7 +1253,6 @@ export function registerTasksCli(
                       : label,
                   ),
                   mode: input.options.multiple ? "multiple" : "single",
-                  allowOther: input.options["allow-other"],
                 }),
               );
               const warnings = !task.progressNote && ["backlog", "todo"].includes(task.status)
@@ -1295,7 +1299,7 @@ export function registerTasksCli(
             clear: { type: "boolean", description: "Clear the answer" },
             text: {
               type: "string",
-              description: "Free-text answer when the creator allows it",
+              description: "Free-text answer",
             },
             revision: {
               type: "integer",
@@ -1389,14 +1393,6 @@ export function registerTasksCli(
               type: "string",
               description: "Optional reason; requires --recommend",
             },
-            "allow-other": {
-              type: "boolean",
-              description: "Allow a free-text answer",
-            },
-            "no-other": {
-              type: "boolean",
-              description: "Disallow a free-text answer",
-            },
             reopen: {
               type: "boolean",
               description:
@@ -1418,10 +1414,6 @@ export function registerTasksCli(
               );
               if (!current)
                 throw new CliError("Question does not belong to this task");
-              if (input.options["allow-other"] && input.options["no-other"])
-                throw new CliError(
-                  "Use --allow-other or --no-other, exclusively",
-                );
               let options: unknown = current.options;
               if (input.options["options-file"]) {
                 const hostId = await resolveClientHostId(
@@ -1451,11 +1443,6 @@ export function registerTasksCli(
                 prompt: input.options.prompt ?? current.prompt,
                 mode: input.options.mode ?? current.mode,
                 options,
-                allowOther: input.options["no-other"]
-                  ? false
-                  : input.options["allow-other"]
-                    ? true
-                    : current.allowOther,
                 reopen: input.options.reopen,
                 authorName: taskAuthor(ctx),
               });
@@ -2211,12 +2198,11 @@ export function registerTasksCli(
           options: {
             "requester-thread": {
               type: "string",
-              description: "BB thread to notify when an Owner action is done",
+              description: "Removed: ask the owner with a task question",
             },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2301,6 +2287,7 @@ export function registerTasksCli(
           ],
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const attachPaths = input.options.attach.map((path) =>
                 resolve(ctx.cwd ?? process.cwd(), path),
               );
@@ -2347,13 +2334,7 @@ export function registerTasksCli(
                 title: input.options.title,
                 status: input.options.status,
                 template: input.options.template,
-                requesterThreadId:
-                  input.options["requester-thread"] ??
-                  (input.options.executor === "owner"
-                    ? (ctx.threadId ?? process.env.BB_THREAD_ID ?? null)
-                    : null),
                 type: input.options.type,
-                executionTarget: input.options.executor,
                 epicId: input.options.epic
                   ? (await resolveTask(domain, input.options.epic)).id
                   : null,
@@ -2436,9 +2417,8 @@ export function registerTasksCli(
             archived: { type: "boolean", description: "List only archived tasks" },
             "include-archived": { type: "boolean", description: "Include archived and unarchived tasks" },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2525,6 +2505,7 @@ export function registerTasksCli(
           },
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const project = await selectedProject(
                 domain,
                 ctx,
@@ -2572,7 +2553,6 @@ export function registerTasksCli(
                     archive: input.options.archived ? "archived" : input.options["include-archived"] ? "all" : "active",
                     projectId: project?.id,
                     type: input.options.type,
-                    executionTarget: input.options.executor,
                     epicId: input.options.epic
                       ? (await resolveTask(domain, input.options.epic)).id
                       : undefined,
@@ -2633,7 +2613,6 @@ export function registerTasksCli(
                 [
                   "KEY",
                   "STATUS",
-                  "EXECUTOR",
                   "PRIORITY",
                   "DUE",
                   "TITLE",
@@ -2646,7 +2625,6 @@ export function registerTasksCli(
                 tasks.map((task) => [
                   task.key,
                   task.status,
-                  task.executionTarget,
                   task.priority,
                   task.dueDate ?? "-",
                   task.title,
@@ -2727,8 +2705,8 @@ export function registerTasksCli(
               const keep = input.options.comments ?? (brief ? 0 : comments.length);
               const shownComments = keep ? comments.slice(-keep) : [];
               const omittedComments = comments.length - shownComments.length;
-              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => question.answeredBy !== null ? {
-                id: question.id, prompt: question.prompt,
+              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => !isQuestionOpen(question) ? {
+                id: question.id, prompt: question.prompt, kind: question.kind, askedByThread: question.askedByThread,
                 answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
                 answeredBy: question.answeredBy, updatedAt: question.updatedAt,
               } : question) : questions;
@@ -2752,7 +2730,7 @@ export function registerTasksCli(
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
-              if (brief && questions.some(q => q.answeredBy !== null || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
+              if (brief && questions.some(q => !isQuestionOpen(q) || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
               if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
               if (input.options.json) {
                 return JSON.stringify({
@@ -2797,13 +2775,6 @@ export function registerTasksCli(
                       ? (await resolveTask(domain, task.epicId)).key
                       : "-",
                   ],
-                  ["Executor", task.executionTarget],
-                  [
-                    "Requester",
-                    task.requesterThreadId
-                      ? `@thread:${task.requesterThreadId}`
-                      : "-",
-                  ],
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
@@ -2827,7 +2798,7 @@ ${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activ
 ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
-                ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "owner action"}`] : []),
+                ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
@@ -2888,12 +2859,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
           options: {
             "requester-thread": {
               type: "string",
-              description: "BB thread to notify when an Owner action is done",
+              description: "Removed: ask the owner with a task question",
             },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2990,6 +2960,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
           ],
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const task = await resolveTask(
                 domain,
                 input.positionals["key-or-id"],
@@ -3057,14 +3028,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 await domain.updateTask(
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
-                    requesterThreadId:
-                      input.options["requester-thread"] ??
-                      (input.options.executor === "owner" &&
-                      !task.requesterThreadId
-                        ? (ctx.threadId ?? process.env.BB_THREAD_ID)
-                        : undefined),
+                    agentThreadId: ctx.threadId ?? null,
                     type: input.options.type,
-                    executionTarget: input.options.executor,
                     epicId: input.options["no-epic"]
                       ? null
                       : input.options.epic
@@ -3089,11 +3054,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               return input.options.json
                 ? JSON.stringify({
                     task: updated,
-                    ...(result.ok && result.notification
-                      ? { notification: result.notification }
-                      : {}),
                   })
-                : `Updated ${updated.key}  ${updated.title}${result.ok && result.notification === "not_sent" ? "\nWarning: requester thread could not be notified; notify it manually." : ""}`;
+                : `Updated ${updated.key}  ${updated.title}`;
             });
           },
         }),

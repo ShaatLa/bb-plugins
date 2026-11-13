@@ -1,3 +1,4 @@
+import { waitingOnOwner } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
@@ -11,7 +12,7 @@ import type {
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ThreadHealthMarkers } from "../../components/thread-health-markers";
-import { QuestionCount, WaitingOnYou } from "../../components/question-count";
+import { QuestionCount } from "../../components/question-count";
 import type { TaskRowMeta } from "./data.js";
 import { formatDueDate, partitionLabels } from "./lib.js";
 import type { EditFn } from "./property-menus.js";
@@ -84,6 +85,7 @@ function LabelChips({
 interface TaskRowProps {
   prSummary?: PrSummary;
   unansweredQuestions?: number;
+  questionKinds?: { decisions: number; checks: number };
   task: Task;
   meta: TaskRowMeta | undefined;
   project: Project | undefined;
@@ -100,6 +102,7 @@ interface TaskRowProps {
 export const TaskRow = memo(function TaskRow({
   prSummary,
   unansweredQuestions,
+  questionKinds,
   task,
   meta,
   project,
@@ -129,7 +132,7 @@ export const TaskRow = memo(function TaskRow({
           "relative grid w-full grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-border-hairline px-3.5 py-1.5 text-left transition-opacity hover:bg-state-hover",
           "@md:flex @md:h-[34px] @md:py-0",
           pending && "opacity-70",
-          task.executionTarget === "owner" && "border-l-[3px] border-l-warning",
+          waitingOnOwner(task, unansweredQuestions ?? 0) && "border-l-[3px] border-l-warning",
         )}
       >
         <button
@@ -170,12 +173,6 @@ export const TaskRow = memo(function TaskRow({
           {task.title}
         </span>
         <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
-          {task.executionTarget === "owner" ? (
-            <span className="flex items-center gap-1 text-warning">
-              <Icon name="User" className="size-3" />
-              Owner
-            </span>
-          ) : null}
           {task.type === "epic" ? (
             <span className={RAIL_CHIP_CLASS}>
               <Icon name="Zap" className="size-3" />
@@ -186,8 +183,7 @@ export const TaskRow = memo(function TaskRow({
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />
-          <WaitingOnYou task={task} count={unansweredQuestions} />
-          <QuestionCount count={unansweredQuestions} />
+          <QuestionCount kinds={questionKinds} count={unansweredQuestions} />
           <PullRequestSummary summary={prSummary} />
           <LabelChips task={task} labelsById={labelsById} />
           {task.dueDate !== null ? (

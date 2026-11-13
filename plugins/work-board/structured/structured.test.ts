@@ -60,7 +60,7 @@ describe("task questions", () => {
     const { structured, store, project, task } = setup();
     const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });
     store.tasks.addTaskLabel(task.id, keep.id);
-    const create = async () => (await structured.handlers.createQuestion({ taskId: task.id, prompt: "Choose?", mode: "single", options: ["A", "B"] })).question;
+    const create = async () => (await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Choose?", mode: "single", options: ["A", "B"] })).question;
     const first = await create();
     const second = await create();
     const names = () => store.tasks.listLabelsForTask(task.id).map((label) => label.name).sort();
@@ -214,7 +214,7 @@ describe("task questions", () => {
 
   it("reads replacement options on the CLI host and keeps existing option IDs", async () => {
     const { cli, harness, task, structured } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Choices?",
       mode: "single",
@@ -251,7 +251,7 @@ describe("task questions", () => {
 
   it("edits by stable option ID, rejects stale or unconfirmed changes and preserves the previous decision", async () => {
     const { task, harness, structured, cli, store } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Size?",
       mode: "single",
@@ -387,7 +387,7 @@ describe("task questions", () => {
       "Now",
       "--option",
       "Later",
-      "--allow-other",
+
       "--json",
     );
     const result = await cli(
@@ -451,7 +451,7 @@ describe("task questions", () => {
       ],
     });
     const other = (
-      await structured.handlers.createQuestion({
+      await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Strict?",
         mode: "single",
@@ -463,9 +463,9 @@ describe("task questions", () => {
         questionId: other.id,
         revision: 1,
         selectedOptionIds: [],
-        answerText: "Not allowed",
+        answerText: "Always allowed",
       }),
-    ).rejects.toThrow("Invalid question answer");
+    ).resolves.toMatchObject({ question: { answerText: "Always allowed" } });
   });
 
   it.each([false, true])(
@@ -485,7 +485,7 @@ describe("task questions", () => {
         title: "Worker",
         liveStatus: "idle",
       });
-      const { question } = await structured.handlers.createQuestion({
+      const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Proceed?",
         mode: "single",
@@ -669,7 +669,7 @@ describe("task questions", () => {
       "--json",
     );
     expect(structured.listQuestions(task.id)).toEqual([]);
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Will cascade?",
       mode: "single",

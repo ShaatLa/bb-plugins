@@ -46,223 +46,31 @@ function setup(failSend = false, archived = false) {
     projectId: project.id,
     title: "Grant registry access",
     description: "Owner must grant access. Done when a test pull succeeds.",
-    executionTarget: "owner",
-    requesterThreadId: "thr_requester",
-  });
+    });
   return { bb, harness, store, project, task };
 }
 
-describe("owner actions", () => {
-  it("migrates existing tasks to agent without losing content or hierarchy", () => {
-    const { bb, store, project } = setup();
-    const parent = store.tasks.createTask({
-      projectId: project.id,
-      title: "Existing",
-    });
-    const child = store.tasks.createTask({
-      projectId: project.id,
-      title: "Child",
-      parentTaskId: parent.id,
-    });
+describe("executor removal", () => {
+  it("migrates the previous schema with data and does not create questions", () => {
+    const { bb, store, task } = setup();
     const db = bb.storage.database();
-    db.exec(
-      "ALTER TABLE tasks DROP COLUMN execution_target; ALTER TABLE tasks DROP COLUMN requester_thread_id; DELETE FROM schema_version WHERE version = 11;",
-    );
+    const child = store.tasks.createTask({ projectId: task.projectId, title: "Preserve child", parentTaskId: task.id });
+    const comment = store.tasks.createComment({ taskId: task.id, body: "Keep context", kind: "agent", authorName: "Agent" });
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_target TEXT NOT NULL DEFAULT 'agent' CHECK (execution_target IN ('agent','owner')); ALTER TABLE tasks ADD COLUMN requester_thread_id TEXT CHECK (requester_thread_id IS NULL OR requester_thread_id GLOB 'thr_*'); DELETE FROM schema_version WHERE version=30;");
+    db.prepare("UPDATE tasks SET execution_target='owner', requester_thread_id='thr_old' WHERE id=?").run(task.id);
     const migrated = createTasksStore(db);
-    expect(migrated.getTask(parent.id)).toEqual(parent);
+    expect(migrated.getTask(task.id)).toEqual(task);
     expect(migrated.getTask(child.id)).toEqual(child);
+    expect(migrated.getComment(comment.id)).toEqual(comment);
+    expect(db.prepare("PRAGMA table_info(tasks)").all().map((row: any) => row.name)).not.toContain("execution_target");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(db.prepare("SELECT * FROM task_questions").all()).toEqual([]);
     createTasksStore(db);
   });
-
-  it("creates owner tasks in an epic via CLI, remembers the initiating thread and filters independently of type", async () => {
-    const { harness, store, project, task } = setup();
-    const epic = store.tasks.createTask({
-      projectId: project.id,
-      title: "Infrastructure",
-      type: "epic",
-    });
-    const result = await harness.runCli(
-      [
-        "create",
-        "--project",
-        "OWN",
-        "--title",
-        "Enable access",
-        "--executor",
-        "owner",
-        "--epic",
-        epic.key,
-        "--json",
-      ],
-      { threadId: "thr_creator" },
-    );
-    expect(result.exitCode, result.stderr).toBe(0);
-    const created = JSON.parse(result.stdout).task;
-    expect(created).toMatchObject({
-      executionTarget: "owner",
-      requesterThreadId: "thr_creator",
-      type: "task",
-      epicId: epic.id,
-    });
-    const owners = await harness.runCli([
-      "list",
-      "--executor",
-      "owner",
-      "--type",
-      "task",
-      "--json",
-    ]);
-    expect(owners.exitCode, owners.stderr).toBe(0);
-    expect(
-      JSON.parse(owners.stdout)
-        .tasks.map((t: { id: string }) => t.id)
-        .sort(),
-    ).toEqual([task.id, created.id].sort());
-    const agents = tasksRpcContract.listTasks.output.parse(
-      await harness.callRpc("listTasks", { executionTarget: "agent" }),
-    );
-    expect(agents.tasks.map((t) => t.id)).toEqual([epic.id]);
-    const page = store.tasks.listTasksPage({ limit: 1 });
-    expect(() =>
-      store.tasks.listTasksPage({
-        limit: 1,
-        cursor: page.nextCursor!,
-        executionTarget: "owner",
-      }),
-    ).toThrow("current filters");
-    const update = await harness.runCli([
-      "update",
-      epic.key,
-      "--executor",
-      "owner",
-      "--requester-thread",
-      "thr_other",
-      "--json",
-    ]);
-    expect(update.exitCode, update.stderr).toBe(0);
-    expect(JSON.parse(update.stdout).task).toMatchObject({
-      type: "epic",
-      executionTarget: "owner",
-      requesterThreadId: "thr_other",
-    });
-    await expect(
-      harness.callRpc("updateTask", {
-        taskId: task.id,
-        requesterThreadId: "invalid",
-      }),
-    ).rejects.toThrow();
-  });
-
-  it("rejects both dispatch APIs and CLI before contacting threads or changing the task", async () => {
-    const { harness, store, task } = setup();
-    const before = store.tasks.getTask(task.id);
-    await expect(
-      harness.callRpc("delegateToThread", {
-        taskId: task.id,
-        threadId: "thr_target",
-      }),
-    ).rejects.toThrow("Owner actions cannot be dispatched");
-    await expect(
-      harness.callRpc("delegate", { taskId: task.id, presetId: task.id }),
-    ).rejects.toThrow("Owner actions cannot be dispatched");
-    const result = await harness.runCli([
-      "dispatch",
-      task.key,
-      "--thread",
-      "thr_target",
-    ]);
+  it.each([["create", "--title", "Old", "--project", "OWN", "--executor", "owner"], ["update", "OWN-1", "--executor", "agent"], ["list", "--executor", "owner"], ["create", "--title", "Old", "--project", "OWN", "--requester-thread", "thr_old"], ["update", "OWN-1", "--requester-thread", "thr_old"]])("rejects removed flags: %s", async (...args) => {
+    const { harness } = setup();
+    const result = await harness.runCli(args);
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain("Owner actions cannot be dispatched");
-    expect(harness.sdk.callsTo("threads.get")).toHaveLength(0);
-    expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(0);
-    expect(harness.sdk.callsTo("threads.send")).toHaveLength(0);
-    expect(store.tasks.listTaskThreads(task.id)).toEqual([]);
-    expect(store.tasks.getTask(task.id)).toEqual(before);
-  });
-
-  it.each(["updateTask", "boardMove"] as const)(
-    "records completion and queues exactly one notification on %s",
-    async (method) => {
-      const { harness, store, task } = setup();
-      const complete = () =>
-        harness.callRpc(method, { taskId: task.id, status: "done" });
-      expect(await complete()).toMatchObject({
-        ok: true,
-        task: { status: "done" },
-        notification: "sent",
-      });
-      await complete();
-      expect(harness.sdk.callsTo("threads.send")).toMatchObject([
-        [{ threadId: "thr_requester", mode: "queue-if-active" }],
-      ]);
-      const completion = store.tasks
-        .listComments(task.id)
-        .filter((c) => c.body.startsWith("Owner action completed"));
-      expect(completion).toHaveLength(1);
-      expect(completion[0]?.notifiedCount).toBe(1);
-      await harness.callRpc("updateTask", { taskId: task.id, status: "todo" });
-      await complete();
-      expect(harness.sdk.callsTo("threads.send")).toHaveLength(2);
-    },
-  );
-
-  it.each([
-    [true, false],
-    [false, true],
-  ])(
-    "preserves Done and exposes undelivered feedback (send failure=%s, archived=%s)",
-    async (failSend, archived) => {
-      const { harness, store, task } = setup(failSend, archived);
-      const result = await harness.runCli([
-        "update",
-        task.key,
-        "--status",
-        "done",
-        "--json",
-      ]);
-      expect(result.exitCode, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        task: { status: "done" },
-        notification: "not_sent",
-      });
-      expect(store.tasks.getTask(task.id)?.status).toBe("done");
-      expect(
-        store.tasks
-          .listComments(task.id)
-          .some(
-            (c) =>
-              c.body.toLowerCase().includes("notify") &&
-              c.body.includes("manually"),
-          ),
-      ).toBe(true);
-    },
-  );
-
-  it("does not notify for ordinary tasks or missing requester and refuses conversion while agents are working", async () => {
-    const { harness, store, project, task } = setup();
-    const agent = store.tasks.createTask({
-      projectId: project.id,
-      title: "Agent work",
-    });
-    store.tasks.upsertTaskThread({
-      taskId: agent.id,
-      threadId: "thr_running",
-      presetName: "Worker",
-      title: "Work",
-      liveStatus: "working",
-    });
-    expect(
-      await harness.callRpc("updateTask", {
-        taskId: agent.id,
-        executionTarget: "owner",
-      }),
-    ).toMatchObject({ ok: false, error: { code: "task_execution_invalid" } });
-    await harness.callRpc("updateTask", { taskId: agent.id, status: "done" });
-    await harness.callRpc("updateTask", {
-      taskId: task.id,
-      requesterThreadId: null,
-      status: "done",
-    });
-    expect(harness.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(result.stderr).toContain("Work Board no longer has executors");
   });
 });

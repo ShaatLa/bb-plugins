@@ -17,25 +17,27 @@ function setup() {
   const project = store.tasks.createProject({ name: "Waiting", prefix: "WAIT", color: "blue" });
   const structured = createStructuredStore(host.bb, store);
   const task = (title: string, extra = {}) => store.tasks.createTask({ projectId: project.id, title, ...extra });
-  const question = (taskId: string) => structured.handlers.createQuestion({ taskId, prompt: "First line\nSecond line", options: ["Yes", "No"], mode: "single" });
+  const question = (taskId: string) => structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId, prompt: "First line\nSecond line", options: ["Yes", "No"], mode: "single" });
   return { ...host, store, project, task, question };
 }
 it("filters waiting tasks before pagination, orders questions first and respects explicit sorts", async () => {
   const f = setup();
-  const owner = f.task("Owner", { executionTarget: "owner" });
+  const owner = f.task("Owner", { });
+  await f.harness.callRpc("createQuestion", { taskId: owner.id, kind: "check", prompt: "Validate" });
   const older = f.task("Older question");
   const newer = f.task("Newer question");
   const quiet = f.task("Quiet");
-  const done = f.task("Done", { status: "done", executionTarget: "owner" });
-  const canceled = f.task("Canceled", { status: "canceled", executionTarget: "owner" });
-  const archived = f.task("Archived", { status: "done", executionTarget: "owner" });
+  const done = f.task("Done", { status: "done", });
+  const canceled = f.task("Canceled", { status: "canceled", });
+  const archived = f.task("Archived", { status: "done", });
   f.store.tasks.setTaskArchived(archived.id, true);
   f.bb.storage.database().prepare("UPDATE tasks SET status='todo' WHERE id=?").run(archived.id);
-  const template = f.task("Hidden template", { executionTarget: "owner" });
+  const template = f.task("Hidden template", { });
   f.bb.storage.database().prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Hidden', 'template')").run(template.id);
   for (const task of [older, newer, done, canceled, archived]) await f.question(task.id);
   f.bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE task_id=?").run("2026-01-01T00:00:00Z", older.id);
   f.bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE task_id=?").run("2026-02-01T00:00:00Z", newer.id);
+  f.bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE task_id=?").run("2025-01-01T00:00:00Z", owner.id);
   const input = { waitingOnOwner: true, projectId: f.project.id, limit: 1 };
   const first = f.store.tasks.listTasksPage(input);
   const second = f.store.tasks.listTasksPage({ ...input, cursor: first.nextCursor! });
@@ -55,15 +57,15 @@ it("filters waiting tasks before pagination, orders questions first and respects
   expect(allRows.find((row: { id: string }) => row.id === quiet.id).waitingOnOwner).toBe(false);
   expect((await f.harness.runCli(["list", "--waiting-on-owner", "--project", "WAIT"])).stdout).toContain(newer.title);
   expect((await f.harness.runCli(["show", newer.key])).stdout).toContain("Waiting on you: First line");
-  expect((await f.harness.runCli(["show", owner.key])).stdout).toContain("Waiting on you: owner action");
+  expect((await f.harness.runCli(["show", owner.key])).stdout).toContain("Waiting on you: Validate");
   expect(JSON.stringify(await archiveRecords(f.store, captureProject(f.bb, f.store, f.project.id), async () => {}))).not.toContain("waitingOnOwner");
 });
 it.each([false, true])("upgrades badge settings once (saved=%s), preserving later removal", async saved => {
   const f = setup();
   if (saved) await f.bb.storage.kv.set("navigation-badge:criteria", ["owner"]);
-  expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: saved ? ["waiting_on_owner", "owner"] : ["open", "waiting_on_owner"] });
-  await f.harness.callRpc("setNavigationBadgeCriteria", { criteria: ["owner"] });
-  expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["owner"] });
+  expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: saved ? ["waiting_on_owner"] : ["open", "waiting_on_owner"] });
+  await f.harness.callRpc("setNavigationBadgeCriteria", { criteria: ["waiting_on_owner"] });
+  expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["waiting_on_owner"] });
 });
 it.each(["text", "json"])("warns on question add in %s without preventing creation", async mode => {
   const f = setup();
@@ -78,11 +80,11 @@ it.each(["text", "json"])("warns on question add in %s without preventing creati
   }
 });
 
-it("orders owner actions without questions by updatedAt", () => {
+it("excludes tasks without questions", () => {
   const f = setup();
-  const older = f.task("Older owner action", { executionTarget: "owner" });
-  const newer = f.task("Newer owner action", { executionTarget: "owner" });
+  const older = f.task("Older owner action", { });
+  const newer = f.task("Newer owner action", { });
   f.bb.storage.database().prepare("UPDATE tasks SET updated_at=? WHERE id=?").run("2026-01-01T00:00:00Z", older.id);
   f.bb.storage.database().prepare("UPDATE tasks SET updated_at=? WHERE id=?").run("2026-02-01T00:00:00Z", newer.id);
-  expect(f.store.tasks.listTasksPage({ waitingOnOwner: true }).tasks.map(t => t.id)).toEqual([newer.id, older.id]);
+  expect(f.store.tasks.listTasksPage({ waitingOnOwner: true }).tasks.map(t => t.id)).toEqual([]);
 });

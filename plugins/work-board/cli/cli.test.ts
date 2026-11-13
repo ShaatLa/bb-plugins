@@ -176,7 +176,7 @@ describe("bb work-board CLI", () => {
     await plugin(bb);
     await harness.runCli(["project", "create", "--name", "Questions", "--prefix", "CMP"]);
     await harness.runCli(["create", "--project", "CMP", "--title", "Questions"]);
-    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "CMP-1", "--prompt", "Choose\nnow", "--option", "One", "--option", "Two", "--multiple", "--allow-other", "--json"]))).question;
+    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "CMP-1", "--prompt", "Choose\nnow", "--option", "One", "--option", "Two", "--multiple",  "--json"]))).question;
     const result = await harness.runCli(["question", "answer", "CMP-1", "--question", question.id, "--answer", question.options[0].id, "--answer", question.options[1].id, "--text", "Details", "--revision", String(question.revision)]);
     expect(result.exitCode).toBe(0);
     await harness.runCli(["question", "add", "CMP-1", "--prompt", "Open question", "--option", "Yes", "--option", "No"]);
@@ -184,7 +184,7 @@ describe("bb work-board CLI", () => {
     expect(stdout(await harness.runCli(["comment", "CMP-1", "--kind", "review", "--head", "b".repeat(40), "--verdict", "changes", "--thread", "thr_reviewer", "--body", "Pre-PR review", "--json"]))).toContain('"verdict":"changes"');
     expect(evidence.exitCode).toBe(0);
     const brief = JSON.parse(stdout(await harness.runCli(["show", "CMP-1", "--brief", "--json"])));
-    expect(brief.questions[0]).toEqual({ id: question.id, prompt: "Choose\nnow", answer: "One; Two; Details", answeredBy: expect.any(String), updatedAt: expect.any(String) });
+    expect(brief.questions[0]).toEqual({ id: question.id, prompt: "Choose\nnow", kind: "decision", askedByThread: question.askedByThread, answer: "One; Two; Details", answeredBy: expect.any(String), updatedAt: expect.any(String) });
     expect(brief.more.questions).toBe("bb work-board question list CMP-1");
     expect(brief.more.evidence).toBe("bb work-board evidence CMP-1");
     expect(brief.more.comments).toContain("--kind system");
@@ -325,10 +325,10 @@ describe("bb work-board CLI", () => {
 
     const listResult = await harness.runCli(["list", "--project", "CLI"]);
     expect(stdout(listResult)).toContain(
-      "KEY    STATUS   EXECUTOR  PRIORITY  DUE  TITLE                   LABELS   AGENTS",
+      "KEY    STATUS   PRIORITY  DUE  TITLE                   LABELS   AGENTS",
     );
     expect(listResult.stdout).toContain(
-      "CLI-1  backlog  agent     medium    -    Ship the canonical CLI  Backend  0",
+      "CLI-1  backlog  medium    -    Ship the canonical CLI  Backend  0",
     );
 
     const showResult = await harness.runCli(["show", "cli-1", "--json"]);

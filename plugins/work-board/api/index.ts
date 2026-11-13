@@ -352,50 +352,6 @@ function writeSystemComments(
   }
 }
 
-function recordOwnerCompletion(
-  store: TasksApiStore,
-  before: StoredTask,
-  after: StoredTask,
-  authorName: string,
-): StoredComment | null {
-  if (
-    after.executionTarget !== "owner" ||
-    after.status !== "done" ||
-    before.status === "done"
-  )
-    return null;
-  return store.tasks.createComment({
-    taskId: after.id,
-    kind: "system",
-    authorName,
-    body: `Owner action completed by ${authorName}: ${after.title}. Re-read the task and its comments to verify the result before continuing.`,
-  });
-}
-
-async function notifyOwnerCompletion(
-  bb: BbPluginApi,
-  store: TasksApiStore,
-  task: StoredTask,
-  comment: StoredComment | null,
-): Promise<{ notification?: "sent" | "not_sent" }> {
-  if (!comment || !task.requesterThreadId) return {};
-  const count = await deliverCommentToLatestAgent(bb, store.tasks, {
-    taskId: task.id,
-    commentId: comment.id,
-    body: comment.body,
-    authorName: comment.authorName,
-    threadId: task.requesterThreadId,
-    mode: "queue-if-active",
-  });
-  store.tasks.updateComment(comment.id, { notifiedCount: count });
-  if (!count)
-    writeSystemComments(store, task.id, "Work Board", [
-      "Owner action is saved as Done, but the requester thread could not be notified. Notify it manually.",
-    ]);
-  publishCommentsChanged(bb, task.id);
-  return { notification: count ? "sent" : "not_sent" };
-}
-
 function attachmentMetadata(attachment: StoredAttachment): AttachmentMetadata {
   return {
     id: attachment.id,
@@ -822,8 +778,6 @@ export function registerHandlers(
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
             type: input.type,
-            executionTarget: input.executionTarget,
-            requesterThreadId: input.requesterThreadId,
             epicId: input.epicId,
           });
           replaceTaskLabels(store, created.id, input.labelIds);
@@ -860,26 +814,6 @@ export function registerHandlers(
       try {
         const current = store.tasks.getTask(input.taskId);
         if (!current) throw new Error(`Task not found: ${input.taskId}`);
-        if (
-          input.executionTarget === "owner" &&
-          current.executionTarget !== "owner" &&
-          store.tasks
-            .listTaskThreads(current.id)
-            .some(
-              (thread) =>
-                thread.liveStatus === "starting" ||
-                thread.liveStatus === "working",
-            )
-        ) {
-          return {
-            ok: false,
-            error: {
-              code: "task_execution_invalid",
-              message:
-                "Stop active task agents before converting to an Owner action",
-            },
-          };
-        }
         const parentTaskId =
           input.parentTaskId === undefined
             ? current.parentTaskId
@@ -896,6 +830,7 @@ export function registerHandlers(
           const updated = store.tasks.updateTask(current.id, {
             title: input.title,
             description: input.description,
+            notifyStatus: Boolean(input.agentThreadId),
             progressNote: input.progressNote,
             authorName: input.authorName,
             status: input.status,
@@ -903,29 +838,13 @@ export function registerHandlers(
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
             type: input.type,
-            executionTarget: input.executionTarget,
-            requesterThreadId: input.requesterThreadId,
             epicId: input.epicId,
           });
           if (input.labelIds) {
             replaceTaskLabels(store, current.id, input.labelIds);
           }
 
-          const completion = recordOwnerCompletion(
-            store,
-            current,
-            updated,
-            input.authorName,
-          );
           const bodies: string[] = [];
-          if (updated.executionTarget !== current.executionTarget)
-            bodies.push(
-              `Executor changed to ${displayName(updated.executionTarget)} by ${input.authorName}`,
-            );
-          if (updated.requesterThreadId !== current.requesterThreadId)
-            bodies.push(
-              `Requester thread ${updated.requesterThreadId ? `set to @thread:${updated.requesterThreadId}` : "cleared"} by ${input.authorName}`,
-            );
           if (updated.type !== current.type) {
             bodies.push(
               `Type changed to ${displayName(updated.type)} by ${input.authorName}`,
@@ -964,8 +883,7 @@ export function registerHandlers(
           writeSystemComments(store, current.id, input.authorName, bodies);
           return {
             task: apiTask(store, updated),
-            systemCommentsWritten: bodies.length + (completion ? 1 : 0),
-            completion,
+            systemCommentsWritten: bodies.length,
           };
         });
 
@@ -973,13 +891,7 @@ export function registerHandlers(
         if (result.systemCommentsWritten > 0) {
           publishCommentsChanged(bb, result.task.id);
         }
-        const notification = await notifyOwnerCompletion(
-          bb,
-          store,
-          result.task,
-          result.completion,
-        );
-        return { ok: true, task: result.task, ...notification };
+        return { ok: true, task: result.task };
       } catch (error) {
         if (error instanceof SecretDetectedError) {
           return {
@@ -1035,7 +947,6 @@ export function registerHandlers(
         waitingOnOwner: input.waitingOnOwner,
         parentTaskId: input.parentTaskId,
         type: input.type,
-        executionTarget: input.executionTarget,
         epicId: input.epicId,
         search: input.search,
         sort: input.sort,
@@ -1056,6 +967,7 @@ export function registerHandlers(
       const result = store.transaction(() => {
         const moved = store.tasks.updatePosition(current.id, {
           status: input.status,
+          notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
           afterTaskId: input.afterTaskId,
         });
@@ -1065,23 +977,11 @@ export function registerHandlers(
             `Status changed to ${statusLabel(moved.status, store.tasks.getProject(moved.projectId)?.statuses)} by ${input.authorName}`,
           ]);
         }
-        const completion = recordOwnerCompletion(
-          store,
-          current,
-          moved,
-          input.authorName,
-        );
-        return { task: apiTask(store, moved), statusChanged, completion };
+        return { task: apiTask(store, moved), statusChanged };
       });
       publishTasksChanged(bb, result.task.id, result.task.projectId);
       if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
-      const notification = await notifyOwnerCompletion(
-        bb,
-        store,
-        result.task,
-        result.completion,
-      );
-      return { ok: true, task: result.task, ...notification };
+      return { ok: true, task: result.task };
     },
     moveTaskToProject(input) {
       const current = store.tasks.getTask(input.taskId);

@@ -1,4 +1,3 @@
-import { newestOpenQuestion, waitingOnOwner } from "../../shared/waiting-on-owner";
 import { CurrentState } from "./current-state";
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
@@ -310,7 +309,6 @@ function TaskDetail({
   const rpc = useTasksRpc();
   const questionsRef = useRef<HTMLDivElement>(null);
   const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
-  const newestQuestion = newestOpenQuestion(questions.data ?? []);
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
@@ -446,10 +444,6 @@ function TaskDetail({
         ...input,
       });
       if (!result.ok) push(result.error.message);
-      else if (result.notification === "not_sent")
-        push(
-          "Saved as Done, but the requester thread could not be notified. Notify it manually.",
-        );
     } catch (error) {
       push(errorMessage(error));
     }
@@ -534,7 +528,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = task.scheduledRole === "template" ? null : <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    {task.executionTarget !== "owner" && !task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
+    {!task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}
   </>;
@@ -620,22 +614,13 @@ function TaskDetail({
             className="mb-4 @[45rem]:hidden"
           />
 
-          {waitingOnOwner(task, newestQuestion ? 1 : 0) ? <button type="button" className="mb-4 flex w-full min-w-0 items-center gap-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-left text-warning" onClick={() => questionsRef.current?.scrollIntoView({ behavior: "smooth" })}>
-            <Icon name="FileQuestion" className="size-4 shrink-0" />
-            <span className="shrink-0 font-medium">Waiting on you</span>{" "}
-            <span className="truncate">{newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Owner action"}</span>
-          </button> : null}
           <TasksEditor
             value={descriptionValue}
             onChange={onDescriptionChange}
             deferChange
             variant="doc"
             className="min-h-24"
-            placeholder={
-              task.executionTarget === "owner"
-                ? "Action to take, why the owner is needed, and how to verify completion…"
-                : "Add a description… rich text: headings, lists, code, checkboxes, @mentions"
-            }
+            placeholder="Add a description… rich text: headings, lists, code, checkboxes, @mentions"
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}

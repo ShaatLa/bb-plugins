@@ -1,5 +1,4 @@
 import { useTasksNavigation } from "../../shell/routes";
-import { useBbContext, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useState, type ReactNode } from "react";
 import type {
   Label,
@@ -49,8 +48,6 @@ import { cn } from "@/lib/utils";
 
 export interface TaskPropertyUpdate {
   status?: TaskStatus;
-  executionTarget?: Task["executionTarget"];
-  requesterThreadId?: string | null;
   type?: Task["type"];
   epicId?: string | null;
   priority?: TaskPriority;
@@ -78,80 +75,6 @@ function LabelChip({ label }: { label: Label }) {
       />
       {label.name}
     </span>
-  );
-}
-
-function ExecutorMenu({
-  task,
-  onUpdate,
-  triggerClassName,
-}: {
-  task: Task;
-  onUpdate: TaskPropertiesProps["onUpdate"];
-  triggerClassName: string;
-}) {
-  const context = useBbContext();
-  const navigate = useBbNavigate();
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label="Executor"
-            className={triggerClassName}
-          >
-            <Icon
-              name={task.executionTarget === "owner" ? "User" : "Bot"}
-              className="size-3.5"
-            />
-            {task.executionTarget === "owner" ? "Owner action" : "Agent"}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
-          {(["agent", "owner"] as const).map((executionTarget) => (
-            <DropdownMenuItem
-              key={executionTarget}
-              onSelect={() =>
-                onUpdate({
-                  executionTarget,
-                  ...(executionTarget === "owner" &&
-                  !task.requesterThreadId &&
-                  context.threadId
-                    ? { requesterThreadId: context.threadId }
-                    : {}),
-                })
-              }
-            >
-              {executionTarget === "owner" ? "Owner action" : "Agent"}
-            </DropdownMenuItem>
-          ))}
-          {task.executionTarget === "owner" && context.threadId ? (
-            <DropdownMenuItem
-              onSelect={() => onUpdate({ requesterThreadId: context.threadId })}
-            >
-              Use this thread as requester
-            </DropdownMenuItem>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {task.executionTarget === "owner" ? (
-        task.requesterThreadId ? (
-          <button
-            type="button"
-            className={triggerClassName}
-            onClick={() => navigate.toThread(task.requesterThreadId!)}
-          >
-            <Icon name="ArrowUpRight" className="size-3.5" />
-            Requester thread
-          </button>
-        ) : (
-          <span className="text-xs text-muted-foreground">
-            No requester thread
-          </span>
-        )
-      ) : null}
-    </>
   );
 }
 
@@ -651,11 +574,6 @@ export function PropertiesRail({
           onUpdate={onUpdate}
           triggerClassName={RAIL_ROW_CLASS}
         />
-        <ExecutorMenu
-          task={task}
-          onUpdate={onUpdate}
-          triggerClassName={RAIL_ROW_CLASS}
-        />
         {task.type !== "epic" && task.parentTaskId === null ? (
           <EpicPicker
             projectId={task.projectId}
@@ -716,7 +634,7 @@ export function PropertiesRail({
           triggerClassName={RAIL_ROW_CLASS}
         />
 
-        {task.executionTarget !== "owner" && !task.archivedAt ? (
+        {!task.archivedAt ? (
           <>
             <div className="mb-1 mt-3 text-2xs font-semibold text-muted-foreground">
               Dispatch target
@@ -732,12 +650,7 @@ export function PropertiesRail({
               <div className="py-0.5 text-sm text-muted-foreground">…</div>
             )}
           </>
-        ) : (
-          <p className="mt-3 text-xs text-muted-foreground">
-            The owner performs this action. Mark Done after verifying the
-            result; the requester thread will be notified if set.
-          </p>
-        )}
+        ) : null}
       </div>
       {children}
     </aside>
@@ -773,11 +686,6 @@ export function InlineProperties({
         triggerClassName={CHIP_CLASS}
       />
       <TypeMenu task={task} onUpdate={onUpdate} triggerClassName={CHIP_CLASS} />
-      <ExecutorMenu
-        task={task}
-        onUpdate={onUpdate}
-        triggerClassName={CHIP_CLASS}
-      />
       {task.type !== "epic" && task.parentTaskId === null ? (
         <EpicPicker
           projectId={task.projectId}

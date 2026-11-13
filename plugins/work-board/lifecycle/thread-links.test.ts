@@ -229,7 +229,7 @@ it.each([false, true])(
     f.add("thr_old", true);
     f.add("thr_new", parent);
     const structured = createStructuredStore(f.bb, f.store);
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: f.task.id,
       prompt: "Proceed?",
       mode: "single",
@@ -279,7 +279,7 @@ it("preserves assignment history through an archive v6 round-trip", async () => 
   await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(16);
+  expect(capture.manifest.version).toBe(17);
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   harnesses.push(harness);
   const restored = createStore(bb);

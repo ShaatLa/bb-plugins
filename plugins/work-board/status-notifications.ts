@@ -57,14 +57,20 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
   tasks.updateTask = (id, input) => {
     const before = input.status === undefined ? undefined : tasks.getTask(id);
     const task = updateTask(id, input);
-    changed(before, task);
+    if (before && before.status !== task.status) {
+      if (input.notifyStatus === false) pending.delete(id);
+      else changed(before, task);
+    }
     return task;
   };
   const updatePosition = tasks.updatePosition;
   tasks.updatePosition = (id, input) => {
     const before = tasks.getTask(id);
     const task = updatePosition(id, input);
-    changed(before, task);
+    if (before && before.status !== task.status) {
+      if (input.notifyStatus === false) pending.delete(id);
+      else changed(before, task);
+    }
     return task;
   };
 }

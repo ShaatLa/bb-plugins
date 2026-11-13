@@ -16,7 +16,6 @@ export interface NewTaskDraft {
   labelIds: string[];
   dueDate: string;
   type: TaskType;
-  executionTarget?: "agent" | "owner";
   epicId: string | null;
 }
 

@@ -14,7 +14,7 @@ function fixture() {
   registerTasksCli(host.bb, store, { name: "Work Board", version: "test" });
   const project = store.tasks.createProject({ name: "Advice", prefix: "ADV", color: "blue" });
   const predecessor = store.tasks.createTask({ projectId: project.id, title: "Predecessor", status: "in_review" });
-  const dependent = store.tasks.createTask({ projectId: project.id, title: "Owner step", executionTarget: "owner" });
+  const dependent = store.tasks.createTask({ projectId: project.id, title: "Owner step", });
   const dependencies = createDependencyStore(host.bb.storage.database(), store.tasks); dependencies.add(dependent.id, predecessor.id);
   const git = createGitSyncStore(host.bb.storage.database());
   const config = gitSyncConfigSchema.parse({ enabled: true, repositories: ["org/repo"] }); git.setConfig(project.id, config);
@@ -67,8 +67,7 @@ it("reports In Progress without live sessions with last attachment and activity,
   f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: thread.id, title: "Previous worker", presetName: "Attached", liveStatus: "idle" });
   f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: string[] }) => threadIds ? [thread] as never : []);
   expect(await f.read(task.id)).toMatchObject([{ kind: "no-live-session", lastAttachment: { threadId: "thr_old", title: "Previous worker" }, lastActivityAt: expect.any(String) }]);
-  f.store.tasks.updateTask(task.id, { executionTarget: "owner" }); expect(await f.read(task.id)).toEqual([]);
-  f.store.tasks.updateTask(task.id, { executionTarget: "agent", status: "todo" }); expect(await f.read(task.id)).toEqual([]);
+  f.store.tasks.updateTask(task.id, { status: "todo" }); expect(await f.read(task.id)).toEqual([]);
   f.store.tasks.updateTask(task.id, { status: "in_progress" });
   // A different uncached thread fails its read: incomplete diagnostics must not establish abandonment advice.
   f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_unknown", title: "Unknown", presetName: "Attached", liveStatus: "working" });

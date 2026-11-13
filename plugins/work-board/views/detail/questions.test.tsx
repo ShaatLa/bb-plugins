@@ -123,7 +123,7 @@ describe("question and evidence UI", () => {
 
   it("renders explicit legacy recommendation suffixes in bold without changing their stored labels", async () => {
     const { task, rpc, structured } = setup();
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Legacy?",
       mode: "single",
@@ -147,7 +147,7 @@ describe("question and evidence UI", () => {
 
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Original question",
       mode: "single",
@@ -200,7 +200,7 @@ describe("question and evidence UI", () => {
 
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Delivery?",
       mode: "single",
@@ -213,7 +213,6 @@ describe("question and evidence UI", () => {
       { rpc },
     );
     const group = await slot.findByRole("group", { name: "Delivery?" });
-    fireEvent.click(within(group).getByLabelText("Other answer"));
     expect(
       within(group).getByRole("button", { name: "Save answer" }),
     ).toHaveProperty("disabled", true);
@@ -233,6 +232,7 @@ describe("question and evidence UI", () => {
       { subPath: `task/${task.key}` },
       { rpc },
     );
+    fireEvent.click(await restored.findByText("Earlier (1)"));
     expect(
       await restored.findByRole("textbox", { name: "Your answer" }),
     ).toHaveProperty("value", "After review");
@@ -247,7 +247,7 @@ describe("question and evidence UI", () => {
         projectId: project.id,
         title: "No decision needed",
       });
-      const { question } = await structured.handlers.createQuestion({
+      const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Proceed?",
         mode: "single",
@@ -431,16 +431,37 @@ describe("question and evidence UI", () => {
   });
 });
 
-it.each([false, true])("shows the detail waiting banner (question=%s)", async hasQuestion => {
-  const { task, rpc, structured, store } = setup();
-  if (hasQuestion) {
-    await structured.handlers.createQuestion({ taskId: task.id, prompt: "Choose deployment\nMore details", options: ["Now", "Later"], mode: "single" });
-  } else store.tasks.updateTask(task.id, { executionTarget: "owner" });
+it("omits the redundant waiting banner", async () => {
+  const { task, rpc, structured } = setup();
+  await structured.handlers.createQuestion({kind: "check", askedByThread: null, taskId: task.id, prompt: "Validate", mode: "single", options: [] });
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   await slot.findByText(task.title);
-  const banner = await slot.findByRole("button", { name: /Waiting on you/ });
-  expect(banner.textContent).toContain(hasQuestion ? "Choose deployment" : "Owner action");
-  expect(banner.textContent).not.toContain("More details");
-  const description = slot.container.querySelector('.bb-work-board-editor');
-  if (description) expect(banner.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
+});
+
+it("orders open questions newest first and moves a check under Earlier after answering", async () => {
+  const { task, rpc, structured, bb } = setup();
+  const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
+    bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE id=?").run(createdAt, question.id);
+    return question;
+  };
+  const earlier = await add("Old answer", "decision", "2026-01-01T00:00:00Z");
+  await structured.handlers.answerQuestion({ questionId: earlier.id, revision: 1, selectedOptionIds: [earlier.options[0]!.id], authorName: "Owner" });
+  await add("Older open", "decision", "2026-01-02T00:00:00Z");
+  const newest = await add("Newest check", "check", "2026-01-03T00:00:00Z");
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const newestGroup = await slot.findByRole("group", { name: newest.prompt });
+  const section = newestGroup.closest('section[aria-label="Questions"]')!;
+  const groups = [...section.querySelectorAll("fieldset")];
+  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Newest check", "Older open", "Old answer"]);
+  expect(slot.getByText("Earlier (1)").closest("details")?.open).toBe(false);
+  expect(within(newestGroup).getByText("Check")).toBeTruthy();
+  expect(within(newestGroup).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
+  fireEvent.click(within(newestGroup).getByLabelText("Proceed"));
+  fireEvent.click(within(newestGroup).getByRole("button", { name: "Save answer" }));
+  await slot.findByText("Earlier (2)");
+  const currentGroups = [...section.querySelectorAll("fieldset")];
+  expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Old answer", "Newest check"]);
+  expect(currentGroups[2]?.closest("details")?.open).toBe(false);
 });

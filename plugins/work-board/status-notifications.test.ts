@@ -1,6 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, expect, it, vi } from "vitest";
-import { createStore } from "./api";
+import { createStore, registerTasksApi } from "./api";
+import { registerTasksCli } from "./cli";
 import { migrateSettings } from "./settings";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -105,4 +106,30 @@ it("migrates the old global mode once, preserves explicit choices and defaults n
   await migrateSettings(f.bb);
   expect(f.store.tasks.getProject(f.project.id)?.statusNotifications).toBe("done");
   expect(f.store.tasks.createProject({ name: "New", prefix: "NEW", color: "blue" }).statusNotifications).toBe("off");
+});
+
+it("suppresses owner edits and board moves, and sends agent changes", async () => {
+  const f = await fixture();
+  registerTasksApi(f.bb, f.store);
+  await f.harness.callRpc("updateTask", { taskId: f.task.id, status: "in_progress" });
+  await f.harness.callRpc("boardMove", { taskId: f.task.id, status: "in_review" });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(f.send).not.toHaveBeenCalled();
+  await f.harness.callRpc("updateTask", { taskId: f.task.id, status: "done", agentThreadId: "thr_agent" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  await f.harness.callRpc("boardMove", { taskId: f.task.id, status: "todo", agentThreadId: "thr_agent" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
+});
+
+it("suppresses CLI owner status changes and sends CLI agent status changes", async () => {
+  const f = await fixture();
+  registerTasksApi(f.bb, f.store);
+  registerTasksCli(f.bb, f.store, { name: "Work Board", version: "test" });
+  const owner = await f.harness.runCli(["update", f.task.key, "--status", "done"]);
+  expect(owner.exitCode, owner.stderr).toBe(0);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(f.send).not.toHaveBeenCalled();
+  const agent = await f.harness.runCli(["update", f.task.key, "--status", "todo"], { threadId: "thr_agent" });
+  expect(agent.exitCode, agent.stderr).toBe(0);
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
 });

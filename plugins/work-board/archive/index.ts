@@ -87,8 +87,17 @@ async function mapJson<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R
   return results;
 }
 
-function parseArchiveJson(text: string): unknown {
-  return JSON.parse(rewriteLegacyAttachmentLinks(JSON.stringify(JSON.parse(text))));
+function parseArchiveJson(text: string, legacy = false): unknown {
+  const value = JSON.parse(rewriteLegacyAttachmentLinks(JSON.stringify(JSON.parse(text))));
+  if (legacy && value.task) {
+    delete value.task.executionTarget;
+    delete value.task.requesterThreadId;
+    for (const question of value.questions ?? []) {
+      question.kind = "decision";
+      question.askedByThread = null;
+    }
+  }
+  return value;
 }
 
 export async function readProjectArchive(
@@ -108,6 +117,7 @@ export async function readProjectArchive(
         (await files.read(join(root, "tasks", `${id}.json`), root)).toString(
           "utf8",
         ),
+        manifest.version < 17,
       ),
     );
     if (record.task.id !== id)

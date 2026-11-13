@@ -25,9 +25,9 @@ afterEach(async () => {
   await Promise.all(harnesses.splice(0).map((h) => h.dispose()));
 });
 
-describe("executor filter surfaces", () => {
+describe("waiting question surfaces", () => {
   it.each(["list", "board", "side"])(
-    "shows and filters owner work on %s",
+    "shows and filters waiting work on %s",
     async (surface) => {
       const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
       harnesses.push(harness);
@@ -42,8 +42,8 @@ describe("executor filter surfaces", () => {
       const owner = store.tasks.createTask({
         projectId: project.id,
         title: "Grant registry access",
-        executionTarget: "owner",
-      });
+        });
+      await harness.callRpc("createQuestion", { taskId: owner.id, kind: "check", prompt: "Validate result" });
       const agent = store.tasks.createTask({
         projectId: project.id,
         title: "Build image",
@@ -81,17 +81,10 @@ describe("executor filter surfaces", () => {
       const ownerCard = slot.container.querySelector(
         `[data-task-key="${owner.key}"]`,
       )!;
-      expect(ownerCard.textContent).toContain("Owner");
-      expect(ownerCard.className).toContain("border-l-warning");
-      fireEvent.keyDown(slot.getByRole("button", { name: "Executor" }), {
-        key: "ArrowDown",
-      });
-      fireEvent.click(
-        await slot.findByRole("menuitemcheckbox", {
-          name: "Owner",
-        }),
-      );
-      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(slot.queryByRole("button", { name: "Executor" })).toBeNull();
+      expect(ownerCard.textContent).not.toContain("Waiting on you");
+      await waitFor(() => expect(ownerCard.className).toContain("border-l-warning"));
+      fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
       await waitFor(() =>
         expect(
           slot.container.querySelector(`[data-task-key="${agent.key}"]`),
@@ -100,13 +93,7 @@ describe("executor filter surfaces", () => {
       expect(
         slot.container.querySelector(`[data-task-key="${owner.key}"]`),
       ).not.toBeNull();
-      fireEvent.keyDown(slot.getByRole("button", { name: /^Executor/ }), {
-        key: "ArrowDown",
-      });
-      fireEvent.click(
-        await slot.findByRole("menuitemcheckbox", { name: "All" }),
-      );
-      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
       await waitFor(() =>
         expect(
           slot.container.querySelector(`[data-task-key="${agent.key}"]`),

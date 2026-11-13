@@ -68,7 +68,7 @@ async function setup() {
     title: "Unrelated task",
   });
   const structured = createStructuredStore(bb, store);
-  const { question } = await structured.handlers.createQuestion({
+  const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
     taskId: child.id,
     prompt: "Which option should we ship?",
     mode: "single",
@@ -184,7 +184,7 @@ it.each(["side", "kanban"])(
 it("adds own and child question counts, prioritizes children needing answers and keeps disclosure clicks off parent navigation", async () => {
   const { project, parent, child, quietChild, store, structured, rpc } =
     await setup();
-  const { question: own } = await structured.handlers.createQuestion({
+  const { question: own } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
     taskId: parent.id,
     prompt: "Parent decision?",
     mode: "single",
@@ -288,7 +288,7 @@ it.each(["main", "side"])(
         within(childRow).queryByRole("img", { name: /unanswered/ }),
       ).toBeNull(),
     );
-    const { question: next } = await structured.handlers.createQuestion({
+    const { question: next } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: child.id,
       prompt: "One more decision?",
       mode: "single",
@@ -376,19 +376,21 @@ it.each([{ count: 250, surface: "kanban" }, { count: 250, surface: "side" }, { c
   expect(reopened.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
 });
 
-it.each([["kanban", "manual"], ["list", "manual"], ["kanban", "priority"], ["list", "priority"]])("marks owner actions and orders waiting tasks on %s (%s), preserving the legacy filter", async (view, sort) => {
+it.each([["kanban", "manual"], ["list", "manual"], ["kanban", "priority"], ["list", "priority"]])("marks typed questions and orders waiting tasks on %s (%s), preserving the legacy filter", async (view, sort) => {
   const f = await setup();
-  const owner = f.store.tasks.createTask({ projectId: f.project.id, title: "Owner action", status: "todo", priority: "urgent", executionTarget: "owner" });
+  const owner = f.store.tasks.createTask({ projectId: f.project.id, title: "Owner action", status: "todo", priority: "urgent", });
+  await f.structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: owner.id, prompt: "Validate?", options: [], mode: "single" });
   const older = f.store.tasks.createTask({ projectId: f.project.id, title: "Older decision", status: "todo" });
   const newer = f.store.tasks.createTask({ projectId: f.project.id, title: "Newest decision", status: "todo" });
-  for (const task of [older, newer]) await f.structured.handlers.createQuestion({ taskId: task.id, prompt: "Proceed?", options: ["Yes", "No"], mode: "single" });
+  for (const task of [older, newer]) await f.structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Proceed?", options: ["Yes", "No"], mode: "single" });
   // Legacy preferences retain their meaning without changing the persisted key.
   window.localStorage.setItem("bb-work-board:list-preferences", JSON.stringify({ version: 1, scopes: { [`project:${f.project.id}`]: { sort, filters: { unansweredOnly: true } } } }));
   const slot = renderSlot(app.navPanels[0]!, { subPath: `${f.project.id}?view=${view}` }, { rpc: f.rpc });
   expect((await slot.findByRole("button", { name: "Waiting on me" })).getAttribute("aria-pressed")).toBe("true");
   await waitFor(() => {
     const row = slot.container.querySelector(`[data-task-key="${owner.key}"]`);
-    expect(row?.textContent).toContain("Waiting on you");
+    expect(row?.className).toContain("border-l-warning");
+    expect(row?.textContent).not.toContain("Waiting on you");
     const keys = [...slot.container.querySelectorAll("[data-task-key]")].map(el => el.getAttribute("data-task-key"));
     if (sort === "manual") {
       expect(keys.indexOf(newer.key)).toBeLessThan(keys.indexOf(older.key));
@@ -397,6 +399,6 @@ it.each([["kanban", "manual"], ["list", "manual"], ["kanban", "priority"], ["lis
       expect(keys.indexOf(owner.key)).toBeLessThan(keys.indexOf(newer.key));
       expect(keys.indexOf(owner.key)).toBeLessThan(keys.indexOf(older.key));
     }
-    expect(slot.container.querySelector(`[data-task-key="${newer.key}"]`)?.textContent).toContain("Waiting on you");
+    expect(slot.container.querySelector(`[data-task-key="${newer.key}"]`)?.className).toContain("border-l-warning");
   });
 });

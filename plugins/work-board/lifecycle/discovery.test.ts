@@ -105,11 +105,10 @@ it("preserves existing assignments, manual detachments and explicit reattachment
   expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(1);
 });
 
-it.each(["done", "canceled", "archived", "owner", "unlinked"])("skips %s cards", (kind) => {
+it.each(["done", "canceled", "archived", "unlinked"])("skips %s cards", (kind) => {
   const f = setup();
   if (kind === "done" || kind === "canceled") f.store.tasks.updateTask(f.task.id, { status: kind });
   if (kind === "archived") { f.store.tasks.updateTask(f.task.id, { status: "done" }); f.store.tasks.setTaskArchived(f.task.id, true); }
-  if (kind === "owner") f.store.tasks.updateTask(f.task.id, { executionTarget: "owner" });
   if (kind === "unlinked") f.store.tasks.updateProject(f.project.id, { linkedBbProjectId: null });
   attachNamedTaskThread(f.bb, f.store, f.thread);
   expect(f.store.tasks.listTaskThreads(f.task.id)).toEqual([]);

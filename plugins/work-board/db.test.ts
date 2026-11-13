@@ -45,7 +45,6 @@ function cursorForEmptyArrayFilter(
     activeOnly: false,
     parentTaskId: { specified: false, value: null },
     type: null,
-    executionTarget: null,
     epicId: { specified: false },
     search: null,
     sort: "manual",
@@ -78,7 +77,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(29);
+      ).toBe(30);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
     } finally {

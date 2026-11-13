@@ -55,7 +55,6 @@ import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
-  WaitingOnYou,
   QuestionCount,
   useQuestionCounts,
 } from "../../components/question-count";
@@ -95,6 +94,7 @@ interface TaskCardProps {
   prSummary?: PrSummary;
   statusLabel?: (status: TaskStatus) => string;
   unansweredQuestions?: number;
+  questionKinds?: ReadonlyMap<string, { decisions: number; checks: number }>;
   subtasks?: readonly Task[];
   questionCounts?: ReadonlyMap<string, number>;
   questionDetails?: ReadonlyMap<string, { newestUnansweredAt: string | null }>;
@@ -117,6 +117,7 @@ function TaskCard({
   prSummary,
   statusLabel = displayName,
   unansweredQuestions,
+  questionKinds,
   subtasks = [],
   questionCounts,
   questionDetails,
@@ -140,6 +141,10 @@ function TaskCard({
   useEffect(() => {
     if (autoExpand) setExpanded(true);
   }, [autoExpand]);
+  const totalKinds = questionKinds && [task, ...subtasks].reduce((total, item) => {
+    const kinds = questionKinds.get(item.id);
+    return { decisions: total.decisions + (kinds?.decisions ?? 0), checks: total.checks + (kinds?.checks ?? 0) };
+  }, { decisions: 0, checks: 0 });
   const questionTitle =
     childQuestions > 0
       ? `${questionCounts?.get(task.id) ?? 0} in this task; ${childQuestions} in sub-tasks`
@@ -172,19 +177,13 @@ function TaskCard({
         "shrink-0 rounded-lg border border-border bg-card px-2.5 py-2 shadow-2xs select-none",
         ghost ? "rotate-2 shadow-md" : "cursor-pointer hover:border-input",
         dragging && "opacity-40",
-        task.executionTarget === "owner" && "border-l-[3px] border-l-warning",
+        waitingOnOwner(task, questionCounts?.get(task.id) ?? 0) && "border-l-[3px] border-l-warning",
       )}
     >
       <div className="touch-none">
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">{task.key}</span>
-            {task.executionTarget === "owner" ? (
-              <span className="inline-flex items-center gap-1 text-warning">
-                <Icon name="User" className="size-3" />
-                Owner
-              </span>
-            ) : null}
             {task.type === "epic" ? (
               <span className="inline-flex items-center gap-1">
                 <Icon name="Zap" className="size-3" />
@@ -207,20 +206,19 @@ function TaskCard({
               }}
               className="rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <QuestionCount
+              <QuestionCount kinds={totalKinds}
                 count={unansweredQuestions}
                 title={questionTitle}
               />
             </button>
           ) : (
-            <QuestionCount count={unansweredQuestions} title={questionTitle} />
+            <QuestionCount kinds={totalKinds} count={unansweredQuestions} title={questionTitle} />
           )}
         </div>
         <div className="mt-1 line-clamp-3 text-sm leading-snug font-medium">
           {task.title}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <WaitingOnYou task={task} count={questionCounts?.get(task.id)} />
           <PullRequestSummary summary={prSummary} />
           <PriorityIcon priority={task.priority} />
           {labels.map((label) => (
@@ -295,8 +293,7 @@ function TaskCard({
                   </span>
                   <span className="block break-words">{child.title}</span>
                 </span>
-                <WaitingOnYou task={child} count={questionCounts?.get(child.id)} />
-                <QuestionCount count={questionCounts?.get(child.id)} />
+                <QuestionCount kinds={questionKinds?.get(child.id)} count={questionCounts?.get(child.id)} />
               </button>
             </div>
           ))}
@@ -419,16 +416,9 @@ export function BoardView({ projectId }: BoardViewProps) {
           (task) =>
             (!filters.unansweredOnly ||
               waitingOnOwner(task, questionCounts.data?.get(task.id) ?? 0) || (subtasksByParent.get(task.id) ?? []).some(child => waitingOnOwner(child, questionCounts.data?.get(child.id) ?? 0))) &&
-            (filters.executionTarget === undefined ||
-              task.executionTarget === filters.executionTarget) &&
             (filters.type === undefined || task.type === filters.type) &&
             (filters.labelNames.length === 0 || labelIds.length > 0) &&
-            matchesFilters(
-              task,
-              filters.statuses,
-              filters.priorities,
-              labelIds,
-            ),
+            matchesFilters(task, filters.statuses, filters.priorities, labelIds),
         ).sort((a, b) => filters.unansweredOnly && sort === "manual" ? waitingOrder(a, b, questionCounts.details) : 0), filters.unansweredOnly ? sort : "manual"),
       statusIds,
     ), [columns, filters, labelIds, questionTotals, statusIds, questionCounts.details, subtasksByParent, sort]);
@@ -552,10 +542,6 @@ export function BoardView({ projectId }: BoardViewProps) {
       .then(
         (result) => {
           if (!result.ok) board.refresh();
-          else if (result.notification === "not_sent")
-            push(
-              "Saved as Done, but the requester thread could not be notified. Notify it manually.",
-            );
         },
         () => board.refresh(),
       );
@@ -698,6 +684,7 @@ export function BoardView({ projectId }: BoardViewProps) {
           prSummary={prSummaries.data?.get(task.id)}
           unansweredQuestions={questionTotals.get(task.id)}
           subtasks={subtasksByParent.get(task.id)}
+          questionKinds={questionCounts.details}
           questionCounts={questionCounts.data}
           questionDetails={questionCounts.details}
           unansweredOnly={filters.unansweredOnly}

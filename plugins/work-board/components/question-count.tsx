@@ -1,4 +1,3 @@
-import { waitingOnOwner } from "../shared/waiting-on-owner";
 import type { Task } from "../shared/contract";
 import { useEffect, useRef, useMemo } from "react";
 import { taskBatches } from "../shell/task-batches";
@@ -58,11 +57,25 @@ export function useQuestionCounts(tasks: readonly Task[], enabled = true, projec
 export function QuestionCount({
   count = 0,
   title,
+  kinds,
 }: {
   count?: number;
   title?: string;
+  kinds?: { decisions: number; checks: number };
 }) {
   if (!count) return null;
+  if (kinds && (kinds.decisions || kinds.checks)) return (
+    <>
+      {kinds.decisions > 0 && <QuestionCount count={kinds.decisions} title={title ?? `${kinds.decisions} open decisions`} />}
+      {kinds.checks > 0 && (
+        <span role="img" aria-label={`${kinds.checks} open checks`} title={title ?? `${kinds.checks} open checks`}
+          className="inline-flex shrink-0 items-center gap-1 px-1.5 py-px text-xs tabular-nums text-warning">
+          <Icon name="CheckCircle2" className="size-3" aria-hidden />
+          {kinds.checks}
+        </span>
+      )}
+    </>
+  );
   const label = `${count} unanswered ${count === 1 ? "question" : "questions"}`;
   return (
     <span
@@ -75,9 +88,4 @@ export function QuestionCount({
       {count}
     </span>
   );
-}
-
-export function WaitingOnYou({ task, count = 0 }: { task: Task; count?: number }) {
-  if (!waitingOnOwner(task, count)) return null;
-  return <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-xs text-warning"><Icon name="FileQuestion" className="size-3" aria-hidden />Waiting on you</span>;
 }

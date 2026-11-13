@@ -136,10 +136,7 @@ describe("NewTaskDialog", () => {
         target: { value: "Task assigned from the dialog" },
       });
       const dialog = within(slot.getByRole("dialog"));
-      fireEvent.click(dialog.getByRole("button", { name: "Executor" }));
-      fireEvent.click(
-        await slot.findByRole("option", { name: "Owner action" }),
-      );
+      expect(dialog.queryByRole("button", { name: "Executor" })).toBeNull();
       fireEvent.click(slot.getByRole("button", { name: "Epic" }));
       const option = await slot.findByRole("option", {
         name: /Selected initiative/,
@@ -160,8 +157,6 @@ describe("NewTaskDialog", () => {
       const member = store.tasks.listTasks({ epicId: epic.id })[0]!;
       expect(member).toMatchObject({
         title: "Task assigned from the dialog",
-        executionTarget: "owner",
-        requesterThreadId: "thr_owner_creator",
         type: "task",
         projectId: project.id,
         epicId: epic.id,

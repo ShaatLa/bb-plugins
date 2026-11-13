@@ -1,3 +1,4 @@
+import { isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -46,9 +47,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     const task = store.tasks.getTask(taskId)!;
     const name = getWorkflowPolicy(store.tasks.getProject(task.projectId)!).ownerDecisionLabel;
     if (!name) return;
-    const open = listQuestions(taskId).some(
-      (question) => question.selectedOptionIds.length === 0 && !question.answerText,
-    );
+    const open = listQuestions(taskId).some(isQuestionOpen);
     let label = store.tasks.listLabels(task.projectId).find((item) => item.name === name);
     if (open) {
       label ??= store.tasks.createLabel({ projectId: task.projectId, name, color: "blue" });
@@ -136,9 +135,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   > = {
     listQuestions: ({ taskId }) => ({ questions: listQuestions(taskId) }),
     questionCounts: ({ taskIds }) => ({
-      counts: taskIds.length ? db.prepare<string[], { taskId: string; unanswered: number; waitingOnOwner: number; newestUnansweredAt: string | null }>(`
+      counts: taskIds.length ? db.prepare<string[], { taskId: string; unanswered: number; decisions: number; checks: number; waitingOnOwner: number; newestUnansweredAt: string | null }>(`
         SELECT t.id AS taskId,
           (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS unanswered,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION} AND COALESCE(json_extract(q.payload, '$.kind'), 'decision')='decision') AS decisions,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION} AND json_extract(q.payload, '$.kind')='check') AS checks,
           (${WAITING_ON_OWNER}) AS waitingOnOwner,
           ${NEWEST_UNANSWERED} AS newestUnansweredAt
         FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})
@@ -150,10 +151,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const question = questionSchema.parse({
         id: createUlid(),
         taskId: input.taskId,
+        kind: input.kind ?? "decision",
+        askedByThread: input.askedByThread ?? null,
         prompt: input.prompt,
         mode: input.mode,
-        allowOther: input.allowOther ?? false,
-        options: input.options.map((option) => ({
+        allowOther: true,
+        options: (input.kind === "check" && !input.options.length ? ["Confirmed", "Problem found"] : input.options).map((option) => ({
           ...(typeof option === "string" ? { label: option } : option),
           id: createUlid(),
         })),
@@ -184,7 +187,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           selectedOptionIds: input.selectedOptionIds,
           answerText: input.answerText?.trim() || null,
           answeredBy:
-            input.selectedOptionIds.length || input.answerText?.trim()
+            (input.selectedOptionIds.length || input.answerText?.trim())
               ? input.authorName
               : null,
           revision: current.revision + 1,
@@ -217,7 +220,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      const threadId =
+      const threadId = question.askedByThread ??
         store.tasks.listTaskThreads(question.taskId)[0]?.threadId ??
         store.tasks.getLatestAgentComment(question.taskId, comment.id)
           ?.threadId;
@@ -261,7 +264,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           prompt: input.prompt.trim(),
           mode: input.mode,
           options,
-          allowOther: input.allowOther ?? current.allowOther,
+          allowOther: true,
         };
         const unchanged = Object.entries(content).every(
           ([key, value]) =>

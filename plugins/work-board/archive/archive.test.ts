@@ -263,7 +263,7 @@ describe("project archives", () => {
       body: "**Goal:** complete",
       labelId: null,
     });
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: source.task.id,
       prompt: "Which platforms?",
       mode: "multiple",
@@ -404,7 +404,7 @@ describe("project archives", () => {
   it("imports v2 questions with defaults for custom answers and history", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: source.task.id,
       prompt: "Legacy question",
       mode: "single",
@@ -430,13 +430,13 @@ describe("project archives", () => {
       createStructuredStore(target.bb, target.store).listQuestions(
         source.task.id,
       ),
-    ).toEqual([question]);
+    ).toEqual([{ ...question, allowOther: false }]);
   });
 
   it("rejects foreign or invalid answers on import, even with overwrite", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: source.task.id,
       prompt: "Choose one",
       mode: "single",
@@ -815,42 +815,36 @@ describe("project archives", () => {
   });
 });
 
-it("round-trips owner execution and requester by ID in the latest format and defaults old archives to agent", async () => {
+it("exports v17 typed questions and imports v16 owner tasks as plain tasks", async () => {
   const source = await seed();
-  source.store.tasks.updateTask(source.task.id, {
-    executionTarget: "owner",
-    requesterThreadId: "thr_archive_requester",
-  });
-  const out = join(await directory(), "owner-v5");
+  const structured = createStructuredStore(source.bb, source.store);
+  await structured.handlers.createQuestion({ kind: "check", askedByThread: "thr_asker", taskId: source.task.id, prompt: "Validate?", mode: "single", options: [] });
+  const out = join(await directory(), "v17");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(16);
+  expect(manifest.version).toBe(17);
+  const path = join(out, "tasks", `${source.task.id}.json`);
+  const record = JSON.parse(await readFile(path, "utf8"));
+  expect(record.task).not.toHaveProperty("executionTarget");
+  expect(record.task).not.toHaveProperty("requesterThreadId");
+  expect(record.questions[0]).toMatchObject({ kind: "check", askedByThread: "thr_asker" });
+  expect(record.questions[0]).not.toHaveProperty("verdict");
   const target = setup();
   await importProject(target.bb, target.store, out, false);
-  expect(target.store.tasks.getTask(source.task.id)).toEqual(
-    source.store.tasks.getTask(source.task.id),
-  );
-  expect(target.harness.sdk.callsTo("threads.send")).toHaveLength(0);
-  manifest.version = 4;
-  delete manifest.gitSync;
-  delete manifest.project.statuses;
+  expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toEqual(structured.listQuestions(source.task.id));
+  manifest.version = 16;
   await writeFile(manifestPath, jsonText(manifest));
-  for (const id of manifest.taskIds) {
-    const path = join(out, "tasks", `${id}.json`);
-    const record = JSON.parse(await readFile(path, "utf8"));
-    delete record.pullRequests;
-      delete record.dependencies;
-    delete record.task.executionTarget;
-    delete record.task.requesterThreadId;
-    await writeFile(path, jsonText(record));
-  }
+  record.task.executionTarget = "owner";
+  record.task.requesterThreadId = "thr_legacy";
+  delete record.questions[0].kind;
+  delete record.questions[0].askedByThread;
+  await writeFile(path, jsonText(record));
   const legacy = setup();
   await importProject(legacy.bb, legacy.store, out, false);
-  expect(legacy.store.tasks.getTask(source.task.id)).toMatchObject({
-    executionTarget: "agent",
-    requesterThreadId: null,
-  });
+  expect(legacy.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
+  expect(createStructuredStore(legacy.bb, legacy.store).listQuestions(source.task.id)[0]).toMatchObject({ kind: "decision", askedByThread: null });
+  expect(legacy.harness.sdk.callsTo("threads.send")).toHaveLength(0);
 });
 
 
@@ -866,7 +860,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(16);
+  expect(manifest.version).toBe(17);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -967,7 +961,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(16);
+    expect(manifest.version).toBe(17);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1101,7 +1095,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(16);
+  expect(manifest.version).toBe(17);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));

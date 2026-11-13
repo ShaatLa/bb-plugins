@@ -15,7 +15,6 @@ const QUERIES: Record<Exclude<BadgeCriterion, "stale_idle">, string> = {
   waiting_on_owner: WAITING_ON_OWNER,
   in_review: `${LIVE} AND t.status = 'in_review'`,
   needs_answer: `${ACTIVE} AND ${UNANSWERED}`,
-  owner: `${ACTIVE} AND t.execution_target = 'owner'`,
   failed_thread: `${ACTIVE} AND EXISTS (SELECT 1 FROM task_threads l WHERE l.task_id = t.id AND l.live_status = 'failed')`,
 };
 

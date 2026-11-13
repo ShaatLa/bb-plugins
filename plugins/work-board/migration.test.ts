@@ -37,9 +37,7 @@ it.each(["tasks-plus", "agent-board"])("migrates %s database and blobs while pre
     const task = store.tasks.createTask({
       projectId: project.id,
       title: "Preserve the owner's decision",
-      executionTarget: "owner",
-      requesterThreadId: "thr_requester",
-    });
+      });
     const attachment = await saveAttachmentFromBytes(
       store.tasks,
       Buffer.from("Sample artifact\n"),
@@ -57,7 +55,7 @@ it.each(["tasks-plus", "agent-board"])("migrates %s database and blobs while pre
       body: "Decision context",
     });
     const structured = createStructuredStore(source.bb, store);
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Which outcome?",
       mode: "single",
@@ -136,8 +134,6 @@ it.each(["tasks-plus", "agent-board"])("migrates %s database and blobs while pre
     registerAttachments(target.bb, migrated.tasks);
     expect(migrated.tasks.getTask(task.id)).toMatchObject({
       key: task.key,
-      executionTarget: "owner",
-      requesterThreadId: "thr_requester",
       description: legacyUrl
         .replace(sourcePlugin, "work-board")
         .replace(/^/, "[Artifact](")

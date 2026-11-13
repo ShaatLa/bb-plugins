@@ -127,7 +127,6 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
 
   const tasksQuery = useListTasks(projectId, activeOnly, {
     type: filters.type,
-    executionTarget: filters.executionTarget,
     statuses: filters.statuses,
     priorities: filters.priorities,
     labelIds,
@@ -317,6 +316,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               task={task}
               meta={meta.data?.get(task.id)}
               prSummary={prSummaries.data?.get(task.id)}
+              questionKinds={questionCounts.details?.get(task.id)}
               unansweredQuestions={questionCounts.data?.get(task.id)}
               project={projectsById.get(task.projectId)}
               showProject={showProject}

@@ -1,3 +1,4 @@
+import { isQuestionOpen } from "../../shared/questions";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,11 +55,12 @@ function QuestionAnswer({
     answerText === question.answerText;
   return (
     <fieldset
+      aria-label={question.prompt}
       className="space-y-2 rounded-md border border-border p-3"
       disabled={saving}
     >
       <legend className="max-w-full px-1 text-sm font-medium break-words">
-        {question.prompt}
+        {question.prompt} <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
       </legend>
       <p className="text-xs text-muted-foreground">
         {question.mode === "single"
@@ -76,7 +78,7 @@ function QuestionAnswer({
             name={question.id}
             checked={selected.includes(option.id)}
             onChange={(event) => {
-              if (question.mode === "single") setOther(false);
+              if (question.mode === "single") { setOther(false); setText(""); }
               setSelected(
                 question.mode === "single"
                   ? [option.id]
@@ -89,31 +91,17 @@ function QuestionAnswer({
           <OptionText option={option} />
         </label>
       ))}
-      {question.allowOther ? (
-        <div className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type={question.mode === "single" ? "radio" : "checkbox"}
-              name={question.id}
-              checked={other}
-              onChange={(event) => {
-                setOther(event.target.checked);
-                if (question.mode === "single") setSelected([]);
-              }}
-            />
-            Other answer
-          </label>
-          {other ? (
-            <Textarea
-              aria-label="Your answer"
-              value={text}
-              maxLength={10_000}
-              required
-              onChange={(event) => setText(event.target.value)}
-            />
-          ) : null}
-        </div>
-      ) : null}
+      <Textarea
+        aria-label="Your answer"
+        placeholder="Your answer (optional)"
+        value={text}
+        maxLength={10_000}
+        onChange={(event) => {
+          setText(event.target.value);
+          setOther(Boolean(event.target.value.trim()));
+          if (question.mode === "single") setSelected([]);
+        }}
+      />
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
           Answered by {question.answeredBy}
@@ -179,7 +167,6 @@ function QuestionAnswer({
                   {entry.mode === "single"
                     ? "Single choice"
                     : "Multiple choice"}
-                  {entry.allowOther ? " · Other answer allowed" : ""}
                 </p>
                 <ul>
                   {entry.options.map((option) => (
@@ -231,7 +218,7 @@ export function QuestionsSection({
     (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]
   >([{ label: "" }, { label: "" }]);
   const [multiple, setMultiple] = useState(false);
-  const [allowOther, setAllowOther] = useState(false);
+  const [kind, setKind] = useState<"decision" | "check">("decision");
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<TaskQuestion | null>(null);
   const [reopen, setReopen] = useState(false);
@@ -241,13 +228,47 @@ export function QuestionsSection({
     setPrompt("");
     setOptions([{ label: "" }, { label: "" }]);
     setMultiple(false);
-    setAllowOther(false);
+    setKind("decision");
     setReopen(false);
   }, [adding]);
   const closeForm = () => {
     setEditing(null);
     onAddingChange(false);
   };
+  const renderQuestion = (question: TaskQuestion) => (
+        <QuestionAnswer
+          key={`${question.id}:${question.revision}`}
+          question={question}
+          onError={onError}
+          onEdit={() => {
+            onAddingChange(false);
+            setEditing(question);
+            setPrompt(question.prompt);
+            setOptions(question.options);
+            setMultiple(question.mode === "multiple");
+            setKind(question.kind);
+            setReopen(false);
+          }}
+          onSave={async (selectedOptionIds, answerText) => {
+            const result = await rpc.call("answerQuestion", {
+              questionId: question.id,
+              revision: question.revision,
+              selectedOptionIds,
+              answerText,
+              authorName: "You",
+            });
+            query.refresh();
+            if (result.notification === "failed")
+              onError(
+                "Answer saved, but the agent could not be notified. Notify its thread manually.",
+              );
+          }}
+        />
+  );
+  const open = (query.data ?? []).filter(isQuestionOpen)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  const earlier = (query.data ?? []).filter(question => !isQuestionOpen(question))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
     <section aria-label="Questions" className="mt-5 space-y-3">
@@ -272,36 +293,15 @@ export function QuestionsSection({
           </Button>
         </div>
       ) : null}
-      {(query.data ?? []).map((question) => (
-        <QuestionAnswer
-          key={`${question.id}:${question.revision}`}
-          question={question}
-          onError={onError}
-          onEdit={() => {
-            onAddingChange(false);
-            setEditing(question);
-            setPrompt(question.prompt);
-            setOptions(question.options);
-            setMultiple(question.mode === "multiple");
-            setAllowOther(question.allowOther);
-            setReopen(false);
-          }}
-          onSave={async (selectedOptionIds, answerText) => {
-            const result = await rpc.call("answerQuestion", {
-              questionId: question.id,
-              revision: question.revision,
-              selectedOptionIds,
-              answerText,
-              authorName: "You",
-            });
-            query.refresh();
-            if (result.notification === "failed")
-              onError(
-                "Answer saved, but the agent could not be notified. Notify its thread manually.",
-              );
-          }}
-        />
-      ))}
+      {open.map(renderQuestion)}
+      {earlier.length ? (
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            Earlier ({earlier.length})
+          </summary>
+          <div className="mt-3 space-y-3">{earlier.map(renderQuestion)}</div>
+        </details>
+      ) : null}
       {adding || editing ? (
         <form
           className="space-y-3 rounded-md border border-border p-3"
@@ -326,7 +326,6 @@ export function QuestionsSection({
                   prompt,
                   mode: multiple ? "multiple" : "single",
                   options: normalizedOptions,
-                  allowOther,
                   reopen,
                   authorName: "You",
                 });
@@ -336,7 +335,7 @@ export function QuestionsSection({
                   prompt,
                   mode: multiple ? "multiple" : "single",
                   options: normalizedOptions.map(({ id, ...option }) => option),
-                  allowOther,
+                  kind,
                 });
               }
               closeForm();
@@ -348,6 +347,23 @@ export function QuestionsSection({
             }
           }}
         >
+          {!editing ? (
+            <label className="block text-sm">
+              Type
+              <select aria-label="Question type" value={kind} disabled={saving}
+                onChange={event => {
+                  const next = event.target.value as "decision" | "check";
+                  setKind(next);
+                  setOptions(next === "check"
+                    ? [{ label: "Confirmed" }, { label: "Problem found" }]
+                    : [{ label: "" }]);
+                }}
+              >
+                <option value="decision">Decision</option>
+                <option value="check">Check</option>
+              </select>
+            </label>
+          ) : null}
           <Textarea
             autoFocus
             aria-label="Question"
@@ -409,7 +425,7 @@ export function QuestionsSection({
                   />
                   Recommend
                 </label>
-                {options.length > 2 ? (
+                {options.length > 1 ? (
                   <Button
                     type="button"
                     variant="ghost"
@@ -491,15 +507,6 @@ export function QuestionsSection({
                 }}
               />
               Allow multiple answers
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={allowOther}
-                disabled={saving}
-                onChange={(event) => setAllowOther(event.target.checked)}
-              />
-              Allow other answer
             </label>
             {editing?.answeredBy ? (
               <label className="flex items-start gap-2 text-sm text-warning">
