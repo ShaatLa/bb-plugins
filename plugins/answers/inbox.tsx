@@ -248,6 +248,9 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // Once a thread's reply pool holds an entry, quote replies keep collecting into it (see poolFirst).
   const pools = useQuery({ contract: rpcContract, method: 'pools', input: {} });
   const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
+  // While a quote reply is open over a message, the chat holds still: new messages and a growing composer do not scroll
+  // the message (and the popup on it) away from the reader's eyes.
+  const quoting = useRef(false); quoting.current = !!draft;
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
   const restore = useRef(useState(() => { const saved = selected ? readScrolls()[selected] : undefined; return saved && selected ? { threadId: selected, ...saved } : null; })[0]);
@@ -400,7 +403,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     // The distance from the bottom is kept across the change, so the stack pushes whatever the reader sees up (or lets it down).
     const fit = () => {
       const column = node.querySelector<HTMLElement>('[data-chat-column]'), padding = `${box.offsetHeight}px`;
-      if (column && column.style.paddingBottom !== padding) { const gap = node.scrollHeight - node.scrollTop - node.clientHeight; column.style.paddingBottom = padding; if (!pin.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
+      if (column && column.style.paddingBottom !== padding) { const gap = node.scrollHeight - node.scrollTop - node.clientHeight; column.style.paddingBottom = padding; if (!pin.current && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
       setScrollbar(node.offsetWidth - node.clientWidth);
     };
     const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit();
@@ -425,7 +428,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       if (node.clientWidth !== width) { width = node.clientWidth; resizedAt = Date.now(); }
       if (!pin.current) {
         if (gap > 24 && Date.now() - resizedAt < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
-        else if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24) node.scrollTop = node.scrollHeight - next;
+        else if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24 && !quoting.current) node.scrollTop = node.scrollHeight - next;
       }
       height = next; if (Date.now() - resizedAt >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
