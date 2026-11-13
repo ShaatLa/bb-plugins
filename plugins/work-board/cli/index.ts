@@ -1856,7 +1856,7 @@ export function registerTasksCli(
           options: {
             "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
-            "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
+            "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
             machine: MACHINE_OPTION,

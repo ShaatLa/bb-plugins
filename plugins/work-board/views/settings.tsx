@@ -426,6 +426,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
           <SelectTrigger aria-label="Automatically archive completed tasks" className="h-8 w-48"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="3">After 3 days</SelectItem>
             <SelectItem value="7">After 7 days</SelectItem>
             <SelectItem value="14">After 14 days</SelectItem>
             <SelectItem value="30">After 30 days</SelectItem>
