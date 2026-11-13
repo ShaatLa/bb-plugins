@@ -41,12 +41,13 @@ const css = `
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 13s ease-out infinite}
 .ar-solid{fill:var(--background,#fff)}
 .ar-dancing *{animation-play-state:paused}.ar-dancing .ar-dance *{animation-play-state:running}.ar-dancing .ar-quick>.ar-front{visibility:hidden}
-.ar-pose{opacity:0;animation:ar-pose 1.5s step-end infinite}
-.ar-tick{transform-box:view-box;transform-origin:12px 11.5px;animation:ar-tick .75s step-end infinite}
-.ar-pop{animation:ar-pop .375s step-end infinite}
-@keyframes ar-pose{0%{opacity:1}25%{opacity:0}}
-@keyframes ar-tick{0%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
-@keyframes ar-pop{0%{transform:translateY(0)}50%{transform:translateY(.5px)}}
+.ar-fore{transform-box:view-box;animation:3s infinite}.ar-fore.l{transform-origin:5px 13.2px;animation-name:ar-fore-l}.ar-fore.r{transform-origin:19px 13.2px;animation-name:ar-fore-r}
+.ar-tick{transform-box:view-box;transform-origin:12px 11.5px;animation:ar-tick 1.5s infinite}
+.ar-pop{animation:ar-pop .75s step-end infinite}
+@keyframes ar-fore-l{0%,25%,50%,75%{animation-timing-function:steps(3,end)}0%{transform:rotate(-90deg)}8%,25%{transform:rotate(0)}33%,50%{transform:rotate(-180deg)}58%,75%{transform:rotate(0)}83%,100%{transform:rotate(-90deg)}}
+@keyframes ar-fore-r{0%,25%,50%,75%{animation-timing-function:steps(3,end)}0%{transform:rotate(90deg)}8%,25%{transform:rotate(180deg)}33%,50%{transform:rotate(0)}58%,75%{transform:rotate(0)}83%,100%{transform:rotate(90deg)}}
+@keyframes ar-tick{0%,50%{animation-timing-function:steps(2,end)}0%{transform:rotate(7deg)}16%,50%{transform:rotate(-7deg)}66%,100%{transform:rotate(7deg)}}
+@keyframes ar-pop{0%{transform:translateY(0)}10%{transform:translateY(.6px)}35%{transform:translateY(0)}}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}42%,46%{transform:translateX(8px)}88%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}42%{opacity:0}}
 @keyframes ar-left-q{0%{opacity:0}46%{opacity:1}88%{opacity:0}}
@@ -129,13 +130,14 @@ const pacing = (bubble: boolean, pebble: boolean, extra?: ReactNode, moods?: [Mo
   {extra}
 </g>;
 
-// The robot dance: happy eyes, the head ticking side to side, the body dipping on every beat, and the arms snapping
-// through four right-angle poses (one per .375 s beat: left up and right down, the reverse, both up, both straight out).
-const DANCE_ARMS = [['M8.5 13.2 H5 V10.6', 'M15.5 13.2 H19 V15.8'], ['M8.5 13.2 H5 V15.8', 'M15.5 13.2 H19 V10.6'], ['M8.5 13.2 H5 V10.6', 'M15.5 13.2 H19 V10.6'], ['M8.5 13.2 H4.2', 'M15.5 13.2 H19.8']];
+// The robot dance, slow and mechanical: happy eyes, the head clicking side to side, the body jolting down on every .75 s
+// beat, and the forearms turning at the elbows in 60° servo steps, then holding: left up and right down, the reverse, both
+// up, both straight out. They always swing outward, never through the (solid) body.
 const dance = <g className="ar-dance"><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-  <g className="ar-pop"><g className="ar-tick">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><path d="M9.1 8 Q10 6.9 10.9 8" /><path d="M13.1 8 Q14 6.9 14.9 8" /></g>
-    <rect x="8.5" y="12" width="7" height="6" rx="1" />
-    {DANCE_ARMS.map((arms, i) => <g key={i} className="ar-pose" style={{ animationDelay: `${i * .375}s` }}><path d={arms[0]} /><path d={arms[1]} /></g>)}</g></g>;
+  <g className="ar-pop"><line x1="8.5" y1="13.2" x2="5" y2="13.2" /><line x1="15.5" y1="13.2" x2="19" y2="13.2" />
+    <line className="ar-fore l" x1="5" y1="13.2" x2="5" y2="10.6" /><line className="ar-fore r" x1="19" y1="13.2" x2="19" y2="10.6" />
+    <rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
+    <g className="ar-tick">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><path d="M9.1 8 Q10 6.9 10.9 8" /><path d="M13.1 8 Q14 6.9 14.9 8" /></g></g></g>;
 // Now and then (about one lap in four), at the right end where it turns to face us without checking the watch, the
 // waiting robot breaks into the robot dance for three seconds while the walk and the pebble hold still. A lap starting
 // arms a timer for that moment, which checks the walk's actual phase, so a late timer (a background tab) skips the dance.
