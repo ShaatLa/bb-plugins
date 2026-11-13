@@ -344,7 +344,7 @@ it('shows a pending bubble until the matching newest item arrives, and skips dra
 it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
   const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
   change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
-  await waitFor(() => expect(slot.queryByText('Queued one')).toBeNull());
+  await waitFor(() => expect(slot.queryByRole('button', { name:'Toggle queued messages' })).toBeNull());
 });
 it('shows a quoted queued reply as the quote line and the message line', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'> Quoted passage\n\nMy reply', mentions:[] }], updatedAt:1 };
@@ -364,6 +364,23 @@ it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Held by Concurrency limit · 14 of 14 running on host Mac')).toBeTruthy();
+});
+it('slides a queue card in once: coming back to its chat draws it in place, a new one after it left slides again', async () => {
+  const first = { ...one, threadId:'thr_slide' }, two = { ...one, threadId:'thr_two', threadTitle:'Two' };
+  let rows: Record<string, any[]> = { thr_slide:[{ id:'q1', threadId:'thr_slide', content:[{ type:'text', text:'Queued one', mentions:[] }], updatedAt:1 }], thr_two:[] };
+  const { slot, recipients } = setup({ recipients:[first, two], queuedMessages: { list: ({ threadId }: any) => Promise.resolve(rows[threadId]), delete: async () => { rows = { ...rows, thr_slide:[] }; return {}; } } });
+  const card = () => slot.getByRole('button', { name:'Toggle queued messages' }).closest('.grid') as HTMLElement;
+  fireEvent.click((await recipients.findAllByRole('option'))[0]!);
+  await slot.findByRole('button', { name:'Toggle queued messages' }); expect(card().className).toContain('starting:');
+  fireEvent.click(recipients.getAllByRole('option')[1]!); await waitFor(() => expect(slot.queryByRole('button', { name:'Toggle queued messages' })).toBeNull());
+  fireEvent.click(recipients.getAllByRole('option')[0]!);
+  await slot.findByRole('button', { name:'Toggle queued messages' }); expect(card().className).not.toContain('starting:');
+  // The queue empties, the card slides away; a message queued after that slides in again.
+  fireEvent.click(slot.getByRole('button', { name:/^Delete/ }));
+  await waitFor(() => expect(slot.queryByRole('button', { name:'Toggle queued messages' })).toBeNull(), { timeout:1000 });
+  rows = { ...rows, thr_slide:[{ id:'q2', threadId:'thr_slide', content:[{ type:'text', text:'Queued one', mentions:[] }], updatedAt:2 }] };
+  fireEvent.click(recipients.getAllByRole('option')[1]!); fireEvent.click(recipients.getAllByRole('option')[0]!);
+  await slot.findByRole('button', { name:'Toggle queued messages' }); expect(card().className).toContain('starting:');
 });
 it('keeps a delivered queued message in the queue card until the chat records it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
