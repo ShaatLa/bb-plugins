@@ -82,14 +82,24 @@ export default function plugin(bb: BbPluginApi) {
   // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
   // Agent questions stay: reading the thread in bb does not answer them.
   let bbReadSyncedAt = 0;
+  // bb also counts sending a message as reading its thread (lastReadAt = the send time, to the millisecond), even a queued
+  // message it sends by itself when a turn ends, while nobody is looking; taking that as a read would hide the answer that
+  // just arrived. So a lastReadAt that falls right on one of the owner's sends is not a read; only bb's real reads count.
+  const sendReads = new Map<string, number>();
+  async function applyBbRead(threadId: string, readAt: number) {
+    const sql = `FROM items WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`;
+    if (sendReads.get(threadId) === readAt || !(db.prepare(`SELECT count(*) AS n ${sql}`).get(threadId,readAt) as {n:number}).n) return 0;
+    const sent = await bb.sdk.threads.events.list({threadId,types:['client/turn/requested'],order:'desc',limit:'5'}) as {createdAt:number;data?:{initiator?:string}}[];
+    if (sent.some(e => e.data?.initiator === 'user' && readAt >= e.createdAt && readAt - e.createdAt < 1000)) { sendReads.set(threadId, readAt); return 0; }
+    return db.prepare(`UPDATE items SET read_at=? WHERE id IN (SELECT id ${sql})`).run(readAt,threadId,readAt).changes;
+  }
   async function syncReadFromBb() {
     if (Date.now() - bbReadSyncedAt < 15000) return; bbReadSyncedAt = Date.now();
     const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND thread_deleted=0`);
     if (!ids.length) return;
     try {
-      const seen = db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`);
       let n = 0;
-      for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) if (t.lastReadAt) n += seen.run(t.lastReadAt,t.id,t.lastReadAt).changes;
+      for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) if (t.lastReadAt) n += await applyBbRead(t.id,t.lastReadAt);
       if (n) invalidate();
     } catch (e) { bb.log.warn(`Answers read sync: ${String(e)}`); }
   }
@@ -271,12 +281,11 @@ export default function plugin(bb: BbPluginApi) {
       const projects=rows.length ? await displayProjects() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
-      const seenInBb=db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`);
       const unreadIds=rows.filter(r=>r.unread>0).map(r=>r.thread_id as string);
       const fresh=unreadIds.length ? await bb.sdk.threads.list({threadIds:unreadIds,includeHidden:true,limit:200}) : [];
       const readTimes=new Map(fresh.map(t=>[t.id,t.lastReadAt]));
       let seen=0;
-      for (const r of rows) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=seenInBb.run(readAt,r.thread_id,readAt).changes; r.unread-=n; seen+=n; } }
+      for (const r of rows) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=await applyBbRead(r.thread_id,readAt).catch(()=>0); r.unread-=n; seen+=n; } }
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);

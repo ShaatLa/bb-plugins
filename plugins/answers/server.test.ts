@@ -56,6 +56,17 @@ describe('server',()=>{
   expect(result.recipients[0].unread).toBe(1);
   expect(db.prepare("SELECT id FROM items WHERE read_at IS NOT NULL").all()).toEqual([{id:'ans_old'}]);
  });
+ it('does not take bb marking a thread read on a send (a queued message going out at turn end) as the owner reading it',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_new','mine','t'); db.prepare("UPDATE items SET status='answered',answer='b',answered_at=? WHERE id=?").run(3000,'ans_new');
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:5001} as any)]);
+  harness.sdk.stub('threads.events.list',async()=>[{seq:9,createdAt:5000,type:'client/turn/requested',data:{initiator:'user'}}] as any);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(1);
+  expect(db.prepare("SELECT id FROM items WHERE read_at IS NOT NULL").all()).toEqual([]);
+  // A real read in bb later still counts.
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:9000} as any)]);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(0);
+ });
  it('validates every RPC boundary and tags both reads',async()=>{
   const {harness}=setup();
   for (const [name,input] of Object.entries({list:{view:'wrong'},counts:{extra:1},markRead:{ids:['bad']},setPinned:{id:'ans_a',pinned:1},setDismissed:{id:'bad',dismissed:true},reply:{id:'ans_a',text:'x'.repeat(8001)},save:{threadId:'t',seq:-1,role:'user',text:'x'}})) await expect(harness.behavior.callRpc(name,input)).rejects.toThrow();
