@@ -362,6 +362,11 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
+it('says why a queued message is held, as bb does', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByText('Held by concurrency-limit · 14 of 14 running on host Mac')).toBeTruthy();
+});
 it('keeps a delivered queued message in the queue card until the chat records it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
   let rows = [row], emptied = 0;
