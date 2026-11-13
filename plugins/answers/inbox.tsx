@@ -94,6 +94,9 @@ function interactionTitle(row: Interaction) {
 // Slides its content out from under the composer (or back under it) while the height follows, so the chat above moves
 // smoothly instead of jumping. The content stays mounted while it slides away. The column is capped (minmax(0,1fr)) so a
 // long unwrapped line cannot widen the card past the composer.
+// Within this many pixels of the end the chat counts as scrolled to the bottom (sub-pixel rounding only): there it follows
+// new messages; scrolled up even a little, nothing moves.
+const AT_BOTTOM = 2;
 // Cards already shown, by id: coming back to a chat whose card did not change draws it in place instead of replaying the slide.
 // An id is forgotten once its card has slid away (or was hidden when it left), so a card that comes back later slides in again.
 const revealed = new Set<string>();
@@ -330,7 +333,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       if (result.ok && result.delivery === 'queued') { setOptimistic(old => old.filter(b => b.id !== optimisticId)); setQueueVersion(n => n + 1); }
       if (JSON.stringify(drafts[threadId]) === JSON.stringify(sent)) { delete drafts[threadId]; saveDrafts(); }
       if (selectedRef.current === threadId) setCompose(current => JSON.stringify(current) === JSON.stringify(sent) ? { text: '', files: [] } : current);
-      setQueueVersion(n => n + 1); refresh(); requestAnimationFrame(() => scroll.current?.scrollTo?.({ top: scroll.current.scrollHeight }));
+      setQueueVersion(n => n + 1); refresh();
     } catch (e) { setOptimistic(old => old.filter(b => b.id !== optimisticId)); if (selectedRef.current === threadId) setComposeError(deliveryError(e)); }
     finally { setComposePending(false); }
   }
@@ -411,7 +414,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
     else if (old.bottom) node.scrollTop = node.scrollHeight;
-    position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24, fresh: false, prepend: false };
+    position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false };
   }, [pages]);
   useEffect(() => {
     const node = scroll.current, list = node?.querySelector('[aria-label=History]');
@@ -431,17 +434,24 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
   useEffect(() => {
     const node = scroll.current, box = stack.current; if (!node || !box || typeof ResizeObserver === 'undefined') return;
-    // The distance from the bottom is kept across the change, so the stack pushes whatever the reader sees up (or lets it down).
+    // A reader at the bottom stays there as the stack grows or shrinks; one scrolled up even a little keeps their place.
     const fit = () => {
-      const column = node.querySelector<HTMLElement>('[data-chat-column]'), padding = `${box.offsetHeight}px`;
-      if (column && column.style.paddingBottom !== padding) { const gap = node.scrollHeight - node.scrollTop - node.clientHeight; column.style.paddingBottom = padding; if (!pin.current && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
+      const column = node.querySelector<HTMLElement>('[data-chat-column]');
+      if (column) {
+        // Shrinking the padding by more than the reader is scrolled up would make the browser clamp the scroll and move the
+        // chat, so above the bottom it shrinks only that far; the rest goes once the reader reaches the bottom.
+        const gap = node.scrollHeight - node.scrollTop - node.clientHeight, bottom = gap <= AT_BOTTOM;
+        const padding = `${bottom ? box.offsetHeight : Math.max(box.offsetHeight, (parseFloat(column.style.paddingBottom) || 0) - gap)}px`;
+        if (column.style.paddingBottom !== padding) { column.style.paddingBottom = padding; if (bottom && !pin.current && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
+      }
       setScrollbar(node.offsetWidth - node.clientWidth);
     };
-    const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit();
-    return () => observer.disconnect();
+    const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit(); node.addEventListener('scroll', fit, { passive: true });
+    return () => { observer.disconnect(); node.removeEventListener('scroll', fit); };
   }, [selected]);
-  // Like a chat app (and bb's chat): when the visible area shrinks or grows (the composer stack grows or shrinks, the
-  // phone keyboard opens or closes, the window is resized), the bottom edge of the conversation stays put instead of the top.
+  // The conversation moves by itself only for a reader at the very bottom: it follows new messages there, and keeps the
+  // bottom edge when the visible area shrinks or grows (the phone keyboard, the window resized). A reader scrolled up even a
+  // little keeps their place: messages grow below and nothing above moves.
   useEffect(() => {
     const node = scroll.current; if (!node || typeof ResizeObserver === 'undefined') return;
     // The distance from the bottom is kept from the last scroll; by the time the observer runs the browser may already
@@ -458,8 +468,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       const next = node.clientHeight;
       if (node.clientWidth !== width) { width = node.clientWidth; resizedAt = Date.now(); }
       if (!pin.current) {
-        if (gap > 24 && Date.now() - resizedAt < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
-        else if (next !== height) node.scrollTop = node.scrollHeight - next - gap; else if (gap <= 24 && !quoting.current) node.scrollTop = node.scrollHeight - next;
+        if (gap > AT_BOTTOM && Date.now() - resizedAt < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next;
       }
       height = next; if (Date.now() - resizedAt >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
@@ -542,7 +552,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
         return thread ? <ThreadActionsContextMenu key={recipient.threadId} thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : <Fragment key={recipient.threadId}>{row}</Fragment>; })}</div>; })}
     </div><ContactsFooter /></div>
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
-    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24 }; if (selected && !position.current.fresh) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(first ? { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(saveScroll, 200); } }}>
+    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(first ? { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(saveScroll, 200); } }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
       {/* A column at least as tall as the view, so a short chat still keeps the composer at the bottom, as bb's chat does; clip (not hidden, which would break sticky) cuts bb's hidden voice textarea that hangs 7px below the composer and made short chats scroll. */}
       {selected && <div data-chat-column className="flex min-h-full flex-col overflow-clip">{mobileHeader}<div data-conversation-header className={`sticky top-[57px] z-[2] flex justify-end min-[640px]:top-0 border-b border-border-seam bg-background px-3 py-1 ${search ? '' : onSearch ? 'hidden' : 'max-[639px]:hidden'}`}>{!onSearch && <Button size="sm" variant="ghost" className="max-[639px]:hidden" aria-label="Search conversation" onClick={() => { setSearch(!search); setOlder(false); }}><Icon name="Search" aria-hidden /></Button>}{search && <input aria-label="Search conversation" autoFocus className="w-56 rounded border border-border-seam bg-background px-2 text-sm max-[639px]:min-w-0 max-[639px]:flex-1" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearch(false); setQuery(''); setOlder(false); } }} />}{search && query.trim() && <div role="listbox" aria-label="Search results" className="absolute right-3 top-full z-10 max-h-64 w-72 overflow-auto rounded border border-border-seam bg-background shadow-lg">{searchError && <p role="alert">{searchError}</p>}{matches.map(match => <button key={match.id} role="option" aria-selected={false} className="block w-full border-b border-border-seam p-2 text-left text-xs hover:bg-state-hover" onClick={() => { setJump(match.id); setOlder(false); setSearch(false); }}>{(match.answer || match.question).slice(0, 160)} <time className="block text-muted-foreground">{new Date(match.updatedAt).toLocaleDateString()}</time></button>)}</div>}</div>{older && <p role="status" className="px-4 text-xs">Older than loaded history — <UrlLink href={`${recipients?.recipients.find(r => r.threadId === selected)?.projectId ? `/projects/${recipients?.recipients.find(r => r.threadId === selected)?.projectId}` : ''}/threads/${selected}`}>open in chat</UrlLink></p>}<HistoryPage key={selected} threadId={selected} index={0} unread={recipients?.recipients.find(r => r.threadId === selected)?.unread} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <EarlierLoader loading={pages.length < depth} enabled={settled} onLoad={() => { position.current.prepend = true; setDepth(d => Math.max(d, pages.length + 1)); }} />}<ActivityContext.Provider value={activity}><History key={selected} groups={historyGroups} flash={flash} markId={mark.current} settled={settled} onJump={jumpTo} /></ActivityContext.Provider>{optimistic.some(b => b.threadId === selected) && <ul inert aria-label="Sending" className="px-4 [&>li]:border-t [&>li]:border-border-seam">{optimistic.filter(b => b.threadId === selected).map(b => <ItemCard key={b.id} item={sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId))} chat markable={false} replyToOwn={false} />)}</ul>}
