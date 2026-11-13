@@ -77,6 +77,15 @@ describe("task questions", () => {
     expect(names()).toEqual(["Keep"]);
   });
 
+  it("marks a legacy no-free-text question as allowing free text when answered with text", async () => {
+    const { bb, structured, task } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Verify?", mode: "single", options: [] });
+    bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.allowOther', json('false')) WHERE id=?").run(question.id);
+    const { question: answered } = await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [], answerText: "Broken on dev", authorName: "Owner" });
+    expect(answered).toMatchObject({ allowOther: true, answerText: "Broken on dev", selectedOptionIds: [] });
+    expect(answered.history?.at(-1)).toMatchObject({ allowOther: false, answerText: null });
+  });
+
   it("sets and clears recommendations through stable IDs without selecting an answer", async () => {
     const { cli, task, structured, harness } = setup();
     const { question } = await cli(

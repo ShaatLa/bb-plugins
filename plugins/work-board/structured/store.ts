@@ -184,6 +184,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           throw new Error("Question changed; reload it before answering");
         const next = questionSchema.parse({
           ...current,
+          // Free text is always allowed now; stamping it keeps answered records valid under the pre-0.33 rule.
+          allowOther: true,
           selectedOptionIds: input.selectedOptionIds,
           answerText: input.answerText?.trim() || null,
           answeredBy:
