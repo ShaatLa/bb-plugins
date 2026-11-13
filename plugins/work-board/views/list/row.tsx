@@ -11,7 +11,7 @@ import type {
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ThreadHealthMarkers } from "../../components/thread-health-markers";
-import { QuestionCount } from "../../components/question-count";
+import { QuestionCount, WaitingOnYou } from "../../components/question-count";
 import type { TaskRowMeta } from "./data.js";
 import { formatDueDate, partitionLabels } from "./lib.js";
 import type { EditFn } from "./property-menus.js";
@@ -186,6 +186,7 @@ export const TaskRow = memo(function TaskRow({
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />
+          <WaitingOnYou task={task} count={unansweredQuestions} />
           <QuestionCount count={unansweredQuestions} />
           <PullRequestSummary summary={prSummary} />
           <LabelChips task={task} labelsById={labelsById} />

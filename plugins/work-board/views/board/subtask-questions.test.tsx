@@ -54,9 +54,9 @@ async function setup() {
   });
   const child = store.tasks.createTask({
     projectId: project.id,
-    title: "Completed child with a decision",
+    title: "Child with a decision",
     parentTaskId: parent.id,
-    status: "done",
+    status: "todo",
   });
   const quietChild = store.tasks.createTask({
     projectId: project.id,
@@ -133,7 +133,7 @@ it.each(["side", "kanban"])(
       slot.container.querySelector(`[data-task-key="${child.key}"]`),
     ).toBeNull();
     expect(slot.queryByText(child.title)).toBeNull();
-    fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
     await waitFor(() => expect(slot.queryByText(unrelated.title)).toBeNull());
     expect(slot.getByText(parent.title)).toBeTruthy();
     const childList = await slot.findByRole("list", {
@@ -221,7 +221,7 @@ it("adds own and child question counts, prioritizes children needing answers and
   expect(
     slot.queryByRole("list", { name: `Sub-tasks of ${parent.key}` }),
   ).toBeNull();
-  fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
+  fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
   await slot.findByRole("list", { name: `Sub-tasks of ${parent.key}` });
   store.tasks.updateTask(child.id, { parentTaskId: null });
   await slot.behavior.emitRealtime("tasks:changed", {
@@ -374,4 +374,29 @@ it.each([{ count: 250, surface: "kanban" }, { count: 250, surface: "side" }, { c
   const measurement = { count, surface, coldReadyMs, warmReadyMs, mountedCards: reopened.container.querySelectorAll("[data-task-key]").length };
   if (process.env.WORK_BOARD_PERF_OUT) appendFileSync(process.env.WORK_BOARD_PERF_OUT, JSON.stringify(measurement) + "\n");
   expect(reopened.container.querySelectorAll("[data-task-key]").length).toBeLessThan(120);
+});
+
+it.each([["kanban", "manual"], ["list", "manual"], ["kanban", "priority"], ["list", "priority"]])("marks owner actions and orders waiting tasks on %s (%s), preserving the legacy filter", async (view, sort) => {
+  const f = await setup();
+  const owner = f.store.tasks.createTask({ projectId: f.project.id, title: "Owner action", status: "todo", priority: "urgent", executionTarget: "owner" });
+  const older = f.store.tasks.createTask({ projectId: f.project.id, title: "Older decision", status: "todo" });
+  const newer = f.store.tasks.createTask({ projectId: f.project.id, title: "Newest decision", status: "todo" });
+  for (const task of [older, newer]) await f.structured.handlers.createQuestion({ taskId: task.id, prompt: "Proceed?", options: ["Yes", "No"], mode: "single" });
+  // Legacy preferences retain their meaning without changing the persisted key.
+  window.localStorage.setItem("bb-work-board:list-preferences", JSON.stringify({ version: 1, scopes: { [`project:${f.project.id}`]: { sort, filters: { unansweredOnly: true } } } }));
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `${f.project.id}?view=${view}` }, { rpc: f.rpc });
+  expect((await slot.findByRole("button", { name: "Waiting on me" })).getAttribute("aria-pressed")).toBe("true");
+  await waitFor(() => {
+    const row = slot.container.querySelector(`[data-task-key="${owner.key}"]`);
+    expect(row?.textContent).toContain("Waiting on you");
+    const keys = [...slot.container.querySelectorAll("[data-task-key]")].map(el => el.getAttribute("data-task-key"));
+    if (sort === "manual") {
+      expect(keys.indexOf(newer.key)).toBeLessThan(keys.indexOf(older.key));
+      expect(keys.indexOf(older.key)).toBeLessThan(keys.indexOf(owner.key));
+    } else {
+      expect(keys.indexOf(owner.key)).toBeLessThan(keys.indexOf(newer.key));
+      expect(keys.indexOf(owner.key)).toBeLessThan(keys.indexOf(older.key));
+    }
+    expect(slot.container.querySelector(`[data-task-key="${newer.key}"]`)?.textContent).toContain("Waiting on you");
+  });
 });

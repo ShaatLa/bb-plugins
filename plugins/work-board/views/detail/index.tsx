@@ -1,3 +1,4 @@
+import { newestOpenQuestion, waitingOnOwner } from "../../shared/waiting-on-owner";
 import { CurrentState } from "./current-state";
 import { useActivityPoll } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
@@ -307,6 +308,9 @@ function TaskDetail({
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
   const rpc = useTasksRpc();
+  const questionsRef = useRef<HTMLDivElement>(null);
+  const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
+  const newestQuestion = newestOpenQuestion(questions.data ?? []);
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
@@ -616,6 +620,11 @@ function TaskDetail({
             className="mb-4 @[45rem]:hidden"
           />
 
+          {waitingOnOwner(task, newestQuestion ? 1 : 0) ? <button type="button" className="mb-4 flex w-full min-w-0 items-center gap-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-left text-warning" onClick={() => questionsRef.current?.scrollIntoView({ behavior: "smooth" })}>
+            <Icon name="FileQuestion" className="size-4 shrink-0" />
+            <span className="shrink-0 font-medium">Waiting on you</span>{" "}
+            <span className="truncate">{newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Owner action"}</span>
+          </button> : null}
           <TasksEditor
             value={descriptionValue}
             onChange={onDescriptionChange}
@@ -711,10 +720,11 @@ function TaskDetail({
             </div>
           ) : null}
 
-          <div className="mt-1">
+          <div className="mt-1" ref={questionsRef}>
             <QuestionsSection
               key={task.id}
               taskId={task.id}
+              query={questions}
               adding={addingQuestion === task.id}
               onAddingChange={(adding) =>
                 setAddingQuestion(adding ? task.id : null)

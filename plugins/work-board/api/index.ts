@@ -644,6 +644,14 @@ const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
 
 async function readBadgeCriteria(bb: BbPluginApi) {
   const stored = await bb.storage.kv.get<unknown>(BADGE_CRITERIA_KEY);
+  const upgraded = await bb.storage.kv.get<boolean>("navigation-badge:waiting-on-owner-upgraded");
+  if (!upgraded) {
+    if (Array.isArray(stored) && !stored.includes("waiting_on_owner")) {
+      stored.push("waiting_on_owner");
+      await bb.storage.kv.set(BADGE_CRITERIA_KEY, stored);
+    }
+    await bb.storage.kv.set("navigation-badge:waiting-on-owner-upgraded", true);
+  }
   if (!Array.isArray(stored)) return [...DEFAULT_BADGE_CRITERIA];
   return BADGE_CRITERIA.filter((criterion) => stored.includes(criterion));
 }
@@ -1024,6 +1032,7 @@ export function registerHandlers(
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
         staleStatus: input.staleStatus,
+        waitingOnOwner: input.waitingOnOwner,
         parentTaskId: input.parentTaskId,
         type: input.type,
         executionTarget: input.executionTarget,
@@ -1375,6 +1384,7 @@ export function registerHandlers(
       return { criteria: await readBadgeCriteria(bb) };
     },
     async setNavigationBadgeCriteria({ criteria }) {
+      await readBadgeCriteria(bb);
       // Store in a stable order and without repeats so the badge never counts a criterion twice.
       const saved = BADGE_CRITERIA.filter((criterion) => criteria.includes(criterion));
       await bb.storage.kv.set(BADGE_CRITERIA_KEY, saved);

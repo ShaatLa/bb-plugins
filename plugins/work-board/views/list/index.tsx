@@ -1,3 +1,4 @@
+import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
 import { usePrSummaries } from "../../components/pr-summary";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -176,7 +177,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     return editedTasks(tasksQuery.data, edits.entries).filter(
       (task) =>
         (!filters.unansweredOnly ||
-          (questionCounts.data?.get(task.id) ?? 0) > 0) &&
+          waitingOnOwner(task, questionCounts.data?.get(task.id) ?? 0)) &&
         matchesFilters(
           task,
           filters.statuses,
@@ -194,8 +195,8 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     questionCounts.data,
   ]);
   const groups = useMemo(
-    () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort), statusIds),
-    [displayTasks, sort, statusIds],
+    () => groupTasksByStatus(filters.unansweredOnly && sort === "manual" ? [...(displayTasks ?? [])].sort((a, b) => waitingOrder(a, b, questionCounts.details)) : sortTasks(displayTasks ?? [], sort), statusIds),
+    [displayTasks, sort, statusIds, filters.unansweredOnly, questionCounts.details],
   );
 
   const showProject = projectId === null;

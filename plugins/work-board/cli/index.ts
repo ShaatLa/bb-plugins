@@ -1,3 +1,4 @@
+import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
 import { advisoryText } from "../shared/task-advisories";
@@ -1250,9 +1251,11 @@ export function registerTasksCli(
                   allowOther: input.options["allow-other"],
                 }),
               );
+              const warnings = !task.progressNote && ["backlog", "todo"].includes(task.status)
+                ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on him."] : [];
               return input.options.json
-                ? JSON.stringify(result)
-                : JSON.stringify(result.question, null, 2);
+                ? JSON.stringify({ ...result, warnings })
+                : { exitCode: 0, stdout: JSON.stringify(result.question, null, 2), stderr: warnings.join("\n") };
             });
           },
         }),
@@ -2488,6 +2491,7 @@ export function registerTasksCli(
               type: "boolean",
               description: "Keep only tasks with a live agent thread",
             },
+            "waiting-on-owner": { type: "boolean", description: "Keep only tasks waiting on you" },
             "include-scheduled": {
               type: "boolean",
               description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
@@ -2584,6 +2588,7 @@ export function registerTasksCli(
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
                     staleStatus: input.options["stale-status"],
+                    waitingOnOwner: input.options["waiting-on-owner"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2601,10 +2606,12 @@ export function registerTasksCli(
                   (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
                 ),
               );
+              const waiting = new Map((await domain.questionCounts({ taskIds: result.tasks.map(task => task.id) })).counts.map(row => [row.taskId, row.waitingOnOwner]));
               const tasks = [];
               for (const task of result.tasks) {
                 tasks.push({
                   ...task,
+                  waitingOnOwner: waiting.get(task.id) ?? false,
                   labels: task.labelIds.map(
                     (id) => labelById.get(id)?.name ?? id,
                   ),
@@ -2708,6 +2715,8 @@ export function registerTasksCli(
               const { questions } = await domain.listQuestions({
                 taskId: task.id,
               });
+              const newestQuestion = newestOpenQuestion(tasksRpcContract.listQuestions.output.parse({ questions }).questions);
+              const waiting = waitingOnOwner(task, newestQuestion ? 1 : 0);
               const evidence = evidenceIndex(comments);
               const attachments = await listTaskAttachments(
                 domain,
@@ -2749,7 +2758,7 @@ export function registerTasksCli(
                 return JSON.stringify({
                   prLinks,
                   overlaps,
-                  task,
+                  task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
                   project,
                   labels,
@@ -2818,6 +2827,7 @@ ${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activ
 ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
+                ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "owner action"}`] : []),
                 `Description\n${task.description || "(none)"}`,
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(

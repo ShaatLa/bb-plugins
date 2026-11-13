@@ -275,7 +275,7 @@ describe("question and evidence UI", () => {
       const slot = mount();
       await slot.findByRole("img", { name: "1 unanswered question" });
       await slot.findByText("No decision needed");
-      fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
+      fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
       await waitFor(() =>
         expect(slot.queryByText("No decision needed")).toBeNull(),
       );
@@ -289,7 +289,7 @@ describe("question and evidence UI", () => {
       slot.lifecycle.unmount();
       const restored = mount();
       const filter = await restored.findByRole("button", {
-        name: "Needs answer",
+        name: "Waiting on me",
       });
       expect(filter.getAttribute("aria-pressed")).toBe("true");
       await waitFor(() => expect(restored.queryByText(task.title)).toBeNull());
@@ -429,4 +429,18 @@ describe("question and evidence UI", () => {
       headings.indexOf("Activity"),
     );
   });
+});
+
+it.each([false, true])("shows the detail waiting banner (question=%s)", async hasQuestion => {
+  const { task, rpc, structured, store } = setup();
+  if (hasQuestion) {
+    await structured.handlers.createQuestion({ taskId: task.id, prompt: "Choose deployment\nMore details", options: ["Now", "Later"], mode: "single" });
+  } else store.tasks.updateTask(task.id, { executionTarget: "owner" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await slot.findByText(task.title);
+  const banner = await slot.findByRole("button", { name: /Waiting on you/ });
+  expect(banner.textContent).toContain(hasQuestion ? "Choose deployment" : "Owner action");
+  expect(banner.textContent).not.toContain("More details");
+  const description = slot.container.querySelector('.bb-work-board-editor');
+  if (description) expect(banner.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

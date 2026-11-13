@@ -808,6 +808,8 @@ export const tasksRpcContract = {
             .object({
               taskId: idSchema,
               unanswered: z.number().int().nonnegative(),
+              waitingOnOwner: z.boolean().default(false),
+              newestUnansweredAt: z.string().nullable().default(null),
             })
             .strict(),
         ),
@@ -929,6 +931,7 @@ export const tasksRpcContract = {
         labelIds: z.array(idSchema).optional(),
         activeOnly: z.boolean().default(false),
         staleStatus: z.boolean().default(false),
+        waitingOnOwner: z.boolean().default(false),
         includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),

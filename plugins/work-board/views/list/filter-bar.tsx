@@ -169,7 +169,7 @@ export function ListFilterBar({
           }
         >
           <Icon name="FileQuestion" className="size-3" />
-          Needs answer
+          Waiting on me
         </button>
         <FilterChip
           icon="User"

@@ -1,5 +1,6 @@
+import { waitingOnOwner } from "../shared/waiting-on-owner";
 import type { Task } from "../shared/contract";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { taskBatches } from "../shell/task-batches";
 import { signalTaskIds } from "../shell/signal-scheduler";
 import { useTasksQuery, type TasksRpc } from "../shell/data";
@@ -7,7 +8,7 @@ import { Icon } from "@/components/ui/icon";
 
 async function readCounts(rpc: TasksRpc, ids: readonly string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("questionCounts", { taskIds })).counts);
-  return new Map(rows.map((row) => [row.taskId, row.unanswered]));
+  return new Map(rows.map((row) => [row.taskId, row]));
 }
 export function useQuestionCounts(tasks: readonly Task[], enabled = true, projectId = tasks[0]?.projectId ?? "") {
   const taskIds = tasks.map((task) => task.id).sort();
@@ -48,7 +49,10 @@ export function useQuestionCounts(tasks: readonly Task[], enabled = true, projec
       return next;
     }).catch(() => query.refresh());
   }, [projectId, idsKey, enabled, query.isFetching, query.data, query.patch]);
-  return query;
+  return { ...query,
+    details: query.data,
+    data: useMemo(() => query.data && new Map([...query.data].map(([id, row]) => [id, row.unanswered])), [query.data]),
+  };
 }
 
 export function QuestionCount({
@@ -71,4 +75,9 @@ export function QuestionCount({
       {count}
     </span>
   );
+}
+
+export function WaitingOnYou({ task, count = 0 }: { task: Task; count?: number }) {
+  if (!waitingOnOwner(task, count)) return null;
+  return <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-xs text-warning"><Icon name="FileQuestion" className="size-3" aria-hidden />Waiting on you</span>;
 }

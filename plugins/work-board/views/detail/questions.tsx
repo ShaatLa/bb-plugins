@@ -214,23 +214,18 @@ function QuestionAnswer({
 
 export function QuestionsSection({
   taskId,
+  query,
   adding,
   onAddingChange,
   onError,
 }: {
   taskId: string;
+  query: ReturnType<typeof useTasksQuery<TaskQuestion[]>>;
   adding: boolean;
   onAddingChange: (adding: boolean) => void;
   onError: (message: string) => void;
 }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery(
-    async (client) =>
-      (await client.call("listQuestions", { taskId })).questions,
-    ["tasks:changed"],
-    [taskId],
-    { relevantTaskIds: [taskId] },
-  );
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState<
     (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]

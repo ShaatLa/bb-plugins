@@ -39,7 +39,7 @@ describe("navigation badge", () => {
     store.tasks.createTask({ projectId: project.id, title: "Review", status: "in_review" });
     store.tasks.createTask({ projectId: project.id, title: "Todo" });
 
-    expect(await harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["open"] });
+    expect(await harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["open", "waiting_on_owner"] });
     expect(
       await harness.callRpc("setNavigationBadgeCriteria", { criteria: ["owner", "in_review", "owner"] }),
     ).toEqual({ criteria: ["in_review", "owner"] });

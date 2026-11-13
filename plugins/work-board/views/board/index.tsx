@@ -1,3 +1,5 @@
+import { sortTasks } from "../../shared/sort";
+import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { displayName } from "../../shared/display-name.js";
 import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
@@ -53,6 +55,7 @@ import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
+  WaitingOnYou,
   QuestionCount,
   useQuestionCounts,
 } from "../../components/question-count";
@@ -94,6 +97,7 @@ interface TaskCardProps {
   unansweredQuestions?: number;
   subtasks?: readonly Task[];
   questionCounts?: ReadonlyMap<string, number>;
+  questionDetails?: ReadonlyMap<string, { newestUnansweredAt: string | null }>;
   unansweredOnly?: boolean;
   onOpenSubtask?: (task: Task) => void;
 
@@ -115,6 +119,7 @@ function TaskCard({
   unansweredQuestions,
   subtasks = [],
   questionCounts,
+  questionDetails,
   unansweredOnly = false,
   onOpenSubtask,
   task,
@@ -131,7 +136,7 @@ function TaskCard({
     (sum, child) => sum + (questionCounts?.get(child.id) ?? 0),
     0,
   );
-  const autoExpand = unansweredOnly && childQuestions > 0;
+  const autoExpand = unansweredOnly && subtasks.some(child => waitingOnOwner(child, questionCounts?.get(child.id) ?? 0));
   useEffect(() => {
     if (autoExpand) setExpanded(true);
   }, [autoExpand]);
@@ -143,10 +148,10 @@ function TaskCard({
     ? [...subtasks]
         .filter(
           (child) =>
-            !unansweredOnly || (questionCounts?.get(child.id) ?? 0) > 0,
+            !unansweredOnly || waitingOnOwner(child, questionCounts?.get(child.id) ?? 0),
         )
         .sort(
-          (a, b) =>
+          (a, b) => unansweredOnly ? waitingOrder(a, b, questionDetails) :
             Number((questionCounts?.get(b.id) ?? 0) > 0) -
               Number((questionCounts?.get(a.id) ?? 0) > 0) ||
             a.position - b.position ||
@@ -215,6 +220,7 @@ function TaskCard({
           {task.title}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <WaitingOnYou task={task} count={questionCounts?.get(task.id)} />
           <PullRequestSummary summary={prSummary} />
           <PriorityIcon priority={task.priority} />
           {labels.map((label) => (
@@ -289,6 +295,7 @@ function TaskCard({
                   </span>
                   <span className="block break-words">{child.title}</span>
                 </span>
+                <WaitingOnYou task={child} count={questionCounts?.get(child.id)} />
                 <QuestionCount count={questionCounts?.get(child.id)} />
               </button>
             </div>
@@ -334,6 +341,7 @@ export function BoardView({ projectId }: BoardViewProps) {
   const { toasts, push, dismiss } = useDetailToasts();
   const navigation = useTasksNavigation();
   const preferenceScope = listPreferenceScope(projectId, false);
+  const sort = loadListPreference(preferenceScope).sort;
   const [filters, setFilters] = useState(
     () => loadListPreference(preferenceScope).filters,
   );
@@ -405,12 +413,12 @@ export function BoardView({ projectId }: BoardViewProps) {
   const labelIds = useMemo(() => selectedLabelIds(labelOptions, filters.labelNames), [labelOptions, filters.labelNames]);
   const visibleColumns = useMemo(() => columns &&
     groupColumns(
-      Object.values(columns)
+      sortTasks(Object.values(columns)
         .flat()
         .filter(
           (task) =>
             (!filters.unansweredOnly ||
-              (questionTotals.get(task.id) ?? 0) > 0) &&
+              waitingOnOwner(task, questionCounts.data?.get(task.id) ?? 0) || (subtasksByParent.get(task.id) ?? []).some(child => waitingOnOwner(child, questionCounts.data?.get(child.id) ?? 0))) &&
             (filters.executionTarget === undefined ||
               task.executionTarget === filters.executionTarget) &&
             (filters.type === undefined || task.type === filters.type) &&
@@ -421,9 +429,9 @@ export function BoardView({ projectId }: BoardViewProps) {
               filters.priorities,
               labelIds,
             ),
-        ),
+        ).sort((a, b) => filters.unansweredOnly && sort === "manual" ? waitingOrder(a, b, questionCounts.details) : 0), filters.unansweredOnly ? sort : "manual"),
       statusIds,
-    ), [columns, filters, labelIds, questionTotals, statusIds]);
+    ), [columns, filters, labelIds, questionTotals, statusIds, questionCounts.details, subtasksByParent, sort]);
   const visibleColumnsRef = useRef(visibleColumns);
   visibleColumnsRef.current = visibleColumns;
 
@@ -691,6 +699,7 @@ export function BoardView({ projectId }: BoardViewProps) {
           unansweredQuestions={questionTotals.get(task.id)}
           subtasks={subtasksByParent.get(task.id)}
           questionCounts={questionCounts.data}
+          questionDetails={questionCounts.details}
           unansweredOnly={filters.unansweredOnly}
           onOpenSubtask={openTask}
           dragging={drag?.taskId === task.id}

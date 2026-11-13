@@ -47,7 +47,11 @@ Task/epic titles, descriptions and comment bodies are checked at write time for 
 
 ## Structured questions, evidence and templates
 
-Board cards and list rows show a Needs answer count. The Needs answer filter works in the main area and thread panel; it shares the project view preferences and clears with other filters. An unanswered question has no saved selection (or free-text answer).
+Live, visible, unfinished tasks are waiting on the owner when they have an unanswered question or the owner executor. Cards and rows show “Waiting on you”; use the “Waiting on me” filter or `bb work-board list --waiting-on-owner` (combinable with `--project`) to find them, newest questions first, then owner actions by update time. Explicit sorting wins. This state is derived and never changes status or executor.
+
+When asking the owner a question, also set Current state with what you need and why, and keep status accurate. Never expect switching the executor to signal the question. `question add` warns (stderr in text, `warnings` in JSON) when a task is in backlog or todo without Current state; it still saves the question.
+
+Board cards and list rows keep the unanswered question count. The Waiting on me filter works in the main area and thread panel; it shares the project view preferences and clears with other filters. An unanswered question has no saved selection (or free-text answer).
 
 Questions belong to tasks and epics. Use `bb work-board question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. A changed answer automatically notifies the first attached worker (active workers take precedence), otherwise the latest agent responder, using queue-if-active delivery. Read the current question before acting on a notification: later answers may supersede it. No-op saves do not notify again; delivery failure preserves the answer and is reported as notification=failed in JSON and a warning in the UI. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
 

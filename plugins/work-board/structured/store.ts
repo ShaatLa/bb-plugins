@@ -1,3 +1,4 @@
+import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
@@ -135,17 +136,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   > = {
     listQuestions: ({ taskId }) => ({ questions: listQuestions(taskId) }),
     questionCounts: ({ taskIds }) => ({
-      counts: taskIds.length
-        ? db
-            .prepare<string[], { taskId: string; unanswered: number }>(
-              `SELECT task_id AS taskId, COUNT(*) AS unanswered FROM task_questions
-         WHERE task_id IN (${taskIds.map(() => "?").join(",")})
-           AND json_array_length(payload, '$.selectedOptionIds') = 0
-           AND COALESCE(json_extract(payload, '$.answerText'), '') = ''
-         GROUP BY task_id`,
-            )
-            .all(...taskIds)
-        : [],
+      counts: taskIds.length ? db.prepare<string[], { taskId: string; unanswered: number; waitingOnOwner: number; newestUnansweredAt: string | null }>(`
+        SELECT t.id AS taskId,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS unanswered,
+          (${WAITING_ON_OWNER}) AS waitingOnOwner,
+          ${NEWEST_UNANSWERED} AS newestUnansweredAt
+        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})
+      `).all(...taskIds).map(row => ({ ...row, waitingOnOwner: Boolean(row.waitingOnOwner) })) : [],
     }),
     createQuestion(input) {
       requireTask(input.taskId);

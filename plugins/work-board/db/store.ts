@@ -1,3 +1,4 @@
+import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
@@ -252,6 +253,7 @@ function taskQueryFingerprint(
     labelIds: normalizedFilterValues(filters.labelIds),
     activeOnly: filters.activeOnly === true,
     ...(filters.staleStatus ? { staleStatus: true } : {}),
+    ...(filters.waitingOnOwner ? { waitingOnOwner: true } : {}),
     parentTaskId:
       filters.parentTaskId === undefined
         ? { specified: false, value: null }
@@ -1087,6 +1089,7 @@ export function createTasksStore(db: PluginDatabase) {
     const dateField = filters.dateField ?? (filters.archive === "archived" ? "archived" : "created");
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
+    if (filters.waitingOnOwner) clauses.push(WAITING_ON_OWNER);
     if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
@@ -1208,8 +1211,12 @@ export function createTasksStore(db: PluginDatabase) {
         `Task page limit must be an integer from 1 to ${TASKS_PAGE_MAX_LIMIT}`,
       );
     }
-    const sort = filters.sort ?? "manual";
-    const baseQuery = taskQueryFingerprint(filters, sort);
+    const waitingOrder = filters.waitingOnOwner && (!filters.sort || filters.sort === "manual");
+    const sort = waitingOrder ? "newest" : filters.sort ?? "manual";
+    // Question edits can change waiting order without changing the task-list revision.
+    const questionRevision = filters.waitingOnOwner ? JSON.stringify(db.prepare("SELECT id, json_extract(payload, '$.revision') AS revision FROM task_questions ORDER BY id").all()) : "";
+    const fingerprint = taskQueryFingerprint(filters, sort);
+    const baseQuery = filters.waitingOnOwner ? createHash("sha256").update(fingerprint).update(questionRevision).digest("base64url") : fingerprint;
     const query = filters.staleStatus ? createHash("sha256").update(baseQuery).update(String(parameters.staleIds)).digest("base64url") : baseQuery;
     const cursor =
       filters.cursor === undefined ? null : decodeTaskCursor(filters.cursor);
@@ -1283,7 +1290,7 @@ export function createTasksStore(db: PluginDatabase) {
                 t.*,
                 CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
                 (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role,
-                COALESCE(${dateColumn}, '') AS cursor_date,
+                ${waitingOrder ? `CASE WHEN ${NEWEST_UNANSWERED} IS NOT NULL THEN '1' || ${NEWEST_UNANSWERED} ELSE '0' || t.updated_at END` : `COALESCE(${dateColumn}, '')`} AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
                   WHEN 'urgent' THEN 0

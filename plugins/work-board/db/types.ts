@@ -217,6 +217,7 @@ export interface ListTasksFilters extends TaskDateFilters {
   labelIds?: readonly string[];
   activeOnly?: boolean;
   staleStatus?: boolean;
+  waitingOnOwner?: boolean;
   parentTaskId?: string | null;
   type?: TaskType;
   executionTarget?: "agent" | "owner";

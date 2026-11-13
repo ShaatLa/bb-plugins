@@ -342,7 +342,7 @@ describe("task questions", () => {
     });
     expect(
       await harness.callRpc("questionCounts", { taskIds: [task.id] }),
-    ).toEqual({ counts: [{ taskId: task.id, unanswered: 1 }] });
+    ).toMatchObject({ counts: [{ taskId: task.id, unanswered: 1, waitingOnOwner: true }] });
     const noop = await cli(
       "question",
       "update",
@@ -411,7 +411,7 @@ describe("task questions", () => {
     });
     expect(
       await harness.callRpc("questionCounts", { taskIds: [task.id] }),
-    ).toEqual({ counts: [] });
+    ).toMatchObject({ counts: [{ taskId: task.id, unanswered: 0, waitingOnOwner: false }] });
     await expect(
       harness.callRpc("answerQuestion", {
         questionId: question.id,

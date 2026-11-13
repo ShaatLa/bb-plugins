@@ -1,3 +1,4 @@
+import { UNANSWERED_QUESTION, WAITING_ON_OWNER } from "../db/waiting-on-owner";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { idleThreshold } from "../shared/project-settings";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -7,12 +8,11 @@ import type { TasksApiStore } from ".";
 
 const LIVE = `t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}`;
 const ACTIVE = `${LIVE} AND t.status NOT IN ('done', 'canceled')`;
-const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id
-  AND json_array_length(q.payload, '$.selectedOptionIds') = 0
-  AND COALESCE(json_extract(q.payload, '$.answerText'), '') = '')`;
+const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id AND ${UNANSWERED_QUESTION})`;
 
 const QUERIES: Record<Exclude<BadgeCriterion, "stale_idle">, string> = {
   open: ACTIVE,
+  waiting_on_owner: WAITING_ON_OWNER,
   in_review: `${LIVE} AND t.status = 'in_review'`,
   needs_answer: `${ACTIVE} AND ${UNANSWERED}`,
   owner: `${ACTIVE} AND t.execution_target = 'owner'`,
