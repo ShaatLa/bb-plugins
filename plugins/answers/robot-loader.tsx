@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type AnimationEvent, type ReactNode } from 'react';
 import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plugin-sdk/app';
 
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
@@ -40,6 +40,13 @@ const css = `
 .ar-pebble{transform:translate(8.5px,20.7px);animation:ar-pebble 13s ease-out infinite}.ar-hop{animation:ar-hop 13s infinite}
 .ar-spin{transform-box:fill-box;transform-origin:50% 50%;animation:ar-spin 13s ease-out infinite}
 .ar-solid{fill:var(--background,#fff)}
+.ar-dancing *{animation-play-state:paused}.ar-dancing .ar-dance *{animation-play-state:running}.ar-dancing .ar-quick>.ar-front{visibility:hidden}
+.ar-pose{opacity:0;animation:ar-pose 1.5s step-end infinite}
+.ar-tick{transform-box:view-box;transform-origin:12px 11.5px;animation:ar-tick .75s step-end infinite}
+.ar-pop{animation:ar-pop .375s step-end infinite}
+@keyframes ar-pose{0%{opacity:1}25%{opacity:0}}
+@keyframes ar-tick{0%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
+@keyframes ar-pop{0%{transform:translateY(0)}50%{transform:translateY(.5px)}}
 @keyframes ar-move-q{0%{transform:translateX(-8px)}42%,46%{transform:translateX(8px)}88%,100%{transform:translateX(-8px)}}
 @keyframes ar-right-q{0%{opacity:1}42%{opacity:0}}
 @keyframes ar-left-q{0%{opacity:0}46%{opacity:1}88%{opacity:0}}
@@ -94,7 +101,7 @@ const walker = (pebble: boolean) => <>
     : <><line className="ar-leg" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg b" x1="12" y1="18" x2="12" y2="21.5" /></>}
 </>;
 const pebble = <g className="ar-pebble"><g className="ar-hop"><path className="ar-spin" d="M-1.26 0.28 Q-1.4 -0.63 -0.21 -0.84 Q1.19 -0.91 1.4 -0.07 Q1.47 0.77 0.21 0.84 Q-1.12 0.91 -1.26 0.28 Z" fill="currentColor" stroke="none" /></g></g>;
-const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
+const pacing = (bubble: boolean, pebble: boolean, extra?: ReactNode) => <g className={pebble ? 'ar-move ar-quick' : 'ar-move'}>
   <g className="ar-right">{walker(pebble)}</g>
   <g className="ar-left"><g transform="translate(24 0) scale(-1 1)">{walker(pebble)}</g></g>
   <g className="ar-front">{front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="17.5" y1="13" x2="17.5" y2="16.5" />
@@ -106,7 +113,34 @@ const pacing = (bubble: boolean, pebble: boolean) => <g className={pebble ? 'ar-
   {pebble && <g className="ar-watch">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10.4" cy="9.1" r=".9" /><circle cx="14.4" cy="9.1" r=".9" />
     <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
     <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><circle className="ar-solid" cx="15" cy="14.05" r=".8" strokeWidth=".6" /></g>}
+  {extra}
 </g>;
+
+// The robot dance: happy eyes, the head ticking side to side, the body dipping on every beat, and the arms snapping
+// through four right-angle poses (one per .375 s beat: left up and right down, the reverse, both up, both straight out).
+const DANCE_ARMS = [['M8.5 13.2 H5 V10.6', 'M15.5 13.2 H19 V15.8'], ['M8.5 13.2 H5 V15.8', 'M15.5 13.2 H19 V10.6'], ['M8.5 13.2 H5 V10.6', 'M15.5 13.2 H19 V10.6'], ['M8.5 13.2 H4.2', 'M15.5 13.2 H19.8']];
+const dance = <g className="ar-dance"><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
+  <g className="ar-pop"><g className="ar-tick">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><path d="M9.1 8 Q10 6.9 10.9 8" /><path d="M13.1 8 Q14 6.9 14.9 8" /></g>
+    <rect x="8.5" y="12" width="7" height="6" rx="1" />
+    {DANCE_ARMS.map((arms, i) => <g key={i} className="ar-pose" style={{ animationDelay: `${i * .375}s` }}><path d={arms[0]} /><path d={arms[1]} /></g>)}</g></g>;
+// Now and then (about one lap in four), at the right end where it turns to face us without checking the watch, the
+// waiting robot breaks into the robot dance for three seconds while the walk and the pebble hold still. A lap starting
+// arms a timer for that moment, which checks the walk's actual phase, so a late timer (a background tab) skips the dance.
+const LAP = 13000;
+function WaitScene() {
+  const root = useRef<SVGGElement>(null), timers = useRef<number[]>([]), [dancing, setDancing] = useState(false);
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  const lap = (event: AnimationEvent) => {
+    if (event.animationName !== 'ar-move-q' || Math.random() >= .25) return;
+    timers.current.push(window.setTimeout(() => {
+      const time = root.current?.querySelector('.ar-move')?.getAnimations?.()[0]?.currentTime, at = typeof time === 'number' ? time % LAP / LAP : -1;
+      if (at < .425 || at > .45) return;
+      setDancing(true);
+      timers.current.push(window.setTimeout(() => setDancing(false), 3000));
+    }, LAP * .43));
+  };
+  return <g ref={root} className={dancing ? 'ar-dancing' : undefined} onAnimationIteration={lap}>{pacing(false, true, dancing && dance)}{pebble}</g>;
+}
 
 // In profile the arm comes from the shoulder, the far arm showing from behind the back, and the magnifier, seen nearly
 // edge-on, is tipped forward so it stays clear of the head; each time the robot turns to a side it leans,
@@ -180,7 +214,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <path d="M5 18.2 V18.9 Q8.5 18.2 12 18.9 Q15.5 18.2 19 18.9 V18.2" />{page(-1)}{page(1)}<g transform="translate(12 0)"><g><animateTransform attributeName="transform" type="scale" values="1 1;1 1;-1 1;-1 1" {...turn} /><g transform="translate(-12 0)">{page(1)}</g></g></g>
         <line x1="15.5" y1="13" x2="17.6" y2="14.4"><animate attributeName="x2" values="17.6;17.6;6.4;6.4" {...turn} /></line></>;
     }
-    case 'wait': return <>{pacing(false, true)}{pebble}</>;
+    case 'wait': return <WaitScene />;
     case 'rest': return <>
       {/* On its back on a couch, eyes shut, still; Zzz drift up toward the middle. */}
       <rect x="1" y="10.6" width="24" height="5.4" rx="1.2" /><line x1="2" y1="18" x2="2" y2="21" /><line x1="24" y1="18" x2="24" y2="21" />
