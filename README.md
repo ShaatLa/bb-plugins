@@ -10,6 +10,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
+| **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
 
 The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
@@ -37,6 +38,7 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin an
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
 ```
 
 For **Work Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
@@ -190,6 +192,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 | `plugins/answers` | `npm ci` | None; tests use an in-memory SQLite database. |
+| `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |
 
 From the chosen plugin directory, after installing its dependencies:
 

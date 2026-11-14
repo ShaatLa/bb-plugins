@@ -30,6 +30,10 @@
     {
       "name": "answers",
       "source": "./plugins/answers"
+    },
+    {
+      "name": "idle-compact",
+      "source": "./plugins/idle-compact"
     }
   ]
 }

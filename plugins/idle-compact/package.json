@@ -1,0 +1,34 @@
+{
+  "name": "bb-plugin-idle-compact",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.49.0",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Idle Compact",
+    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm.",
+    "branding": {
+      "icon": "Minimize2"
+    },
+    "server": "./server.ts"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "better-sqlite3": "^13.0.3",
+    "cron-parser": "^5.10.6",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.5"
+  }
+}
