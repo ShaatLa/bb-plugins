@@ -12,10 +12,13 @@ function offset(root: HTMLElement, node: Node, at: number) { const range = docum
 function position(root: HTMLElement, at: number): [Node, number] {
   for (const child of Array.from(root.childNodes)) {
     const length = raw(child).length;
-    if (at < length) {
+    // The end of a quote line sits inside its block, not after it on the next visual line.
+    if (at < length || (at === length && child instanceof HTMLElement && child.dataset.quote !== undefined)) {
       if (child.nodeType === Node.TEXT_NODE) return [child, at];
+      if (child instanceof HTMLElement && !child.dataset.raw) return position(child, at);
       return [root, Array.prototype.indexOf.call(root.childNodes, child)];
     }
+    if (at === 0 && child.nodeName === 'BR') return [root, Array.prototype.indexOf.call(root.childNodes, child)];
     at -= length;
   }
   return [root, root.childNodes.length];
@@ -37,7 +40,9 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     const mention = match[1] ? { kind: 'thread' as const, threadId: match[1], label: thread?.displayTitle ?? fetched[match[1]]?.label ?? match[1], ...(thread?.projectId || fetched[match[1]]?.projectId ? { projectId: thread?.projectId ?? fetched[match[1]]?.projectId } : {}) } : match[6] ? pastedMentions().get(match[6]) : undefined;
     return { match, mention };
   });
-  const signature = JSON.stringify(spans.map(({ match, mention }) => [match[0], mention, match[2], match[3], match[4], match[5]]));
+  // Runs of "> " lines, drawn as one quote block like bb's composer; the draft keeps the Markdown text.
+  const quotes = Array.from(value.matchAll(/^>(?: [^\n]*)?(?=\n|$)(?:\n>(?: [^\n]*)?(?=\n|$))*/gm), m => [m.index, m.index + m[0].length, m[0]] as const);
+  const signature = JSON.stringify([spans.map(({ match, mention }) => [match[0], mention, match[2], match[3], match[4], match[5]]), quotes.map(q => q[2])]);
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
@@ -53,9 +58,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     if (raw(root) === value && drawn.current === signature) { caret.current = null; return; }
     const at = document.activeElement === root ? caret.current ?? selection()[1] : null;
     const fragment = document.createDocumentFragment(), contents: React.ReactPortal[] = [];
-    let last = 0;
-    for (const { match, mention } of spans) {
-      fragment.append(document.createTextNode(value.slice(last, match.index)));
+    const drawPill = (match: RegExpMatchArray & { index: number }, mention: (typeof spans)[number]['mention']) => {
       const pill = document.createElement('span');
       pill.contentEditable = 'false'; pill.dataset.raw = match[0];
       if (mention) {
@@ -73,9 +76,29 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         pill.title = match[4] ?? match[5] ?? '';
         const label = document.createElement('span'); label.className = 'truncate'; label.textContent = match[3] ?? match[5] ?? ''; pill.append(label);
       }
-      fragment.append(pill); last = match.index + match[0].length;
+      return pill;
+    };
+    // Quote markers and the line break after a quote are hidden but kept in the raw text.
+    const hidden = (text: string) => { const marker = document.createElement('span'); marker.contentEditable = 'false'; marker.dataset.raw = text; marker.className = 'hidden'; return marker; };
+    const tokens: { at: number; length: number; node(): Node }[] = spans.map(({ match, mention }) => ({ at: match.index, length: match[0].length, node: () => drawPill(match, mention) }));
+    for (const [start, end] of quotes) {
+      for (let at = start; at < end; at = value.indexOf('\n', at) + 1 || end) { const marker = value[at + 1] === ' ' ? '> ' : '>'; tokens.push({ at, length: marker.length, node: () => hidden(marker) }); }
+      if (value[end] === '\n') tokens.push({ at: end, length: 1, node: () => hidden('\n') });
     }
-    fragment.append(document.createTextNode(value.slice(last)));
+    let last = 0, block: HTMLElement | null = null, run = 0;
+    const boundary = (at: number) => {
+      // A block swallows its trailing empty line, so an empty last quote line gets a <br> to hold the caret.
+      if (block && at >= quotes[run][1]) { if (/(?:^|\n)> ?$/.test(quotes[run][2])) block.append(document.createElement('br')); block = null; run++; }
+      if (!block && run < quotes.length && at >= quotes[run][0]) { block = document.createElement('span'); block.dataset.quote = ''; block.className = 'my-1 block border-l-2 border-surface-selected-border pl-3 text-muted-foreground'; fragment.append(block); }
+    };
+    const put = (node: Node) => (block ?? fragment).append(node);
+    const upTo = (to: number) => { while (last < to) { boundary(last); const stop = Math.min(to, block ? quotes[run][1] : quotes[run]?.[0] ?? to); put(document.createTextNode(value.slice(last, stop))); last = stop; } };
+    for (const token of tokens.sort((x, y) => x.at - y.at)) {
+      if (token.at < last) continue;
+      upTo(token.at); boundary(token.at); put(token.node()); last = token.at + token.length;
+    }
+    upTo(value.length); boundary(value.length);
+    fragment.append(document.createTextNode(''));
     root.replaceChildren(fragment); drawn.current = signature; setPillContents(contents);
     if (at !== null) {
       const [node, index] = position(root, at), selection = window.getSelection(), range = document.createRange();
@@ -124,9 +147,10 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(choices[active].id); return; }
     }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
-    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) replace('\n'); else onSend(); return; }
+    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) { const [a] = selection(); replace(/^>(?: |\n|$)/.test(value.slice(a ? value.lastIndexOf('\n', a - 1) + 1 : 0)) ? '\n> ' : '\n'); } else onSend(); return; }
     if (event.key === 'Backspace' || event.key === 'Delete') {
-      const [a,b] = selection(); if (a !== b) { event.preventDefault(); replace('',a,b); return; }
+      // Select-all leaves out a leading hidden quote marker; take it too so the box really empties.
+      const [a,b] = selection(); if (a !== b) { event.preventDefault(); replace('',/^> ?$/.test(value.slice(0,a)) ? 0 : a,b); return; }
       const matches = Array.from(value.matchAll(matcher));
       const pill = matches.find(m => event.key === 'Backspace' ? m.index + m[0].length === a : m.index === a);
       if (pill) { event.preventDefault(); replace('', pill.index, pill.index + pill[0].length); }

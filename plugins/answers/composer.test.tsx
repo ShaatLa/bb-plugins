@@ -83,9 +83,18 @@ it('shows thread titles with the host title component', () => {
   const { box } = editor('@thread:thr_one');
   expect(box.querySelector('.prompt-mention-pill')?.textContent).toContain('Fix login');
 });
-it('keeps quote Markdown text literal while editing, as bb composer does', () => {
-  const { box } = editor('> Quoted line');
-  expect(box.textContent).toBe('> Quoted line');
+it('draws "> " lines as one quote block with hidden markers, like bb composer, and continues the quote on Shift+Enter', () => {
+  const { box, onChange } = editor('> **What holds.** one\n> two\nafter');
+  const quote = box.querySelector('[data-quote]')!;
+  expect(quote.textContent).toBe('**What holds.** one\ntwo');
+  expect(box.textContent).toBe('**What holds.** one\ntwoafter');
+  const range = document.createRange(), selection = window.getSelection()!;
+  range.setStart(quote.lastChild!, 3); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+  expect(onChange).toHaveBeenLastCalledWith('> **What holds.** one\n> two\n> \nafter');
+  range.setStart(quote.childNodes[1], 0); range.setEnd(box.lastChild!, 0); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(box, { key: 'Backspace' });
+  expect(onChange).toHaveBeenLastCalledWith('');
 });
 
 function nativeEditor(options: any = {}) {
