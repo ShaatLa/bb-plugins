@@ -349,7 +349,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 aria-label="Required GitHub checks"
                 aria-describedby={`${id}-checks-help`}
                 rows={2}
-                className="min-h-14 resize-y px-2 py-1.5 text-xs"
+                className="min-h-14 px-2 py-1.5 text-xs"
                 value={checks}
                 onChange={(event) => setChecks(event.target.value)}
               />
@@ -366,7 +366,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 aria-label="Post-merge workflows"
                 aria-describedby={`${id}-workflows-help`}
                 rows={2}
-                className="min-h-14 resize-y px-2 py-1.5 text-xs"
+                className="min-h-14 px-2 py-1.5 text-xs"
                 value={workflows}
                 onChange={(event) => setWorkflows(event.target.value)}
               />
