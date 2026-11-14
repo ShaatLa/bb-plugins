@@ -13,7 +13,11 @@ thread costs as much as waking it.
 - At the timer it compacts only if the thread is still idle, runs on Claude Code, is not
   exempt, and its context is at or above the minimum.
 - Timers survive a plugin restart: the idle start time is kept in plugin storage.
-- Settings: on/off and the minimum context in tokens.
+- Like the former auto-compact plugin, it also compacts at once any thread (any provider)
+  that goes idle or fails with its context at 80% of the model's window or more, while the
+  cache is warm, instead of mid-turn at the provider's own limit. Keep exempts it too.
+- Settings: on/off, the minimum context in tokens for the 50-minute check, and the window
+  share for compacting at once (70–95%, default 80%, or off).
 
 ## Limitation
 

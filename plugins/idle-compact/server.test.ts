@@ -20,7 +20,7 @@ async function setup({ used = 250_000, provider = "claude-code", status = "idle"
   cleanups.push(() => host.harness.lifecycle.dispose());
   const thread = makeThreadResponse({ id: "thr_a" } as any);
   const advance = async (ms: number) => { clock += ms; await vi.advanceTimersByTimeAsync(ms); };
-  const emit = (event: "thread.idle" | "thread.active") => host.harness.behavior.emitThreadEvent(event, (event === "thread.idle" ? { thread, lastAssistantText: null } : { thread }) as any);
+  const emit = (event: "thread.idle" | "thread.active" | "thread.failed") => host.harness.behavior.emitThreadEvent(event, (event === "thread.idle" ? { thread, lastAssistantText: null } : event === "thread.failed" ? { thread, error: null } : { thread }) as any);
   return { host, compact, state, advance, emit, now, setClock: (ms: number) => { clock += ms; } };
 }
 
@@ -125,5 +125,25 @@ it("treats the server refusing a thread that is no longer idle as a skip, not re
   h.compact.mockRejectedValueOnce(new Error("Context can only be compacted while the thread is idle or errored"));
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["goes idle", "thread.idle", "idle", "claude-code"],
+  ["fails", "thread.failed", "error", "claude-code"],
+  ["goes idle on another provider", "thread.idle", "idle", "codex"],
+] as const)("compacts at once a thread that %s at 80% of its window or more", async (_name, event, status, provider) => {
+  const h = await setup({ used: 800_000, status, provider });
+  await h.emit(event); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  await h.advance(IDLE_MS); // the 50-minute check sees the same usage and leaves it
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("leaves a thread below 80% of its window until the 50-minute check", async () => {
+  const h = await setup({ used: 790_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });

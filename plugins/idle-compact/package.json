@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Idle Compact",
-    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm.",
+    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm, and any thread that stops with its context at 80% of the window or more.",
     "branding": {
       "icon": "Minimize2"
     },

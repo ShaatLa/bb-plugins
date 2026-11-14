@@ -9,6 +9,11 @@ prompt cache is still warm, so the next wake rewrites only the summary instead o
 whole context. A thread found idle longer than 57 minutes (for example after the machine
 slept) is left alone, because by then compacting costs as much as waking it.
 
+It also compacts at once a thread on any provider that goes idle or fails with its
+context at 80% of the model's window or more (the share is a setting, 70–95% or off), as
+the former auto-compact plugin did. A failed compaction is not retried
+until the context changes.
+
 Commands:
 - `bb idle-compact status [--json]`: settings, threads due for compaction and when, and
   threads that keep their full context.
