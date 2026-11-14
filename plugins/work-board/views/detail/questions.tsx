@@ -9,6 +9,7 @@ import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
 import { LinkedText } from "../../components/linked-text";
+import { clearAnswerDraft, readAnswerDraft, readAnswerFiles, writeAnswerDraft, writeAnswerFiles } from "./answer-draft";
 
 import { uploadAttachment, Lightbox } from "./attachments";
 import { AttachmentTracks } from "../activity/task-activity";
@@ -107,6 +108,19 @@ function QuestionAnswer({
   onError: (message: string) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
+  const filesLoaded = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void readAnswerFiles(question.id, question.revision).then(saved => {
+      if (!live) return;
+      filesLoaded.current = true;
+      if (saved.length) setFiles(current => current.length ? current : saved);
+    });
+    return () => { live = false; };
+  }, [question.id, question.revision]);
+  useEffect(() => {
+    if (filesLoaded.current) void writeAnswerFiles(question.id, question.revision, files);
+  }, [files, question.id, question.revision]);
   const picker = useRef<HTMLInputElement>(null);
   const addFiles = (chosen: File[]) => {
     const valid = chosen.filter(file => {
@@ -116,9 +130,14 @@ function QuestionAnswer({
     });
     setFiles(current => [...current, ...valid]);
   };
-  const [selected, setSelected] = useState(question.selectedOptionIds);
-  const [other, setOther] = useState(question.answerText !== null);
-  const [text, setText] = useState(question.answerText ?? "");
+  const [draft] = useState(() => readAnswerDraft(question.id, question.revision));
+  const [selected, setSelected] = useState(draft?.selected ?? question.selectedOptionIds);
+  const [other, setOther] = useState(draft?.other ?? question.answerText !== null);
+  const [text, setText] = useState(draft?.text ?? question.answerText ?? "");
+  useEffect(() => {
+    const saved = JSON.stringify([...selected].sort()) === JSON.stringify([...question.selectedOptionIds].sort()) && text === (question.answerText ?? "");
+    writeAnswerDraft(question.id, question.revision, saved ? null : { selected, other, text });
+  }, [selected, other, text, question.id, question.revision, question.selectedOptionIds, question.answerText]);
   const answerText = other ? text.trim() || null : null;
   const [saving, setSaving] = useState(false);
   const unchanged =
@@ -216,6 +235,7 @@ function QuestionAnswer({
             setSaving(true);
             try {
               await onSave(selected, answerText, files);
+              clearAnswerDraft(question.id);
               setFiles([]);
             } catch (error) {
               onError(errorMessage(error));

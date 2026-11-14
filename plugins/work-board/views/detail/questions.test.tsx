@@ -262,6 +262,22 @@ describe("question and evidence UI", () => {
     expect(current.options[0]!.id).toBe(question.options[0]!.id);
   });
 
+  it("keeps an unsaved answer across leaving the task until it is saved", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Draft?", mode: "single", options: ["Now", "Later"] });
+    const open = () => renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const first = open();
+    fireEvent.change(within(await first.findByRole("group", { name: "Draft?" })).getByRole("textbox", { name: "Your answer" }), { target: { value: "Half written" } });
+    first.lifecycle.unmount();
+    const second = open();
+    const group = await second.findByRole("group", { name: "Draft?" });
+    expect(within(group).getByRole("textbox", { name: "Your answer" })).toHaveProperty("value", "Half written");
+    fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+    await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answerText).toBe("Half written"));
+    expect(Object.keys(window.localStorage).filter(key => key.startsWith("bb-work-board:answer-draft:"))).toEqual([]);
+    window.localStorage.clear();
+  });
+
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
     await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
