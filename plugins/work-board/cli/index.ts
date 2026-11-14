@@ -1312,6 +1312,8 @@ export function registerTasksCli(
               required: true,
               description: "Question revision returned by list",
             },
+            file: { type: "string", repeatable: true, description: "Answer attachment file (at most 25 MB); repeat for multiple files" },
+            machine: MACHINE_OPTION,
             json: JSON_OPTION,
           },
           run(input, ctx) {
@@ -1336,8 +1338,20 @@ export function registerTasksCli(
                 throw new CliError(
                   "Use --answer/--text or --clear, exclusively",
                 );
-              const result = await domain.answerQuestion(
+              if (input.options.clear && input.options.file.length) throw new CliError("Files require an answer");
+              const attachmentIds: string[] = [];
+              let result;
+              try {
+                const hostId = input.options.file.length ? await resolveClientHostId(bb, domain, input.options.machine, ctx) : undefined;
+                for (const file of input.options.file) {
+                  const path = resolve(ctx.cwd ?? process.cwd(), file);
+                  const attachment = await saveAttachmentFromBytes(store.tasks, await readAttachmentSource(bb, hostId, path), { taskId: task.id, fileName: attachmentFileName(path) });
+                  attachmentIds.push(attachment.id);
+                  publishAttachmentChanged(bb, store.tasks, attachment);
+                }
+                result = await domain.answerQuestion(
                 tasksRpcContract.answerQuestion.input.parse({
+                  attachmentIds,
                   questionId: input.options.question,
                   selectedOptionIds: input.options.clear
                     ? []
@@ -1347,6 +1361,10 @@ export function registerTasksCli(
                   authorName: taskAuthor(ctx),
                 }),
               );
+              } catch (error) {
+                await Promise.allSettled(attachmentIds.map(attachmentId => domain.deleteAttachment({ attachmentId, removeDescriptionReferences: false })));
+                throw error;
+              }
               return input.options.json
                 ? JSON.stringify(result)
                 : `Saved answer to ${result.question.id}`;

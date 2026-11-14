@@ -1,5 +1,5 @@
 import { isQuestionOpen } from "../../shared/questions";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -7,6 +7,21 @@ import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
 import { LinkedText } from "../../components/linked-text";
+
+import { uploadAttachment, Lightbox } from "./attachments";
+import { AttachmentTracks } from "../activity/task-activity";
+import { formatFileSize } from "../activity/time";
+import { MAX_ATTACHMENT_SIZE_BYTES } from "../../shared/attachments";
+import type { Attachment } from "../../shared/contract";
+
+function AnswerAttachments({ commentId }: { commentId: string }) {
+  const query = useTasksQuery(async rpc => (await rpc.call("listAttachments", { commentId })).attachments, ["tasks:changed", "comments:changed"], [commentId]);
+  const [image, setImage] = useState<Attachment | null>(null);
+  return <>
+    <AttachmentTracks attachments={query.data ?? []} onOpenImage={setImage} />
+    {image ? <Lightbox attachment={image} onClose={() => setImage(null)} /> : null}
+  </>;
+}
 
 // shortcut: Honor explicit legacy suffixes until old questions carry recommendation metadata.
 const LEGACY_RECOMMENDATION = /\s*\((?:рекомендую|recommended)\)\s*$/i;
@@ -41,10 +56,20 @@ function QuestionAnswer({
   onError,
 }: {
   question: TaskQuestion;
-  onSave: (ids: string[], answerText: string | null) => Promise<void>;
+  onSave: (ids: string[], answerText: string | null, files: File[]) => Promise<void>;
   onEdit: () => void;
   onError: (message: string) => void;
 }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const picker = useRef<HTMLInputElement>(null);
+  const addFiles = (chosen: File[]) => {
+    const valid = chosen.filter(file => {
+      if (file.size <= MAX_ATTACHMENT_SIZE_BYTES) return true;
+      onError(`File "${file.name}" exceeds the 25 MB attachment limit`);
+      return false;
+    });
+    setFiles(current => [...current, ...valid]);
+  };
   const [selected, setSelected] = useState(question.selectedOptionIds);
   const [other, setOther] = useState(question.answerText !== null);
   const [text, setText] = useState(question.answerText ?? "");
@@ -93,6 +118,14 @@ function QuestionAnswer({
         </label>
       ))}
       <Textarea
+        onPaste={event => {
+          const pasted = Array.from(event.clipboardData.files);
+          if (pasted.length) { event.preventDefault(); addFiles(pasted); }
+        }}
+        onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+        onDrop={event => {
+          if (event.dataTransfer.files.length) { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }
+        }}
         aria-label="Your answer"
         placeholder="Your answer (optional)"
         value={text}
@@ -103,6 +136,14 @@ function QuestionAnswer({
           if (question.mode === "single") setSelected([]);
         }}
       />
+      <input ref={picker} type="file" multiple hidden aria-label="Answer files" onChange={event => {
+        addFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+      }} />
+      <Button size="sm" variant="ghost" onClick={() => picker.current?.click()}>Attach files</Button>
+      <div className="flex flex-wrap gap-2">{files.map((file, index) => <span key={index} className="rounded border px-2 py-1 text-xs">
+        {file.name} · {formatFileSize(file.size)} <button type="button" aria-label={`Remove ${file.name}`} onClick={() => setFiles(current => current.filter((_, at) => at !== index))}>×</button>
+      </span>)}</div>
+      {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
           Answered by {question.answeredBy}
@@ -117,11 +158,12 @@ function QuestionAnswer({
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          disabled={unchanged || saving || (other && !answerText)}
+          disabled={(unchanged && !files.length) || saving || (other && !answerText) || (files.length > 0 && !selected.length && !answerText)}
           onClick={async () => {
             setSaving(true);
             try {
-              await onSave(selected, answerText);
+              await onSave(selected, answerText, files);
+              setFiles([]);
             } catch (error) {
               onError(errorMessage(error));
             } finally {
@@ -250,14 +292,23 @@ export function QuestionsSection({
             setKind(question.kind);
             setReopen(false);
           }}
-          onSave={async (selectedOptionIds, answerText) => {
-            const result = await rpc.call("answerQuestion", {
+          onSave={async (selectedOptionIds, answerText, files) => {
+            const attachmentIds: string[] = [];
+            let result;
+            try {
+              for (const file of files) attachmentIds.push((await uploadAttachment(file, { taskId })).attachmentId);
+              result = await rpc.call("answerQuestion", {
+              attachmentIds,
               questionId: question.id,
               revision: question.revision,
               selectedOptionIds,
               answerText,
               authorName: "You",
             });
+            } catch (error) {
+              await Promise.allSettled(attachmentIds.map(attachmentId => rpc.call("deleteAttachment", { attachmentId })));
+              throw error;
+            }
             query.refresh();
             if (result.notification === "failed")
               onError(

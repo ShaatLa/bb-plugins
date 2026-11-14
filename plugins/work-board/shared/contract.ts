@@ -262,7 +262,10 @@ export const questionSchema = questionStateSchema
       previous = entry.revision;
     }
   });
-export type TaskQuestion = z.infer<typeof questionSchema>;
+export type TaskQuestion = z.infer<typeof questionSchema> & {
+  answerCommentId?: string | null;
+  answerAttachments?: { id: string; fileName: string; mime: string; sizeBytes: number }[];
+};
 export const templateSchema = z
   .object({
     id: idSchema,
@@ -788,7 +791,10 @@ export const tasksRpcContract = {
   },
   listQuestions: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ questions: z.array(questionSchema) }).strict(),
+    output: z.object({ questions: z.array(questionSchema.safeExtend({
+      answerCommentId: idSchema.nullable().optional(),
+      answerAttachments: z.array(z.object({ id: idSchema, fileName: z.string(), mime: z.string(), sizeBytes: z.number().int().nonnegative() }).strict()).optional(),
+    })) }).strict(),
   },
   questionCounts: {
     input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
@@ -832,6 +838,7 @@ export const tasksRpcContract = {
     input: z
       .object({
         questionId: idSchema,
+        attachmentIds: z.array(idSchema).optional(),
         selectedOptionIds: z.array(idSchema).max(20).default([]),
         answerText: z.string().trim().max(10_000).nullable().optional(),
         revision: z.number().int().positive(),
@@ -841,6 +848,8 @@ export const tasksRpcContract = {
     output: z
       .object({
         question: questionSchema,
+        commentId: idSchema.nullable(),
+        attachmentIds: z.array(idSchema),
         notification: z
           .enum(["sent", "failed", "none", "unchanged"])
           .optional(),

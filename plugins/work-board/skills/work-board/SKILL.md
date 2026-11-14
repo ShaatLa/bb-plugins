@@ -60,6 +60,8 @@ Questions belong to tasks and epics. Use `bb work-board question add KEY --promp
 
 Question text/options, evidence and template text use the secret guard. Export format v5 stores questions in task records, optional evidence in comments, and project templates in project.json, with no new directories; v1/v2/v3/v4 imports remain supported. Update external closed-schema validators before installing 0.5.0.
 
+Answer attachments (0.34.0): add repeatable `--file <path>` to `question answer`, with `--machine` to select the source host, as for `attachment add`. Files require an option or text answer; `--clear --file` is refused. The UI supports picking, pasting and dropping files. Uploads become attachments of the answer's system comment atomically before notification; failed saves attempt to remove uploaded files. `question list --json` includes derived `answerAttachments` (id, fileName, mime, sizeBytes) for the current answer. Retrieve them with `bb work-board attachment get <id> --out <path>`. Export format is unchanged: files travel with the existing comment attachments.
+
 ## Project snapshots in Git
 
 Export with `bb work-board export --project ABC --out .bb/tasks/<project-id>` and restore with `bb work-board import --from .bb/tasks/<project-id>`.

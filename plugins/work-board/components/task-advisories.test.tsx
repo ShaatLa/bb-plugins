@@ -3,9 +3,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 import { TaskAdvisories } from "./task-advisories";
 import type { TaskAdvisory } from "../shared/task-advisories";
-const { go, toThread } = vi.hoisted(() => ({ go: vi.fn(), toThread: vi.fn() }));
+const { go, toThread, openUrl } = vi.hoisted(() => ({ go: vi.fn(), toThread: vi.fn(), openUrl: vi.fn() }));
 vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go }) }));
-vi.mock("@get-bb/plugin-sdk/app", async importOriginal => ({ ...await importOriginal<typeof import("@get-bb/plugin-sdk/app")>(), useBbNavigate: () => ({ toThread }) }));
+vi.mock("@get-bb/plugin-sdk/app", async importOriginal => ({ ...await importOriginal<typeof import("@get-bb/plugin-sdk/app")>(), useBbNavigate: () => ({ toThread }), UrlLink: ({ href, children, ...props }: React.ComponentProps<"a">) => <a {...props} href={href} onClick={event => { event.preventDefault(); openUrl(href); }}>{children}</a> }));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 function items(): TaskAdvisory[] {
   const checkedAt = new Date().toISOString(), validUntil = new Date(Date.now() + 60_000).toISOString();
@@ -16,6 +16,8 @@ it("shows actionable evidence and opens the predecessor, PR and last session", (
   fireEvent.click(screen.getByText("Needs attention · 2"));
   expect(screen.getByText(/Merge bbbb/).textContent).toContain("b".repeat(40));
   expect(screen.getByRole("link", { name: "org/repo#1" }).getAttribute("href")).toBe("https://github.com/org/repo/pull/1");
+  fireEvent.click(screen.getByRole("link", { name: "org/repo#1" }));
+  expect(openUrl).toHaveBeenCalledWith("https://github.com/org/repo/pull/1");
   fireEvent.click(screen.getByRole("button", { name: /ADV-1 · Predecessor/ }));
   expect(go).toHaveBeenCalledWith({ kind: "task", taskKey: "ADV-1" });
   fireEvent.click(screen.getByRole("button", { name: /Last attachment: Previous worker/ }));

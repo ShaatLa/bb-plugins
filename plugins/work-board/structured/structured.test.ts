@@ -1,3 +1,4 @@
+import { registerAttachments } from "../attachments";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createFakePluginHost,
@@ -35,6 +36,7 @@ function setup() {
   });
   harnesses.push(harness);
   const store = createStore(bb);
+  registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
   const project = store.tasks.createProject({
@@ -56,6 +58,53 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("moves answer attachments atomically, returns their IDs and includes retrieval commands in the notification", async () => {
+    const { harness, store, task, structured, cli } = setup();
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    harness.sdk.stub("threads.send", async () => {});
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: "thr_asker", prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    const attachment = store.tasks.createAttachment({ taskId: task.id, fileName: "log.txt", mime: "text/plain", sizeBytes: 12, blobPath: "blobs/log.txt", isImage: false });
+    const result = await structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [question.options[0]!.id], authorName: "Owner", attachmentIds: [attachment.id] });
+    expect(result.attachmentIds).toEqual([attachment.id]);
+    expect(store.tasks.getAttachment(attachment.id)).toMatchObject({ taskId: null, commentId: result.commentId });
+    expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).toContain(`Attachment: log.txt (12 bytes) — bb work-board attachment get ${attachment.id} --out <path>`);
+    const listed = await cli("question", "list", task.key, "--json");
+    expect(listed.questions[0].answerAttachments).toEqual([{ id: attachment.id, fileName: "log.txt", mime: "text/plain", sizeBytes: 12 }]);
+    const payload = structured.listQuestions(task.id)[0]!;
+    expect(payload).not.toHaveProperty("answerAttachments");
+    expect(payload).not.toHaveProperty("answerCommentId");
+  });
+
+  it("rejects foreign, comment-owned and attachment-only answers without changing the decision", async () => {
+    const { store, task, project, structured } = setup();
+    const foreign = store.tasks.createTask({ projectId: project.id, title: "Other" });
+    const comment = store.tasks.createComment({ taskId: task.id, kind: "user", authorName: "Owner", body: "Other comment" });
+    const create = (owner: { taskId: string } | { commentId: string }) => store.tasks.createAttachment({ ...owner, fileName: "log.txt", mime: "text/plain", sizeBytes: 1, blobPath: "blobs/log.txt", isImage: false });
+    const own = create({ taskId: task.id });
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    for (const attachment of [create({ taskId: foreign.id }), create({ commentId: comment.id })]) {
+      await expect(structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [question.options[0]!.id], authorName: "Owner", attachmentIds: [own.id, attachment.id] })).rejects.toThrow("Attachment must belong");
+      expect(store.tasks.getAttachment(own.id)?.taskId).toBe(task.id);
+      expect(structured.listQuestions(task.id)[0]?.revision).toBe(1);
+    }
+    await expect(structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [], authorName: "Owner", attachmentIds: [own.id] })).rejects.toThrow("Attachments require an answer");
+  });
+
+  it("uploads repeatable CLI answer files on the selected machine and cleans up after a stale answer", async () => {
+    const { harness, store, task, structured, cli } = setup();
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    const args = ["question", "answer", task.key, "--question", question.id, "--text", "Confirmed", "--revision", "1", "--file", "one.txt", "--file", "two.txt", "--json"];
+    const result = await cli(...args);
+    expect(result.attachmentIds).toHaveLength(2);
+    expect(store.tasks.listAttachmentsForComment(result.commentId).map(a => a.fileName)).toEqual(["one.txt", "two.txt"]);
+    expect(harness.sdk.callsTo("files.read")).toHaveLength(2);
+    const failed = await harness.runCli(args);
+    expect(failed.exitCode).not.toBe(0);
+    expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    expect(store.tasks.listAttachmentsForComment(result.commentId)).toHaveLength(2);
+  });
+
   it("keeps the decision label until the last open question is answered or deleted", async () => {
     const { structured, store, project, task } = setup();
     const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { registerAttachments, saveAttachmentFromBytes } from "../../attachments";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -21,12 +22,14 @@ const app = await loadPluginApp(() => import("../../app"));
 const harnesses: FakePluginHarness[] = [];
 afterEach(async () => {
   cleanup();
+  vi.unstubAllGlobals();
   await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()));
 });
 function setup() {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   harnesses.push(harness);
   const store = createStore(bb);
+  registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   const project = store.tasks.createProject({
     name: "Questions",
@@ -56,6 +59,51 @@ function setup() {
 }
 
 describe("question and evidence UI", () => {
+  it.each([false, true])("uploads selected/pasted/dropped files before answering and cleans up on failure=%s", async fails => {
+    const { task, rpc, structured, store } = setup();
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Approve files?", mode: "single", options: ["Yes"] });
+    const uploaded: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/token")) return { ok: true, json: async () => ({ token: "test" }) };
+      if (url.includes("/attachments/upload")) {
+        const file = init!.body as File;
+        const attachment = await saveAttachmentFromBytes(store.tasks, new Uint8Array(file.size), { taskId: task.id, fileName: file.name, mime: file.type });
+        uploaded.push(attachment.id);
+        return { ok: true, json: async () => ({ attachmentId: attachment.id, url: "/download" }) };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const save = rpc.answerQuestion!;
+    rpc.answerQuestion = async input => {
+      expect(uploaded).toHaveLength(3);
+      if (fails) throw new Error("Answer failed");
+      return save(input);
+    };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const answer = await slot.findByRole("textbox", { name: "Your answer" });
+    const image = new File(["png"], "screen.png", { type: "image/png" });
+    fireEvent.change(slot.getByLabelText("Answer files"), { target: { files: [image] } });
+    fireEvent.paste(answer, { clipboardData: { files: [new File(["log"], "log.txt", { type: "text/plain" })] } });
+    fireEvent.drop(answer, { dataTransfer: { files: [new File(["drop"], "drop.txt", { type: "text/plain" })] } });
+    expect(slot.getByRole("button", { name: "Save answer" })).toHaveProperty("disabled", true);
+    fireEvent.click(slot.getByRole("radio", { name: "Yes" }));
+    fireEvent.click(slot.getByRole("button", { name: "Save answer" }));
+    if (fails) {
+      await slot.findByText("Answer failed");
+      await waitFor(() => expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]));
+      expect(uploaded.every(id => !store.tasks.getAttachment(id))).toBe(true);
+    } else {
+      await slot.findByText("Earlier (1)");
+      const section = slot.getByRole("region", { name: "Questions" });
+      await waitFor(() => expect(within(section).getByRole("img", { name: "screen.png", hidden: true })).toBeTruthy());
+      expect(within(section).getByText("log.txt").closest("a")?.getAttribute("download")).toBe("log.txt");
+      fireEvent.click(within(section).getByRole("img", { name: "screen.png", hidden: true }));
+      expect(slot.getByRole("dialog", { name: "screen.png" })).toBeTruthy();
+      expect(structured.listQuestions(task.id)[0]?.answeredBy).toBe("You");
+      expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    }
+  });
+
   it("creates and edits bold recommendations without preselecting an answer", async () => {
     const { task, rpc, structured } = setup();
     const slot = renderSlot(
