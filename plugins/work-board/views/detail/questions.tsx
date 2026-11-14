@@ -9,7 +9,7 @@ import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
 import { LinkedText } from "../../components/linked-text";
-import { clearAnswerDraft, readAnswerDraft, readAnswerFiles, writeAnswerDraft, writeAnswerFiles } from "./answer-draft";
+import { clearAnswerDraft, readAnswerDraft, readAnswerFiles, sweepAnswerDrafts, writeAnswerDraft, writeAnswerFiles } from "./answer-draft";
 
 import { uploadAttachment, Lightbox } from "./attachments";
 import { AttachmentTracks } from "../activity/task-activity";
@@ -329,6 +329,7 @@ export function QuestionsSection({
   onError: (message: string) => void;
 }) {
   const rpc = useTasksRpc();
+  useEffect(() => { void sweepAnswerDrafts(); }, []);
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState<
     (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]
