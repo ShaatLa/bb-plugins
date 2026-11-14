@@ -18,11 +18,20 @@ thread costs as much as waking it.
 ## Limitation
 
 bb has no conditional compaction. The server checks that the thread is idle and then
-dispatches the compaction a few awaits later without checking again. A turn that starts
-in that moment (a message sent exactly at the 50-minute mark, or a plugin reload in the
-middle of a check) can coincide with a compaction. The same holds for `bb thread compact`.
-The plugin re-checks the idle period right before the call and runs one call per thread
-at a time, which keeps the window to that server-side moment.
+dispatches the compaction a few awaits later without checking again. Anything that
+starts a turn in that moment still goes through alongside the compaction:
+
+- A message, queued message or agent message that arrives while a check runs. A check
+  runs around the 50-minute mark, but a delayed timer or a reschedule after a restart
+  can move it later.
+- A second compaction after a plugin reload. The reload does not cancel a call the old
+  instance already sent, and the new instance can check the same thread and send another
+  before the first dispatch lands. The plugin's one-call-per-thread guard holds only
+  within one plugin instance.
+
+The same holds for `bb thread compact`. The plugin re-checks the idle period right before
+its call, so the window stays at that server-side moment; closing it needs a conditional
+dispatch in bb.
 
 ## Commands
 
