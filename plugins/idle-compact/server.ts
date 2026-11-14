@@ -57,7 +57,10 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
 
   // `full`: the check made the moment a thread stops, by share of the window; otherwise the one after 50 minutes idle.
   async function attempt(threadId: string, since: number, live: () => boolean, full = false): Promise<string> {
-    const stale = () => !live() ? "skipped: thread left idle during the check" : !config.enabled || (full && config.thresholdPercent === "off") ? "skipped: turned off" : !full && now() - since > WARM_MS ? `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold` : null;
+    // The window share once read; stale() re-evaluates it against the current setting, which may change mid-check.
+    let share: number | null = null;
+    const below = () => full && share != null && !(share >= Number(config.thresholdPercent));
+    const stale = () => !live() ? "skipped: thread left idle during the check" : !config.enabled || (full && config.thresholdPercent === "off") ? "skipped: turned off" : below() ? `skipped: ${share!.toFixed(1)}% of the window, below ${config.thresholdPercent}%` : !full && now() - since > WARM_MS ? `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold` : null;
     if (!config.enabled) return "skipped: turned off";
     // A sleeping machine fires the timer late, after the cache has gone cold.
     if (stale()) return stale()!;
@@ -68,8 +71,10 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (!full && thread.providerId !== "claude-code") return `skipped: provider ${thread.providerId}`;
     const { usedTokens: used, modelContextWindow: window } = (await bb.sdk.threads.timeline({ threadId })).contextWindowUsage ?? {};
     if (used == null) return "skipped: context size unknown";
-    const share = window ? used / window * 100 : null, percent = share == null ? "?" : share.toFixed(1);
-    if (full && !(share != null && share >= Number(config.thresholdPercent))) return `skipped: ${percent}% of the window, below ${config.thresholdPercent}%`;
+    share = window ? used / window * 100 : null;
+    const percent = share == null ? "?" : share.toFixed(1);
+    if (full && share == null) return "skipped: context window size unknown";
+    if (below()) return stale()!;
     if (!full && used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";

@@ -179,3 +179,11 @@ it("follows the threshold setting, including a change while a check waits on the
   await h.emit("thread.idle"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
 });
+
+it("does not compact when the threshold is raised above the usage while the attempt is recorded", async () => {
+  const h = await setup({ used: 850_000 });
+  const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
+  vi.spyOn(kv, "set").mockImplementation(async (key: string, value: unknown) => { if (key.startsWith("own:")) await h.host.harness.setSettings({ thresholdPercent: "95" }); return set(key, value as never); });
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+});
