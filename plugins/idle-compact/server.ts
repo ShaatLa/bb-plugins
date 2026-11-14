@@ -8,6 +8,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
+export const COMPACT_TIMEOUT_MS = 5 * 60_000;
 const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 200);
@@ -20,25 +21,36 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   let config = await settings.get();
   settings.onChange(next => { config = next; });
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Each idle period gets a generation, set and cleared synchronously by the events; a check re-reads it after every await,
+  // so an active, failed or archived event (or keep) that lands mid-check stops it, and a stale check never touches a newer period.
+  const periods = new Map<string, number>(), inflight = new Set<string>();
+  let generation = 0;
 
   const cancel = async (threadId: string) => {
-    clearTimeout(timers.get(threadId)); timers.delete(threadId);
+    periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId);
     await bb.storage.kv.delete(IDLE + threadId);
   };
-  const schedule = (threadId: string, since: number) => {
+  const schedule = (threadId: string, since: number, period: number) => {
+    if (periods.get(threadId) !== period) return;
     clearTimeout(timers.get(threadId));
-    if (now() - since > WARM_MS) { void bb.storage.kv.delete(IDLE + threadId); return; }
+    if (now() - since > WARM_MS) { periods.delete(threadId); void bb.storage.kv.delete(IDLE + threadId); return; }
     timers.set(threadId, setTimeout(() => {
       timers.delete(threadId);
-      void check(threadId, since).then(result => bb.log.info(`Idle compact ${threadId}: ${result}`), error => bb.log.warn(`Idle compact ${threadId} failed: ${message(error)}`));
+      void check(threadId, since, period).then(result => bb.log.info(`Idle compact ${threadId}: ${result}`), error => bb.log.warn(`Idle compact ${threadId} failed: ${message(error)}`));
     }, Math.max(0, since + IDLE_MS - now())));
   };
 
-  async function check(threadId: string, since: number): Promise<string> {
-    await bb.storage.kv.delete(IDLE + threadId);
+  async function check(threadId: string, since: number, period: number): Promise<string> {
+    const live = () => periods.get(threadId) === period;
+    try { return await attempt(threadId, since, live); } finally { if (live()) { periods.delete(threadId); await bb.storage.kv.delete(IDLE + threadId); } }
+  }
+
+  async function attempt(threadId: string, since: number, live: () => boolean): Promise<string> {
+    const stale = () => !live() ? "skipped: thread left idle during the check" : now() - since > WARM_MS ? `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold` : null;
     if (!config.enabled) return "skipped: turned off";
     // A sleeping machine fires the timer late, after the cache has gone cold.
-    if (now() - since > WARM_MS) return `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold`;
+    if (stale()) return stale()!;
+    if (inflight.has(threadId)) return "skipped: an earlier compaction has not finished";
     if (await bb.storage.kv.get(KEEP + threadId)) return "skipped: keeps its full context";
     const thread = await bb.sdk.threads.get({ threadId });
     if (thread.status !== "idle" || thread.archivedAt) return `skipped: thread is ${thread.archivedAt ? "archived" : thread.status}`;
@@ -48,22 +60,34 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";
-    await bb.sdk.threads.compact({ threadId });
+    if (stale()) return stale()!;
+    // The attempt is recorded first, so a failed compaction is not retried on the same usage, and only one call runs at a time.
     await bb.storage.kv.set(COMPACTED + threadId, used);
+    // shortcut: the SDK has no conditional compact, so an event in the moment between this check and the call is not seen.
+    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) await bb.storage.kv.delete(COMPACTED + threadId); return reason; }
+    inflight.add(threadId);
+    const call = bb.sdk.threads.compact({ threadId }).finally(() => inflight.delete(threadId));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), COMPACT_TIMEOUT_MS); });
+    try {
+      if (await Promise.race([call, timedOut]) === "timeout") { call.catch(error => bb.log.warn(`Idle compact ${threadId} failed late: ${message(error)}`)); return `compaction not finished after ${COMPACT_TIMEOUT_MS / 60_000} min; no new attempt until it settles`; }
+    } finally { clearTimeout(timer); }
     return `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
 
   bb.events.on("thread.idle", async ({ thread }) => {
-    const since = now();
+    const since = now(), period = ++generation;
+    periods.set(thread.id, period);
     await bb.storage.kv.set(IDLE + thread.id, since);
-    schedule(thread.id, since);
+    schedule(thread.id, since, period);
   });
   for (const event of ["thread.active", "thread.failed", "thread.archived"] as const) bb.events.on(event, ({ thread }) => cancel(thread.id));
 
   // Timers die with the server; threads that went idle before a restart are picked up again while still warm.
   for (const key of await bb.storage.kv.list(IDLE)) {
     const since = await bb.storage.kv.get<number>(key);
-    if (typeof since === "number") schedule(key.slice(IDLE.length), since);
+    const threadId = key.slice(IDLE.length), period = ++generation;
+    if (typeof since === "number" && !periods.has(threadId)) { periods.set(threadId, period); schedule(threadId, since, period); }
   }
   bb.onDispose(() => { for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
 
@@ -89,7 +113,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
         const threadId = rest[0] ?? ctx.threadId;
         if (!threadId || rest.length > 1) return { exitCode: 1, stderr: usage };
         await bb.sdk.threads.get({ threadId });
-        if (command === "keep") await bb.storage.kv.set(KEEP + threadId, true); else await bb.storage.kv.delete(KEEP + threadId);
+        if (command === "keep") { periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId); await bb.storage.kv.set(KEEP + threadId, true); } else await bb.storage.kv.delete(KEEP + threadId);
         return { exitCode: 0, stdout: json ? JSON.stringify({ threadId, keep: command === "keep" }) : `${threadId}: ${command === "keep" ? "keeps its full context" : "can be idle-compacted"}` };
       }
       if (command && command !== "help" && command !== "--help") return { exitCode: 1, stderr: usage };
