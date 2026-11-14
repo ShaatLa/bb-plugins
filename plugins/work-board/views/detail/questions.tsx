@@ -61,6 +61,19 @@ function PendingFiles({ files, onRemove }: { files: readonly File[]; onRemove: (
   );
 }
 
+/**
+ * Saving an answer snapshots the unanswered state it replaces; that snapshot repeats the
+ * current question, so only versions that were answered or worded differently are shown.
+ */
+function meaningfulHistory(question: TaskQuestion) {
+  const states = [...question.history, question];
+  return question.history.filter((entry, index) => {
+    const next = states[index + 1]!;
+    return Boolean(entry.answeredBy) || entry.prompt !== next.prompt || entry.mode !== next.mode ||
+      JSON.stringify(entry.options.map(option => option.label)) !== JSON.stringify(next.options.map(option => option.label));
+  });
+}
+
 function AnswerAttachments({ commentId }: { commentId: string }) {
   const query = useTasksQuery(async rpc => (await rpc.call("listAttachments", { commentId })).attachments, ["tasks:changed", "comments:changed"], [commentId]);
   const [image, setImage] = useState<Attachment | null>(null);
@@ -262,19 +275,19 @@ function QuestionAnswer({
       <Button size="sm" variant="ghost" onClick={onEdit}>
         Edit question
       </Button>
-      {question.history.length ? (
+      {meaningfulHistory(question).length ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">
-            History · {question.history.length}
+            History · {meaningfulHistory(question).length}
           </summary>
           <ol className="mt-2 space-y-3">
-            {[...question.history].reverse().map((entry) => (
+            {[...meaningfulHistory(question)].reverse().map((entry) => (
               <li
                 key={entry.revision}
                 className="space-y-1 border-t border-border pt-2"
               >
                 <p>
-                  Revision {entry.revision} · {entry.updatedAt}
+                  Revision {entry.revision} · {new Date(entry.updatedAt).toLocaleString()}
                 </p>
                 <p className="whitespace-pre-wrap break-words">
                   <LinkedText text={entry.prompt} />
@@ -303,7 +316,7 @@ function QuestionAnswer({
                       )
                       .map((option) => option.label),
                     ...(entry.answerText ? [entry.answerText] : []),
-                  ].join("; ") || "(unanswered)"}
+                  ].join("; ") || "none, replaced before an answer"}
                   {entry.answeredBy ? ` · ${entry.answeredBy}` : ""}
                 </p>
               </li>

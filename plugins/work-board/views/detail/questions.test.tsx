@@ -278,6 +278,20 @@ describe("question and evidence UI", () => {
     window.localStorage.clear();
   });
 
+  it("hides the unanswered snapshot an answer replaces and labels versions replaced before an answer", async () => {
+    const { task, rpc, structured } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "First wording?", mode: "single", options: [] });
+    const revised = (await structured.handlers.updateQuestion({ questionId: question.id, revision: question.revision, prompt: "Second wording?", mode: "single", options: question.options, authorName: "Agent" })).question;
+    await structured.handlers.answerQuestion({ questionId: question.id, revision: revised.revision, selectedOptionIds: [revised.options[0]!.id], authorName: "You" });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    fireEvent.click(await slot.findByText("Earlier (1)"));
+    const history = await slot.findByText("History · 1");
+    const entries = history.closest("details")!.querySelectorAll("ol > li");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.textContent).toContain("First wording?");
+    expect(entries[0]!.textContent).toContain("none, replaced before an answer");
+  });
+
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
     await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
