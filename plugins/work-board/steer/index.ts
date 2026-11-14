@@ -27,6 +27,39 @@ function steerPrompt(
   );
 }
 
+export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
+
+// Extend our own notice when it is still the last queued row, so a busy thread
+// gets one message instead of a stack of them. Any doubt falls back to send.
+async function appendToQueuedNotice(
+  bb: BbPluginApi,
+  threadId: string,
+  text: string,
+): Promise<boolean> {
+  try {
+    const last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
+    const part = last?.content.length === 1 ? last.content[0] : undefined;
+    if (
+      !last ||
+      !part ||
+      part.type !== "text" ||
+      last.originPluginId !== bb.pluginId ||
+      last.state !== "queued" ||
+      !last.editable
+    )
+      return false;
+    await bb.sdk.threads.queuedMessages.update({
+      threadId,
+      queuedMessageId: last.id,
+      expectedUpdatedAt: last.updatedAt,
+      input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function deliverCommentToLatestAgent(
   bb: BbPluginApi,
   store: TasksStore,
@@ -67,6 +100,7 @@ export async function deliverCommentToLatestAgent(
         thread.status === "stopping"
       )
         continue;
+      if (await appendToQueuedNotice(bb, threadId, prompt)) return 1;
       await bb.sdk.threads.send({
         threadId,
         originPluginId: bb.pluginId,
