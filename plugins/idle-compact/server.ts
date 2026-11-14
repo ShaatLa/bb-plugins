@@ -9,8 +9,9 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
 const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:";
-// bb's server compacts only an idle or errored thread (409 otherwise), and runs the compaction as a turn, so the thread is
-// active while it runs: the server itself refuses a second compaction during one, from this or any other plugin instance.
+// bb's server refuses to compact a thread that is not idle or errored (409), and runs the compaction as a turn. Its check
+// reads a snapshot, though, and the dispatch that follows is not conditional: a turn (or a second compact) that starts in
+// the few awaits between them still goes through. Same for `bb thread compact` and any plugin. bb is not changed for this.
 const NOT_IDLE = /only be compacted while the thread is idle/;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 200);
@@ -65,7 +66,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (stale()) return stale()!;
     // The attempt is recorded first, so a failed compaction is not retried on the same usage.
     await bb.storage.kv.set(COMPACTED + threadId, used);
-    // shortcut: the SDK has no conditional compact, so an event in the moment between this check and the call is not seen.
+    // shortcut: neither the SDK nor the server has a conditional compact, so a turn starting between this check and the
+    // server's dispatch is not seen; only a bb change (a conditional dispatch) closes it.
     if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) await bb.storage.kv.delete(COMPACTED + threadId); return reason; }
     inflight.add(threadId);
     try { await bb.sdk.threads.compact({ threadId }); }

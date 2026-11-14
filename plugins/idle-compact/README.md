@@ -15,6 +15,15 @@ thread costs as much as waking it.
 - Timers survive a plugin restart: the idle start time is kept in plugin storage.
 - Settings: on/off and the minimum context in tokens.
 
+## Limitation
+
+bb has no conditional compaction. The server checks that the thread is idle and then
+dispatches the compaction a few awaits later without checking again. A turn that starts
+in that moment (a message sent exactly at the 50-minute mark, or a plugin reload in the
+middle of a check) can coincide with a compaction. The same holds for `bb thread compact`.
+The plugin re-checks the idle period right before the call and runs one call per thread
+at a time, which keeps the window to that server-side moment.
+
 ## Commands
 
 ```
