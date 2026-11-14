@@ -8,11 +8,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
-export const COMPACT_TIMEOUT_MS = 5 * 60_000;
-// A compaction marked in storage blocks new attempts from any plugin instance for this long (well past the next idle
-// period); a marker older than this is taken as left behind by a server that stopped mid-call.
-export const INFLIGHT_MS = 3 * 60 * 60_000;
-const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:", INFLIGHT = "inflight:";
+const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:";
+// bb's server compacts only an idle or errored thread (409 otherwise), and runs the compaction as a turn, so the thread is
+// active while it runs: the server itself refuses a second compaction during one, from this or any other plugin instance.
+const NOT_IDLE = /only be compacted while the thread is idle/;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 200);
 
@@ -53,8 +52,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (!config.enabled) return "skipped: turned off";
     // A sleeping machine fires the timer late, after the cache has gone cold.
     if (stale()) return stale()!;
-    const started = await bb.storage.kv.get<number>(INFLIGHT + threadId);
-    if (inflight.has(threadId) || (typeof started === "number" && now() - started < INFLIGHT_MS)) return "skipped: an earlier compaction has not finished";
+    if (inflight.has(threadId)) return "skipped: an earlier compaction has not finished";
     if (await bb.storage.kv.get(KEEP + threadId)) return "skipped: keeps its full context";
     const thread = await bb.sdk.threads.get({ threadId });
     if (thread.status !== "idle" || thread.archivedAt) return `skipped: thread is ${thread.archivedAt ? "archived" : thread.status}`;
@@ -65,19 +63,14 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";
     if (stale()) return stale()!;
-    // The attempt is recorded first, so a failed compaction is not retried on the same usage, and only one call runs at a
-    // time, also across a plugin reload (the marker is in storage; the old instance cannot cancel its call).
+    // The attempt is recorded first, so a failed compaction is not retried on the same usage.
     await bb.storage.kv.set(COMPACTED + threadId, used);
-    await bb.storage.kv.set(INFLIGHT + threadId, now());
     // shortcut: the SDK has no conditional compact, so an event in the moment between this check and the call is not seen.
-    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; await bb.storage.kv.delete(INFLIGHT + threadId); if (stale()) await bb.storage.kv.delete(COMPACTED + threadId); return reason; }
+    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) await bb.storage.kv.delete(COMPACTED + threadId); return reason; }
     inflight.add(threadId);
-    const call = bb.sdk.threads.compact({ threadId }).finally(() => { inflight.delete(threadId); return bb.storage.kv.delete(INFLIGHT + threadId).catch(() => {}); });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), COMPACT_TIMEOUT_MS); });
-    try {
-      if (await Promise.race([call, timedOut]) === "timeout") { call.catch(error => bb.log.warn(`Idle compact ${threadId} failed late: ${message(error)}`)); return `compaction not finished after ${COMPACT_TIMEOUT_MS / 60_000} min; no new attempt until it settles`; }
-    } finally { clearTimeout(timer); }
+    try { await bb.sdk.threads.compact({ threadId }); }
+    catch (error) { if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; throw error; }
+    finally { inflight.delete(threadId); }
     return `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { COMPACT_TIMEOUT_MS, INFLIGHT_MS, IDLE_MS, WARM_MS } from "./server.js";
+import plugin, { IDLE_MS, WARM_MS } from "./server.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.useRealTimers(); });
@@ -111,26 +111,19 @@ it("does not retry a failed compaction on the same usage", async () => {
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
 
-it("never overlaps a compaction that hangs", async () => {
+it("never overlaps a compaction call that has not returned", async () => {
   const h = await setup();
   h.compact.mockImplementationOnce(() => new Promise(() => {}));
-  await h.emit("thread.idle"); await h.advance(IDLE_MS + COMPACT_TIMEOUT_MS);
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
   h.state.used += 1000; // a later turn grew the context
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
 
-it("does not start a second compaction after a reload while the first still hangs", async () => {
+it("treats the server refusing a thread that is no longer idle as a skip, not retried", async () => {
   const h = await setup();
-  h.compact.mockImplementationOnce(() => new Promise(() => {}));
-  await h.emit("thread.idle"); await h.advance(IDLE_MS + COMPACT_TIMEOUT_MS);
-  const next = await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now));
-  cleanups.push(() => next.harness.lifecycle.dispose());
-  const idle = async () => { await next.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_a" } as any), lastAssistantText: null } as any); await h.advance(IDLE_MS); };
-  h.state.used += 1000; await idle();
-  expect(JSON.parse((await next.harness.behavior.runCli(["status", "--json"])).stdout!).enabled).toBe(true);
+  h.compact.mockRejectedValueOnce(new Error("Context can only be compacted while the thread is idle or errored"));
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
-  // A marker older than INFLIGHT_MS is taken as left behind by a stopped server.
-  h.setClock(INFLIGHT_MS); h.state.used += 1000; await idle();
-  expect(h.compact).toHaveBeenCalledTimes(2);
 });
