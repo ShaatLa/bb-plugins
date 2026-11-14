@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { COMPACT_TIMEOUT_MS, IDLE_MS, WARM_MS } from "./server.js";
+import plugin, { COMPACT_TIMEOUT_MS, INFLIGHT_MS, IDLE_MS, WARM_MS } from "./server.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.useRealTimers(); });
@@ -21,7 +21,7 @@ async function setup({ used = 250_000, provider = "claude-code", status = "idle"
   const thread = makeThreadResponse({ id: "thr_a" } as any);
   const advance = async (ms: number) => { clock += ms; await vi.advanceTimersByTimeAsync(ms); };
   const emit = (event: "thread.idle" | "thread.active") => host.harness.behavior.emitThreadEvent(event, (event === "thread.idle" ? { thread, lastAssistantText: null } : { thread }) as any);
-  return { host, compact, state, advance, emit, setClock: (ms: number) => { clock += ms; } };
+  return { host, compact, state, advance, emit, now, setClock: (ms: number) => { clock += ms; } };
 }
 
 it("compacts a large Claude Code thread after 50 minutes idle, once", async () => {
@@ -118,4 +118,19 @@ it("never overlaps a compaction that hangs", async () => {
   h.state.used += 1000; // a later turn grew the context
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("does not start a second compaction after a reload while the first still hangs", async () => {
+  const h = await setup();
+  h.compact.mockImplementationOnce(() => new Promise(() => {}));
+  await h.emit("thread.idle"); await h.advance(IDLE_MS + COMPACT_TIMEOUT_MS);
+  const next = await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now));
+  cleanups.push(() => next.harness.lifecycle.dispose());
+  const idle = async () => { await next.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_a" } as any), lastAssistantText: null } as any); await h.advance(IDLE_MS); };
+  h.state.used += 1000; await idle();
+  expect(JSON.parse((await next.harness.behavior.runCli(["status", "--json"])).stdout!).enabled).toBe(true);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  // A marker older than INFLIGHT_MS is taken as left behind by a stopped server.
+  h.setClock(INFLIGHT_MS); h.state.used += 1000; await idle();
+  expect(h.compact).toHaveBeenCalledTimes(2);
 });
