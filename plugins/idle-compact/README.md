@@ -16,6 +16,8 @@ thread costs as much as waking it.
 - Like the former auto-compact plugin, it also compacts at once any thread (any provider)
   that goes idle or fails with its context at 80% of the model's window or more, while the
   cache is warm, instead of mid-turn at the provider's own limit. Keep exempts it too.
+- The stop that ends a compaction this plugin started runs no checks, so a thread still
+  over the threshold after compaction waits for a real turn before the next one.
 - Settings: on/off, the minimum context in tokens for the 50-minute check, and the window
   share for compacting at once (70–95%, default 80%, or off).
 
@@ -25,9 +27,10 @@ bb has no conditional compaction. The server checks that the thread is idle and 
 dispatches the compaction a few awaits later without checking again. Anything that
 starts a turn in that moment still goes through alongside the compaction:
 
-- A message, queued message or agent message that arrives while a check runs. A check
-  runs around the 50-minute mark, but a delayed timer or a reschedule after a restart
-  can move it later.
+- A message, queued message or agent message that arrives while a check runs. The
+  window-share check runs the moment a thread stops (goes idle or fails); the other runs
+  around the 50-minute mark, and a delayed timer or a reschedule after a restart can move
+  it later.
 - A second compaction after a plugin reload. The reload does not cancel a call the old
   instance already sent, and the new instance can check the same thread and send another
   before the first dispatch lands. The plugin's one-call-per-thread guard holds only

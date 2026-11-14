@@ -11,7 +11,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
-const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:";
+// OWN marks a compaction this plugin dispatched: the idle (or failure) that ends that compaction turn starts no checks, so
+// a thread still over the threshold afterwards is not compacted again until a real turn. shortcut: a marker whose end
+// event was missed (a reload mid-turn) makes the next real stop skip its checks once.
+const IDLE = "idle:", KEEP = "keep:", COMPACTED = "compacted:", OWN = "own:";
 // bb's server refuses to compact a thread that is not idle or errored (409), and runs the compaction as a turn. Its check
 // reads a snapshot, though, and the dispatch that follows is not conditional: a turn (or a second compact) that starts in
 // the few awaits between them still goes through. Same for `bb thread compact` and any plugin. bb is not changed for this.
@@ -54,7 +57,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
 
   // `full`: the check made the moment a thread stops, by share of the window; otherwise the one after 50 minutes idle.
   async function attempt(threadId: string, since: number, live: () => boolean, full = false): Promise<string> {
-    const stale = () => !live() ? "skipped: thread left idle during the check" : !full && now() - since > WARM_MS ? `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold` : null;
+    const stale = () => !live() ? "skipped: thread left idle during the check" : !config.enabled || (full && config.thresholdPercent === "off") ? "skipped: turned off" : !full && now() - since > WARM_MS ? `skipped: idle ${Math.round((now() - since) / 60_000)} min, cache already cold` : null;
     if (!config.enabled) return "skipped: turned off";
     // A sleeping machine fires the timer late, after the cache has gone cold.
     if (stale()) return stale()!;
@@ -65,20 +68,21 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (!full && thread.providerId !== "claude-code") return `skipped: provider ${thread.providerId}`;
     const { usedTokens: used, modelContextWindow: window } = (await bb.sdk.threads.timeline({ threadId })).contextWindowUsage ?? {};
     if (used == null) return "skipped: context size unknown";
-    const percent = window ? Math.round(used / window * 100) : null;
-    if (full) { if (percent == null || percent < Number(config.thresholdPercent)) return `skipped: ${percent ?? "?"}% of the window, below ${config.thresholdPercent}%`; }
-    else if (used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
+    const share = window ? used / window * 100 : null, percent = share == null ? "?" : share.toFixed(1);
+    if (full && !(share != null && share >= Number(config.thresholdPercent))) return `skipped: ${percent}% of the window, below ${config.thresholdPercent}%`;
+    if (!full && used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";
     if (stale()) return stale()!;
     // The attempt is recorded first, so a failed compaction is not retried on the same usage.
     await bb.storage.kv.set(COMPACTED + threadId, used);
+    await bb.storage.kv.set(OWN + threadId, true);
     // shortcut: neither the SDK nor the server has a conditional compact, so a turn starting between this check and the
     // server's dispatch is not seen; only a bb change (a conditional dispatch) closes it.
-    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) await bb.storage.kv.delete(COMPACTED + threadId); return reason; }
+    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) { await bb.storage.kv.delete(COMPACTED + threadId); await bb.storage.kv.delete(OWN + threadId); } return reason; }
     inflight.add(threadId);
     try { await bb.sdk.threads.compact({ threadId }); }
-    catch (error) { if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
+    catch (error) { await bb.storage.kv.delete(OWN + threadId); if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
     finally { inflight.delete(threadId); }
     return full ? `compacted ${used} tokens at ${percent}% of the window` : `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
@@ -87,9 +91,18 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     void attempt(threadId, now(), () => periods.get(threadId) === period, true).then(result => bb.log.info(`Compact ${threadId}: ${result}`), error => bb.log.warn(`Compact ${threadId} failed: ${message(error)}`));
   };
 
+  // The stop that ends this plugin's own compaction turn: consume the marker and start nothing.
+  const ownTurnEnded = async (threadId: string, period: number) => {
+    if (!await bb.storage.kv.get(OWN + threadId)) return false;
+    await bb.storage.kv.delete(OWN + threadId);
+    if (periods.get(threadId) === period) periods.delete(threadId);
+    bb.log.info(`Compact ${threadId}: its compaction turn ended; no check until the next turn`);
+    return true;
+  };
   bb.events.on("thread.idle", async ({ thread }) => {
     const since = now(), period = ++generation;
     periods.set(thread.id, period);
+    if (await ownTurnEnded(thread.id, period)) return;
     atOnce(thread.id, period);
     await bb.storage.kv.set(IDLE + thread.id, since);
     schedule(thread.id, since, period);
@@ -98,7 +111,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // A failed thread gets no idle timer, only the check by share of the window, under its own generation.
   bb.events.on("thread.failed", async ({ thread }) => {
     const done = cancel(thread.id), period = ++generation;
-    periods.set(thread.id, period); atOnce(thread.id, period); await done;
+    periods.set(thread.id, period); await done;
+    if (!await ownTurnEnded(thread.id, period)) atOnce(thread.id, period);
   });
 
   // Timers die with the server; threads that went idle before a restart are picked up again while still warm.

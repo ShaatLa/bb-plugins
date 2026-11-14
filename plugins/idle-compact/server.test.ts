@@ -140,10 +140,42 @@ it.each([
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
 
-it("leaves a thread below 80% of its window until the 50-minute check", async () => {
-  const h = await setup({ used: 790_000 });
+it("leaves a thread just below 80% of its window (79.95%) until the 50-minute check", async () => {
+  const h = await setup({ used: 799_500 });
   await h.emit("thread.idle"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
   await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("does not compact again on the stop that ends its own compaction, even with usage still high, until a real turn", async () => {
+  const h = await setup({ used: 900_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  await h.emit("thread.active"); h.state.used = 850_000; // the compaction turn, with a new but still high figure
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  await h.emit("thread.active"); h.state.used = 860_000; // a real turn
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(2);
+});
+
+it("follows the threshold setting, including a change while a check waits on the SDK", async () => {
+  const h = await setup({ used: 900_000 });
+  await h.host.harness.setSettings({ thresholdPercent: "95" });
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  await h.emit("thread.active"); await h.host.harness.setSettings({ thresholdPercent: "90" });
+  let release!: () => void;
+  h.state.timeline = new Promise(resolve => { release = resolve; });
+  await h.emit("thread.idle"); await h.advance(0);
+  await h.host.harness.setSettings({ thresholdPercent: "off" });
+  h.state.timeline = null; release(); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  // Turned off after the usage passed, while the attempt is being recorded: the last check before the call sees it.
+  await h.emit("thread.active"); await h.host.harness.setSettings({ thresholdPercent: "90" });
+  const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
+  vi.spyOn(kv, "set").mockImplementation(async (key: string, value: unknown) => { if (key.startsWith("own:")) await h.host.harness.setSettings({ thresholdPercent: "off" }); return set(key, value as never); });
+  await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
 });
