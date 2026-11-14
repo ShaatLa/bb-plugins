@@ -1,4 +1,4 @@
-import { UrlLink } from "@get-bb/plugin-sdk/app";
+import { BbLink } from "./bb-link";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
@@ -102,13 +102,13 @@ export function PullRequestsSection({
         />
         <span className="min-w-0 flex-1 space-y-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
-            <UrlLink
+            <BbLink
               href={link.url}
               title={link.url}
               className="min-w-0 truncate font-medium hover:underline"
             >
               {link.repository.split("/")[1]}#{link.number}
-            </UrlLink>
+            </BbLink>
             <span className="shrink-0 text-2xs text-muted-foreground">
               {link.excluded ? "Excluded" : (snapshot?.state ?? "Not checked")}
             </span>
@@ -181,9 +181,9 @@ export function PullRequestsSection({
                   {snapshot.checks.map((check, index) => (
                     <li key={index}>
                       {check.url ? (
-                        <UrlLink className="hover:underline" href={check.url}>
+                        <BbLink className="hover:underline" href={check.url}>
                           {check.name}
-                        </UrlLink>
+                        </BbLink>
                       ) : (
                         check.name
                       )}{" "}
@@ -205,9 +205,9 @@ export function PullRequestsSection({
                   ? ` · Superseded${coverage.originalRunId ? ` #${coverage.originalRunId}` : ""}, covered by `
                   : " · "}
                 {coverage.url ? (
-                  <UrlLink href={coverage.url} className="hover:underline">
+                  <BbLink href={coverage.url} className="hover:underline">
                     run {coverage.runId}
-                  </UrlLink>
+                  </BbLink>
                 ) : (
                   "awaiting run"
                 )}

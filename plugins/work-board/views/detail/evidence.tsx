@@ -1,4 +1,5 @@
-import { UrlLink, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { BbLink } from "../../components/bb-link";
+import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Comment, TaskPullRequest } from "../../shared/contract";
 import { evidenceFlags, evidenceIndex } from "../../structured/evidence";
 import { useMemo, useState } from "react";
@@ -67,9 +68,9 @@ export function EvidenceSection({
                   <td className="p-2">
                     {record.indexedPr ? (
                       pr ? (
-                        <UrlLink className="underline" href={pr.url}>
+                        <BbLink className="underline" href={pr.url}>
                           #{record.indexedPr}
-                        </UrlLink>
+                        </BbLink>
                       ) : (
                         `#${record.indexedPr}`
                       )

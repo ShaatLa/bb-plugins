@@ -1,5 +1,5 @@
+import { BbLink } from "./bb-link";
 import { Fragment } from "react";
-import { UrlLink } from "@get-bb/plugin-sdk/app";
 
 const URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
 const TRAILING = /[.,;:!?)\]»”]+$/;
@@ -12,7 +12,7 @@ export function LinkedText({ text }: { text: string }) {
     const trailing = TRAILING.exec(match[0])?.[0] ?? "";
     const url = trailing ? match[0].slice(0, -trailing.length) : match[0];
     parts.push(text.slice(last, match.index), (
-      <UrlLink key={match.index} href={url} className="text-primary underline underline-offset-2 [overflow-wrap:anywhere]">{url}</UrlLink>
+      <BbLink key={match.index} href={url} className="text-primary underline underline-offset-2 [overflow-wrap:anywhere]">{url}</BbLink>
     ));
     last = match.index + url.length;
   }

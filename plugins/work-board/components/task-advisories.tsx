@@ -1,5 +1,6 @@
+import { BbLink } from "./bb-link";
 import { useEffect, useState } from "react";
-import { experimental_Icon as Icon, useBbNavigate, UrlLink } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useTasksNavigation } from "../shell/routes";
 import { advisoryText, type TaskAdvisory } from "../shared/task-advisories";
 
@@ -28,7 +29,7 @@ export function TaskAdvisories({ items, compact = false }: { items?: readonly Ta
       <p>{item.kind === "merged-predecessor" ? "Predecessor has a merged delivery PR. Check acceptance criteria or remaining work before marking it Done." : "In Progress without a live attached session. Consider reassigning or queueing."}</p>
       {item.kind === "merged-predecessor" ? <>
         <button type="button" className="block text-left underline" onClick={() => navigation.go({ kind: "task", taskKey: item.predecessor.key })}>{item.predecessor.key} · {item.predecessor.title} ({item.predecessor.status})</button>
-        <UrlLink className="block underline" href={item.pr.url}>{item.pr.repository}#{item.pr.number}</UrlLink>
+        <BbLink className="block underline" href={item.pr.url}>{item.pr.repository}#{item.pr.number}</BbLink>
         <p className="break-all text-muted-foreground">Merge {item.pr.mergeSha} · {item.pr.mergedAt}</p>
       </> : <>
         {item.lastAttachment ? <button type="button" className="block text-left underline" onClick={() => navigate.toThread(item.lastAttachment!.threadId)}>Last attachment: {item.lastAttachment.title || item.lastAttachment.threadId} · {item.lastAttachment.attachedAt}</button> : <p>No attachment history retained.</p>}

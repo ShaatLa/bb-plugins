@@ -5,7 +5,7 @@ import { TaskAdvisories } from "./task-advisories";
 import type { TaskAdvisory } from "../shared/task-advisories";
 const { go, toThread, openUrl } = vi.hoisted(() => ({ go: vi.fn(), toThread: vi.fn(), openUrl: vi.fn() }));
 vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go }) }));
-vi.mock("@get-bb/plugin-sdk/app", async importOriginal => ({ ...await importOriginal<typeof import("@get-bb/plugin-sdk/app")>(), useBbNavigate: () => ({ toThread }), UrlLink: ({ href, children, ...props }: React.ComponentProps<"a">) => <a {...props} href={href} onClick={event => { event.preventDefault(); openUrl(href); }}>{children}</a> }));
+vi.mock("@get-bb/plugin-sdk/app", async importOriginal => ({ ...await importOriginal<typeof import("@get-bb/plugin-sdk/app")>(), useBbNavigate: () => ({ toThread, openUrl: (url: string) => { openUrl(url); return true; } }) }));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 function items(): TaskAdvisory[] {
   const checkedAt = new Date().toISOString(), validUntil = new Date(Date.now() + 60_000).toISOString();

@@ -1,6 +1,7 @@
+import { BbLink } from "../../components/bb-link";
 import { migrateBrowserPreferences } from "../../shell/migrate-preferences.js";
 import { useState } from "react";
-import { UrlLink, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
 import type {
   Preset,
@@ -43,7 +44,7 @@ function ThreadPullRequestPill({
   if (pullRequest) {
     const meta = PR_STATE_META[pullRequest.state];
     return (
-      <UrlLink
+      <BbLink
         href={pullRequest.url}
         rel="noopener noreferrer"
         title={`${pullRequest.title} (${meta.label})`}
@@ -52,7 +53,7 @@ function ThreadPullRequestPill({
       >
         <Icon name={meta.icon} className={cn("size-3", meta.textClassName)} />#
         {pullRequest.number}
-      </UrlLink>
+      </BbLink>
     );
   }
   if (unavailable) {

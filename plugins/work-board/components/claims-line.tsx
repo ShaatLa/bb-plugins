@@ -1,4 +1,4 @@
-import { UrlLink } from "@get-bb/plugin-sdk/app";
+import { BbLink } from "./bb-link";
 import { useState } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
@@ -30,9 +30,9 @@ export function ClaimsLine({ taskId }: { taskId: string }) {
               {claim.prUrl && (
                 <>
                   {" · "}
-                  <UrlLink className="hover:underline" href={claim.prUrl}>
+                  <BbLink className="hover:underline" href={claim.prUrl}>
                     {pr ? `PR #${pr}` : claim.prUrl}
-                  </UrlLink>
+                  </BbLink>
                 </>
               )}{" "}
               {releasing !== claim.id && (

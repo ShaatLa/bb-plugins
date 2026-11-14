@@ -201,6 +201,8 @@ describe("question and evidence UI", () => {
     const group = await slot.findByRole("group", { name: prompt });
     const link = within(group).getByRole("link", { name: "http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark" });
     expect(link.getAttribute("href")).toBe("http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark");
+    fireEvent.click(link);
+    expect(slot.navigateCalls).toContainEqual(expect.objectContaining({ method: "openUrl", url: "http://127.0.0.1:8796/Anvil%20Avatar.html?lang=ru&theme=dark" }));
   });
 
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
