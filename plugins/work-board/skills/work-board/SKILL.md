@@ -356,6 +356,8 @@ Owner rules for questions (2026-11-13; the owner found a 3,600-character accepta
 
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
 
+The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
+
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
 bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'

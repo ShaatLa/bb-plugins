@@ -152,6 +152,7 @@ function QuestionAnswer({
     writeAnswerDraft(question.id, question.revision, saved ? null : { selected, other, text });
   }, [selected, other, text, question.id, question.revision, question.selectedOptionIds, question.answerText]);
   const answerText = other ? text.trim() || null : null;
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
   const [saving, setSaving] = useState(false);
   const unchanged =
     JSON.stringify([...selected].sort()) ===
@@ -271,6 +272,28 @@ function QuestionAnswer({
         >
           Clear selection
         </Button>
+        {question.answeredBy ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={saving}
+            onClick={async () => {
+              if (!confirmWithdraw) { setConfirmWithdraw(true); return; }
+              setSaving(true);
+              try {
+                await onSave([], null, []);
+                setSelected([]); setOther(false); setText("");
+              } catch (error) {
+                onError(errorMessage(error));
+              } finally {
+                setSaving(false);
+                setConfirmWithdraw(false);
+              }
+            }}
+          >
+            {confirmWithdraw ? "Confirm: withdraw and notify the agent" : "Withdraw answer"}
+          </Button>
+        ) : null}
       </div>
       <Button size="sm" variant="ghost" onClick={onEdit}>
         Edit question

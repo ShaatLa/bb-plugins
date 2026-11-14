@@ -185,6 +185,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       return { question };
     },
     async answerQuestion(input) {
+      let withdrawn = false;
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
@@ -225,14 +226,17 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
-        const selected = next.options.filter((option) =>
-          next.selectedOptionIds.includes(option.id),
-        );
+        const answerOf = (state: typeof current) => [
+          ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
+          ...(state.answerText ? [state.answerText] : []),
+        ].join("; ");
+        const answer = answerOf(next), previous = answerOf(current);
+        withdrawn = !answer && Boolean(previous);
         comment = store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
           authorName: input.authorName,
-          body: `Question: ${next.prompt}\nAnswer: ${[...selected.map((option) => option.label), ...(next.answerText ? [next.answerText] : [])].join("; ") || "(cleared)"}\nQuestion ID: ${next.id}; revision: ${next.revision}`,
+          body: `Question: ${next.prompt}\n${answer ? `Answer: ${answer}` : withdrawn ? `Answer withdrawn (was: ${previous})` : "Answer: (cleared)"}\nQuestion ID: ${next.id}; revision: ${next.revision}`,
         });
         for (const id of attachmentIds) db.prepare<[string, string]>(
           "UPDATE attachments SET task_id = NULL, comment_id = ? WHERE id = ?",
@@ -253,7 +257,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
-        body: `${comment.body}${attachments.map(a => `\nAttachment: ${a.fileName} (${a.sizeBytes} bytes) — bb work-board attachment get ${a.id} --out <path>`).join("")}\nRead the current saved decision with bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json before continuing.`,
+        body: `${comment.body}${withdrawn ? "\nThe owner withdrew this answer. Treat the question as open again, do not act on the earlier answer, and undo or report anything you already did because of it (for example, move the task back if you changed its status)." : ""}${attachments.map(a => `\nAttachment: ${a.fileName} (${a.sizeBytes} bytes) — bb work-board attachment get ${a.id} --out <path>`).join("")}\nRead the current saved decision with bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json before continuing.`,
         authorName: input.authorName,
         threadId,
         mode: "queue-if-active",

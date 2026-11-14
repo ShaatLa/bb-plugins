@@ -292,6 +292,18 @@ describe("question and evidence UI", () => {
     expect(entries[0]!.textContent).toContain("none, replaced before an answer");
   });
 
+  it("withdraws a saved answer after a confirming second click and records it for the agent", async () => {
+    const { task, rpc, structured, store } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Accept?", mode: "single", options: [] });
+    await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    fireEvent.click(await slot.findByText("Earlier (1)"));
+    fireEvent.click(await slot.findByRole("button", { name: "Withdraw answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Confirm: withdraw and notify the agent" }));
+    await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBeNull());
+    expect(store.tasks.listComments(task.id).map(comment => comment.body).join("\n")).toContain("Answer withdrawn (was: Confirmed)");
+  });
+
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
     await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
