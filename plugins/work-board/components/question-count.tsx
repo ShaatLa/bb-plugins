@@ -70,7 +70,7 @@ export function QuestionCount({
       {kinds.checks > 0 && (
         <span role="img" aria-label={`${kinds.checks} open checks`} title={title ?? `${kinds.checks} open checks`}
           className="inline-flex shrink-0 items-center gap-1 px-1.5 py-px text-xs tabular-nums text-warning">
-          <Icon name="CheckCircle2" className="size-3" aria-hidden />
+          <Icon name="Eye" className="size-3" aria-hidden />
           {kinds.checks}
         </span>
       )}
