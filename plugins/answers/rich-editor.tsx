@@ -105,6 +105,8 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const pick = (id: string) => { if (menu) replace(`@thread:${id} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
   const paste = (event: ClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); onPasteFiles(files); return; }
+    // Like bb's composer: a paste of 5,000+ characters goes in as a "Pasted text.txt" attachment.
+    const long = event.clipboardData.getData('text/plain'); if (long.length >= 5000) { event.preventDefault(); onPasteFiles([new File([long], 'Pasted text.txt', { type: 'text/plain' })]); return; }
     const html = event.clipboardData.getData('text/html');
     if (html) {
       const doc = new DOMParser().parseFromString(html, 'text/html');

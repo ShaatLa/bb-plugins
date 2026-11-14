@@ -175,3 +175,13 @@ it('collects into the reply pool on Enter and the main button once pooling, with
   expect(slot.queryByRole('menuitem', { name:'Add to reply pool' })).toBeNull();
   fireEvent.click(slot.getByRole('menuitem', { name:'Send now' })); expect(onSend).toHaveBeenCalledWith(undefined);
 });
+it('attaches a paste of 5,000+ characters as Pasted text.txt, like bb', async () => {
+  const upload = vi.fn((input: any) => input.clientFile.text().then((text: string) => ({ type:'localFile', path:'/pasted.txt', name:input.clientFile.name, mimeType:'text/plain', sizeBytes:text.length })));
+  const onChange = vi.fn();
+  const slot = renderSlot({ component: () => { const [files, setFiles] = useState<any[]>([]); return <Composer label="Reply" value="" onChange={onChange} attachments={files} onAttachments={update => setFiles(update)} projectId="p" onSend={() => {}} />; } }, {}, { sdk: { projects: { attachments: { upload } } } } as any);
+  const long = 'x'.repeat(5000);
+  fireEvent.paste(slot.getByRole('textbox', { name:'Reply' }), { clipboardData: { files: [], getData: (kind: string) => kind === 'text/plain' ? long : '' } });
+  await waitFor(() => expect(slot.getByRole('list', { name:'Attachments' }).textContent).toContain('Pasted text.txt'));
+  expect(upload.mock.calls[0][0]).toMatchObject({ projectId:'p', mimeType:'text/plain' });
+  expect(onChange).not.toHaveBeenCalled();
+});
