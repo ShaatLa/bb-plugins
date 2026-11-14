@@ -382,6 +382,19 @@ it('slides a queue card in once: coming back to its chat draws it in place, a ne
   fireEvent.click(recipients.getAllByRole('option')[1]!); fireEvent.click(recipients.getAllByRole('option')[0]!);
   await slot.findByRole('button', { name:'Toggle queued messages' }); expect(card().className).toContain('starting:');
 });
+it('offers bb\'s Scroll to latest button once the last message is out of sight below, and scrolls there', async () => {
+  const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByRole('list', { name:'History' }); const button = document.querySelector('[aria-label="Scroll to latest"]') as HTMLElement;
+  expect(button.className).toContain('invisible');
+  const view = slot.getByRole('list', { name:'History' }).closest('.overflow-auto') as HTMLElement, last = slot.getByRole('list', { name:'History' }).lastElementChild as HTMLElement;
+  view.getBoundingClientRect = () => ({ top:0, bottom:500 }) as DOMRect; last.getBoundingClientRect = () => ({ top:900, bottom:1000 }) as DOMRect;
+  const scrollTo = vi.fn(); view.scrollTo = scrollTo as any;
+  fireEvent.scroll(view);
+  await waitFor(() => expect(button.className).not.toContain('invisible'));
+  fireEvent.click(button); expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior:'smooth' }));
+  last.getBoundingClientRect = () => ({ top:300, bottom:450 }) as DOMRect; fireEvent.scroll(view);
+  await waitFor(() => expect(button.className).toContain('invisible'));
+});
 it('keeps a delivered queued message in the queue card until the chat records it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
   let rows = [row], emptied = 0;
