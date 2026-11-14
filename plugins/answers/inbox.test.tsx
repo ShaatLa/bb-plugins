@@ -644,3 +644,11 @@ it('groups a waiting question with the steers its turn took into one card', () =
   const groups = groupItems([waiting, { ...waiting, id:'ans_two', questionSeq:3 }, { ...waiting, id:'ans_three', turnId:'t2', questionSeq:5 }]);
   expect(groups.map(group => group.map(item => item.id))).toEqual([['ans_one', 'ans_two'], ['ans_three']]);
 });
+it('quotes another thread\'s message under its caption while the turn works on it', async () => {
+  const update = { ...base, id:'ans_tell', kind:'update' as const, status:'waiting' as const, question:'[bb message from thread:thr_m] Task from the owner', questionSeq:null, answer:null, answerSeq:null, trigger:{ kind:'agent' as const, sourceId:'thr_m', sourceTitle:'Manager' } };
+  const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }) });
+  fireEvent.click(await recipients.findByRole('option'));
+  const quote = await waitFor(() => { const node = document.querySelector('[data-history-ids="ans_tell"] [data-agent-message]'); expect(node).toBeTruthy(); return node as HTMLElement; });
+  expect(quote.textContent).toBe('Task from the owner');
+  expect(slot.getByLabelText('Working on the message')).toBeTruthy();
+});

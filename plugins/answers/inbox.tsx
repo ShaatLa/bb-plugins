@@ -30,7 +30,7 @@ export const activityAt = (item: Item) => item.answeredAt ?? item.createdAt;
 // updates: a run of consecutive agent updates that ask nothing, shown as one collapsed group (UpdateGroup in app.tsx).
 // late: earlier questions answered by this same message (one reply resolving several), echoed above it instead of a second copy.
 export type Entry = { group: Item[]; part?: 'question' | 'answer'; updates?: true; late?: Item[] };
-const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 && entry.group[0].kind === 'update' && !entry.group[0].asks;
+const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 && entry.group[0].kind === 'update' && !entry.group[0].asks && entry.group[0].status !== 'waiting';
 // Messenger-style reply: when other messages arrived between a question and its late answer, the question stays at its
 // time and the answer becomes its own message at answer time. groups run oldest first; more: earlier pages exist, so a
 // split question older than the oldest loaded item waits there (orphans, carried to the earlier page; carried: from a newer one).

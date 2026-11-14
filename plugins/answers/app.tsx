@@ -316,7 +316,11 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
       <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={item.question} /></div></div>
       {time}
-    </div> : item.kind === 'update' ? <UpdateCaption item={item} time={chat ? time : null} /> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
+      {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
+      {chat && item.trigger?.kind === 'agent' && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={item.question.replace(/^\[bb message from [^\]]*\]\s*/, '')} /></div></div>}
+      {chat && live && item.status === 'waiting' && <span className="flex w-fit px-2 text-muted-foreground"><RobotLoader className="h-8" label="Working on the message" /></span>}
+    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}

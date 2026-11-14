@@ -39,6 +39,8 @@ function releaseChild(db: Database.Database, threadId: string, child: string, wi
 }
 /** Apply an ascending page inside the caller's transaction; returns whether anything the UI shows changed. */
 /** `trackQuestions` is false for agent-spawned threads, whose "user" turns come from agents and scripts. */
+// One message from another thread or a plugin per turn: the chat item shown when the turn took it.
+const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
@@ -85,7 +87,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    hidden += db.prepare(`UPDATE items SET attempt_request_id=?,candidate=CASE WHEN turn_id=? THEN candidate ELSE NULL END,candidate_seq=CASE WHEN turn_id=? THEN candidate_seq ELSE NULL END,turn_id=?,updated_at=? WHERE thread_id=? AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(d.clientRequestId,turn,turn,turn,now,threadId,d.clientRequestId,threadId,d.clientRequestId).changes;
    // The turn's trigger is the first input it accepted; an owner message has no trigger row and counts as 'other'.
    const trigger = db.prepare('SELECT kind,source_id,text FROM request_triggers WHERE thread_id=? AND request_id=?').get(threadId,d.clientRequestId) as {kind:string;source_id:string|null;text:string}|undefined;
-   hidden += db.prepare('UPDATE turn_updates SET kind=?,source_id=?,question=? WHERE thread_id=? AND turn_id=? AND kind IS NULL').run(trigger?.kind ?? 'other',trigger?.source_id ?? null,trigger?.text ?? '',threadId,turn).changes;
+   const first = db.prepare('UPDATE turn_updates SET kind=?,source_id=?,question=? WHERE thread_id=? AND turn_id=? AND kind IS NULL').run(trigger?.kind ?? 'other',trigger?.source_id ?? null,trigger?.text ?? '',threadId,turn).changes;
+   hidden += first;
+   // bb shows another thread's or a plugin's message the moment the turn takes it; so does the chat, answered at turn end.
+   // Child-completion and script wakes keep appearing only with a reply, as bb batches them.
+   if (first && (trigger?.kind === 'agent' || trigger?.kind === 'plugin')) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'waiting',?,?,?,?,?,?)`).run(turnUpdateId(threadId,turn),threadId,projectId,trigger.text,e.createdAt ?? now,trigger.kind,trigger.source_id,e.createdAt ?? now,now);
    hidden += db.prepare('DELETE FROM request_triggers WHERE thread_id=? AND request_id=?').run(threadId,d.clientRequestId).changes;
    // Accepted while the turn was already producing items: a steer, unseen until the agent's next tool result.
    if ((db.prepare('SELECT busy FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {busy:number}|undefined)?.busy)
@@ -105,8 +111,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const asks = !!update?.answer && asksOwner(update.answer);
     // Safety net: a child's completion wakes a parent whose question was auto-deferred; see releaseChild.
     if (update?.kind === 'system' && update.source_id) releaseChild(db,threadId,update.source_id,[update.started_at ?? e.createdAt ?? now,e.createdAt ?? now]);
-    if (update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn))
-     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answer,answer_seq,answer_source,answered_at,read_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,'turn',?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|update|'+update.answer_seq).digest('hex'),threadId,projectId,update.question,update.answer,update.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),update.kind ?? 'other',update.source_id,e.createdAt ?? now,now);
+    const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);
+    // The message shown at acceptance takes the turn's reply; with nothing to report it stays a read caption.
+    if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);
+    else if (reply)
+     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answer,answer_seq,answer_source,answered_at,read_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,'turn',?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|update|'+update!.answer_seq).digest('hex'),threadId,projectId,update!.question,update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),update!.kind ?? 'other',update!.source_id,e.createdAt ?? now,now);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='agent',failed_at=NULL,wait_children=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND resolve_turn_id=? AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='turn',failed_at=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND turn_id=? AND status='waiting' AND resolve_turn_id IS NULL AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     for (const item of db.prepare("SELECT id,answer FROM items WHERE thread_id=? AND turn_id=? AND status='answered' AND answer_source='turn' AND answer_seq=candidate_seq").all(threadId,turn) as {id:string;answer:string}[]) db.prepare('UPDATE items SET likely_interim=? WHERE id=?').run(Number(INTERIM_RE.test(item.answer.slice(-600))),item.id);
@@ -123,6 +132,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
      db.prepare(`UPDATE items SET dismissed_at=?,updated_at=? WHERE ${cancelled} AND dismissed_at IS NULL`).run(now,now,threadId,turn);
     }
    }
+   hidden += db.prepare("UPDATE items SET status='answered',answered_at=?,updated_at=? WHERE id=? AND status='waiting'").run(e.createdAt ?? now,now,turnUpdateId(threadId,turn)).changes;
    hidden += db.prepare('DELETE FROM turn_updates WHERE thread_id=? AND turn_id=?').run(threadId,turn).changes;
    hidden += db.prepare('UPDATE items SET candidate=NULL,candidate_seq=NULL,resolve_turn_id=CASE WHEN resolve_turn_id=? THEN NULL ELSE resolve_turn_id END WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?)').run(turn,threadId,turn,turn).changes;
    if (active === turn) active=null;
