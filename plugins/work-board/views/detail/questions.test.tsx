@@ -83,6 +83,10 @@ describe("question and evidence UI", () => {
     const answer = await slot.findByRole("textbox", { name: "Your answer" });
     const image = new File(["png"], "screen.png", { type: "image/png" });
     fireEvent.change(slot.getByLabelText("Answer files"), { target: { files: [image] } });
+    expect(slot.getByRole("button", { name: "Attach files" })).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Preview screen.png" }));
+    // The SDK lightbox renders the full image next to the thumbnail.
+    expect(slot.getAllByRole("img", { name: "screen.png" })).toHaveLength(2);
     fireEvent.paste(answer, { clipboardData: { files: [new File(["log"], "log.txt", { type: "text/plain" })] } });
     fireEvent.drop(answer, { dataTransfer: { files: [new File(["drop"], "drop.txt", { type: "text/plain" })] } });
     expect(slot.getByRole("button", { name: "Save answer" })).toHaveProperty("disabled", true);

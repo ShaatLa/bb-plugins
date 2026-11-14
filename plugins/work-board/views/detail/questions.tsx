@@ -1,5 +1,7 @@
 import { isQuestionOpen } from "../../shared/questions";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
+import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +15,50 @@ import { AttachmentTracks } from "../activity/task-activity";
 import { formatFileSize } from "../activity/time";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../../shared/attachments";
 import type { Attachment } from "../../shared/contract";
+
+/** Files chosen for an answer, shown inside the answer box like bb's chat composer. */
+function PendingFiles({ files, onRemove }: { files: readonly File[]; onRemove: (index: number) => void }) {
+  const urls = useMemo(() => files.map(file => file.type.startsWith("image/") ? URL.createObjectURL(file) : null), [files]);
+  useEffect(() => () => urls.forEach(url => url && URL.revokeObjectURL(url)), [urls]);
+  const images = files.map((_, index) => index).filter(index => urls[index]);
+  const [open, setOpen] = useState<number | null>(null);
+  const at = open === null ? -1 : images.indexOf(open);
+  return (
+    <div className="flex flex-wrap gap-2 px-2 pt-2">
+      {files.map((file, index) => (
+        <span key={`${index}:${file.name}`} className="group relative inline-flex items-center">
+          {urls[index] ? (
+            <button type="button" className="block size-14 overflow-hidden rounded-md border border-border" aria-label={`Preview ${file.name}`} onClick={() => setOpen(index)}>
+              <img src={urls[index]!} alt={file.name} className="size-full object-cover" />
+            </button>
+          ) : (
+            <span className="inline-flex h-14 max-w-48 items-center gap-1.5 rounded-md border border-border px-2 text-xs">
+              <Icon name="File" className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0"><span className="block truncate">{file.name}</span><span className="text-muted-foreground">{formatFileSize(file.size)}</span></span>
+            </span>
+          )}
+          <button type="button" aria-label={`Remove ${file.name}`} title={`Remove ${file.name}`}
+            className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full border border-border bg-background text-[10px] leading-none text-muted-foreground hover:text-foreground"
+            onClick={() => onRemove(index)}>×</button>
+        </span>
+      ))}
+      {open !== null && urls[open] ? (
+        <ImageLightbox
+          isOpen
+          imageSrc={urls[open]!}
+          imageAlt={files[open]!.name}
+          title={files[open]!.name}
+          hasMultipleImages={images.length > 1}
+          previousDisabled={at <= 0}
+          nextDisabled={at >= images.length - 1}
+          onPrevious={() => setOpen(images[at - 1] ?? open)}
+          onNext={() => setOpen(images[at + 1] ?? open)}
+          onClose={() => setOpen(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 function AnswerAttachments({ commentId }: { commentId: string }) {
   const query = useTasksQuery(async rpc => (await rpc.call("listAttachments", { commentId })).attachments, ["tasks:changed", "comments:changed"], [commentId]);
@@ -117,32 +163,39 @@ function QuestionAnswer({
           <OptionText option={option} />
         </label>
       ))}
-      <Textarea
-        onPaste={event => {
-          const pasted = Array.from(event.clipboardData.files);
-          if (pasted.length) { event.preventDefault(); addFiles(pasted); }
-        }}
+      <div
+        className="rounded-md border border-input focus-within:ring-1 focus-within:ring-ring"
         onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
         onDrop={event => {
           if (event.dataTransfer.files.length) { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }
         }}
-        aria-label="Your answer"
-        placeholder="Your answer (optional)"
-        value={text}
-        maxLength={10_000}
-        onChange={(event) => {
-          setText(event.target.value);
-          setOther(Boolean(event.target.value.trim()));
-          if (question.mode === "single") setSelected([]);
-        }}
-      />
-      <input ref={picker} type="file" multiple hidden aria-label="Answer files" onChange={event => {
-        addFiles(Array.from(event.target.files ?? [])); event.target.value = "";
-      }} />
-      <Button size="sm" variant="ghost" onClick={() => picker.current?.click()}>Attach files</Button>
-      <div className="flex flex-wrap gap-2">{files.map((file, index) => <span key={index} className="rounded border px-2 py-1 text-xs">
-        {file.name} · {formatFileSize(file.size)} <button type="button" aria-label={`Remove ${file.name}`} onClick={() => setFiles(current => current.filter((_, at) => at !== index))}>×</button>
-      </span>)}</div>
+      >
+        {files.length ? <PendingFiles files={files} onRemove={index => setFiles(current => current.filter((_, at) => at !== index))} /> : null}
+        <Textarea
+          className="border-0 shadow-none focus-visible:ring-0"
+          onPaste={event => {
+            const pasted = Array.from(event.clipboardData.files);
+            if (pasted.length) { event.preventDefault(); addFiles(pasted); }
+          }}
+          aria-label="Your answer"
+          placeholder="Your answer (optional)"
+          value={text}
+          maxLength={10_000}
+          onChange={(event) => {
+            setText(event.target.value);
+            setOther(Boolean(event.target.value.trim()));
+            if (question.mode === "single") setSelected([]);
+          }}
+        />
+        <div className="flex px-1.5 pb-1.5">
+          <input ref={picker} type="file" multiple hidden aria-label="Answer files" onChange={event => {
+            addFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+          }} />
+          <Button type="button" size="icon" variant="ghost" className="size-7" aria-label="Attach files" onClick={() => picker.current?.click()}>
+            <Icon name="Paperclip" className="size-4" />
+          </Button>
+        </div>
+      </div>
       {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
