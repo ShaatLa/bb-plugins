@@ -315,7 +315,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   const saveDrafts = () => { clearTimeout(draftTimer.current); const ids = Object.keys(drafts), kept = ids.filter(id => drafts[id]?.text.trim() || drafts[id]?.files.length).slice(-50); for (const id of ids) if (!kept.includes(id)) delete drafts[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); } catch { /* storage unavailable */ } };
   const saveScroll = () => { clearTimeout(scrollTimer.current); scrollTimer.current = undefined; if (scrollPending.current) { const { threadId, ...at } = scrollPending.current, all = readScrolls(); delete all[threadId]; all[threadId] = at; try { localStorage.setItem(SCROLL_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-50)))); } catch { /* storage unavailable */ } scrollPending.current = null; } };
   useEffect(() => () => { saveDrafts(); saveScroll(); }, []);
-  useEffect(() => { saveDrafts(); saveScroll(); }, [selected]);
+  useEffect(() => { cancelAnimationFrame(latestFrame.current); latestFrame.current = 0; saveDrafts(); saveScroll(); }, [selected]);
   useEffect(() => {
     if (!selected || !search || !query.trim()) { setMatches([]); setSearchError(''); return; }
     let active = true; const timer = setTimeout(() => { void rpc.call('list', { view: 'all', threadId: selected, query: query.trim(), limit: 20 }).then(data => { if (active) { setMatches(data.items); setSearchError(''); } }).catch(e => { if (active) setSearchError(errorText(e)); }); }, 200);
@@ -447,7 +447,10 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
   // Scrolled up past the last message (its top below the composer stack): offer bb's "Scroll to latest" button.
-  const [farFromEnd, setFarFromEnd] = useState(false);
+  // Scroll events come every frame while the window or a sidebar resizes the chat, and any geometry read in one forces a
+  // layout of the whole conversation at a size about to change. So the chat's scroll handler reads once a frame, the saved
+  // anchor once scrolling settles, and the other scroll listeners skip a resize (its own observer keeps them right).
+  const [farFromEnd, setFarFromEnd] = useState(false), latestFrame = useRef(0), resizedAt = useRef(0);
   const checkLatest = () => { const node = scroll.current, last = node?.querySelector('[aria-label=History]')?.lastElementChild; setFarFromEnd(!!node && !!last && last.getBoundingClientRect().top > node.getBoundingClientRect().bottom - (stack.current?.offsetHeight ?? 0)); };
   useEffect(() => { const frame = requestAnimationFrame(checkLatest); return () => cancelAnimationFrame(frame); }, [selected, pages]);
   useEffect(() => {
@@ -464,8 +467,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       }
       setScrollbar(node.offsetWidth - node.clientWidth);
     };
-    const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit(); node.addEventListener('scroll', fit, { passive: true });
-    return () => { observer.disconnect(); node.removeEventListener('scroll', fit); };
+    const observer = new ResizeObserver(fit); observer.observe(box); observer.observe(node); fit(); const scrolled = () => { if (Date.now() - resizedAt.current >= 500) fit(); }; node.addEventListener('scroll', scrolled, { passive: true });
+    return () => { observer.disconnect(); node.removeEventListener('scroll', scrolled); };
   }, [selected]);
   // The conversation moves by itself only for a reader at the very bottom: it follows new messages there, and keeps the
   // bottom edge when the visible area shrinks or grows (the phone keyboard, the window resized). A reader scrolled up even a
@@ -474,25 +477,41 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     const node = scroll.current; if (!node || typeof ResizeObserver === 'undefined') return;
     // The distance from the bottom is kept from the last scroll; by the time the observer runs the browser may already
     // have clamped scrollTop, so it cannot be derived then.
-    let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height, resizedAt = 0;
+    let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height;
     // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
     // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
     let anchor: { el: HTMLElement; offset: number } | null = null;
     const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, offset: el.getBoundingClientRect().top - view } : null; };
-    const track = () => { if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; if (Date.now() - resizedAt > 500) remember(); };
+    const track = () => { if (Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; remember(); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
     // a reader who was at the bottom stays there.
+    // Every frame of a resize (a sidebar opening, the window dragged) rewraps the whole conversation, which made the UI lag.
+    // While it lasts, cards out of view skip layout at the height they had (content-visibility); when it settles they are
+    // laid out once at the new width and the reader's card is put back in place.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const cards = () => Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] > *'));
+    const settled = () => {
+      settle = undefined; remember(); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = '';
+      resizedAt.current = Date.now(); // cards laid out again settle a moment later (embeds report their height); keep the anchor that long
+      if (pin.current) return;
+      if (gap > AT_BOTTOM && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+      else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight;
+    };
     const observer = new ResizeObserver(() => {
       const next = node.clientHeight;
-      if (node.clientWidth !== width) { width = node.clientWidth; resizedAt = Date.now(); }
+      if (node.clientWidth !== width) {
+        width = node.clientWidth; resizedAt.current = Date.now();
+        if (!settle) { for (const card of cards()) { const style = getComputedStyle(card); card.style.containIntrinsicSize = `auto ${card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)}px`; card.style.contentVisibility = 'auto'; } }
+        clearTimeout(settle); settle = setTimeout(settled, 500);
+      }
       if (!pin.current) {
-        if (gap > AT_BOTTOM && Date.now() - resizedAt < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+        if (gap > AT_BOTTOM && Date.now() - resizedAt.current < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
         else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next;
       }
-      height = next; if (Date.now() - resizedAt >= 500) gap = node.scrollHeight - node.scrollTop - next;
+      height = next; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
     observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true }); remember();
-    return () => { observer.disconnect(); node.removeEventListener('scroll', track); };
+    return () => { observer.disconnect(); node.removeEventListener('scroll', track); if (settle) { clearTimeout(settle); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = ''; } };
   }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {
@@ -570,7 +589,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
         return thread ? <ThreadActionsContextMenu key={recipient.threadId} thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : <Fragment key={recipient.threadId}>{row}</Fragment>; })}</div>; })}
     </div><ContactsFooter /></div>
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
-    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(first ? { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(saveScroll, 200); } }}>
+    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; if (latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
       {/* A column at least as tall as the view, so a short chat still keeps the composer at the bottom, as bb's chat does; clip (not hidden, which would break sticky) cuts bb's hidden voice textarea that hangs 7px below the composer and made short chats scroll. */}
       {selected && <div data-chat-column className="flex min-h-full flex-col overflow-clip">{mobileHeader}<div data-conversation-header className={`sticky top-[57px] z-[2] flex justify-end min-[640px]:top-0 border-b border-border-seam bg-background px-3 py-1 ${search ? '' : onSearch ? 'hidden' : 'max-[639px]:hidden'}`}>{!onSearch && <Button size="sm" variant="ghost" className="max-[639px]:hidden" aria-label="Search conversation" onClick={() => { setSearch(!search); setOlder(false); }}><Icon name="Search" aria-hidden /></Button>}{search && <input aria-label="Search conversation" autoFocus className="w-56 rounded border border-border-seam bg-background px-2 text-sm max-[639px]:min-w-0 max-[639px]:flex-1" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearch(false); setQuery(''); setOlder(false); } }} />}{search && query.trim() && <div role="listbox" aria-label="Search results" className="absolute right-3 top-full z-10 max-h-64 w-72 overflow-auto rounded border border-border-seam bg-background shadow-lg">{searchError && <p role="alert">{searchError}</p>}{matches.map(match => <button key={match.id} role="option" aria-selected={false} className="block w-full border-b border-border-seam p-2 text-left text-xs hover:bg-state-hover" onClick={() => { setJump(match.id); setOlder(false); setSearch(false); }}>{(match.answer || match.question).slice(0, 160)} <time className="block text-muted-foreground">{new Date(match.updatedAt).toLocaleDateString()}</time></button>)}</div>}</div>{older && <p role="status" className="px-4 text-xs">Older than loaded history — <UrlLink href={`${recipients?.recipients.find(r => r.threadId === selected)?.projectId ? `/projects/${recipients?.recipients.find(r => r.threadId === selected)?.projectId}` : ''}/threads/${selected}`}>open in chat</UrlLink></p>}<HistoryPage key={selected} threadId={selected} index={0} unread={recipients?.recipients.find(r => r.threadId === selected)?.unread} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <EarlierLoader loading={pages.length < depth} enabled={settled} onLoad={() => { position.current.prepend = true; setDepth(d => Math.max(d, pages.length + 1)); }} />}<ActivityContext.Provider value={activity}><History key={selected} groups={historyGroups} flash={flash} markId={mark.current} settled={settled} onJump={jumpTo} /></ActivityContext.Provider>{optimistic.some(b => b.threadId === selected) && <ul inert aria-label="Sending" className="px-4 [&>li]:border-t [&>li]:border-border-seam">{optimistic.filter(b => b.threadId === selected).map(b => <ItemCard key={b.id} item={sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId))} chat markable={false} replyToOwn={false} />)}</ul>}
