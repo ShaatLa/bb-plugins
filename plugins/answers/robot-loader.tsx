@@ -139,9 +139,9 @@ const dance = <g className="ar-dance"><line x1="10.5" y1="18" x2="10.5" y2="21.5
     <rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
     <g className="ar-tick">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><path d="M9.1 8 Q10 6.9 10.9 8" /><path d="M13.1 8 Q14 6.9 14.9 8" /></g></g></g>;
 // Now and then (about one lap in four), at the right end where it turns to face us without checking the watch, the
-// waiting robot breaks into the robot dance for three seconds while the walk and the pebble hold still. A lap starting
+// waiting robot breaks into the robot dance for five seconds while the walk and the pebble hold still. A lap starting
 // arms a timer for that moment, which checks the walk's actual phase, so a late timer (a background tab) skips the dance.
-const LAP = 13000;
+const LAP = 13000, DANCE = 5000;
 function WaitScene() {
   const root = useRef<SVGGElement>(null), timers = useRef<number[]>([]), [dancing, setDancing] = useState(false);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
@@ -151,7 +151,7 @@ function WaitScene() {
       const time = root.current?.querySelector('.ar-move')?.getAnimations?.()[0]?.currentTime, at = typeof time === 'number' ? time % LAP / LAP : -1;
       if (at < .425 || at > .45) return;
       setDancing(true);
-      timers.current.push(window.setTimeout(() => setDancing(false), 3000));
+      timers.current.push(window.setTimeout(() => setDancing(false), DANCE));
     }, LAP * .43));
   };
   return <g ref={root} className={dancing ? 'ar-dancing' : undefined} onAnimationIteration={lap}>{pacing(false, true, dancing && dance)}{pebble}</g>;
