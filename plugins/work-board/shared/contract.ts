@@ -427,6 +427,17 @@ export const taskThreadSchema = z
   })
   .strict();
 
+export const taskCostSchema = z
+  .object({
+    usd: z.number().nullable(),
+    tokens: z.object({ freshIn: z.number(), cacheRead: z.number(), cacheWrite: z.number(), output: z.number() }).strict(),
+    estimated: z.boolean(),
+    partial: z.boolean(),
+    threadCount: z.number(),
+  })
+  .strict();
+export type TaskCost = z.infer<typeof taskCostSchema>;
+
 export const threadHealthSchema = z
   .object({
     failed: z.array(z.object({ threadId: z.string().startsWith("thr_"), title: z.string(), failedAt: z.string() }).strict()),
@@ -1043,6 +1054,10 @@ export const tasksRpcContract = {
       })
       .strict(),
     output: attachmentDeleteResultSchema,
+  },
+  getTaskCost: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ cost: taskCostSchema.nullable() }).strict(),
   },
   listTaskThreads: {
     input: z.object({ taskId: idSchema, reconcile: z.boolean().optional() }).strict(),
