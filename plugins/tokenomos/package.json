@@ -19,7 +19,8 @@
     "server.ts",
     "app.tsx",
     "skills",
-    "README.md"
+    "README.md",
+    "assets"
   ],
   "engines": {
     "bb": ">=0.46",
@@ -29,7 +30,10 @@
     "name": "Tokenomos",
     "description": "Token usage and API-equivalent cost across all BB threads: charts by provider and model, top threads, compaction and local-model savings, provider usage limits.",
     "branding": {
-      "icon": "ChartColumn"
+      "icon": "./assets/icon.svg",
+      "experimental_icons": {
+        "mark": "./assets/icon.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx",
