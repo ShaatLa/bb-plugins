@@ -210,4 +210,5 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE compactions ADD COLUMN after_known INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE compactions ADD COLUMN expired INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE compaction_seen(key TEXT NOT NULL PRIMARY KEY,at INTEGER NOT NULL) STRICT`,
+  `CREATE TABLE source_status(source TEXT PRIMARY KEY, last_ingest_at INTEGER, rows INTEGER NOT NULL DEFAULT 0, last_error TEXT, state TEXT NOT NULL DEFAULT 'no-data') STRICT`,
 ];

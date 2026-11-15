@@ -176,7 +176,8 @@ export function status(db: Database) {
   const sources = db.prepare(`SELECT source AS id,MAX(ts) AS lastIngestAt,COUNT(*) AS rows FROM usage_raw GROUP BY source`).all() as { id: string; lastIngestAt: number | null; rows: number }[];
   const states = db.prepare('SELECT source,MAX(state) AS state FROM thread_source GROUP BY source').all() as { source: string; state: string }[];
   for (const id of ['claude-file','codex-file','local-log','agy-log','bb-events']) if (!sources.some(s => s.id===id)) sources.push({ id,lastIngestAt: null,rows: 0 });
-  return { sources: sources.map(s => ({ ...s, lastError: null, state: states.find(t => t.source===s.id)?.state ?? (s.rows ? 'ok' : 'no-data') })),
+  const health = db.prepare('SELECT source,last_ingest_at,last_error,state FROM source_status').all() as { source: string; last_ingest_at: number | null; last_error: string | null; state: string }[];
+  return { sources: sources.map(s => { const h = health.find(h => h.source === s.id); return { ...s, lastIngestAt: h?.last_ingest_at ?? s.lastIngestAt, lastError: h?.last_error ?? null, state: h?.state ?? states.find(t => t.source===s.id)?.state ?? (s.rows ? 'ok' : 'no-data') }; }),
     degradedThreads: (db.prepare("SELECT COUNT(*) AS n FROM thread_source WHERE state='degraded'").get() as { n: number }).n, disk: diskStats(db) };
 }
 type Usage = Awaited<ReturnType<PluginBbSdk['system']['usageLimits']>>;

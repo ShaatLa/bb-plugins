@@ -118,6 +118,11 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
           }
           if(errors){store.setCursor(`bb-parse-errors:${threadId}`,(store.getCursor<number>(`bb-parse-errors:${threadId}`)??0)+errors);log.warn(`Tokenomos skipped ${errors} invalid/unknown events in ${threadId}`);}
           effects.resolve(threadId, false);
+          // Persist rows with the read cursor so a later source failure cannot lose usage.
+          const saveCandidate = db.prepare(`INSERT OR REPLACE INTO bb_candidate
+            (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags)
+            VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags)`);
+          for (const row of batch) saveCandidate.run({ ...row, turnId: row.turnId ?? '' });
           db.prepare("INSERT OR REPLACE INTO bb_cursor VALUES (?,?)").run(threadId,cursor);
         })();
         rows.push(...batch);
