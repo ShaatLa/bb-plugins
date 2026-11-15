@@ -28,7 +28,7 @@ export const gitContract = defineRpcContract({
 });
 export const boardContract = defineRpcContract({ threadTasks: {
   input: z.object({ threadId: z.string() }),
-  output: z.object({ tasks: z.array(z.object({ key: z.string(), title: z.string(), status: z.object({ id: z.string(), name: z.string(), icon: z.string().optional(), color: z.string().optional() }), projectName: z.string(), archived: z.boolean(), url: z.string() })) }),
+  output: z.object({ tasks: z.array(z.object({ key: z.string(), title: z.string(), status: z.object({ id: z.string(), name: z.string(), icon: z.string().optional(), color: z.string().optional(), iconName: z.string().optional(), cssColor: z.string().optional() }), projectName: z.string(), archived: z.boolean(), url: z.string() })) }),
 } });
 export type GitFile = z.infer<typeof file>;
 export type GitTarget = z.infer<typeof target>;

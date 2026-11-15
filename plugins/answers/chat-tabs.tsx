@@ -130,5 +130,14 @@ export function WorkBoardTab() {
   if (tasks.error) return <Empty>Work Board unavailable</Empty>;
   if (!tasks.data) return <Empty>Loading…</Empty>;
   if (!tasks.data.tasks.length) return <Empty>No linked tasks</Empty>;
-  return <div className="p-4"><InfoSection label="Work Board" count={tasks.data.tasks.length}><InfoList limit={5} items={tasks.data.tasks} getKey={task => task.key} renderItem={task => <InfoListRow leading={<Icon name="ListTodo" />} name={<span className={task.archived ? 'opacity-50' : undefined}>{task.key} {task.title}</span>} context={task.projectName} trailing={<span style={{ color: task.status.color }} className={`flex items-center gap-1 ${task.archived ? 'opacity-50' : ''}`}>{task.status.icon && <Icon name={task.status.icon} className="size-3" />}{task.status.name}</span>} onSelect={() => { if (task.url.startsWith('/plugins/work-board/')) openAppRoute(task.url); }} />} /></InfoSection></div>;
+  // Mirrors Work Board's TaskRow (views/list/row.tsx): status glyph, key, title, then project; the whole row opens the task.
+  // Glyph and color are Work Board's shared icon and color when it sends them; before that the status name stands in.
+  return <div role="list" aria-label="Linked tasks">{tasks.data.tasks.map(task => <div key={task.key} role="listitem" data-task-key={task.key} className={`relative flex h-[34px] w-full items-center gap-x-2 border-b border-border-hairline px-3.5 text-left transition-opacity hover:bg-state-hover ${task.archived ? 'opacity-50' : ''}`}>
+    <button type="button" aria-label={`Open ${task.key}: ${task.title}`} onClick={() => { if (task.url.startsWith('/plugins/work-board/')) openAppRoute(task.url); }} className="absolute inset-0 rounded-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" />
+    {task.status.iconName && <span title={task.status.name} aria-label={task.status.name} className="flex shrink-0" style={{ color: task.status.cssColor }}><Icon name={task.status.iconName} className="size-3.5" /></span>}
+    <span className="w-14 shrink-0 truncate text-xs tabular-nums text-subtle-foreground">{task.key}</span>
+    <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
+    {!task.status.iconName && <span className="shrink-0 text-xs text-subtle-foreground">{task.status.name}</span>}
+    <span className="shrink-0 truncate text-xs text-subtle-foreground">{task.projectName}</span>
+  </div>)}</div>;
 }

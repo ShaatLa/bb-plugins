@@ -68,9 +68,15 @@ it('renders files and saves and clears revision-aware Viewed marks', async () =>
 it('shows linked tasks and opens their in-app route', async () => {
   const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-1', title: 'Task', status: { id: 'done', name: 'Done', icon: 'Check', color: '#008800', future: true }, projectName: 'Project', archived: true, url: '/plugins/work-board/work-board/task/WB-1', future: true }] }) });
   const moved = vi.fn(); window.addEventListener('popstate', moved);
-  fireEvent.click(await slot.findByText('WB-1 Task'));
+  fireEvent.click(await slot.findByRole('button', { name: 'Open WB-1: Task' }));
   expect(window.location.pathname).toBe('/plugins/work-board/work-board/task/WB-1'); expect(moved).toHaveBeenCalledOnce(); window.removeEventListener('popstate', moved);
   expect(slot.getByText('Done')).toBeTruthy();
+  expect(slot.getByText('WB-1').className).toContain('w-14');
+});
+it('draws Work Board\'s own status glyph and color once it sends them', async () => {
+  const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-2', title: 'Glyph', status: { id: 'in_progress', name: 'In Progress', iconName: 'work-board/status-in_progress', cssColor: 'goldenrod' }, projectName: 'P', archived: false, url: '/plugins/work-board/work-board/task/WB-2' }] }) });
+  const glyph = await slot.findByLabelText('In Progress');
+  expect(glyph.getAttribute('style')).toContain('goldenrod'); expect(slot.queryByText('In Progress')).toBeNull();
 });
 it.each([undefined, () => { throw new Error('offline'); }])('fails softly without Work Board', async handler => {
   const { slot } = setup(WorkBoardTab, handler ? { threadTasks: handler } : {});
