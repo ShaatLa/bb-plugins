@@ -7,8 +7,8 @@ import { migrations } from './schema';
 import Database from 'better-sqlite3';
 const cleanup: (()=>Promise<void>)[]=[];
 afterEach(async()=>{for (const dispose of cleanup.splice(0)) await dispose(); vi.useRealTimers();});
-function setup(send = vi.fn(async (_args:unknown)=>({ok:true as const,delivery:'sent' as const}))) {
- const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list:async()=>[],get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
+function setup(send = vi.fn(async (_args:unknown)=>({ok:true as const,delivery:'sent' as const})), list:(args:any)=>Promise<any[]> = async()=>[]) {
+ const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list,get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
  plugin(host.bb); cleanup.push(()=>host.harness.lifecycle.dispose());
  return {...host,db:host.bb.storage.database(),send};
 }
@@ -244,6 +244,11 @@ describe('reply pools and inbox',()=>{
   expect(buildReplyMessage([{quote:'**bold**\n\nlast',note:'note'},{quote:'only',note:''}])).toBe('> **bold**\n>\n> last\n\nnote\n\n> only');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20000),note:'x'.repeat(12000)}])).toThrow('32,000');
+ });
+ it('previews another thread\'s message as "Sender: text", not its [bb message from …] header',async()=>{
+  const {harness,db}=setup(undefined,async (args:any)=>(args?.threadIds ?? []).filter((id:string)=>id==='thr_c').map(()=>makeThreadResponse({id:'thr_c',projectId:'p',title:'Manager'})));
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_w','update','t','waiting','[bb message from thread:thr_c] **Review** done',1,'agent','thr_c',1,1)").run();
+  expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review done');
  });
  it('counts an update as unread in contacts and views, never as waiting or saved, and refuses replies to it',async()=>{
   const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;

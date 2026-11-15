@@ -288,12 +288,13 @@ export default function plugin(bb: BbPluginApi) {
       for (const r of rows) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=await applyBbRead(r.thread_id,readAt).catch(()=>0); r.unread-=n; seen+=n; } }
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
-      const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/@thread:(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
+      const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/(?:@thread:|^\[bb message from thread:)(thr_[A-Za-z0-9]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
       if (mentioned.length) threads.push(...await displayThreads(mentioned));
       for(const t of threads) threadMap.set(t.id,t);
       // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
       const unquote=(text:string)=>{const note=text.split('\n').filter(line=>!/^\s*>/.test(line)).join('\n').trim(); return note || text.replace(/^\s*>[ \t]?/gm,'');};
-      const plain=(text:string)=>unquote(text).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
+      // Another thread's message previews as "Sender: text", as its chat card names the sender instead of the [bb message from …] header.
+      const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview((r.preview ?? '') as string)).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs answers`.
