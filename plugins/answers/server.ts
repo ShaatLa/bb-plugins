@@ -22,6 +22,8 @@ const toolInputs = {
     .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
+// Deferred answers expire after three days without answer movement.
+export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -70,6 +72,10 @@ export default function plugin(bb: BbPluginApi) {
   const commit = (sql: string, ...params: (string | number | null)[]) => {
     db.prepare(sql).run(...params); invalidate(); return {ok:true as const};
   };
+  function expireOwed(threadId: string) {
+    const now = Date.now();
+    if (db.prepare("UPDATE items SET dismissed_at=?,wait_children=NULL,updated_at=? WHERE thread_id=? AND kind='mine' AND status='deferred' AND dismissed_at IS NULL AND coalesce(moved_at,created_at)<=?").run(now,now,threadId,now-OWED_EXPIRY_MS).changes) invalidate();
+  }
   function counts(): Counts {
     return db.prepare(`SELECT
       count(CASE WHEN kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
@@ -366,6 +372,21 @@ export default function plugin(bb: BbPluginApi) {
       });
     },
     markRead: markReadFromUi,
+    owed(raw: z.infer<typeof inputs.owed>) {
+      const {threadId}=inputs.owed.parse(raw);
+      return driver.withThread(threadId,() => {
+        expireOwed(threadId);
+        const rows=db.prepare("SELECT id,question,created_at,interim FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND dismissed_at IS NULL ORDER BY created_at,id").all(threadId) as Row[];
+        return {items:rows.map(r=>({id:r.id,question:r.question,createdAt:r.created_at,interim:!!r.interim}))};
+      });
+    },
+    settleOwed(raw: z.infer<typeof inputs.settleOwed>) {
+      const p=inputs.settleOwed.parse(raw), item=get(p.id), now=Date.now();
+      if (item.kind!=='mine' || item.status!=='deferred' || item.dismissed_at!==null) throw new Error('item is not owed');
+      return p.action==='answered'
+        ? commit("UPDATE items SET status='answered',answered_at=?,answer_source='user',resolve_turn_id=NULL,wait_children=NULL,failed_at=NULL,updated_at=? WHERE id=?",now,now,p.id)
+        : commit('UPDATE items SET dismissed_at=?,wait_children=NULL,updated_at=? WHERE id=?',now,now,p.id);
+    },
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
     setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {
@@ -399,7 +420,8 @@ export default function plugin(bb: BbPluginApi) {
         return driver.withThread(ctx.threadId,() => {
           const now=Date.now();
           if (method==='list') {
-            const rows=db.prepare("SELECT id,question,note,created_at FROM items WHERE thread_id=? AND kind='mine' AND status IN ('waiting','deferred') ORDER BY created_at DESC LIMIT 20").all(ctx.threadId) as Row[];
+            expireOwed(ctx.threadId);
+            const rows=db.prepare("SELECT id,question,note,created_at FROM items WHERE thread_id=? AND kind='mine' AND status IN ('waiting','deferred') AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 20").all(ctx.threadId) as Row[];
             return cap(rows.map(r=>`${r.id} ${Math.max(0,Math.floor((now-r.created_at)/1000))}s ${r.question.slice(0,160)}${r.note ? ' — '+r.note : ''}`).join('\n') || 'No pending questions.',2000);
           }
           if (method==='ask') {

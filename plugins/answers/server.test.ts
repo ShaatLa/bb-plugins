@@ -779,3 +779,61 @@ it('reads a thread\'s cost from Tokenomos and stays quiet when it is missing', a
   harness.sdk.stub('plugins.callRpc',async()=>{throw new Error('Plugin tokenomos is not installed');});
   expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:false,own:null,total:null,descendantCount:0});
 });
+
+describe('owed answers', () => {
+ const day=24*60*60*1000, now=10*day;
+ function owedSeed(db:Database.Database,id:string,at=now-1000) {
+  seed(db,id,'mine');
+  db.prepare("UPDATE items SET status='deferred',created_at=?,updated_at=? WHERE id=?").run(at,at,id);
+ }
+ it('lists oldest first, omits dismissed and expired, and keeps history',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup();
+  owedSeed(db,'ans_new'); owedSeed(db,'ans_old',now-day); owedSeed(db,'ans_expired',now-3*day); owedSeed(db,'ans_dismissed');
+  db.prepare("UPDATE items SET interim='Working',updated_at=? WHERE id='ans_old'").run(now-day);
+  db.prepare("UPDATE items SET dismissed_at=? WHERE id='ans_dismissed'").run(now);
+  expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[
+   {id:'ans_old',question:'Question',createdAt:now-day,interim:true},
+   {id:'ans_new',question:'Question',createdAt:now-1000,interim:false},
+  ]});
+  expect(db.prepare("SELECT status,dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({status:'deferred',dismissed_at:now});
+  expect((await harness.behavior.callRpc('list',{view:'all',threadId:'t'}) as any).items).toHaveLength(4);
+ });
+ it('settles answered and dismissed, validates kind and invalidates lists and counts',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup(); owedSeed(db,'ans_answer'); owedSeed(db,'ans_drop'); seed(db,'ans_wrong');
+  await harness.behavior.callRpc('settleOwed',{id:'ans_answer',action:'answered'});
+  expect(db.prepare("SELECT status,answered_at,answer_source FROM items WHERE id='ans_answer'").get()).toEqual({status:'answered',answered_at:now,answer_source:'user'});
+  await harness.behavior.callRpc('settleOwed',{id:'ans_drop',action:'dismissed'});
+  expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_drop'").get()).toEqual({dismissed_at:now});
+  await expect(harness.behavior.callRpc('settleOwed',{id:'ans_wrong',action:'answered'})).rejects.toThrow('not owed');
+  expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[]});
+  await vi.advanceTimersByTimeAsync(150);
+  expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(ITEMS_TAG);
+  expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(COUNTS_TAG);
+ });
+ it('expires at three days despite pins and reads; interim and status movement restart the clock',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup();
+  for (const id of ['ans_stale','ans_interim','ans_status']) owedSeed(db,id,now-3*day+1);
+  await harness.behavior.callRpc('setPinned',{id:'ans_stale',pinned:true});
+  db.prepare("UPDATE items SET failed_at=? WHERE id='ans_stale'").run(now);
+  await harness.behavior.callRpc('markThreadRead',{threadId:'t'});
+  expect(db.prepare("SELECT read_at FROM items WHERE id='ans_stale'").get()).toEqual({read_at:now});
+  db.prepare("UPDATE items SET interim='New interim',interim_seq=10,updated_at=? WHERE id='ans_interim'").run(now);
+  db.prepare("UPDATE items SET status='waiting',updated_at=? WHERE id='ans_status'").run(now);
+  db.prepare("UPDATE items SET status='deferred',updated_at=? WHERE id='ans_status'").run(now);
+  expect((await harness.behavior.callRpc('owed',{threadId:'t'}) as any).items).toHaveLength(3);
+  vi.setSystemTime(now+1);
+  expect((await harness.behavior.callRpc('owed',{threadId:'t'}) as any).items.map((r:any)=>r.id)).toEqual(['ans_interim','ans_status']);
+ });
+ it('agent list excludes dismissed and expires deferred items, retaining waiting and fresh items',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup(); owedSeed(db,'ans_expired',now-3*day); owedSeed(db,'ans_fresh'); seed(db,'ans_waiting','mine'); seed(db,'ans_dismissed','mine');
+  db.prepare("UPDATE items SET dismissed_at=? WHERE id='ans_dismissed'").run(now);
+  const result=await harness.behavior.callAgentTool('answers_list',{}, {threadId:'t'});
+  expect(String(result)).toContain('ans_fresh'); expect(String(result)).toContain('ans_waiting');
+  expect(String(result)).not.toContain('ans_expired'); expect(String(result)).not.toContain('ans_dismissed');
+  expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({dismissed_at:now});
+ });
+});

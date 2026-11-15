@@ -30,6 +30,7 @@ const costSchema=z.object({usd:z.number().nullable(),tokens:z.object({freshIn:z.
 export type Cost=z.infer<typeof costSchema>;
 export const tokenomosThreads=z.object({priceVersion:z.string(),threads:z.array(z.object({threadId:z.string(),own:costSchema,total:costSchema,descendantCount:z.number(),updatedAt:z.number()}))});
 export const inputs = {
+ owed:z.object({threadId}).strict(), settleOwed:z.object({id:idSchema,action:z.enum(['answered','dismissed'])}).strict(),
  undoRead:z.object({batch:z.string().min(1)}).strict(),
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
@@ -46,6 +47,8 @@ export const inputs = {
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({
+ owed:{tags:()=>[ITEMS_TAG],input:inputs.owed,output:z.object({items:z.array(z.object({id:idSchema,question:z.string(),createdAt:time,interim:z.boolean()}))})},
+ settleOwed:{input:inputs.settleOwed,output:ok},
  undoRead:{input:inputs.undoRead,output:z.object({ok:z.literal(true),count:time})},
  keepWaiting:{input:inputs.keepWaiting,output:ok},setInterim:{input:inputs.setInterim,output:ok},
  snooze:{input:inputs.snooze,output:ok},retryTurn:{input:inputs.retryTurn,output:ok},

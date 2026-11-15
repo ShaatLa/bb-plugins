@@ -94,4 +94,13 @@ ALTER TABLE turn_updates ADD COLUMN busy INTEGER NOT NULL DEFAULT 0;`,
   // children woke); only children created inside them count. turn_updates.started_at: when the turn started.
   `ALTER TABLE items ADD COLUMN wait_windows TEXT;
 ALTER TABLE turn_updates ADD COLUMN started_at INTEGER;`,
+  // Legacy rows use updated_at because their earlier movement timestamps were not recorded.
+  // Track answer movement independently of reads, pins and other presentation metadata.
+  `ALTER TABLE items ADD COLUMN moved_at INTEGER;
+UPDATE items SET moved_at=updated_at;
+CREATE TRIGGER items_movement AFTER UPDATE OF status,interim,interim_seq,answer,answer_seq ON items
+WHEN NEW.status IS NOT OLD.status OR NEW.interim IS NOT OLD.interim OR NEW.interim_seq IS NOT OLD.interim_seq OR NEW.answer IS NOT OLD.answer OR NEW.answer_seq IS NOT OLD.answer_seq
+BEGIN
+  UPDATE items SET moved_at=NEW.updated_at WHERE id=NEW.id;
+END;`,
 ];

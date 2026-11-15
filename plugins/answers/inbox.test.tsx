@@ -683,3 +683,41 @@ it('quotes another thread\'s message under its caption while the turn works on i
   // Dimmed like the other robots, never at full strength.
   expect(slot.getByLabelText('Working on the message').closest('.opacity-60')).toBeTruthy();
 });
+
+it('shows owed answers, collapses, jumps and confirms answered', async () => {
+  const old = { ...base, id:'ans_old', status:'deferred' as const, question:'Older **question**', answer:null, interim:'Working', createdAt:Date.now()-3600000 };
+  let owed = [{id:old.id,question:old.question,createdAt:old.createdAt,interim:true}];
+  const settleOwed = vi.fn(() => { owed=[]; return {ok:true}; });
+  const {slot,recipients} = setup({list:()=>({items:[base,old],nextCursor:null}),rpc:{owed:()=>({items:owed}),settleOwed}});
+  fireEvent.click(await recipients.findByRole('option'));
+  const card = within(await slot.findByRole('region',{name:'Answers owed'}));
+  expect(card.getByText('1 answers owed')).toBeTruthy(); expect(card.getByText('1h')).toBeTruthy(); expect(card.getByText('Older question')).toBeTruthy();
+  fireEvent.click(card.getByRole('button',{name:'Toggle answers owed'})); expect(card.queryByRole('button',{name:'Jump'})).toBeNull();
+  fireEvent.click(card.getByRole('button',{name:'Toggle answers owed'}));
+  fireEvent.click(card.getByRole('button',{name:'Jump'}));
+  await waitFor(()=>expect(document.querySelector('[data-history-ids~="ans_old"]')?.hasAttribute('data-flash')).toBe(true));
+  fireEvent.click(card.getByRole('button',{name:'Answered'}));
+  await waitFor(()=>expect(settleOwed).toHaveBeenCalledWith({id:'ans_old',action:'answered'}));
+  await waitFor(()=>expect(slot.queryByRole('region',{name:'Answers owed'})).toBeNull());
+});
+it('dismisses owed rows and excludes the newest card already showing its robot', async () => {
+  const latest = {...base,status:'deferred' as const,answer:null,interim:'Working'};
+  const rows=[{id:'ans_old',question:'Older',createdAt:Date.now(),interim:false},{id:base.id,question:base.question,createdAt:base.createdAt,interim:true}];
+  const settleOwed=vi.fn(()=>({ok:true}));
+  const {slot,recipients}=setup({list:()=>({items:[latest],nextCursor:null}),rpc:{owed:()=>({items:rows}),settleOwed}});
+  fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Working');
+  const card=within(await slot.findByRole('region',{name:'Answers owed'}));
+  await waitFor(()=>expect(card.getByText('1 answers owed')).toBeTruthy());
+  expect(card.queryByText(base.question)).toBeNull();
+  fireEvent.click(card.getByRole('button',{name:'Dismiss'}));
+  await waitFor(()=>expect(settleOwed).toHaveBeenCalledWith({id:'ans_old',action:'dismissed'}));
+});
+
+it('keeps the newest deferred question visible when it has no interim robot', async () => {
+  const latest = {...base,status:'deferred' as const,answer:null,interim:null};
+  const {slot,recipients}=setup({list:()=>({items:[latest],nextCursor:null}),rpc:{owed:()=>({items:[{id:base.id,question:base.question,createdAt:base.createdAt,interim:false}]})}});
+  fireEvent.click(await recipients.findByRole('option'));
+  const card=within(await slot.findByRole('region',{name:'Answers owed'}));
+  expect(card.getByText('1 answers owed')).toBeTruthy();
+  expect(card.getByRole('button',{name:'Jump'})).toBeTruthy();
+});

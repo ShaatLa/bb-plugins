@@ -464,7 +464,7 @@ export function quoteSegments(text: string) {
   return parts.map(part => ({ ...part, text: part.text.trim() })).filter(part => part.text);
 }
 
-function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
+export function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
   const task = taskKeyRegex(prefixes);
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
