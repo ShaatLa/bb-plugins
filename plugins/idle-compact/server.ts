@@ -103,23 +103,41 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     try { await bb.sdk.threads.compact({ threadId }); }
     catch (error) { await bb.storage.kv.delete(OWN + threadId); if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
     finally { inflight.delete(threadId); }
-    // A failed log write must not report the compaction itself as failed.
-    await record({ threadId, trigger: full ? "threshold" : "idle", usedTokensBefore: used, contextWindow: window ?? null }).catch(error => bb.log.warn(`Compaction log ${threadId}: ${message(error)}`));
+    record({ threadId, trigger: full ? "threshold" : "idle", usedTokensBefore: used, contextWindow: window ?? null });
     return full ? `compacted ${used} tokens at ${percent}% of the window` : `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
-  async function record(entry: Omit<Compaction, "id" | "at">) {
-    const at = now(), id = `${String(at).padStart(15, "0")}:${entry.threadId}`;
-    await bb.storage.kv.set(LOG + id, { ...entry, id, at });
-    const oldest = String(at - LOG_RETENTION_MS).padStart(15, "0");
-    for (const key of await bb.storage.kv.list(LOG)) if (key.slice(LOG.length) < oldest) await bb.storage.kv.delete(key);
-  }
+
+  // Log writes run one at a time and `at` strictly increases, so ids are unique and every new id sorts after all written
+  // ones: a reader's `after` cursor never passes an entry still to come. Reads wait for pending writes.
+  // shortcut: an old instance whose compaction resolves after a reload can still write a lower id; per-instance only.
+  const ids = (keys: string[]) => keys.map(key => key.slice(LOG.length)).sort();
+  let lastAt = 0, writes: Promise<unknown> = bb.storage.kv.list(LOG).then(keys => { const last = ids(keys).at(-1); lastAt = last ? Number(last.slice(0, 15)) : 0; }, error => bb.log.warn(`Compaction log: ${message(error)}`));
+  const record = (entry: Omit<Compaction, "id" | "at">) => {
+    writes = writes.catch(() => {}).then(async () => {
+      const at = lastAt = Math.max(now(), lastAt + 1), id = `${String(at).padStart(15, "0")}:${entry.threadId}`;
+      await bb.storage.kv.set(LOG + id, { ...entry, id, at });
+      // Bounded, so a backlog after a quiet month is cleared over several writes rather than in one.
+      const oldest = String(at - LOG_RETENTION_MS).padStart(15, "0");
+      for (const old of ids(await bb.storage.kv.list(LOG)).filter(id => id < oldest).slice(0, 20)) await bb.storage.kv.delete(LOG + old);
+    });
+    // A failed log write must not report the compaction itself as failed.
+    writes.catch(error => bb.log.warn(`Compaction log ${entry.threadId}: ${message(error)}`));
+  };
   bb.rpc.register(rpcContract, {
     "compactions.list": async ({ since, after, limit = 100 }) => {
-      const ids = (await bb.storage.kv.list(LOG)).map(key => key.slice(LOG.length)).sort()
-        .filter(id => (after == null || id > after) && (since == null || Number(id.slice(0, 15)) > since));
+      await writes.catch(() => {});
+      const oldest = now() - LOG_RETENTION_MS;
       const items: Compaction[] = [];
-      for (const id of ids.slice(0, limit)) { const entry = await bb.storage.kv.get<Compaction>(LOG + id); if (entry) items.push(entry); }
-      return ids.length > limit ? { items, nextCursor: ids[limit - 1] } : { items };
+      let more = false;
+      for (const id of ids(await bb.storage.kv.list(LOG))) {
+        if ((after != null && id <= after) || (since != null && Number(id.slice(0, 15)) <= since)) continue;
+        // Entries pruned since the listing, or past retention but not yet pruned, are skipped without counting.
+        const entry = await bb.storage.kv.get<Compaction>(LOG + id);
+        if (!entry || entry.at < oldest) continue;
+        if (items.length === limit) { more = true; break; }
+        items.push(entry);
+      }
+      return more ? { items, nextCursor: items.at(-1)!.id } : { items };
     },
   });
 

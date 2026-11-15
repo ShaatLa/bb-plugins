@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { IDLE_MS, WARM_MS } from "./server.js";
+import plugin, { IDLE_MS, LOG_RETENTION_MS, WARM_MS } from "./server.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.useRealTimers(); });
@@ -215,4 +215,49 @@ it("logs the compactions it made for compactions.list, pages them, and prunes en
   await h.emit("thread.active"); h.state.used = 400_000; h.setClock(31 * 86_400_000);
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect((await list({})).items).toEqual([expect.objectContaining({ usedTokensBefore: 400_000, trigger: "idle" })]);
+});
+
+it("gives same-millisecond compactions distinct ids in write order, and a read waits for a log write in progress", async () => {
+  const h = await setup({ used: 900_000 });
+  const list = (input: object) => h.host.harness.behavior.callRpc("compactions.list", input) as Promise<any>;
+  const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let delayed = false;
+  vi.spyOn(kv, "set").mockImplementation(async (key: string, value: unknown) => { if (key.startsWith("log:") && !delayed) { delayed = true; await gate; } return set(key, value as never); });
+  const t0 = h.now();
+  await h.emit("thread.idle");
+  await h.host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_b" } as any), lastAssistantText: null } as any);
+  await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(2);
+  let read: any = null; const pending = list({}).then(result => { read = result; });
+  await h.advance(0);
+  expect(read).toBeNull(); // the second entry is not visible ahead of the first
+  release(); await pending;
+  expect(read.items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_a", t0], ["thr_b", t0 + 1]]);
+  expect(read.items[0].id < read.items[1].id).toBe(true);
+  expect(await list({ after: read.items[0].id })).toEqual({ items: [read.items[1]] });
+  expect(await list({ since: t0 - 1, after: read.items[0].id })).toEqual({ items: [read.items[1]] });
+  expect(await list({ since: t0 + 1, after: read.items[0].id })).toEqual({ items: [] });
+});
+
+it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per write", async () => {
+  const h = await setup({ used: 900_000 });
+  const list = (input: object) => h.host.harness.behavior.callRpc("compactions.list", input) as Promise<any>;
+  const kv = h.host.bb.storage.kv;
+  const compactAgain = async (used: number) => {
+    await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
+    await h.emit("thread.active"); h.state.used = used; await h.emit("thread.idle"); await h.advance(0);
+  };
+  const t0 = h.now();
+  await h.emit("thread.idle"); await h.advance(0);
+  h.setClock(LOG_RETENTION_MS); await compactAgain(910_000);
+  expect((await list({})).items.map((item: any) => item.at)).toEqual([t0, t0 + LOG_RETENTION_MS]);
+  h.setClock(1);
+  expect((await list({})).items.map((item: any) => item.at)).toEqual([t0 + LOG_RETENTION_MS]);
+  expect(await kv.list("log:")).toHaveLength(2); // hidden, not yet pruned
+  for (let i = 1; i <= 25; i++) await kv.set(`log:${String(t0 - i).padStart(15, "0")}:thr_old`, { id: "", threadId: "thr_old", at: t0 - i, trigger: "idle", usedTokensBefore: 1, contextWindow: null });
+  await compactAgain(920_000);
+  expect(await kv.list("log:")).toHaveLength(2 + 6); // 26 expired, 20 pruned
+  await compactAgain(930_000);
+  expect(await kv.list("log:")).toHaveLength(3);
 });
