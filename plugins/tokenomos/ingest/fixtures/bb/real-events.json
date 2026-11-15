@@ -1,0 +1,254 @@
+[
+  {
+    "id": "evt_5iui3364mv",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 1014,
+    "type": "client/turn/requested",
+    "turn_id": null,
+    "parent_tool_call_id": null,
+    "created_at": 1794068426722,
+    "data": {
+      "direction": "outbound",
+      "source": "tell",
+      "initiator": "user",
+      "request": {
+        "method": "turn/start",
+        "params": {}
+      },
+      "requestId": "creq_5xinjk6gt8",
+      "senderThreadId": null,
+      "input": [
+        {
+          "type": "text",
+          "text": "/compact",
+          "mentions": [
+            {
+              "start": 0,
+              "end": 8,
+              "resource": {
+                "kind": "command",
+                "trigger": "/",
+                "name": "compact",
+                "source": "command",
+                "origin": "builtin",
+                "label": "compact",
+                "argumentHint": null
+              }
+            }
+          ]
+        }
+      ],
+      "target": {
+        "kind": "new-turn"
+      },
+      "execution": {
+        "model": "claude-opus-5-5",
+        "permissionMode": "auto",
+        "reasoningLevel": "high",
+        "serviceTier": "default",
+        "source": "client/turn/requested"
+      }
+    }
+  },
+  {
+    "id": "evt_xysfsbtpse",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 40892,
+    "type": "turn/started",
+    "turn_id": "da3d91030d-t9",
+    "parent_tool_call_id": null,
+    "created_at": 1794682427308,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+    }
+  },
+  {
+    "id": "evt_7qfqqusqzc",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 40893,
+    "type": "turn/input/accepted",
+    "turn_id": "da3d91030d-t9",
+    "parent_tool_call_id": null,
+    "created_at": 1794682427308,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "clientRequestId": "creq_y23tsjk98r"
+    }
+  },
+  {
+    "id": "evt_f7es8fj8ia",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 40902,
+    "type": "thread/compacted",
+    "turn_id": "da3d91030d-t9",
+    "parent_tool_call_id": null,
+    "created_at": 1794682526165,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+    }
+  },
+  {
+    "id": "evt_5jgfmg6f48",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 41297,
+    "type": "turn/input/accepted",
+    "turn_id": "da3d91030d-t9",
+    "parent_tool_call_id": null,
+    "created_at": 1794682896757,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "clientRequestId": "creq_3eh6tdpt58"
+    }
+  },
+  {
+    "id": "evt_c4zzqsset8",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 41865,
+    "type": "thread/compacted",
+    "turn_id": "da3d91030d-t9",
+    "parent_tool_call_id": null,
+    "created_at": 1794683634264,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+    }
+  },
+  {
+    "id": "evt_3iwbv2au2a",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 43715,
+    "type": "client/turn/requested",
+    "turn_id": null,
+    "parent_tool_call_id": null,
+    "created_at": 1794689355731,
+    "data": {
+      "direction": "outbound",
+      "source": "tell",
+      "initiator": "user",
+      "request": {
+        "method": "turn/start",
+        "params": {}
+      },
+      "requestId": "creq_b8igehn24m",
+      "senderThreadId": null,
+      "input": [
+        {
+          "type": "text",
+          "text": "/compact",
+          "mentions": [
+            {
+              "start": 0,
+              "end": 8,
+              "resource": {
+                "kind": "command",
+                "trigger": "/",
+                "name": "compact",
+                "source": "command",
+                "origin": "builtin",
+                "label": "compact",
+                "argumentHint": null
+              }
+            }
+          ]
+        }
+      ],
+      "target": {
+        "kind": "new-turn"
+      },
+      "execution": {
+        "model": "claude-opus-5-5",
+        "permissionMode": "auto",
+        "reasoningLevel": "high",
+        "serviceTier": "default",
+        "source": "client/turn/requested"
+      }
+    }
+  },
+  {
+    "id": "evt_g39im9brkn",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 43719,
+    "type": "turn/started",
+    "turn_id": "daa6b08a7b-t1",
+    "parent_tool_call_id": null,
+    "created_at": 1794689355924,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+    }
+  },
+  {
+    "id": "evt_4nwsv24iib",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 43720,
+    "type": "turn/input/accepted",
+    "turn_id": "daa6b08a7b-t1",
+    "parent_tool_call_id": null,
+    "created_at": 1794689355924,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "clientRequestId": "creq_b8igehn24m"
+    }
+  },
+  {
+    "id": "evt_4j94unhqxf",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 43726,
+    "type": "thread/compacted",
+    "turn_id": "daa6b08a7b-t1",
+    "parent_tool_call_id": null,
+    "created_at": 1794689438908,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+    }
+  },
+  {
+    "id": "evt_wggze2zm77",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 45028,
+    "type": "thread/tokenUsage/updated",
+    "turn_id": "daab3f7bc8-t3",
+    "parent_tool_call_id": null,
+    "created_at": 1794728093537,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 17741150,
+          "inputTokens": 226,
+          "cachedInputTokens": 17685331,
+          "cacheReadInputTokens": 17538311,
+          "cacheWriteInputTokens": 147020,
+          "outputTokens": 55593,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 6185246,
+          "inputTokens": 62,
+          "cachedInputTokens": 6173016,
+          "cacheReadInputTokens": 6140824,
+          "cacheWriteInputTokens": 32192,
+          "outputTokens": 12168,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 1000000,
+        "promptCacheTtlMs": 3600000
+      }
+    }
+  },
+  {
+    "id": "evt_rmcjm9jf4k",
+    "thread_id": "thr_wr7z5gy6db",
+    "sequence": 45030,
+    "type": "thread/contextWindowUsage/updated",
+    "turn_id": "daab3f7bc8-t3",
+    "parent_tool_call_id": null,
+    "created_at": 1794728095204,
+    "data": {
+      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "contextWindowUsage": {
+        "usedTokens": 227432,
+        "modelContextWindow": 1000000,
+        "estimated": true
+      }
+    }
+  }
+]

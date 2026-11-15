@@ -194,4 +194,7 @@ export const MIGRATIONS: string[] = [
   name TEXT NOT NULL PRIMARY KEY,
   value TEXT NOT NULL DEFAULT 'null'
 ) STRICT`,
+
+  // WP3: Codex turn_id → model/tier, kept so a later read of a file can price records whose turn_context came earlier.
+  `CREATE TABLE codex_turn_context (session_id TEXT NOT NULL, turn_id TEXT NOT NULL, model TEXT NOT NULL, tier TEXT NOT NULL, PRIMARY KEY (session_id, turn_id)) STRICT`,
 ];
