@@ -93,6 +93,11 @@ const threadCostSchema = z.object({
 
 const topThreadItem = z.object({
   threadId: z.string(), title: z.string(), projectId: z.string(), provider: z.string(), own: costSchema, total: costSchema,
+  calls: count, tokens: num, rangeCost: costSchema, model: z.string(), projectName: z.string().nullable(), childCount: count,
+});
+
+const heatmapCell = z.object({
+  weekday: count.max(6), hour: count.max(23), usd: nullableNum, tokens: num, calls: count,
 });
 
 const limitWindow = z.object({
@@ -114,10 +119,23 @@ export const rpcContract = defineRpcContract({
   },
   summary: {
     tags,
-    input: z.object({ range: rangeSchema, by: z.enum(["provider", "model"]) }),
+    input: z.object({ range: rangeSchema, by: z.enum(["provider", "model"]), projectId: z.string().optional() }),
     output: z.object({
       range: rangeSchema, from: num, to: num,
-      buckets: z.array(z.object({ start: num, series: z.record(z.string(), costSchema) })),
+      buckets: z.array(z.object({ start: num, series: z.record(z.string(), costSchema.extend({ calls: count })) })),
+      kpis: z.object({
+        spendUsd: nullableNum, spendPrevUsd: nullableNum, tokens: num, tokensPrev: nullableNum,
+        calls: count, callsPrev: count.nullable(), threads: count, medianThreadUsd: nullableNum,
+        perCallUsd: nullableNum, cacheHitRate: nullableNum, estimated: z.boolean(), partial: z.boolean(),
+      }),
+      mix: z.object({
+        rows: z.array(z.object({
+          component: z.enum(["freshIn", "cacheWrite", "cacheRead", "output"]),
+          tokens: num, usd: nullableNum, usdPerMTok: nullableNum,
+        })),
+        reasoningTokens: num,
+      }),
+      heatmap: z.object({ cells: z.array(heatmapCell), busiest: heatmapCell.nullable() }),
       totals: costSchema,
       previous: costSchema.nullable(),
       cacheReadShare: nullableNum,
@@ -128,18 +146,23 @@ export const rpcContract = defineRpcContract({
   },
   topThreads: {
     tags,
-    input: z.object({ range: rangeSchema, offset: z.number().int().min(0), limit: z.number().int().min(1).max(50) }),
+    input: z.object({ range: rangeSchema, offset: z.number().int().min(0), limit: z.number().int().min(1).max(50), projectId: z.string().optional() }),
     output: z.object({ items: z.array(topThreadItem), hasMore: z.boolean() }),
   },
   compactions: {
     tags,
-    input: z.object({ range: rangeSchema }),
+    input: z.object({ range: rangeSchema, projectId: z.string().optional() }),
     output: z.object({
       items: z.array(z.object({
         id: z.string(), threadId: z.string(), title: z.string(), at: num, beforeTokens: num, afterTokens: num,
         origin: z.enum(["bb", "idle-compact"]), saving: savingSchema,
       })),
     }),
+  },
+  projects: {
+    tags,
+    input: z.object({}),
+    output: z.object({ items: z.array(z.object({ projectId: z.string(), name: z.string() })) }),
   },
   limits: {
     tags,

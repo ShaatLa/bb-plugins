@@ -6,7 +6,7 @@ import { MIGRATIONS } from './store/schema.js';
 
 function setup() {
   const usageLimits=vi.fn(async () => ({}));
-  const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ system:{ usageLimits } } });
+  const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ system:{ usageLimits }, projects:{ list: async () => [] } } });
   const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
   const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' }, rollupRetentionDays:{ type:'number',default:200,label:'Rollups' }, referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' }, includeOutsideBb:{ type:'boolean',default:false,label:'Outside' }, priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
   const handlers=registerRpc(bb,db,settings); registerCli(bb,handlers);
@@ -63,4 +63,32 @@ describe('RPC and CLI', () => {
       expect((await harness.behavior.runCli(['summary','--range','invalid'])).exitCode).not.toBe(0);
     } finally { await harness.lifecycle.dispose(); }
   });
+});
+
+it('lists only retained usage projects, resolves names, and coalesces the five-minute name cache',async()=>{
+  vi.useFakeTimers();
+  const {harness,db}=setup();
+  const list=vi.fn(async()=>[{id:'p',name:'Project P'}]);
+  harness.sdk.stub('projects.list',list);
+  const now=Date.now(), hour=Math.floor(now/3600000)*3600000;
+  const insert=db.prepare("INSERT INTO usage_hourly(hour,project_id,calls) VALUES (?,?,1)");
+  for(const id of ['p','unknown','~outside','~local-calls']) insert.run(hour,id);
+  insert.run(hour-201*86400000,'expired');
+  try {
+    const [a,b]=await Promise.all([harness.behavior.callRpc('projects',{}),harness.behavior.callRpc('projects',{})]);
+    expect(a).toEqual(b);
+    expect(a).toEqual({items:[{projectId:'p',name:'Project P'},{projectId:'unknown',name:'unknown'},
+      {projectId:'~local-calls',name:'Local calls'},{projectId:'~outside',name:'Outside bb'}]});
+    expect(list).toHaveBeenCalledTimes(1); expect(list).toHaveBeenCalledWith({includePersonal:true});
+    vi.advanceTimersByTime(299999); await harness.behavior.callRpc('projects',{}); expect(list).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1); await harness.behavior.callRpc('projects',{}); expect(list).toHaveBeenCalledTimes(2);
+    db.exec("DELETE FROM usage_hourly WHERE project_id LIKE '~%'");
+    expect((await harness.behavior.callRpc('projects',{}) as {items:{projectId:string}[]}).items.map(p=>p.projectId)).toEqual(['p','unknown']);
+    // Verify optional filters survive the validated RPC boundary.
+    for(const method of ['summary','topThreads','compactions']) {
+      const input=method==='summary' ? {range:'day',by:'provider',projectId:'none'} : method==='topThreads' ? {range:'day',offset:0,limit:50,projectId:'none'} : {range:'day',projectId:'none'};
+      const value=await harness.behavior.callRpc(method,input);
+      expect(value).toMatchObject(method==='summary' ? {kpis:{calls:0}} : {items:[]});
+    }
+  } finally {vi.useRealTimers(); await harness.lifecycle.dispose();}
 });

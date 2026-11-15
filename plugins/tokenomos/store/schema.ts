@@ -221,4 +221,7 @@ export const MIGRATIONS: string[] = [
     (SELECT 1 FROM compactions n WHERE n.thread_id=compactions.thread_id AND n.seq>compactions.seq)
     AND NOT EXISTS (SELECT 1 FROM context_snap s WHERE s.thread_id=compactions.thread_id AND s.seq>compactions.seq
       AND s.seq<(SELECT MIN(n.seq) FROM compactions n WHERE n.thread_id=compactions.thread_id AND n.seq>compactions.seq))`,
+  // WP11: dashboard project filters and compaction range scans.
+  `CREATE INDEX usage_hourly_project_hour ON usage_hourly(project_id, hour)`,
+  `CREATE INDEX compactions_at ON compactions(at)`,
 ];

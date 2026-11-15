@@ -17,12 +17,30 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
   };
   let cached: { at: number; value: Awaited<ReturnType<typeof sdk.system.usageLimits>> } | undefined;
   let pending: Promise<void> | undefined;
+  let projectCache: { at: number; names: Map<string,string> } | undefined;
+  let projectPending: Promise<void> | undefined;
+  const projectNames = async () => {
+    if (!projectCache || Date.now()-projectCache.at>=300_000) {
+      projectPending ??= sdk.projects.list({ includePersonal: true }).then(items => {
+        projectCache = { at: Date.now(), names: new Map(items.map(p => [p.id,p.name])) };
+        projectCache.names.set('~outside','Outside bb'); projectCache.names.set('~local-calls','Local calls');
+      }).finally(() => { projectPending = undefined; });
+      await projectPending;
+    }
+    return projectCache!.names;
+  };
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
     'costs.threads': async i => read.threadCosts(db,i.threadIds,i.includeDescendants,(await options()).overrides),
     'costs.sum': async i => read.costSum(db,i.threadIds,i.includeDescendants,(await options()).overrides),
     summary: async i => read.summary(db,{ ...await options(), ...i }),
-    topThreads: async i => { const o = await options(); return read.topThreads(db,i.range,i.offset,i.limit,o.overrides,o.now); },
-    compactions: async i => { const o = await options(); return read.compactionsInRange(db,i.range,o.overrides,o.now); },
+    topThreads: async i => { const o = await options(); return read.topThreads(db,i.range,i.offset,i.limit,o.overrides,o.now,i.projectId,await projectNames()); },
+    compactions: async i => { const o = await options(); return read.compactionsInRange(db,i.range,o.overrides,o.now,i.projectId); },
+    projects: async () => {
+      const o = await options(), names = await projectNames();
+      const ids = db.prepare('SELECT DISTINCT project_id FROM usage_hourly WHERE hour>=? ORDER BY project_id')
+        .all(o.now-o.rollupRetentionDays*86_400_000) as { project_id: string }[];
+      return { items: ids.map(p => ({ projectId: p.project_id, name: names.get(p.project_id) ?? p.project_id })) };
+    },
     limits: async () => {
       const o = await options();
       if (!cached || o.now-cached.at>=60_000) {

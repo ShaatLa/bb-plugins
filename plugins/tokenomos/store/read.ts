@@ -41,46 +41,85 @@ export function rangeBounds(range: Range, now: number) {
   const starts = Array.from({ length: count }, (_, i) => { const d = new Date(end); d.setDate(d.getDate() - (count - i) * step); return +d; });
   return { from: starts[0], to: now, previousFrom: starts[0] - (now - starts[0]), starts };
 }
-function flags(db: Database, from: number, to: number, outside: boolean) {
+function flags(db: Database, from: number, to: number, outside: boolean, projectId?: string) {
   return db.prepare(`SELECT COALESCE(MAX((r.flags & ?) != 0 OR c.partial = 1),0) AS partial,
     COALESCE(MAX((r.flags & ?) != 0),0) AS estimated FROM usage_raw r LEFT JOIN thread_cov c ON c.thread_id=r.thread_id
-    WHERE r.ts>=? AND r.ts<? ${outside ? '' : "AND r.project_id != '~outside'"}`).get(RECOVERED, ESTIMATED, from, to) as { partial: number; estimated: number };
+    WHERE r.ts>=? AND r.ts<? ${outside ? '' : "AND r.project_id != '~outside'"} ${projectId === undefined ? '' : 'AND r.project_id=?'}`).get(RECOVERED, ESTIMATED, from, to, ...(projectId === undefined ? [] : [projectId])) as { partial: number; estimated: number };
 }
-export type SummaryOptions = { range: Range; by: 'provider' | 'model'; now: number; overrides: Overrides; referenceModel: string; includeOutsideBb: boolean };
+export type SummaryOptions = { range: Range; by: 'provider' | 'model'; now: number; overrides: Overrides; referenceModel: string; includeOutsideBb: boolean; projectId?: string };
 export function summary(db: Database, o: SummaryOptions) {
   const { from, to, previousFrom, starts } = rangeBounds(o.range, o.now);
-  const outside = o.includeOutsideBb ? '' : "AND project_id != '~outside'";
-  const query = db.prepare(`SELECT hour,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<? ${outside} GROUP BY hour,provider,model,tier,band`);
-  type Hour = Group & { hour: number; provider: string };
-  const rows = query.all(from, to + 1) as Hour[], previousRows = query.all(Math.floor(previousFrom / HOUR) * HOUR, from) as Hour[];
+  const filter = `${o.includeOutsideBb ? '' : "AND project_id != '~outside'"} ${o.projectId === undefined ? '' : 'AND project_id=?'}`;
+  const params = o.projectId === undefined ? [] : [o.projectId];
+  type Hour = Group & { hour: number; provider: string; reasoning: number };
+  const allRows = db.prepare(`SELECT hour,provider,model,tier,band,${sums},SUM(reasoning) AS reasoning FROM usage_hourly
+    WHERE hour>=? AND hour<=? ${filter} GROUP BY hour,provider,model,tier,band`).all(Math.floor(previousFrom / HOUR) * HOUR,to,...params) as Hour[];
+  const rows = allRows.filter(r => r.hour>=from), previousRows = allRows.filter(r => r.hour<from);
   const price = priceContext(o.overrides);
-  const totals = combine(rows, o.overrides), f = flags(db, from, to + 1, o.includeOutsideBb);
+  const totals = combine(rows, o.overrides), f = flags(db, from, to + 1, o.includeOutsideBb, o.projectId);
   totals.partial ||= !!f.partial; totals.estimated ||= !!f.estimated;
   const modelCosts = new Map<string, number>();
   for (const r of rows) modelCosts.set(r.model, (modelCosts.get(r.model) ?? 0) + (price(r).usd ?? 0));
   const top = new Set([...modelCosts].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,4).map(([k]) => k));
   const key = (r: Hour) => o.by === 'provider' ? r.provider : top.has(r.model) ? r.model : 'other';
   const keys = [...new Set(rows.map(key))];
-  const buckets = starts.map(start => ({ start, series: Object.fromEntries(keys.map(k => [k, empty()])) }));
+  const buckets = starts.map(start => ({ start, series: Object.fromEntries(keys.map(k => [k, { ...empty(), calls: 0 }])) }));
   const breakdown = new Map(keys.map(k => [k, { key: k, label: k, cost: empty(), calls: 0 }]));
   // Start accumulators at the first priced row so an entirely unknown group stays null.
   const seen = new Set<string>();
   rows.forEach(r => {
     let i = starts.length - 1; while (i > 0 && r.hour < starts[i]) i--;
     const k = key(r), c = price(r), b = breakdown.get(k)!;
-    buckets[i].series[k] = seen.has(`${i}:${k}`) ? add(buckets[i].series[k], c) : structuredClone(c);
+    const bucket = buckets[i].series[k];
+    buckets[i].series[k] = { ...(seen.has(`${i}:${k}`) ? add(bucket, c) : structuredClone(c)), calls: bucket.calls + r.calls };
     b.cost = seen.has(k) ? add(b.cost, c) : structuredClone(c); b.calls += r.calls;
     seen.add(`${i}:${k}`); seen.add(k);
   });
-  const oldest = (db.prepare('SELECT MIN(hour) AS hour FROM usage_hourly').get() as { hour: number | null }).hour;
+  const oldest = (db.prepare(`SELECT MIN(hour) AS hour FROM usage_hourly WHERE 1=1 ${filter}`).get(...params) as { hour: number | null }).hour;
   const previous = oldest === null || previousFrom < oldest ? null : combine(previousRows, o.overrides);
-  if (previous) { const p = flags(db, previousFrom, from, o.includeOutsideBb); previous.partial ||= !!p.partial; previous.estimated ||= !!p.estimated; }
+  if (previous) { const p = flags(db, previousFrom, from, o.includeOutsideBb, o.projectId); previous.partial ||= !!p.partial; previous.estimated ||= !!p.estimated; }
   const localRows = rows.filter(r => r.provider === 'local-models');
   const local = combine(localRows.map(r => ({ ...r, provider: '', model: o.referenceModel, tier: 'standard' })), o.overrides);
   const denominator = totals.tokens.freshIn + totals.tokens.cacheRead + totals.tokens.cacheWrite;
-  const savings = compactionsInRange(db, o.range, o.overrides, o.now).items.map(i => i.saving);
+  const savings = compactionsInRange(db, o.range, o.overrides, o.now, o.projectId).items.map(i => i.saving);
   const compactionSavings = sumSavings(savings);
-  return { range: o.range, from, to, buckets, totals, previous, cacheReadShare: denominator ? totals.tokens.cacheRead / denominator : null,
+  const threadRows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly
+    WHERE hour>=? AND hour<=? AND thread_id!='' ${filter} GROUP BY thread_id,provider,model,tier,band`).all(from,to,...params) as (Group & { thread_id: string })[];
+  const threadSpend = new Map<string, Cost>();
+  for (const r of threadRows) if (r.calls) threadSpend.set(r.thread_id, threadSpend.has(r.thread_id) ? add(threadSpend.get(r.thread_id)!,price(r)) : price(r));
+  const spends = [...threadSpend.values()].flatMap(c => c.usd === null ? [] : [c.usd]).sort((a,b) => a-b);
+  const mid = Math.floor(spends.length/2);
+  const calls = rows.reduce((n,r) => n+r.calls,0);
+  const tokenCount = (c: Cost) => Object.values(c.tokens).reduce((a,b) => a+b,0);
+  const components = ['freshIn','cacheWrite','cacheRead','output'] as const;
+  const mixRows = components.map(component => {
+    let usd: number | null = rows.length ? null : 0;
+    for (const r of rows) {
+      const rates = ratesFor(r.model,r.tier,r.band,o.overrides);
+      if (r.provider !== 'local-models' && !rates) continue;
+      const value = r.provider === 'local-models' ? 0 : component === 'freshIn' ? r.fresh_in*rates!.input
+        : component === 'cacheRead' ? r.cache_read*rates!.cacheRead : component === 'output' ? r.output*rates!.output
+        : r.cache_write_short*rates!.cacheWriteShort+r.cache_write_long*rates!.cacheWriteLong;
+      usd = (usd ?? 0)+value/1e6;
+    }
+    const tokens = totals.tokens[component];
+    return { component, tokens, usd, usdPerMTok: tokens && usd !== null ? usd/tokens*1e6 : null };
+  });
+  const cells = new Map<number, { weekday: number; hour: number; usd: number | null; tokens: number; calls: number }>();
+  for (const r of rows) {
+    const date = new Date(r.hour), weekday = (date.getDay()+6)%7, hour = date.getHours(), key = weekday*24+hour;
+    const c = price(r), old = cells.get(key);
+    cells.set(key,{ weekday,hour,usd: old ? old.usd === null && c.usd === null ? null : (old.usd ?? 0)+(c.usd ?? 0) : c.usd,
+      tokens: (old?.tokens ?? 0)+tokenCount(c),calls: (old?.calls ?? 0)+r.calls });
+  }
+  const heatCells = [...cells.values()].sort((a,b) => a.weekday-b.weekday || a.hour-b.hour);
+  const busiest = [...heatCells].sort((a,b) => b.calls-a.calls || b.tokens-a.tokens || (b.usd ?? 0)-(a.usd ?? 0))[0] ?? null;
+  const kpis = { spendUsd: totals.usd, spendPrevUsd: previous?.usd ?? null, tokens: tokenCount(totals), tokensPrev: previous ? tokenCount(previous) : null,
+    calls, callsPrev: previous ? previousRows.reduce((n,r) => n+r.calls,0) : null, threads: threadSpend.size,
+    medianThreadUsd: spends.length ? spends.length%2 ? spends[mid] : (spends[mid-1]+spends[mid])/2 : null,
+    perCallUsd: calls && totals.usd !== null ? totals.usd/calls : null, cacheHitRate: denominator ? totals.tokens.cacheRead/denominator : null,
+    estimated: totals.estimated, partial: totals.partial };
+  return { range: o.range, from, to, buckets, totals, previous, kpis, mix: { rows: mixRows, reasoningTokens: rows.reduce((n,r) => n+r.reasoning,0) }, heatmap: { cells: heatCells, busiest }, cacheReadShare: denominator ? totals.tokens.cacheRead / denominator : null,
     breakdown: [...breakdown.values()].sort((a,b) => (b.cost.usd ?? 0)-(a.cost.usd ?? 0)), compactionSavings,
     localSavings: { usd: local.usd, tokens: Object.values(local.tokens).reduce((a,b) => a+b,0), partial: local.partial, excludesOwnCost: false, referenceModel: o.referenceModel } };
 }
@@ -107,12 +146,17 @@ export function compactionEstimate(effects: Effect[], c: Compaction, overrides: 
 function sumSavings(rows: Saving[]): Saving {
   return { usd: rows.length && rows.every(r => r.usd === null) ? null : rows.reduce((n,r) => n+(r.usd ?? 0),0), tokens: rows.reduce((n,r) => n+r.tokens,0), partial: rows.some(r => r.partial), excludesOwnCost: rows.some(r => r.excludesOwnCost) };
 }
-export function compactionsInRange(db: Database, range: Range, overrides: Overrides = {}, now = Date.now()) {
+export function compactionsInRange(db: Database, range: Range, overrides: Overrides = {}, now = Date.now(), projectId?: string) {
   const { from, to } = rangeBounds(range, now);
   type Row = Compaction & { id: string; thread_id: string; title: string; at: number; origin: 'bb' | 'idle-compact' };
-  const rows = db.prepare(`SELECT c.*,COALESCE(t.title,'') AS title FROM compactions c LEFT JOIN threads t ON t.id=c.thread_id WHERE c.at>=? AND c.at<=? ORDER BY c.at DESC`).all(from,to) as Row[];
-  const effects = db.prepare('SELECT * FROM compaction_effect WHERE compaction_id=?');
-  return { items: rows.map(c => ({ id: c.id, threadId: c.thread_id, title: c.title, at: c.at, beforeTokens: c.before_tokens, afterTokens: c.after_tokens, origin: c.origin, saving: compactionEstimate(effects.all(c.id) as Effect[],c,overrides) })) };
+  const rows = db.prepare(`SELECT c.*,COALESCE(t.title,'') AS title FROM compactions c LEFT JOIN threads t ON t.id=c.thread_id
+    WHERE c.at>=? AND c.at<=? ${projectId === undefined ? '' : 'AND t.project_id=?'} ORDER BY c.at DESC`).all(from,to,...(projectId === undefined ? [] : [projectId])) as Row[];
+  const effects = db.prepare(`SELECT e.* FROM compaction_effect e JOIN compactions c ON c.id=e.compaction_id
+    LEFT JOIN threads t ON t.id=c.thread_id WHERE c.at>=? AND c.at<=? ${projectId === undefined ? '' : 'AND t.project_id=?'}`)
+    .all(from,to,...(projectId === undefined ? [] : [projectId])) as (Effect & { compaction_id: string })[];
+  const grouped = new Map<string, Effect[]>();
+  for (const e of effects) { const list = grouped.get(e.compaction_id) ?? []; list.push(e); grouped.set(e.compaction_id,list); }
+  return { items: rows.map(c => ({ id: c.id, threadId: c.thread_id, title: c.title, at: c.at, beforeTokens: c.before_tokens, afterTokens: c.after_tokens, origin: c.origin, saving: compactionEstimate(grouped.get(c.id) ?? [],c,overrides) })) };
 }
 
 function tree(db: Database, ids: string[], descendants: boolean) {
@@ -153,21 +197,28 @@ export function costSum(db: Database, threadIds: string[], includeDescendants: b
   cost.partial ||= threadIds.some(id => !edges.some(e => e.root===id));
   return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: ids.length, updatedAt: Math.max(0,...[...data.values()].map(d => d.updatedAt)) };
 }
-export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now()) {
+export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now(), projectId?: string, projectNames = new Map<string,string>()) {
   const { from,to } = rangeBounds(range,now);
-  const rows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<=? AND thread_id!='' GROUP BY thread_id,provider,model,tier,band`).all(from,to) as (Group & { thread_id: string })[];
-  const costs = new Map<string, Cost>(), price = priceContext(overrides);
-  for (const r of rows) costs.set(r.thread_id,costs.has(r.thread_id) ? add(costs.get(r.thread_id)!,price(r)) : price(r));
+  const rows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<=? AND thread_id!=''
+    ${projectId === undefined ? '' : 'AND project_id=?'} GROUP BY thread_id,provider,model,tier,band`).all(from,to,...(projectId === undefined ? [] : [projectId])) as (Group & { thread_id: string })[];
+  const costs = new Map<string, Cost>(), calls = new Map<string,number>(), models = new Map<string,Map<string,number>>(), price = priceContext(overrides);
+  for (const r of rows) {
+    costs.set(r.thread_id,costs.has(r.thread_id) ? add(costs.get(r.thread_id)!,price(r)) : price(r));
+    calls.set(r.thread_id,(calls.get(r.thread_id) ?? 0)+r.calls);
+    const m = models.get(r.thread_id) ?? new Map<string,number>();
+    m.set(r.model,(m.get(r.model) ?? 0)+r.calls); models.set(r.thread_id,m);
+  }
   const ids = [...costs].sort((a,b) => (b[1].usd ?? 0)-(a[1].usd ?? 0) || a[0].localeCompare(b[0])).slice(offset,offset+limit).map(([id]) => id);
-  const edges = tree(db,ids,true);
-  const get = db.prepare('SELECT title,project_id,provider_id FROM threads WHERE id=?');
+  const lifetime = new Map(threadCosts(db,ids,true,overrides).threads.map(t => [t.threadId,t]));
+  const info = db.prepare('SELECT id,title,project_id,provider_id FROM threads WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids)) as { id: string; title: string; project_id: string; provider_id: string }[];
   const items = ids.flatMap(threadId => {
-    const info = get.get(threadId) as { title: string; project_id: string; provider_id: string } | undefined;
-    if (!info) return [];
-    const own = costs.get(threadId) ?? empty();
-    const children = edges.filter(e => e.root===threadId).map(e => costs.get(e.id)).filter((c): c is Cost => !!c);
-    const total = children.length ? children.map(c => structuredClone(c)).reduce(add) : empty();
-    return [{ threadId, title: info.title, projectId: info.project_id, provider: info.provider_id, own, total }];
+    const t = info.find(t => t.id===threadId), all = lifetime.get(threadId);
+    if (!t || !all) return [];
+    const rangeCost = costs.get(threadId)!;
+    return [{ threadId, title: t.title, projectId: t.project_id, provider: t.provider_id, own: all.own, total: all.total,
+      calls: calls.get(threadId)!, tokens: Object.values(rangeCost.tokens).reduce((a,b) => a+b,0), rangeCost,
+      model: [...models.get(threadId)!].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]))[0][0],
+      projectName: projectNames.get(t.project_id) ?? null, childCount: all.descendantCount }];
   });
   return { items, hasMore: costs.size>offset+limit };
 }
