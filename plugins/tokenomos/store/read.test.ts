@@ -94,7 +94,7 @@ it('keeps local tool usage free in mixed lifetime totals', () => {
 });
 const effect: Effect = { model:'claude-sonnet-5-5',tier:'standard',band:0,calls_hit:2,calls_miss:1,calls_cross:0,first_gap_hit:1,overhead_fresh_in:10,overhead_cache_read:20,overhead_cache_write:30,overhead_output:40 };
 it('prices hit/miss, rewrite and overhead by hand, keeps negative and cross savings', () => {
-  const c={ before_tokens:1000,after_tokens:200,own_cost_known:1 };
+  const c={ before_tokens:1000,after_tokens:200,own_cost_known:1,before_known:1,after_known:1 };
   // gross 800*(2*.1+4)=3360; rewrite 200*3.9=780; overhead 20+2+75+400=497.
   expect(compactionEstimate([effect],c,overrides)).toEqual({ usd:(3360-780-497)/1e6,tokens:2400,partial:false,excludesOwnCost:false });
   expect(compactionEstimate([{ ...effect,calls_hit:0,calls_miss:0 }],c,overrides).usd).toBeLessThan(0);
@@ -103,6 +103,7 @@ it('prices hit/miss, rewrite and overhead by hand, keeps negative and cross savi
 it('compaction estimates survive raw expiry', () => {
   createStore(db).applyRows([row('raw')]);
   db.prepare('INSERT INTO compactions(id,thread_id,at,before_tokens,after_tokens,own_cost_known) VALUES (?,?,?,?,?,?)').run('c','a',now-HOUR,1000,200,1);
+  db.prepare("UPDATE compactions SET before_known=1,after_known=1 WHERE id='c'").run();
   db.prepare(`INSERT INTO compaction_effect(compaction_id,${Object.keys(effect).join(',')}) VALUES (${Array(Object.keys(effect).length+1).fill('?').join(',')})`).run('c',...Object.values(effect));
   const before=compactionsInRange(db,'week',overrides,now);
   db.exec('DELETE FROM usage_raw');
@@ -131,4 +132,11 @@ describe.skipIf(process.env.TOKENOMOS_SKIP_PERF==='1')('performance', () => {
       expect(summaryMs).toBeLessThan(50); expect(threadsMs).toBeLessThan(100);
     } finally { perfDb.close(); rmSync(dir,{ recursive:true,force:true }); }
   });
+});
+
+it('returns no money estimate when either compaction size is unknown',()=>{
+ for(const [id,before,after] of [['before',0,1],['after',1,0]] as const) {
+ db.prepare('INSERT INTO compactions(id,thread_id,at,before_tokens,after_tokens,before_known,after_known) VALUES (?,?,?,?,?,?,?)').run(id,'a',now,40000,10000,before,after);
+ }
+ expect(compactionsInRange(db,'day',overrides,now).items.map(c=>c.saving.usd)).toEqual([null,null]);
 });

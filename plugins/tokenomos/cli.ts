@@ -8,7 +8,7 @@ export function registerCli(bb: BbPluginApi, api: Pick<ReturnType<typeof registe
   bb.cli.register(defineCli({ name: 'tokenomos', summary: 'Token usage and API-equivalent costs', commands: {
     status: cliCommand({ summary: 'Sources and storage status', options: { json: { type: 'boolean', description: 'Return JSON' } }, async run(i) {
       const r = await api.status({});
-      return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : [`Disk: ${r.disk.bytes} bytes; degraded threads: ${r.degradedThreads}`, ...(r.loop ? [`Event loop (last minute): p99 ${r.loop.p99Ms.toFixed(1)} ms; max ${r.loop.maxMs.toFixed(1)} ms`] : []), ...r.sources.slice(0,50).map(s => `${clean(s.id)}: ${s.rows} rows; ${clean(s.state)}; last ingest ${s.lastIngestAt === null ? 'never' : new Date(s.lastIngestAt).toISOString()}`)].join('\n') };
+      return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : [`Backfill: ${r.backfill.processedThreads}/${r.backfill.totalThreads} threads; ${r.backfill.done ? 'complete' : 'history is loading, numbers are incomplete'}`, `Disk: ${r.disk.bytes} bytes; degraded threads: ${r.degradedThreads}`, ...(r.loop ? [`Event loop (last minute): p99 ${r.loop.p99Ms.toFixed(1)} ms; max ${r.loop.maxMs.toFixed(1)} ms`] : []), ...r.sources.slice(0,50).map(s => `${clean(s.id)}: ${s.rows} rows; ${clean(s.state)}; last ingest ${s.lastIngestAt === null ? 'never' : new Date(s.lastIngestAt).toISOString()}`)].join('\n') };
     } }),
     summary: cliCommand({ summary: 'Costs by provider and model', options: { range: { type: 'enum', values: rangeSchema.options, description: 'Time range (default: week)' }, json: { type: 'boolean', description: 'Return JSON' } }, async run(i) {
       const range = i.options.range ?? 'week';

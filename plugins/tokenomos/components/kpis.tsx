@@ -1,5 +1,6 @@
 import type { Cost, Saving } from "../contract";
 import { fmtCost, fmtPercent, fmtSaving, fmtTokens, totalTokens } from "./format";
+import { useT, type T } from "./i18n";
 import { Card } from "./shared";
 import type { SummaryOutput } from "./types";
 
@@ -14,44 +15,49 @@ function Tile({ label, value, children }: { label: string; value: string; childr
 }
 
 /** Percent change vs the previous equal period; dollars when both periods are priced, otherwise tokens. */
-export function delta(now: Cost, before: Cost | null): string | null {
+export function delta(now: Cost, before: Cost | null, t: T): string | null {
   if (!before) return null;
   const usd = now.usd !== null && before.usd !== null && before.usd > 0;
   const [a, b] = usd ? [now.usd!, before.usd!] : [totalTokens(now.tokens), totalTokens(before.tokens)];
   if (b <= 0) return null;
   const pct = Math.round(((a - b) / b) * 100);
-  return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct)} % к прошлому периоду${usd ? "" : " (токены)"}`;
+  const value = `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${fmtPercent(Math.abs(pct) / 100, t)}`;
+  return t(usd ? "kpi.deltaUsd" : "kpi.deltaTokens", { value });
 }
 
-function SavingNote({ s }: { s: Saving }) {
+function SavingNote({ s, t }: { s: Saving; t: T }) {
   return (
     <>
-      <div>{s.usd === null ? "нет цены" : `${fmtTokens(s.tokens)} токенов`}</div>
-      {s.usd !== null && s.usd < 0 && <div>затраты, а не экономия</div>}
-      {s.excludesOwnCost && <div>без учёта стоимости самой компакции</div>}
-      {s.partial && <div>частично</div>}
+      <div>{s.usd === null ? t("noPrice") : t("saving.tokens", { tokens: fmtTokens(s.tokens, t) })}</div>
+      {s.usd !== null && s.usd < 0 && <div>{t("saving.cost")}</div>}
+      {s.excludesOwnCost && <div>{t("saving.excludesOwnCost")}</div>}
+      {s.partial && <div>{t("saving.partial")}</div>}
     </>
   );
 }
 
-export function Kpis({ summary }: { summary: SummaryOutput }) {
+/** `incomplete` marks money as approximate while the history import is still running. */
+export function Kpis({ summary, incomplete = false }: { summary: SummaryOutput; incomplete?: boolean }) {
+  const t = useT();
   const { totals, previous, cacheReadShare, compactionSavings: comp, localSavings: local } = summary;
-  const change = delta(totals, previous);
-  const t = totals.tokens;
+  const change = delta(totals, previous, t);
+  const tok = (n: number) => fmtTokens(n, t);
+  const noMoney = (n: number) => t("tokShort", { value: tok(n) });
+  const tk = totals.tokens;
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <Tile label="Расход (API-эквивалент)" value={fmtCost(totals) ?? `${fmtTokens(totalTokens(t))} ток.`}>
-        {totals.usd === null && <div>нет цены</div>}
-        <div>{change ?? "нет данных за прошлый период"}</div>
+      <Tile label={t("kpi.spend")} value={fmtCost({ ...totals, estimated: totals.estimated || incomplete }, t) ?? noMoney(totalTokens(tk))}>
+        {totals.usd === null && <div>{t("noPrice")}</div>}
+        <div>{change ?? t("kpi.noPrevious")}</div>
       </Tile>
-      <Tile label="Токены" value={fmtTokens(totalTokens(t))}>
-        <div>{cacheReadShare === null ? "чтение из кэша —" : `чтение из кэша ${fmtPercent(cacheReadShare)}`}</div>
-        <div className="tabular-nums">вход {fmtTokens(t.freshIn)} · кэш {fmtTokens(t.cacheRead)} · запись {fmtTokens(t.cacheWrite)} · выход {fmtTokens(t.output)}</div>
+      <Tile label={t("kpi.tokens")} value={tok(totalTokens(tk))}>
+        <div>{cacheReadShare === null ? t("kpi.cacheReadNone") : t("kpi.cacheRead", { value: fmtPercent(cacheReadShare, t) })}</div>
+        <div className="tabular-nums">{t("kpi.split", { freshIn: tok(tk.freshIn), cacheRead: tok(tk.cacheRead), cacheWrite: tok(tk.cacheWrite), output: tok(tk.output) })}</div>
       </Tile>
-      <Tile label="Компакция ~" value={fmtSaving(comp) ?? `${fmtTokens(comp.tokens)} ток.`}><SavingNote s={comp} /></Tile>
-      <Tile label="Локальные модели ~" value={fmtSaving(local) ?? `${fmtTokens(local.tokens)} ток.`}>
-        <div>vs {local.referenceModel}</div>
-        <SavingNote s={local} />
+      <Tile label={t("kpi.compaction")} value={fmtSaving(comp, t) ?? noMoney(comp.tokens)}><SavingNote s={comp} t={t} /></Tile>
+      <Tile label={t("kpi.local")} value={fmtSaving(local, t) ?? noMoney(local.tokens)}>
+        <div>{t("kpi.vsModel", { model: local.referenceModel })}</div>
+        <SavingNote s={local} t={t} />
       </Tile>
     </div>
   );

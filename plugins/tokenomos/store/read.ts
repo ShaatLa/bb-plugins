@@ -85,9 +85,10 @@ export function summary(db: Database, o: SummaryOptions) {
     localSavings: { usd: local.usd, tokens: Object.values(local.tokens).reduce((a,b) => a+b,0), partial: local.partial, excludesOwnCost: false, referenceModel: o.referenceModel } };
 }
 
-export type Compaction = { before_tokens: number; after_tokens: number; own_cost_known: number };
+export type Compaction = { before_tokens: number; after_tokens: number; own_cost_known: number; before_known: number; after_known: number };
 export type Effect = { model: string; tier: string; band: number; calls_hit: number; calls_miss: number; calls_cross: number; first_gap_hit: number; overhead_fresh_in: number; overhead_cache_read: number; overhead_cache_write: number; overhead_output: number };
 export function compactionEstimate(effects: Effect[], c: Compaction, overrides: Overrides = {}): Saving {
+  if (!c.before_known || !c.after_known) return { usd: null, tokens: 0, partial: true, excludesOwnCost: !c.own_cost_known };
   const delta = c.before_tokens - c.after_tokens;
   let usd: number | null = effects.length ? null : 0, tokens = 0, partial = false;
   for (const e of effects) {
@@ -176,7 +177,9 @@ export function status(db: Database) {
   const states = db.prepare('SELECT source,MAX(state) AS state FROM thread_source GROUP BY source').all() as { source: string; state: string }[];
   for (const id of ['claude-file','codex-file','local-log','agy-log','bb-events']) if (!sources.some(s => s.id===id)) sources.push({ id,lastIngestAt: null,rows: 0 });
   const health = db.prepare('SELECT source,last_ingest_at,last_error,state FROM source_status').all() as { source: string; last_ingest_at: number | null; last_error: string | null; state: string }[];
-  return { sources: sources.map(s => { const h = health.find(h => h.source === s.id); return { ...s, lastIngestAt: h?.last_ingest_at ?? s.lastIngestAt, lastError: h?.last_error ?? null, state: h?.state ?? states.find(t => t.source===s.id)?.state ?? (s.rows ? 'ok' : 'no-data') }; }),
+  const saved = db.prepare("SELECT value FROM cursor WHERE name='backfill-progress'").get() as {value:string}|undefined;
+  const backfill = saved ? JSON.parse(saved.value) as {processedThreads:number;totalThreads:number;done:boolean;startedAt:number|null} : {processedThreads:0,totalThreads:0,done:false,startedAt:null};
+  return { backfill, sources: sources.map(s => { const h = health.find(h => h.source === s.id); return { ...s, lastIngestAt: h?.last_ingest_at ?? s.lastIngestAt, lastError: h?.last_error ?? null, state: h?.state ?? states.find(t => t.source===s.id)?.state ?? (s.rows ? 'ok' : 'no-data') }; }),
     degradedThreads: (db.prepare("SELECT COUNT(*) AS n FROM thread_source WHERE state='degraded'").get() as { n: number }).n, disk: diskStats(db) };
 }
 type Usage = Awaited<ReturnType<PluginBbSdk['system']['usageLimits']>>;

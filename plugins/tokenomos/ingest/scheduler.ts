@@ -32,6 +32,8 @@ export function createScheduler(o: {
 }) {
   const { bb, db, store } = o;
   const dirty = new Set<string>();
+  const continuing = new Set<string>();
+  const liveAt = new Map<string, number>();
   const dtos = new Map<string, ThreadResponse>();
   const environments = new Map<string, string | null>();
   let stopped = false, lastInvalidation = -Infinity;
@@ -62,7 +64,7 @@ export function createScheduler(o: {
   }
   const note = (thread: ThreadResponse, ingest: boolean) => {
     store.noteThread(thread); dtos.set(thread.id, thread);
-    if (ingest) dirty.add(thread.id);
+    if (ingest) { dirty.add(thread.id); liveAt.set(thread.id, Date.now()); }
     invalidate();
   };
   for (const event of ['experimental_thread.events', 'thread.idle', 'thread.created'] as const) bb.events.on(event, ({ thread }) => note(thread, true));
@@ -152,10 +154,26 @@ export function createScheduler(o: {
         && (store.getCursor<string>(`initial-source:${id}`) ?? 'bb-events') === 'bb-events'
         && !store.getCursor<boolean>(`file-found:${id}`)
         && !db.prepare('SELECT 1 FROM source_interval WHERE thread_id=? LIMIT 1').get(id);
-      const eventBatch = await sources!.bbEvents.flushThread(id, fallbackOwned);
+      let eventBatch = await sources!.bbEvents.flushThread(id, fallbackOwned);
+      let touched = eventBatch.touched;
+      const background = () => Date.now() - (liveAt.get(id) ?? -Infinity) >= 5000;
+      for (let burst=1; eventBatch.more && burst<4 && background(); burst++) {
+        await setImmediate(undefined,{signal});
+        eventBatch = await sources!.bbEvents.flushThread(id, fallbackOwned);
+        touched ||= eventBatch.touched;
+      }
+      // A full final page needs a bounded end probe, not another scheduled flush.
+      if (eventBatch.more && background()) {
+        const cursor = db.prepare('SELECT last_seq FROM bb_cursor WHERE thread_id=?').get(id) as {last_seq:number} | undefined;
+        if (cursor) {
+          const tail = await sdk.threads.events.list({threadId:id,afterSeq:String(cursor.last_seq),limit:'1',order:'asc',signal});
+          if (!tail.length) eventBatch.more=false;
+        }
+      }
+      eventBatch.touched=touched;
       if (stopped) return false;
       if (eventBatch.more) {
-        dirty.add(id);
+        continuing.add(id); dirty.add(id);
         if (eventBatch.touched) invalidate();
         return true; // Drain compaction metadata before consuming calls at later timestamps.
       }
@@ -223,7 +241,8 @@ export function createScheduler(o: {
         : fileBatch?.parseErrors ? `Skipped ${fileBatch.parseErrors} invalid transcript lines` : null;
       if (warning) bb.log.warn(`Tokenomos ${sourceId}: ${warning}`);
       status(sourceId, warning, sourceId === 'agy-log' && !agyAvailable ? 'unavailable' : warning ? 'partial' : current(id)!.state);
-      if (fileBatch?.more || eventBatch.more || (desiredFile && (!found || sourceId === 'bb-events'))) dirty.add(id);
+      if (fileBatch?.more) { continuing.add(id); dirty.add(id); }
+      if (desiredFile && (!found || sourceId === 'bb-events')) dirty.add(id);
       if (eventBatch.touched) invalidate();
       return true;
     } catch (e) { if (!signal.aborted) { fail(sourceId,e); dirty.add(id); } return false; }
@@ -261,38 +280,63 @@ export function createScheduler(o: {
       if (!stopped && result.matched) invalidate();
     } catch (e) { fail('compactions',e); }
   }
-  async function* backfill(signal: AbortSignal) {
-    type Cursor = { done: boolean; after?: { createdAt: number; id: string } };
-    const cursor = store.getCursor<Cursor>('backfill') ?? {done:false};
+  type Progress = { processedThreads:number; totalThreads:number; done:boolean; startedAt:number|null };
+  const progress = () => store.getCursor<Progress>('backfill-progress') ?? {processedThreads:0,totalThreads:0,done:false,startedAt:null};
+  async function metadata(signal: AbortSignal) {
+    const cursor = store.getCursor<{archived:boolean;offset:number;done:boolean;total:number}>('backfill-metadata') ?? {archived:false,offset:0,done:false,total:0};
     if (cursor.done) return;
-    const threads = new Map<string, ThreadResponse>();
-    for (const archived of [false,true]) for (let offset=0;;offset+=100) {
-      const page = await sdk.threads.list({archived,includeHidden:true,limit:100,offset,signal});
+    const p = progress(); p.startedAt ??= Date.now(); store.setCursor('backfill-progress',p);
+    while (!cursor.done) {
+      const page = await sdk.threads.list({archived:cursor.archived,includeHidden:true,limit:100,offset:cursor.offset,signal});
       signal.throwIfAborted();
-      let sliceStart = performance.now();
+      db.transaction(() => {
+        for (const dto of page) { store.noteThread(dto); if (!dtos.has(dto.id)) dtos.set(dto.id,dto); }
+        cursor.total += page.length; cursor.offset += page.length;
+        if (page.length<100) { if (cursor.archived) cursor.done=true; else { cursor.archived=true; cursor.offset=0; } }
+        store.setCursor('backfill-metadata',cursor);
+        store.setCursor('backfill-progress',{...progress(),totalThreads:cursor.total});
+      })();
+      invalidate();
+      await setImmediate(undefined,{signal});
+    }
+  }
+  async function* backfill(signal: AbortSignal) {
+    type Cursor = { done:boolean; order:'desc'; after?:{createdAt:number;id:string} };
+    const saved = store.getCursor<Cursor>('backfill');
+    const cursor:Cursor = saved?.order==='desc' ? saved : {done:false,order:'desc'};
+    if (cursor.done) return;
+    if (saved?.order!=='desc') store.setCursor('backfill-progress',{...progress(),processedThreads:0,done:false});
+    let failed=false;
+    let after = cursor.after;
+    for (;;) {
+      signal.throwIfAborted();
+      const page = db.prepare(`SELECT id,created_at FROM threads
+        WHERE created_at<? OR (created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT 100`)
+        .all(after?.createdAt ?? Number.MAX_SAFE_INTEGER,after?.createdAt ?? Number.MAX_SAFE_INTEGER,after?.id ?? '') as {id:string;created_at:number}[];
+      if (!page.length) break;
       for (const dto of page) {
-        threads.set(dto.id,dto);
-        if (performance.now()-sliceStart>=8) { await setImmediate(undefined,{signal}); sliceStart=performance.now(); }
+        do {
+          continuing.delete(dto.id); dirty.delete(dto.id);
+          if (!await flushThread(dto.id,signal)) failed=true;
+          signal.throwIfAborted();
+          yield; // Keep this thread ahead of older history while yielding to live work.
+        } while (continuing.has(dto.id));
+        after={createdAt:dto.created_at,id:dto.id};
+        if (!failed) db.transaction(() => {
+          store.setCursor('backfill',{done:false,order:'desc',after});
+          const p=progress(); store.setCursor('backfill-progress',{...p,processedThreads:p.processedThreads+1});
+        })();
       }
-      yield; // Live work gets a turn while historical pages are collected.
-      if (page.length<100) break;
     }
-    const ordered = [...threads.values()].sort((a,b)=>a.createdAt-b.createdAt || a.id.localeCompare(b.id));
-    let failed = false;
-    for (const dto of ordered) {
-      signal.throwIfAborted();
-      if (cursor.after && (dto.createdAt < cursor.after.createdAt || (dto.createdAt === cursor.after.createdAt && dto.id.localeCompare(cursor.after.id) <= 0))) continue;
-      dtos.set(dto.id,dto);
-      if (!await flushThread(dto.id, signal)) failed = true;
-      signal.throwIfAborted();
-      if (!failed) store.setCursor('backfill',{done:false,after:{createdAt:dto.createdAt,id:dto.id}});
-      yield;
-    }
-    if (!failed) store.setCursor('backfill',{done:true});
+    if (!failed) db.transaction(() => {
+      store.setCursor('backfill',{done:true,order:'desc'});
+      store.setCursor('backfill-progress',{...progress(),done:true});
+    })();
   }
   async function flushDirty(signal: AbortSignal, limit = 50) {
-    for (const id of [...dirty].slice(0,limit)) {
-      signal.throwIfAborted(); dirty.delete(id);
+    const ids = [...new Set([...continuing,...dirty])].slice(0,limit);
+    for (const id of ids) {
+      signal.throwIfAborted(); continuing.delete(id); dirty.delete(id);
       await flushThread(id, signal);
       await setImmediate(undefined, { signal });
     }
@@ -331,21 +375,14 @@ export function createScheduler(o: {
     sources = o.sources(sdk, signal);
     const loop = async () => {
       try {
-        let afterId = '';
-        for (;;) {
-          signal.throwIfAborted();
-          const page = db.prepare("SELECT id FROM threads WHERE provider_id IN ('claude-code','codex') AND id>? ORDER BY id LIMIT 100").all(afterId) as {id:string}[];
-          for (const row of page) dirty.add(row.id);
-          if (page.length<100) break;
-          afterId = page.at(-1)!.id;
-          await setImmediate(undefined,{signal});
-        }
-        let history = backfill(signal), historyDone = false;
+        let history:AsyncGenerator<void,void,unknown>|undefined, historyDone=false;
         while (!signal.aborted) {
           try {
+            if (!history) { await metadata(signal); history=backfill(signal); }
             if (!historyDone) {
               historyDone = !!(await history.next()).done;
-              if (!historyDone) {
+              if (!history) { await metadata(signal); history=backfill(signal); }
+            if (!historyDone) {
                 await flushDirty(signal,1);
                 if (Date.now()-lastExt>=60_000) { lastExt=Date.now(); await external(signal); }
                 await setImmediate(undefined,{signal});
@@ -353,9 +390,10 @@ export function createScheduler(o: {
               }
             }
             await tick(signal);
+            if (continuing.size) { await setImmediate(undefined,{signal}); continue; }
           } catch (e) {
             if (signal.aborted) break;
-            fail('scheduler',e); history=backfill(signal); historyDone=false;
+            fail('scheduler',e); history=undefined; historyDone=false;
           }
           await new Promise<void>(resolve => {
             const abort = () => { clearTimeout(timer); resolve(); };

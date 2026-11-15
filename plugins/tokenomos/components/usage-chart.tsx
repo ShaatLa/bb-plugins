@@ -8,11 +8,12 @@ import { cn } from "../lib/utils";
 import { fmtCost, fmtTokens, fmtUsd, totalTokens, type By } from "./format";
 import { buildChart, type ChartModel, type Row, type Slot } from "./series";
 import { seriesColor } from "./colors";
+import { useT, type T } from "./i18n";
 import { Card, Muted } from "./shared";
 import type { SummaryOutput } from "./types";
 
-const fmtMetric = (metric: ChartModel["metric"], v: number) => (metric === "usd" ? fmtUsd(v) : fmtTokens(v));
-const axisTick = (metric: ChartModel["metric"], v: number) => (metric === "tokens" ? fmtTokens(v) : v < 10 ? `$${+v.toFixed(2)}` : `$${fmtTokens(v)}`);
+const fmtMetric = (metric: ChartModel["metric"], v: number, t: T) => (metric === "usd" ? fmtUsd(v, t) : fmtTokens(v, t));
+const axisTick = (metric: ChartModel["metric"], v: number, t: T) => (metric === "tokens" ? fmtTokens(v, t) : v < 10 ? `$${fmtTokens(+v.toFixed(2), t)}` : `$${fmtTokens(v, t)}`);
 
 /** Segment with a square baseline and a 4px rounded data end; only the top visible segment of a stack rounds. */
 function segment(slots: Slot[], index: number) {
@@ -28,8 +29,9 @@ function segment(slots: Slot[], index: number) {
 }
 
 export function Legend({ slots }: { slots: Slot[] }) {
+  const t = useT();
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label="Легенда">
+    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label={t("chart.legend")}>
       {slots.map((s) => (
         <li key={s.id} className="flex items-center gap-1.5">
           <span aria-hidden className="size-2.5 rounded-[2px]" style={{ background: seriesColor(s.n) }} />
@@ -40,52 +42,53 @@ export function Legend({ slots }: { slots: Slot[] }) {
   );
 }
 
-function DataTable({ model, summary }: { model: ChartModel; summary: SummaryOutput }) {
-  const unit = model.metric === "usd" ? "~$" : "токены";
+function DataTable({ model, summary, t }: { model: ChartModel; summary: SummaryOutput; t: T }) {
+  const unit = model.metric === "usd" ? "~$" : t("chart.unitTokens");
   return (
     <div className="overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Интервал ({unit})</TableHead>
+            <TableHead>{t("chart.interval", { unit })}</TableHead>
             {model.slots.map((s) => <TableHead key={s.id} className="text-right">{s.label}</TableHead>)}
-            <TableHead className="text-right">Всего</TableHead>
+            <TableHead className="text-right">{t("chart.total")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {model.rows.map((row) => (
             <TableRow key={row.start}>
               <TableCell className="whitespace-nowrap">{row.title}</TableCell>
-              {model.slots.map((s) => <TableCell key={s.id} className="text-right tabular-nums">{row[s.id] ? fmtMetric(model.metric, Number(row[s.id])) : "—"}</TableCell>)}
-              <TableCell className="text-right tabular-nums">{fmtMetric(model.metric, row.total)}</TableCell>
+              {model.slots.map((s) => <TableCell key={s.id} className="text-right tabular-nums">{row[s.id] ? fmtMetric(model.metric, Number(row[s.id]), t) : "—"}</TableCell>)}
+              <TableCell className="text-right tabular-nums">{fmtMetric(model.metric, row.total, t)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
-      <span className="sr-only">{summary.buckets.length} интервалов</span>
+      <span className="sr-only">{t("chart.intervals", { n: summary.buckets.length })}</span>
     </div>
   );
 }
 
 export function UsageChart({ summary, by, stale }: { summary: SummaryOutput; by: By; stale: boolean }) {
+  const t = useT();
   const [asTable, setAsTable] = useState(false);
   const range: Range = summary.range;
-  const model = useMemo(() => buildChart(summary, by, range), [summary, by, range]);
+  const model = useMemo(() => buildChart(summary, by, range, t), [summary, by, range, t]);
   const config = useMemo<ChartConfig>(() => Object.fromEntries(model.slots.map((s) => [s.id, { label: s.label, color: seriesColor(s.n) }])), [model]);
   const empty = model.rows.every((r) => r.total === 0);
   const interval = range === "day" ? 2 : range === "month" ? 4 : 0;
   return (
     <Card className={cn("space-y-3 transition-opacity", stale && "opacity-60")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {model.slots.length > 1 ? <Legend slots={model.slots} /> : <span className="text-xs text-muted-foreground">{model.metric === "usd" ? "Расход, ~$" : "Токены"}</span>}
-        <Button variant="ghost" size="sm" aria-pressed={asTable} onClick={() => setAsTable((v) => !v)}>Таблица</Button>
+        {model.slots.length > 1 ? <Legend slots={model.slots} /> : <span className="text-xs text-muted-foreground">{model.metric === "usd" ? t("chart.spend") : t("chart.tokens")}</span>}
+        <Button variant="ghost" size="sm" aria-pressed={asTable} onClick={() => setAsTable((v) => !v)}>{t("chart.table")}</Button>
       </div>
-      {empty ? <Muted>За этот период данных нет.</Muted> : asTable ? <DataTable model={model} summary={summary} /> : (
-        <ChartContainer config={config} className="aspect-auto h-64 w-full" role="img" aria-label={`Расход по интервалам, ${model.rows.length} шт.`} data-bucket-count={model.rows.length}>
+      {empty ? <Muted>{t("chart.empty")}</Muted> : asTable ? <DataTable model={model} summary={summary} t={t} /> : (
+        <ChartContainer config={config} className="aspect-auto h-64 w-full" role="img" aria-label={t("chart.aria", { n: model.rows.length })} data-bucket-count={model.rows.length}>
           <BarChart data={model.rows} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} barCategoryGap="20%">
             <CartesianGrid vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} interval={interval} tickMargin={6} />
-            <YAxis tickLine={false} axisLine={false} width={44} tickFormatter={(v: number) => axisTick(model.metric, v)} />
+            <YAxis tickLine={false} axisLine={false} width={44} tickFormatter={(v: number) => axisTick(model.metric, v, t)} />
             <ChartTooltip shared={false} cursor={false} content={
               <ChartTooltipContent hideLabel formatter={(_v, _n, item) => {
                 const row = item.payload as Row, id = String(item.dataKey), cost = row.costs[id];
@@ -97,10 +100,10 @@ export function UsageChart({ summary, by, stale }: { summary: SummaryOutput; by:
                     <div className="flex items-center gap-2">
                       <span aria-hidden className="h-0.5 w-3 rounded-full" style={{ background: seriesColor(slot.n) }} />
                       <span className="text-muted-foreground">{slot.label}</span>
-                      <span className="ml-auto font-medium tabular-nums text-foreground">{fmtCost(cost) ?? "нет цены"}</span>
+                      <span className="ml-auto font-medium tabular-nums text-foreground">{fmtCost(cost, t) ?? t("noPrice")}</span>
                     </div>
                     <div className="text-muted-foreground tabular-nums">
-                      {fmtTokens(totalTokens(cost.tokens))} ток. · кэш {fmtTokens(cost.tokens.cacheRead)} · выход {fmtTokens(cost.tokens.output)}
+                      {t("chart.tipDetail", { total: fmtTokens(totalTokens(cost.tokens), t), cacheRead: fmtTokens(cost.tokens.cacheRead, t), output: fmtTokens(cost.tokens.output, t) })}
                     </div>
                   </div>
                 );

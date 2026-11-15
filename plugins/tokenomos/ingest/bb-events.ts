@@ -85,11 +85,19 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
                 break;
               }
               case "thread/compacted": {
+                const file=db.prepare(`SELECT c.id FROM compactions c JOIN compaction_file f ON f.compaction_id=c.id
+                  WHERE c.thread_id=? AND c.seq=0 AND ABS(c.at-?)<=300000 ORDER BY ABS(c.at-?) LIMIT 1`).get(threadId,at,at) as {id:string}|undefined;
+                if(file) {
+                  db.prepare('UPDATE compactions SET seq=?,turn_id=?,at=? WHERE id=?').run(e.seq,turnId??'',at,file.id);
+                  effects.recompute(threadId);
+                  break;
+                }
                 const prev=db.prepare("SELECT MAX(seq) AS seq FROM compactions WHERE thread_id=?").get(threadId) as {seq:number|null};
                 const before=db.prepare("SELECT used_tokens FROM context_snap WHERE thread_id=? AND seq<? AND seq>? ORDER BY seq DESC LIMIT 1").get(threadId,e.seq,prev.seq??0) as {used_tokens:number}|undefined;
                 const turn=db.prepare("SELECT model FROM turns WHERE thread_id=? AND turn_id=?").get(threadId,turnId??"") as {model:string}|undefined;
                 db.prepare(`INSERT OR IGNORE INTO compactions(id,thread_id,turn_id,at,before_tokens,model,ttl_ms,seq,before_known) VALUES (?,?,?,?,?,?,?,?,?)`)
                   .run(`bbc:${e.id}`,threadId,turnId??"",at,before?.used_tokens??0,turn?.model??"unknown",store.getCursor<number>(`cache-ttl:${threadId}`)??(thread?.provider_id==="claude-code"?3_600_000:1_800_000),e.seq,+!!before);
+                effects.recompute(threadId);
                 break;
               }
               case "thread/tokenUsage/updated": {

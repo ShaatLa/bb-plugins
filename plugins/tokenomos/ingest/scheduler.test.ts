@@ -15,22 +15,25 @@ let dispose: (()=>Promise<void>) | undefined;
 beforeEach(()=> {vi.useFakeTimers();vi.setSystemTime(1_000_000);});
 afterEach(async()=> {await dispose?.();dispose=undefined;vi.useRealTimers();});
 type TestEvent = {id:string;seq:number;createdAt:number;type:string;data:unknown;scope:{kind:'thread'}|{kind:'turn';turnId:string}};
-function setup(provider='claude-code', found=true, available=true, realEvents?:TestEvent[], externalRpc?: (id:string, method:string, input:unknown)=>Promise<unknown>) {
+function setup(provider='claude-code', found=true, available=true, realEvents?:TestEvent[], externalRpc?: (id:string, method:string, input:unknown)=>Promise<unknown>, listed?:ReturnType<typeof makeThreadResponse>[], resumeMetadata=false) {
   const thread = makeThreadResponse({id:'t',projectId:'p',providerId:provider,environmentId:null,createdAt:1});
-  const {bb,harness} = createFakePluginHost({pluginId:'tokenomos',sdk:{threads:{list:async()=>[],get:async()=>thread,events:{list:async a=>(realEvents??[]).filter(e=>e.seq>Number(a.afterSeq)).slice(0,100)}}}});
+  const list=vi.fn(async(args?:{archived?:boolean;offset?:number;limit?:number;includeHidden?:boolean;projectId?:string})=>(listed??[]).filter(t=>!!t.archivedAt===!!args?.archived).slice(args?.offset??0,(args?.offset??0)+(args?.limit??100)));
+  const {bb,harness} = createFakePluginHost({pluginId:'tokenomos',sdk:{threads:{list,get:async args=>listed?.find(t=>t.id===args.threadId)??thread,events:{list:async a=>(realEvents??[]).filter(e=>e.seq>Number(a.afterSeq)).slice(0,100)}}}});
   dispose=()=>harness.lifecycle.dispose();
   const db=bb.storage.database();bb.storage.migrate(db,MIGRATIONS);const store=createStore(db);
   const settings=bb.settings.define({rawRetentionDays:{type:'number',label:'raw',default:30},rollupRetentionDays:{type:'number',label:'rollup',default:200},referenceModel:{type:'string',label:'ref',default:settingsValue.referenceModel},priceOverrides:{type:'string',label:'price',default:'{}'},includeOutsideBb:{type:'boolean',label:'outside',default:false}});
   const file={locate:vi.fn(async()=>found),flushThread:vi.fn(async(_info?: unknown, _signal?: AbortSignal)=>({rows:[] as UsageRow[],parseErrors:0,commit:vi.fn(),more:undefined as boolean | undefined})),scanOutside:vi.fn(async()=>({rows:[],commit:vi.fn()}))};
-  const events={flushThread:vi.fn(async()=>({rows:[] as UsageRow[],candidates:[] as UsageRow[],touched:false,...({} as {more?:boolean})})),coverage:vi.fn(async()=>({uncoveredStreak:0,firstUncoveredStart:null as number|null,lastCoveredTurnStart:null as number|null})),onRowsApplied:vi.fn()};
+  const events={flushThread:vi.fn(async(_id?:string,_fallback?:boolean)=>({rows:[] as UsageRow[],candidates:[] as UsageRow[],touched:false,...({} as {more?:boolean})})),coverage:vi.fn(async()=>({uncoveredStreak:0,firstUncoveredStart:null as number|null,lastCoveredTurnStart:null as number|null})),onRowsApplied:vi.fn()};
   const ext={pollUsage:vi.fn(async()=>({rows:[] as UsageRow[],available})),pollCompactions:vi.fn(async()=>({matched:0,available:true}))};
-  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?createBbEvents({db,store,sdk,log:bb.log}):events,ext:externalRpc?createExtSource({db,store,callRpc:externalRpc}):ext})});
+  if(resumeMetadata){for(const dto of (listed??[]).slice(0,100))store.noteThread(dto);store.setCursor('backfill-metadata',{archived:false,offset:100,done:false,total:100});}
+  let actualEvents:ReturnType<typeof createBbEvents>|undefined;
+  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?(actualEvents=createBbEvents({db,store,sdk,log:bb.log})):events,ext:externalRpc?createExtSource({db,store,callRpc:externalRpc}):ext})});
   const service = harness.behavior.runService('ingest');
   const emit=()=>harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:1});
   const step=()=>vi.advanceTimersByTimeAsync(5000);
   const source=()=>db.prepare('SELECT source,state FROM thread_source WHERE thread_id=?').get('t');
   const total=()=> (db.prepare('SELECT SUM(fresh_in) n FROM thread_tokens').get() as {n:number}).n;
-  return {bb,harness,db,store,file,events,ext,thread,emit,step,source,total,service};
+  return {bb,harness,db,store,file,events,ext,thread,emit,step,source,total,service,list,actualEvents};
 }
 it.each([['claude-code',true,true,'claude-file'],['codex',true,true,'codex-file'],['local-models',false,true,'local-log'],['antigravity',false,true,'agy-log'],['antigravity',false,false,'bb-events'],['other',false,false,'bb-events']])('selects %s (file %s, RPC %s)',async(provider,found,available,expected)=>{
   const s=setup(provider,found,available);await s.emit();await s.step();expect(s.source()).toMatchObject({source:expected});
@@ -49,11 +52,12 @@ it('keeps fallback after raw expiry and exposes why',async()=>{
   expect(s.source()).toMatchObject({source:'bb-events'});expect(s.total()).toBe(100);expect(s.db.prepare('SELECT last_error FROM source_status WHERE source=?').get('bb-events')).toEqual({last_error:'Source switch deferred: raw rows have expired'});
 });
 it('does not degrade while a large transcript is still being caught up (more: true)',async()=>{
-  const s=setup();
-  s.events.flushThread.mockResolvedValueOnce({rows:[],candidates:[row({key:'bb',ts:900_000,source:'bb-events'})],touched:true});
-  s.events.coverage.mockResolvedValue({uncoveredStreak:3,firstUncoveredStart:900_000,lastCoveredTurnStart:null});
-  s.file.flushThread.mockResolvedValue({rows:[row({key:'old',ts:100_000})],parseErrors:0,commit:vi.fn(),more:true});
+  const s=setup();let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
+  s.events.coverage.mockResolvedValue({uncoveredStreak:3,firstUncoveredStart:900000,lastCoveredTurnStart:null});
+  s.file.flushThread.mockResolvedValueOnce({rows:[row({key:'old',ts:100000})],parseErrors:0,commit:vi.fn(),more:true});
+  s.file.flushThread.mockImplementationOnce(async()=>{await gate;return {rows:[],parseErrors:0,commit:vi.fn(),more:false};});
   await s.emit();await s.step();expect(s.source()).toMatchObject({state:'ok'});
+  s.events.coverage.mockResolvedValue({uncoveredStreak:0,firstUncoveredStart:null,lastCoveredTurnStart:null});release();await vi.advanceTimersByTimeAsync(0);
 });
 it('opens and closes degraded intervals without counting a later transcript of the same call twice',async()=>{
   const s=setup();
@@ -157,9 +161,11 @@ it('accepts thread events while a file flush is awaiting IO',async()=>{
   expect(s.harness.logEntries.filter(e=>e.level==='warn')).toEqual([]);
 });
 it('drains event metadata before reading a transcript',async()=>{
- const s=setup();s.events.flushThread.mockResolvedValue({rows:[],candidates:[],touched:true,more:true});
- await s.emit();await s.step();expect(s.file.locate).not.toHaveBeenCalled();expect(s.file.flushThread).not.toHaveBeenCalled();
- s.events.flushThread.mockResolvedValue({rows:[],candidates:[],touched:true,more:false});await s.step();expect(s.file.flushThread).toHaveBeenCalled();
+ const s=setup();let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
+ s.events.flushThread.mockResolvedValueOnce({rows:[],candidates:[],touched:true,more:true});
+ s.events.flushThread.mockImplementationOnce(async()=>{await gate;return {rows:[],candidates:[],touched:false,more:false};});
+ await s.emit();await s.step();expect(s.file.flushThread).not.toHaveBeenCalled();
+ release();await vi.advanceTimersByTimeAsync(0);await s.step();expect(s.file.flushThread).toHaveBeenCalled();
 });
 it('attributes a transcript call after C2 to C2 when its metadata is beyond the 500-event flush limit',async()=>{
  const events:TestEvent[]=[];
@@ -244,4 +250,39 @@ it('keeps Antigravity contributions and its durable cursor through an RPC outage
  available=true;await vi.advanceTimersByTimeAsync(60000);await s.emit();await s.step();
  expect(s.total()).toBe(100);expect(s.source()).toMatchObject({source:'agy-log'});expect(removed).not.toHaveBeenCalled();expect(cursor()).toEqual({cursor:'one'});
  expect(s.db.prepare("SELECT state FROM source_status WHERE source='agy-log'").get()).toEqual({state:'ok'});
+});
+it('indexes the complete tree before ingestion and backfills newest threads first',async()=>{
+ const listed=Array.from({length:202},(_,i)=>makeThreadResponse({id:`tree-${String(i).padStart(3,'0')}`,createdAt:i+1,providerId:'other',environmentId:null,archivedAt:i===201?999:null,parentThreadId:i===200?'tree-000':null,lifecycleOwnerThreadId:i===199?'tree-000':null}));
+ const s=setup('other',false,false,undefined,undefined,listed);const order:string[]=[];
+ s.events.flushThread.mockImplementation(async id=>{
+   expect(s.db.prepare('SELECT COUNT(*) n FROM threads').get()).toEqual({n:202});
+   expect(s.db.prepare("SELECT parent_id FROM threads WHERE id='tree-200'").get()).toEqual({parent_id:'tree-000'});
+   expect(s.db.prepare("SELECT lifecycle_owner_id FROM threads WHERE id='tree-199'").get()).toEqual({lifecycle_owner_id:'tree-000'});
+   order.push(id!);return {rows:[],candidates:[],touched:false};
+ });
+ await vi.advanceTimersByTimeAsync(0);
+ expect(order).toEqual(listed.map(t=>t.id).reverse());
+ expect(s.store.getCursor('backfill-progress')).toMatchObject({processedThreads:202,totalThreads:202,done:true,startedAt:1000000});
+ expect(s.list.mock.calls.every(([args])=>args?.includeHidden===true && !('projectId' in args!))).toBe(true);
+});
+it('resumes the fast metadata pass at its own page cursor',async()=>{
+ const listed=Array.from({length:130},(_,i)=>makeThreadResponse({id:`resume-${i}`,createdAt:i+1,providerId:'other',environmentId:null}));
+ const s=setup('other',false,false,undefined,undefined,listed,true);
+ await vi.advanceTimersByTimeAsync(0);
+ expect(s.list.mock.calls[0][0]).toMatchObject({offset:100,archived:false});
+ expect(s.db.prepare('SELECT COUNT(*) n FROM threads').get()).toEqual({n:130});
+ expect(s.store.getCursor('backfill-metadata')).toMatchObject({done:true,total:130});
+ expect(s.store.getCursor('backfill-progress')).toMatchObject({processedThreads:130,totalThreads:130,done:true});
+});
+it('drains 10000 background events in five scheduler flushes, without a new live event',async()=>{
+ const history:TestEvent[]=Array.from({length:10000},(_,i)=>({id:`old-${i}`,seq:i+1,createdAt:i+1,type:'thread/identity',data:{providerThreadId:'session'},scope:{kind:'thread'}}));
+ const listed=[makeThreadResponse({id:'t',providerId:'claude-code',createdAt:1,environmentId:null})];
+ const s=setup('claude-code',true,true,history,undefined,listed);
+ const flush=vi.spyOn(s.actualEvents!,'flushThread');
+ s.file.flushThread.mockResolvedValue({rows:[row()],parseErrors:0,commit:vi.fn(),more:false});
+ await vi.advanceTimersByTimeAsync(0);
+ expect(flush).toHaveBeenCalledTimes(20); // Four bounded 500-event calls per scheduler flush.
+ expect(s.db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:10000});
+ expect(s.file.flushThread).toHaveBeenCalledTimes(1);expect(s.total()).toBe(100);
+ expect(s.store.getCursor('backfill-progress')).toMatchObject({done:true,processedThreads:1});
 });

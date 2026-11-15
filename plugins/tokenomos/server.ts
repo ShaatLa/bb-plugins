@@ -25,7 +25,7 @@ const priceOverridesSchema = z.string().refine((text) => {
   } catch {
     return false;
   }
-}, "Нужен JSON-объект с допустимыми ценами моделей");
+}, "Expected a JSON object with valid model prices");
 
 export default function plugin(bb: BbPluginApi) {
   const loopDelay = monitorEventLoopDelay({ resolution: 10 });
@@ -39,20 +39,23 @@ export default function plugin(bb: BbPluginApi) {
   bb.storage.migrate(db, MIGRATIONS);
 
   const settings = bb.settings.define({
+    language: {
+      type: "select", label: "Language", options: ["en", "ru"], experimental_optionLabels: { en: "English", ru: "Русский" }, default: "en",
+    },
     rawRetentionDays: {
-      type: "number", label: "Хранить сырые записи, дней (7–60)", default: 30, experimental_schema: days(7, 60),
+      type: "number", label: "Keep raw records, days (7–60)", default: 30, experimental_schema: days(7, 60),
     },
     rollupRetentionDays: {
-      type: "number", label: "Хранить почасовые итоги, дней (184–400)", default: 200, experimental_schema: days(184, 400),
+      type: "number", label: "Keep hourly rollups, days (184–400)", default: 200, experimental_schema: days(184, 400),
     },
     referenceModel: {
-      type: "select", label: "Эталонная модель для расчёта экономии", options: REFERENCE_MODELS, default: "claude-sonnet-5-5",
+      type: "select", label: "Reference model for savings", options: REFERENCE_MODELS, default: "claude-sonnet-5-5",
     },
     includeOutsideBb: {
-      type: "boolean", label: "Учитывать использование вне BB", default: false,
+      type: "boolean", label: "Count usage outside BB", default: false,
     },
     priceOverrides: {
-      type: "string", label: "Свои цены ($/MTok, JSON)", default: "{}", experimental_multiline: true,
+      type: "string", label: "Custom prices ($/MTok, JSON)", default: "{}", experimental_multiline: true,
       experimental_schema: priceOverridesSchema,
     },
   });

@@ -165,3 +165,37 @@ it('resumes a compressed cursor after cancellation without replaying rows', asyn
   while (more && runs++ < 8) { batch = await readFile(db, path, thread('resume'), parse, { remaining: LIMIT }); more = !!batch.more; apply(batch); }
   expect(more).toBe(false); expect(db.prepare('SELECT count(*) n FROM usage_raw').get()).toEqual({ n: 3500 });
 });
+
+describe('transcript compaction markers', () => {
+  it('uses exact Claude sizes, merges a bb event, preserves Idle Compact, and never resurrects expired markers', async () => {
+    const project=join(dir,'project'); mkdirSync(join(project,'session','subagents'),{recursive:true});
+    const text=fixture('claude-compaction.jsonl'), marker=JSON.parse(text), at=Date.parse(marker.timestamp), path=join(project,'session.jsonl');
+    writeFileSync(path,text); writeFileSync(join(project,'session','subagents','agent-test.jsonl'),text);
+    db.prepare("INSERT INTO compactions(id,thread_id,at,seq,origin) VALUES ('bbc:e','thread',?,10,'idle-compact')").run(at+1000);
+    const source=createClaudeSource({db,store,root:dir}); const batch=await source.flushThread(thread('session'));
+    expect(batch.compactions).toEqual([{threadId:'thread',at,before:151966,after:14803,conv:'',source:'claude-file',key:`ccx:session:${marker.timestamp}`}]); apply(batch);
+    expect(db.prepare('SELECT id,before_tokens,after_tokens,before_known,after_known,origin FROM compactions').all()).toEqual([{id:'bbc:e',before_tokens:151966,after_tokens:14803,before_known:1,after_known:1,origin:'idle-compact'}]);
+    db.prepare('DELETE FROM compactions').run(); writeFileSync(path,text+'\n'); apply(await source.flushThread(thread('session')));
+    expect(db.prepare('SELECT * FROM compactions').all()).toEqual([]);
+  });
+  it('skips copied Claude markers before a fork', async () => {
+    const project=join(dir,'project');mkdirSync(project);writeFileSync(join(project,'session.jsonl'),fixture('claude-compaction.jsonl'));
+    const source=createClaudeSource({db,store,root:dir});const batch=await source.flushThread(thread('session',{isFork:true,createdAt:Date.now()}));
+    expect(batch.compactions).toEqual([]);apply(batch);expect(db.prepare('SELECT * FROM compactions').all()).toEqual([]);
+  });
+  it('gets Codex prompt sizes on either side, resolves after a restart, and excludes native children', async () => {
+    const lines=fixture('codex-compaction.jsonl').trimEnd().split('\n'), meta=JSON.parse(lines[0]), session=meta.payload.id;
+    const date=join(dir,'2026','11','09');mkdirSync(date,{recursive:true});const path=join(date,'rollout-main.jsonl');
+    writeFileSync(path,lines.slice(0,-1).join('\n')+'\n');
+    const child=JSON.parse(lines[0]);child.payload={...child.payload,id:'native-child',session_id:session,parent_thread_id:session};
+    writeFileSync(join(date,'rollout-child.jsonl'),[JSON.stringify(child),...lines.slice(1)].join('\n')+'\n');
+    const options={db,store,root:dir,archivedRoot:join(dir,'archive')};
+    let source=createCodexSource(options), batch=await source.flushThread(thread(session,{provider:'codex'}));
+    expect(batch.compactions).toHaveLength(1);expect(batch.compactions![0]).toMatchObject({before:335606,after:null,conv:'',source:'codex-file'});apply(batch);
+    expect(db.prepare('SELECT before_known,after_known FROM compactions').all()).toEqual([{before_known:1,after_known:0}]);
+    appendFileSync(path,lines.at(-1)+'\n');source=createCodexSource(options);batch=await source.flushThread(thread(session,{provider:'codex'}));
+    expect(batch.compactions![0]).toMatchObject({before:335606,after:50367});apply(batch);
+    expect(db.prepare('SELECT before_tokens,after_tokens,before_known,after_known FROM compactions').all()).toEqual([{before_tokens:335606,after_tokens:50367,before_known:1,after_known:1}]);
+    expect((await source.flushThread(thread(session,{provider:'codex'}))).compactions).toEqual([]);
+  });
+});

@@ -129,3 +129,36 @@ it('persists the initial total beside last-only candidates without advancing it 
  expect(db.prepare("SELECT fresh_in FROM bb_candidate WHERE key GLOB 'bbi:*'").all()).toEqual([{fresh_in:10000}]);
  expect(db.prepare('SELECT partial FROM thread_cov').get()).toBeUndefined();
 });
+
+it('assigns the only surviving snapshot to the last of three historical compactions',async()=>{
+ event('thread/compacted');event('thread/compacted');event('thread/compacted');context(120848);
+ await source().flushThread('t',false);
+ expect(db.prepare('SELECT after_tokens,after_known FROM compactions ORDER BY seq').all()).toEqual([{after_tokens:0,after_known:0},{after_tokens:0,after_known:0},{after_tokens:120848,after_known:1}]);
+});
+it('recomputes historical effects when compactions arrive after already applied calls, idempotently',async()=>{
+ const before=row({key:'before'});context(40000);const c1=event('thread/compacted');context(10000);
+ const between=row({key:'between'});context(50000);const c2=event('thread/compacted');context(12000);const after=row({key:'after'});
+ const s=source(),store=createStore(db);store.applyRows([before,between,after]);s.onRowsApplied([before,between,after]);
+ await s.flushThread('t',false);await source().flushThread('t',false);
+ expect(db.prepare('SELECT compaction_id,calls_hit,calls_miss,first_gap_hit FROM compaction_effect WHERE calls_hit+calls_miss>0 ORDER BY compaction_id').all()).toEqual([
+ {compaction_id:`bbc:${c1.id}`,calls_hit:1,calls_miss:0,first_gap_hit:1},{compaction_id:`bbc:${c2.id}`,calls_hit:1,calls_miss:0,first_gap_hit:1}]);
+ s.onRowsApplied([between,after]);expect(db.prepare('SELECT SUM(calls_hit) n FROM compaction_effect').get()).toEqual({n:2});
+});
+
+it('merges bb events arriving after a file marker without replacing authoritative sizes',async()=>{
+ const {createCompactions}=await import('./compactions');
+ context(90000);const e=event('thread/compacted');context(120848);
+ createCompactions(db,createStore(db),()=>time,false).upsert([{threadId:'t',at:e.createdAt-1000,before:429042,after:16199,conv:'',source:'claude-file',key:'ccx:session:boundary'}]);
+ await source().flushThread('t',false);
+ expect(db.prepare('SELECT before_tokens,after_tokens,seq FROM compactions').all()).toEqual([{before_tokens:429042,after_tokens:16199,seq:e.seq}]);
+});
+
+it('keeps retained interval effects when recomputing with only a suffix of raw calls',async()=>{
+ const {createCompactions}=await import('./compactions');
+ const store=createStore(db), effects=createCompactions(db,store,()=>time,false);
+ const before=row({key:'before'}), at=++time, calls=[row({key:'one'}),row({key:'two'}),row({key:'three'})];
+ store.applyRows([before,...calls]);effects.upsert([{threadId:'t',at,before:40000,after:10000,conv:'',source:'claude-file',key:'ccx:s:1'}]);
+ const saved=db.prepare('SELECT * FROM compaction_effect').all();
+ db.prepare('DELETE FROM usage_raw WHERE ts<?').run(calls[2].ts);effects.recompute('t');
+ expect(db.prepare('SELECT * FROM compaction_effect').all()).toEqual(saved);
+});

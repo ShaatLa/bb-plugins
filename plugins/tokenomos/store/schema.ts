@@ -211,4 +211,14 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE compactions ADD COLUMN expired INTEGER NOT NULL DEFAULT 0`,
   `CREATE TABLE compaction_seen(key TEXT NOT NULL PRIMARY KEY,at INTEGER NOT NULL) STRICT`,
   `CREATE TABLE source_status(source TEXT PRIMARY KEY, last_ingest_at INTEGER, rows INTEGER NOT NULL DEFAULT 0, last_error TEXT, state TEXT NOT NULL DEFAULT 'no-data') STRICT`,
+  // WP10: replay existing transcripts for markers without replaying expired usage.
+  `CREATE TABLE compaction_file(key TEXT PRIMARY KEY, compaction_id TEXT NOT NULL) STRICT`,
+  `CREATE UNIQUE INDEX compaction_file_compaction ON compaction_file(compaction_id)`,
+  `ALTER TABLE file_cursor ADD COLUMN compaction_watermark_ts INTEGER NOT NULL DEFAULT 0`,
+  `UPDATE file_cursor SET "offset"=0`,
+  `DELETE FROM cursor WHERE name LIKE 'file-zstd-complete:%'`,
+  `UPDATE compactions SET after_known=0,after_tokens=0,expired=0 WHERE seq>0 AND EXISTS
+    (SELECT 1 FROM compactions n WHERE n.thread_id=compactions.thread_id AND n.seq>compactions.seq)
+    AND NOT EXISTS (SELECT 1 FROM context_snap s WHERE s.thread_id=compactions.thread_id AND s.seq>compactions.seq
+      AND s.seq<(SELECT MIN(n.seq) FROM compactions n WHERE n.thread_id=compactions.thread_id AND n.seq>compactions.seq))`,
 ];

@@ -7,6 +7,7 @@ import type { Database } from 'better-sqlite3';
 import { bandOf, ESTIMATED, type UsageRow } from '../contract';
 import type { Store } from '../store/write';
 import { combine, outsideThread, readFile, exists, cooperation, LIMIT, type Batch, type FileSource, type ThreadInfo } from './files';
+import { createCompactions, type FileCompaction } from './compactions';
 import { normaliseTier } from './tiers';
 
 type Entry = { rollout_path: string; id: string; root_session: string };
@@ -56,15 +57,30 @@ export function createCodexSource(o: { store: Store; db: Database; root?: string
     for (const row of o.db.prepare('SELECT turn_id,model,tier FROM codex_turn_context WHERE session_id = ?').all(file.id) as Array<{ turn_id: string; model: string; tier: string }>) { await pause(); contexts.set(row.turn_id, { model: row.model, tier: row.tier }); }
     const pending = new Map<string, { model: string; tier: string }>();
     const path = file.rollout_path;
-    const batch = await readFile(o.db, path, t, (line): UsageRow | null => {
+    const stateKey = `codex-compaction:${file.id}`;
+    const state = o.store.getCursor<{ before: number | null; pending: FileCompaction[] }>(stateKey) ?? { before: null, pending: [] };
+    const resolved: FileCompaction[] = [];
+    const batch = await readFile(o.db, path, t, (line): UsageRow | FileCompaction | null => {
       const p = line.payload;
+      if (file.id === file.root_session) {
+        if (line.type === 'compacted' && state.before !== null) {
+          const marker: FileCompaction = { threadId: t.threadId, at: Date.parse(line.timestamp), before: state.before, after: null, conv: '', source: 'codex-file', key: `cxx:${file.id}:${line.ordinal ?? line.timestamp}` };
+          if (!state.pending.some(m => m.key === marker.key)) state.pending.push(marker);
+          return marker;
+        }
+        if (line.type === 'token_usage_record' && Number.isFinite(p?.usage?.input_tokens) && p.usage.input_tokens >= 0) {
+          for (const marker of state.pending) resolved.push({ ...marker, after: p.usage.input_tokens });
+          state.pending = []; state.before = p.usage.input_tokens;
+        }
+      }
       if (line.type === 'turn_context' && p?.turn_id) { const context = { model: p.model ?? 'unknown', tier: p.service_tier ?? '' }; contexts.set(p.turn_id, context); pending.set(p.turn_id, context); return null; }
       if (line.type !== 'token_usage_record' || !p?.response_id || !p.usage) return null;
       const u = p.usage, cacheRead = u.cached_input_tokens ?? 0, cacheWriteShort = u.cache_write_input_tokens ?? 0, freshIn = Math.max(0, (u.input_tokens ?? 0) - cacheRead - cacheWriteShort), output = u.output_tokens ?? 0;
       const ctx = contexts.get(p.turn_id), tierRaw = ctx?.tier ?? '', promptTokens = freshIn + cacheRead + cacheWriteShort;
       return { key: `cx:${p.response_id}`, ts: Date.parse(line.timestamp), threadId: t.threadId, projectId: t.projectId, provider: 'codex', model: ctx?.model ?? 'unknown', tier: normaliseTier(tierRaw), tierRaw, promptTokens, band: bandOf(promptTokens), conv: file.id === file.root_session ? '' : `child:${file.id}`, freshIn, cacheRead, cacheWriteShort, cacheWriteLong: 0, output, reasoning: u.reasoning_output_tokens ?? 0, turnId: p.turn_id ?? null, source: 'codex-file', flags: (!ctx || cacheWriteShort > 0) ? ESTIMATED : 0 };
     }, budget, signal, true);
-    batches.push({ ...batch, commit() { batch.commit(); const stmt = o.db.prepare('INSERT INTO codex_turn_context VALUES (?,?,?,?) ON CONFLICT(session_id,turn_id) DO UPDATE SET model=excluded.model,tier=excluded.tier'); for (const [id, c] of pending) stmt.run(file.id, id, c.model, c.tier); } });
+    const accepted = resolved.filter(m => (!t.isFork || m.at >= t.createdAt) && ((batch.compactions ?? []).some(b => b.key===m.key) || o.db.prepare('SELECT 1 FROM compaction_file WHERE key=?').get(m.key)));
+    batches.push({ ...batch, compactions: [...new Map([...(batch.compactions ?? []), ...accepted].map(m => [m.key,m])).values()], commit() { batch.commit(); createCompactions(o.db,o.store,o.now ?? Date.now,false).upsert(accepted); o.store.setCursor(stateKey,state); const stmt = o.db.prepare('INSERT INTO codex_turn_context VALUES (?,?,?,?) ON CONFLICT(session_id,turn_id) DO UPDATE SET model=excluded.model,tier=excluded.tier'); for (const [id, c] of pending) stmt.run(file.id, id, c.model, c.tier); } });
     }
     return combine(batches);
   };

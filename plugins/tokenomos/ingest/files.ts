@@ -7,13 +7,15 @@ import { setImmediate as yieldNow } from 'node:timers/promises';
 import { createZstdDecompress } from 'node:zlib';
 import type { Database } from 'better-sqlite3';
 import type { UsageRow } from '../contract';
+import { createCompactions, type FileCompaction } from './compactions';
+import { createStore } from '../store/write';
 
 export type ThreadInfo = { threadId: string; providerThreadId: string | null; provider: string; projectId: string; createdAt: number; isFork: boolean; cwd: string | null };
-export type Batch = { rows: UsageRow[]; parseErrors: number; more?: boolean; commit(): void };
+export type Batch = { rows: UsageRow[]; compactions?: FileCompaction[]; parseErrors: number; more?: boolean; commit(): void };
 export interface FileSource {
   locate(t: ThreadInfo, signal?: AbortSignal): Promise<boolean>;
   flushThread(t: ThreadInfo, signal?: AbortSignal): Promise<Batch>;
-  scanOutside(knownSessions: Set<string>, sinceTs: number, signal?: AbortSignal): Promise<{ rows: UsageRow[]; more?: boolean; commit(): void }>;
+  scanOutside(knownSessions: Set<string>, sinceTs: number, signal?: AbortSignal): Promise<{ rows: UsageRow[]; compactions?: FileCompaction[]; more?: boolean; commit(): void }>;
 }
 export const LIMIT = 2 * 1024 * 1024;
 export function cooperation(signal?: AbortSignal) {
@@ -21,7 +23,7 @@ export function cooperation(signal?: AbortSignal) {
   return async () => { signal?.throwIfAborted(); if (performance.now() - last >= 8) { await yieldNow(); signal?.throwIfAborted(); last = performance.now(); } };
 }
 export async function exists(path: string) { try { await stat(path); return true; } catch (e: any) { if (e.code === 'ENOENT') return false; throw e; } }
-type Cursor = { path: string; inode: number; size: number; mtime: number; offset: number; head_hash: string; watermark_ts: number; thread_id: string; root_session: string };
+type Cursor = { path: string; inode: number; size: number; mtime: number; offset: number; head_hash: string; watermark_ts: number; thread_id: string; root_session: string; compaction_watermark_ts: number };
 
 type StreamState = { input: ReturnType<typeof createReadStream>; decoder: ReturnType<typeof createZstdDecompress>; iterator: AsyncIterator<any>; pending: Buffer; head: Buffer; position: number; done: boolean; signature: string; signal?: AbortSignal; abort?: () => void };
 const streams = new Map<string, StreamState>();
@@ -65,7 +67,7 @@ function oGetComplete(db: Database, name: string): string | null {
   const row = db.prepare('SELECT value FROM cursor WHERE name = ?').get(name) as { value: string } | undefined;
   return row ? JSON.parse(row.value) : null;
 }
-export async function readFile(db: Database, path: string, t: ThreadInfo, parse: (line: any) => UsageRow | null, budget: { remaining: number }, signal?: AbortSignal, move = false): Promise<Batch> {
+export async function readFile(db: Database, path: string, t: ThreadInfo, parse: (line: any) => UsageRow | FileCompaction | null, budget: { remaining: number }, signal?: AbortSignal, move = false): Promise<Batch> {
   signal?.throwIfAborted(); const st = await stat(path); const compressed = path.endsWith('.zst');
   let old = db.prepare('SELECT *, "offset" AS offset FROM file_cursor WHERE path = ?').get(path) as Cursor | undefined;
   if (!old && move) {
@@ -113,18 +115,26 @@ export async function readFile(db: Database, path: string, t: ThreadInfo, parse:
     if (carry.length) bytes = Buffer.concat([carry, bytes]);
     const end = bytes.lastIndexOf(10) + 1, watermark = old?.watermark_ts ?? 0;
     let max = watermark, parseErrors = 0, pos = 0; const rows = new Map<string, UsageRow>(), pause = cooperation(signal);
+    const markers = new Map<string, FileCompaction>();
+    let markerMax = old?.compaction_watermark_ts ?? 0;
     const existsRow = db.prepare('SELECT 1 FROM usage_raw WHERE key = ?');
     while (pos < end) {
       const next = bytes.indexOf(10, pos); const text = bytes.toString('utf8', pos, next); pos = next + 1;
       await pause(); let line: any;
       try { line = JSON.parse(text); } catch { parseErrors++; continue; }
       const row = parse(line);
+      if (row && 'before' in row) {
+        if (!Number.isFinite(row.at) || !Number.isFinite(row.before) || row.before < 0 || (row.after !== null && (!Number.isFinite(row.after) || row.after < 0)) || (t.isFork && row.at < t.createdAt)) continue;
+        if (row.at <= (old?.compaction_watermark_ts ?? 0) && !db.prepare('SELECT 1 FROM compaction_file WHERE key=?').get(row.key)) continue;
+        markers.set(row.key, row); markerMax = Math.max(markerMax, row.at); continue;
+      }
       if (!row || !Number.isFinite(row.ts) || (t.isFork && row.ts < t.createdAt)) continue;
       if (row.ts <= watermark && !existsRow.get(row.key) && !rows.has(row.key)) continue;
       rows.set(row.key, row); max = Math.max(max, row.ts);
     }
     signal?.throwIfAborted(); const headHash = hash(compressed ? 4096 : st.size);
-    return { rows: [...rows.values()], parseErrors, more: hasMore, commit() {
+    return { rows: [...rows.values()], compactions: [...markers.values()], parseErrors, more: hasMore, commit() {
+      createCompactions(db, createStore(db), Date.now, false).upsert([...markers.values()]);
       if (!end && hasMore) {
         partial.set(path, { signature, offset, bytes });
         compressedCommit?.(newBytes);
@@ -141,10 +151,11 @@ export async function readFile(db: Database, path: string, t: ThreadInfo, parse:
         VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET inode=excluded.inode,size=excluded.size,mtime=excluded.mtime,
         "offset"=excluded."offset",head_hash=excluded.head_hash,watermark_ts=excluded.watermark_ts,thread_id=excluded.thread_id,root_session=excluded.root_session`)
         .run(path, st.ino, st.size, Math.trunc(st.mtimeMs * 1000), offset + end, headHash, max, t.threadId, t.providerThreadId ?? '');
+      db.prepare('UPDATE file_cursor SET compaction_watermark_ts=? WHERE path=?').run(markerMax,path);
     } };
   } finally { await handle?.close(); }
 }
 export function combine(batches: Batch[]): Batch {
-  return { rows: batches.flatMap(b => b.rows), parseErrors: batches.reduce((n, b) => n + b.parseErrors, 0), more: batches.some(b => b.more), commit() { for (const b of batches) b.commit(); } };
+  return { rows: batches.flatMap(b => b.rows), compactions: batches.flatMap(b => b.compactions ?? []), parseErrors: batches.reduce((n, b) => n + b.parseErrors, 0), more: batches.some(b => b.more), commit() { for (const b of batches) b.commit(); } };
 }
 export const outsideThread = (id: string, provider: string): ThreadInfo => ({ threadId: '', providerThreadId: id, provider, projectId: '~outside', createdAt: 0, isFork: false, cwd: null });

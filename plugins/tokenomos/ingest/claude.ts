@@ -5,6 +5,7 @@ import type { Database } from "better-sqlite3";
 import { bandOf, type UsageRow } from "../contract";
 import type { Store } from "../store/write";
 import { combine, outsideThread, readFile, exists, cooperation, LIMIT, type Batch, type FileSource, type ThreadInfo } from "./files";
+import type { FileCompaction } from './compactions';
 import { normaliseTier } from "./tiers";
 
 export function createClaudeSource(o: { store: Store; db: Database; root?: string; now?: () => number }): FileSource {
@@ -40,7 +41,10 @@ export function createClaudeSource(o: { store: Store; db: Database; root?: strin
     const batches: Batch[] = [], budget = { remaining: LIMIT }, pause = cooperation(signal);
     for (const p of files) {
       await pause(); if (!budget.remaining) { batches.push({ rows: [], parseErrors: 0, more: true, commit() {} }); break; }
-      batches.push(await readFile(o.db, p, t, (line): UsageRow | null => {
+      batches.push(await readFile(o.db, p, t, (line): UsageRow | FileCompaction | null => {
+      if (p === path && line.type === 'system' && line.subtype === 'compact_boundary' && line.compactMetadata?.preTokens !== undefined) {
+        return { threadId: t.threadId, at: Date.parse(line.timestamp), before: line.compactMetadata.preTokens, after: line.compactMetadata.postTokens ?? null, conv: '', source: 'claude-file', key: `ccx:${t.providerThreadId}:${line.timestamp}` };
+      }
       const m = line.message, u = m?.usage;
       if (line.type !== 'assistant' || !u || !m.id || !line.requestId || m.model === '<synthetic>') return null;
       const freshIn = u.input_tokens ?? 0, cacheRead = u.cache_read_input_tokens ?? 0;
