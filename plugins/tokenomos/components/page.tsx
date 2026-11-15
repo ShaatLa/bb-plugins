@@ -21,7 +21,6 @@ export function TokenomosPage({ subPath }: { subPath: string }) {
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className="mx-auto w-full max-w-5xl space-y-4">
-        <BackfillBanner backfill={backfill} />
         <div className="flex flex-wrap items-center gap-3">
           <Tabs value={range} onValueChange={(v) => go(v as typeof range, by)}>
             <TabsList>{RANGE_SEGMENTS.map((r) => <TabsTrigger key={r} value={r}>{t(`range.${r}`)}</TabsTrigger>)}</TabsList>
@@ -42,6 +41,7 @@ export function TokenomosPage({ subPath }: { subPath: string }) {
         )}
         <Threads range={range} />
         <Compactions range={range} />
+        <BackfillBanner backfill={backfill} />
       </div>
     </div>
   );

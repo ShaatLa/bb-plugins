@@ -2,7 +2,6 @@ import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../contract";
 import { fmtInt } from "./format";
 import { useT } from "./i18n";
-import { Card } from "./shared";
 
 /** Progress of the first-run history import; the server may omit it, and `usage` invalidation refreshes it. */
 export type Backfill = { processedThreads: number; totalThreads: number; done: boolean; startedAt?: number };
@@ -18,8 +17,8 @@ export function BackfillBanner({ backfill }: { backfill: Backfill | undefined })
   const t = useT();
   if (!backfill) return null;
   return (
-    <Card role="status" className="py-2 text-sm">
+    <p role="status" className="text-xs text-muted-foreground">
       {t("backfill.banner", { n: backfill.totalThreads, processed: fmtInt(backfill.processedThreads, t), total: fmtInt(backfill.totalThreads, t) })}
-    </Card>
+    </p>
   );
 }
