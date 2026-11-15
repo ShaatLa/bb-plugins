@@ -198,6 +198,16 @@ describe('transcript compaction markers', () => {
     expect(db.prepare('SELECT before_tokens,after_tokens,before_known,after_known FROM compactions').all()).toEqual([{before_tokens:335606,after_tokens:50367,before_known:1,after_known:1}]);
     expect((await source.flushThread(thread(session,{provider:'codex'}))).compactions).toEqual([]);
   });
+  it('relabels a compaction call written before its turn_context, moving rollups with it', async () => {
+    const lines=fixture('codex-compaction.jsonl').trimEnd().split('\n'), session=JSON.parse(lines[0]).payload.id, turn=JSON.parse(lines[1]).payload.turn_id;
+    const context=JSON.stringify({timestamp:'2026-11-10T14:16:45.661Z',type:'turn_context',payload:{turn_id:turn,model:'gpt-6.1-sol',service_tier:'priority'}});
+    const date=join(dir,'2026','11','10');mkdirSync(date,{recursive:true});
+    writeFileSync(join(date,'rollout-main.jsonl'),[lines[0],lines[1],lines[2],context].join('\n')+'\n');
+    const batch=await createCodexSource({db,store,root:dir,archivedRoot:join(dir,'archive')}).flushThread(thread(session,{provider:'codex'}));
+    expect(batch.rows.map(r=>r.model)).toEqual(['unknown']);apply(batch);
+    expect(db.prepare('SELECT model,tier,tier_raw FROM usage_raw').all()).toEqual([{model:'gpt-6.1-sol',tier:'fast',tier_raw:'priority'}]);
+    for (const table of ['thread_tokens','usage_hourly']) expect(db.prepare(`SELECT model,tier,SUM(calls) AS calls FROM ${table} GROUP BY 1,2`).all()).toEqual([{model:'gpt-6.1-sol',tier:'fast',calls:1}]);
+  });
 });
 
 it.each(['claude','codex'])('filters 5 MiB %s records and preserves bounded compaction metadata under 50 ms slices',async(provider)=>{

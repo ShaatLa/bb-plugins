@@ -230,5 +230,7 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE bb_candidate ADD COLUMN provider_thread_id TEXT NOT NULL DEFAULT ''`,
   `CREATE TABLE cache_ttl(thread_id TEXT NOT NULL,provider_thread_id TEXT NOT NULL,at INTEGER NOT NULL,ttl_ms INTEGER NOT NULL,PRIMARY KEY(thread_id,provider_thread_id)) STRICT`,
   `CREATE TABLE context_cleared(thread_id TEXT PRIMARY KEY,at INTEGER NOT NULL) STRICT`,
+  // Codex writes a compaction's token record before that turn's turn_context; such calls wait here for their model.
+  `CREATE INDEX usage_raw_unknown_turn ON usage_raw(turn_id) WHERE model='unknown'`,
 
 ];

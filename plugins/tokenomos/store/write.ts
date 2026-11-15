@@ -4,6 +4,8 @@ import type { ApplyResult, SourceId, ThreadDtoLike, UsageRow } from "../contract
 export interface Store {
   applyRows(rows: UsageRow[]): ApplyResult;
   deleteContribution(threadId: string, source: SourceId, fromTs?: number): void;
+  /** Moves a stored call to other model/tier dimensions, keeping both rollups consistent. */
+  relabel(key: string, dims: { model: string; tier: string; tierRaw: string; flags: number }): void;
   getCursor<T>(name: string): T | null;
   setCursor(name: string, value: unknown): void;
   noteThread(dto: ThreadDtoLike): void;
@@ -67,6 +69,10 @@ export function createStore(db: Database): Store {
      FROM usage_raw WHERE thread_id = ? AND source = ? AND ts >= ?`,
   );
   const deleteRaw = db.prepare(`DELETE FROM usage_raw WHERE key = ?`);
+  const empty = `calls = 0 AND ${COMPONENTS.map((c) => `${c} = 0`).join(" AND ")}`;
+  const dropEmptyHourly = db.prepare(`DELETE FROM usage_hourly WHERE hour=@hour AND provider=@provider AND model=@model AND tier=@tier AND band=@band AND project_id=@projectId AND thread_id=@threadId AND ${empty}`);
+  const dropEmptyThread = db.prepare(`DELETE FROM thread_tokens WHERE thread_id=@threadId AND provider=@provider AND model=@model AND tier=@tier AND band=@band AND ${empty}`);
+  const setDims = db.prepare(`UPDATE usage_raw SET model=@model, tier=@tier, tier_raw=@tierRaw, flags=@flags WHERE key=@key`);
 
   /** Adds (or, with a negative sign, removes) one row's tokens to both rollups. */
   const roll = (
@@ -77,6 +83,8 @@ export function createStore(db: Database): Store {
     const params = { ...dims, ...tokens, calls, hour: Math.floor(dims.ts / HOUR_MS) * HOUR_MS };
     addHourly.run(params);
     if (dims.threadId !== "") addThread.run(params);
+    // A removal can leave an all-zero row; drop it so an unpriced model does not mark the totals partial.
+    if (calls < 0) { dropEmptyHourly.run(params); dropEmptyThread.run(params); }
   };
 
   const apply = db.transaction((rows: UsageRow[]): ApplyResult => {
@@ -123,6 +131,17 @@ export function createStore(db: Database): Store {
     return rows.length;
   });
 
+  const relabelTx = db.transaction((key: string, dims: { model: string; tier: string; tierRaw: string; flags: number }): boolean => {
+    const old = getRaw.get(key);
+    if (!old) return false;
+    const tokens = {} as Tokens, negated = {} as Tokens;
+    for (const c of COMPONENTS) { tokens[c] = old[c]; negated[c] = -old[c]; }
+    const at = { ts: old.ts, threadId: old.thread_id, projectId: old.project_id, provider: old.provider, band: old.band };
+    roll({ ...at, model: old.model, tier: old.tier }, negated, -1);
+    setDims.run({ key, ...dims });
+    roll({ ...at, model: dims.model, tier: dims.tier }, tokens, 1);
+    return true;
+  });
   const readCursor = db.prepare<[string], { value: string }>(`SELECT value FROM cursor WHERE name = ?`);
   const writeCursor = db.prepare(
     `INSERT INTO cursor (name, value) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value`,
@@ -144,6 +163,9 @@ export function createStore(db: Database): Store {
     },
     deleteContribution(threadId, source, fromTs = 0) {
       if (deleteTx(threadId, source, fromTs)) version++;
+    },
+    relabel(key, dims) {
+      if (relabelTx(key, dims)) version++;
     },
     getCursor<T>(name: string): T | null {
       const row = readCursor.get(name);

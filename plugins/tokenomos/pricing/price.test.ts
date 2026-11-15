@@ -97,7 +97,10 @@ describe("resolveModel", () => {
   });
 
   test("unknown model → null", () => {
-    expect(resolveModel("codex-auto-review")).toBeNull();
+    expect(resolveModel("some-future-model")).toBeNull();
+    // The Codex reviewer has no public price: it resolves, but as an unverified estimate.
+    expect(resolveModel("codex-auto-review")).toBe("codex-auto-review");
+    expect(listPrices().find((p) => p.model === "codex-auto-review")?.verified).toBe(false);
   });
 });
 

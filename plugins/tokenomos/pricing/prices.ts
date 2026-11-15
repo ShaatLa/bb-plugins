@@ -210,6 +210,18 @@ export const PRICES: Record<string, Entry> = {
     verified: true,
     source: "developers.openai.com/api/docs/pricing 2026-11-15",
   },
+  // Codex's hidden approval reviewer (guardian child sessions) has no public API price;
+  // it is priced like the default workhorse and flagged as an estimate.
+  "codex-auto-review": {
+    rates: { input: 2, cacheRead: 0.10, cacheWriteShort: 2.50, cacheWriteLong: 5, output: 10 },
+    long: {
+      aboveTokens: 272_000,
+      rates: { input: 4, cacheRead: 0.20, cacheWriteShort: 5, cacheWriteLong: 10, output: 15 },
+    },
+    tiers: { standard: 1, fast: 2, flex: 0.5, batch: 0.5, ultrafast: 6 },
+    verified: false,
+    source: "no public price; gpt-6.1-sol rates as an estimate",
+  },
 
   // ───────────────────────────────────────────── Gemini ──────────────────────────────────────────
 

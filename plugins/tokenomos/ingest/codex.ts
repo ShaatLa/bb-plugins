@@ -86,6 +86,13 @@ export function createCodexSource(o: { store: Store; db: Database; root?: string
     for (const row of o.db.prepare('SELECT rollout_path FROM codex_index').all() as Array<{ rollout_path: string }>) { await pause(); if (!await exists(row.rollout_path)) o.db.prepare('DELETE FROM codex_index WHERE rollout_path = ?').run(row.rollout_path); }
   };
   const entries = (id: string) => o.db.prepare('SELECT rollout_path,id,root_session FROM codex_index WHERE root_session = ?').all(id) as Entry[];
+  // A compaction's token record precedes its turn_context, so the call is stored as 'unknown' and relabelled once the turn's model is known.
+  const unknownCalls = o.db.prepare(`SELECT r.key, r.cache_write_short, r.flags, c.model, c.tier FROM usage_raw r
+    JOIN codex_turn_context c ON c.turn_id = r.turn_id AND c.model != 'unknown' WHERE r.model = 'unknown' AND r.provider = 'codex' AND r.turn_id != ''`);
+  const relabelUnknown = () => {
+    for (const r of unknownCalls.all() as { key: string; cache_write_short: number; flags: number; model: string; tier: string }[])
+      o.store.relabel(r.key, { model: r.model, tier: normaliseTier(r.tier), tierRaw: r.tier, flags: r.cache_write_short > 0 ? r.flags : r.flags & ~ESTIMATED });
+  };
   const flushEntries = async (t: ThreadInfo, files: Entry[], signal?: AbortSignal): Promise<Batch> => {
     const batches: Batch[] = [], budget = { remaining: LIMIT }, pause = cooperation(signal);
     for (const file of files) {
@@ -117,7 +124,7 @@ export function createCodexSource(o: { store: Store; db: Database; root?: string
       return { providerThreadId:file.id, key: `cx:${p.response_id}`, ts: Date.parse(line.timestamp), threadId: t.threadId, projectId: t.projectId, provider: 'codex', model: ctx?.model ?? 'unknown', tier: normaliseTier(tierRaw), tierRaw, promptTokens, band: bandOf(promptTokens), conv: file.id === file.root_session ? '' : `child:${file.id}`, freshIn, cacheRead, cacheWriteShort, cacheWriteLong: 0, output, reasoning: u.reasoning_output_tokens ?? 0, turnId: p.turn_id ?? null, source: 'codex-file', flags: (!ctx || cacheWriteShort > 0) ? ESTIMATED : 0 };
     }, budget, signal, true, decodeCodex);
     const accepted = resolved.filter(m => (!t.isFork || m.at >= t.createdAt) && ((batch.compactions ?? []).some(b => b.key===m.key) || o.db.prepare('SELECT 1 FROM compaction_file WHERE key=?').get(m.key)));
-    batches.push({ ...batch, compactions: [...new Map([...(batch.compactions ?? []), ...accepted].map(m => [m.key,m])).values()], commit() { batch.commit(); createCompactions(o.db,o.store,o.now ?? Date.now,false).upsert(accepted); o.store.setCursor(stateKey,state); const stmt = o.db.prepare('INSERT INTO codex_turn_context VALUES (?,?,?,?) ON CONFLICT(session_id,turn_id) DO UPDATE SET model=excluded.model,tier=excluded.tier'); for (const [id, c] of pending) stmt.run(file.id, id, c.model, c.tier); } });
+    batches.push({ ...batch, compactions: [...new Map([...(batch.compactions ?? []), ...accepted].map(m => [m.key,m])).values()], commit() { batch.commit(); createCompactions(o.db,o.store,o.now ?? Date.now,false).upsert(accepted); o.store.setCursor(stateKey,state); const stmt = o.db.prepare('INSERT INTO codex_turn_context VALUES (?,?,?,?) ON CONFLICT(session_id,turn_id) DO UPDATE SET model=excluded.model,tier=excluded.tier'); for (const [id, c] of pending) stmt.run(file.id, id, c.model, c.tier); relabelUnknown(); } });
     }
     return combine(batches);
   };
