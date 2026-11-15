@@ -14,14 +14,19 @@ export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
 export const LOG_RETENTION_MS = 30 * 86_400_000;
 
-// A read-only log of the compactions this plugin dispatched, for other plugins (Tokenomos) through bb.sdk.plugins.callRpc.
+// A read-only log of the compactions this plugin dispatched, for other plugins (Tokenomos) through bb.sdk.plugins.callRpc,
+// including those the user started with the thread header's Compact button (`compact`, trigger "manual").
 // An entry's id is its storage key without the prefix: <ordering key>:<at>:<thread>, both times zero-padded ms, so ids sort
 // in log order and stay stable across reloads.
-export type Compaction = { id: string; threadId: string; at: number; trigger: "idle" | "threshold"; usedTokensBefore: number; contextWindow: number | null };
+export type Compaction = { id: string; threadId: string; at: number; trigger: "idle" | "threshold" | "manual"; usedTokensBefore: number | null; contextWindow: number | null };
 export const rpcContract = defineRpcContract({
   "compactions.list": {
     input: z.object({ since: z.number().int().nonnegative().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }).strict(),
     output: z.custom<{ items: Compaction[]; nextCursor?: string }>(),
+  },
+  compact: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.custom<{ ok: true }>(),
   },
 });
 const LOG = "log:";
@@ -145,7 +150,25 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
       }
       return more ? { items, nextCursor: items.at(-1)!.id } : { items };
     },
+    compact: async ({ threadId }) => { await manual(threadId); return { ok: true as const }; },
   });
+
+  // The header button: any provider, regardless of the settings, size and keep. The server still refuses a thread that is
+  // not idle or errored. OWN makes the stop ending this compaction turn start no checks, as for the plugin's own.
+  async function manual(threadId: string) {
+    if (inflight.has(threadId)) throw new Error("An earlier compaction of this thread has not finished");
+    inflight.add(threadId);
+    try {
+      // usedTokensBefore is null when bb does not know the context size.
+      const { usedTokens: used, modelContextWindow: window } = (await bb.sdk.threads.timeline({ threadId })).contextWindowUsage ?? {};
+      await bb.storage.kv.set(OWN + threadId, true);
+      try { await bb.sdk.threads.compact({ threadId }); } catch (error) { await bb.storage.kv.delete(OWN + threadId); throw error; }
+      record({ threadId, trigger: "manual", usedTokensBefore: used ?? null, contextWindow: window ?? null });
+      // The usage figure may still show the pre-compaction size until the next turn.
+      if (used != null) await bb.storage.kv.set(COMPACTED + threadId, used);
+    } finally { inflight.delete(threadId); }
+    bb.log.info(`Compact ${threadId}: compacted from the thread header`);
+  }
 
   const atOnce = (threadId: string, period: number) => {
     if (config.thresholdPercent === "off") return;

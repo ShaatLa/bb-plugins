@@ -20,6 +20,9 @@ thread costs as much as waking it.
   over the threshold after compaction waits for a real turn before the next one.
 - Settings: on/off, the minimum context in tokens for the 50-minute check, and the window
   share for compacting at once (70–95%, default 80%, or off).
+- A Compact button in the open thread's header compacts that thread now, on any provider,
+  whatever the settings, context size or keep. It is enabled only while the thread is idle
+  or failed, since bb compacts nothing else; the stop ending that compaction runs no checks.
 
 ## Limitation
 
@@ -48,13 +51,15 @@ Idle Compact works the same whether anything reads it.
 
 ```
 input:  { since?: number /* ms, exclusive */, after?: string /* nextCursor */, limit?: number /* 1–500, default 100 */ }
-output: { items: { id, threadId, at, trigger: "idle" | "threshold", usedTokensBefore, contextWindow: number | null }[], nextCursor?: string }
+output: { items: { id, threadId, at, trigger: "idle" | "threshold" | "manual", usedTokensBefore: number | null, contextWindow: number | null }[], nextCursor?: string }
 ```
 
 - An entry is written when the server accepts the compaction (`at`, ms). Refused or failed
   attempts, and compactions started by anything else, are not logged.
-- `trigger` is `idle` for the 50-minute check and `threshold` for compacting at once by
-  window share. The size after compaction is not known here; read it from the thread.
+- `trigger` is `idle` for the 50-minute check, `threshold` for compacting at once by
+  window share and `manual` for the header button. `usedTokensBefore` is null only for
+  `manual`, when bb does not know the context size. The size after compaction is not known
+  here; read it from the thread.
 - Items are in log order, which is time order unless the clock moved back. `at` is the
   real acceptance time; `id` is unique and stable across reloads, and a new entry always
   sorts after every entry already readable, so paging with `after` never skips one.

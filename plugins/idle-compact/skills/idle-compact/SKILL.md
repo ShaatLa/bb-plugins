@@ -14,6 +14,10 @@ context at 80% of the model's window or more (the share is a setting, 70–95% o
 the former auto-compact plugin did. A failed compaction is not retried
 until the context changes.
 
+The Compact button in the open thread's header compacts that thread now, on any
+provider and regardless of the settings or keep; it is enabled only while the thread is
+idle or failed. Agents compact a thread with `bb thread compact` instead.
+
 Commands:
 - `bb idle-compact status [--json]`: settings, threads due for compaction and when, and
   threads that keep their full context.

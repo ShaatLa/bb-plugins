@@ -9,11 +9,12 @@
   },
   "bb": {
     "name": "Idle Compact",
-    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm, and any thread that stops with its context at 80% of the window or more.",
+    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm, and any thread that stops with its context at 80% of the window or more. Adds a Compact button to the thread header.",
     "branding": {
       "icon": "Minimize2"
     },
-    "server": "./server.ts"
+    "server": "./server.ts",
+    "app": "./app.ts"
   },
   "scripts": {
     "build": "bb plugin build",
@@ -28,6 +29,7 @@
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.6",
     "hono": "^4.11.9",
+    "react": "^19.3.1",
     "typescript": "^5.7.0",
     "vitest": "^5.0.5"
   },

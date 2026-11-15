@@ -282,3 +282,34 @@ it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per writ
   await compactAgain(930_000);
   expect(await kv.list("log:")).toHaveLength(3);
 });
+
+it("compacts from the header button regardless of provider, settings and size, logs it as manual, and starts nothing when its turn ends", async () => {
+  const h = await setup({ used: 50_000, provider: "codex" });
+  await h.host.harness.setSettings({ enabled: false });
+  const compact = (threadId = "thr_a") => h.host.harness.behavior.callRpc("compact", { threadId }) as Promise<any>;
+  const list = async () => (await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items;
+  await h.emit("thread.idle");
+  const t0 = h.now();
+  // A double click: the second call is refused while the first is in flight.
+  const [first, second] = await Promise.allSettled([compact(), compact()]);
+  expect(first).toEqual({ status: "fulfilled", value: { ok: true } });
+  expect(second).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/has not finished/) }) });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await list()).toEqual([expect.objectContaining({ threadId: "thr_a", at: t0, trigger: "manual", usedTokensBefore: 50_000, contextWindow: 1_000_000 })]);
+  // Its compaction turn ends over the threshold: no check runs.
+  await h.host.harness.setSettings({ enabled: true });
+  await h.emit("thread.active"); h.state.used = 900_000; await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  // A refused call is not logged and leaves no marker: the next real stop is checked as usual.
+  h.compact.mockRejectedValueOnce(new Error("Context can only be compacted while the thread is idle or errored"));
+  await expect(compact()).rejects.toThrow(/only be compacted/);
+  expect(await list()).toHaveLength(1);
+  h.state.provider = "claude-code"; h.state.used = 910_000;
+  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(3);
+  // An unknown context size is logged as null.
+  h.state.used = undefined as never;
+  await h.emit("thread.active"); await h.emit("thread.idle");
+  await compact();
+  expect((await list()).at(-1)).toMatchObject({ trigger: "manual", usedTokensBefore: null });
+});
