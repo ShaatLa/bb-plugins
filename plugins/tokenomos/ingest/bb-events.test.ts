@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import type { PluginBbSdk, PluginLogger } from '@get-bb/plugin-sdk';
 import { readFileSync } from 'node:fs';
-import { type UsageRow, RECOVERED } from '../contract';
+import { type UsageRow, BACKFILLED, ESTIMATED, RECOVERED } from '../contract';
 import { MIGRATIONS } from '../store/schema';
 import { createStore } from '../store/write';
 import { createBbEvents, onRowsApplied } from './bb-events';
@@ -23,7 +23,7 @@ beforeEach(()=>{db=new Database(':memory:');for(const sql of [...MIGRATIONS])db.
 afterEach(()=>db.close());
 it('joins the first accepted request, ignoring steers and queued execution until its own turn, across restart',async()=>{
  request('r1');request('queued','m2');event('turn/started');accept('r1');request('steer','m3');accept('steer');usage(100,100);
- expect((await source().flushThread('t',true)).rows[0]).toMatchObject({model:'m1',tier:'standard',tierRaw:'default',turnId:'t1',flags:0});
+ expect((await source().flushThread('t',true)).rows[0]).toMatchObject({model:'m1',tier:'standard',tierRaw:'default',turnId:'t1',flags:BACKFILLED|ESTIMATED});
  event('turn/completed');event('turn/started',undefined,'t2');accept('queued','t2');usage(180,80,undefined,'t2');
  expect((await source().flushThread('t',true)).rows[0]).toMatchObject({model:'m2',turnId:'t2'});expect((await source().flushThread('t',true)).rows).toEqual([]);
 });
@@ -49,7 +49,7 @@ it('does not reuse a snapshot before the previous compaction; pending expires af
 it('reads real payloads and recognizes manual compact without claiming absent own usage',async()=>{
  const real=JSON.parse(readFileSync(new URL('./fixtures/bb/real-events.json',import.meta.url),'utf8')) as Array<{id:string;sequence:number;created_at:number;turn_id:string|null;type:string;data:unknown}>;
  events=real.map(e=>({id:e.id,seq:e.sequence,createdAt:e.created_at,type:e.type,data:e.data,scope:e.turn_id?{kind:'turn',turnId:e.turn_id}:{kind:'thread'}}));time=events.at(-1)!.createdAt;
- const {rows}=await source().flushThread('t',true);expect(log.warn).not.toHaveBeenCalled();expect(rows[0]).toMatchObject({freshIn:62,cacheRead:6140824,cacheWriteShort:32192,output:12168});expect(db.prepare("SELECT compaction_only FROM turns WHERE turn_id='daa6b08a7b-t1'").get()).toEqual({compaction_only:1});expect(db.prepare("SELECT own_cost_known FROM compactions WHERE turn_id='daa6b08a7b-t1'").get()).toEqual({own_cost_known:0});
+ const {rows}=await source().flushThread('t',true);expect(log.warn).not.toHaveBeenCalled();expect(rows[0]).toMatchObject({freshIn:226,cacheRead:17538311,cacheWriteShort:147020,output:55593});expect(db.prepare("SELECT compaction_only FROM turns WHERE turn_id='daa6b08a7b-t1'").get()).toEqual({compaction_only:1});expect(db.prepare("SELECT own_cost_known FROM compactions WHERE turn_id='daa6b08a7b-t1'").get()).toEqual({own_cost_known:0});
 });
 it('counts the trailing uncovered streak using main file rows and completion grace',async()=>{
  for(let i=1;i<=5;i++){time=i*10000;event('turn/started',undefined,`t${i}`);usage(i*100,100,undefined,`t${i}`);event('turn/completed',undefined,`t${i}`);}const s=source();await s.flushThread('t',false);
@@ -76,4 +76,31 @@ it('caps a flush at five pages and resumes at its saved cursor',async()=>{
   expect(db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:500});
   expect((await s.flushThread('t',false)).more).toBe(false);expect(list).toHaveBeenCalledTimes(7);
   expect(db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:601});
+});
+
+it('backfills one accumulated snapshot per new counter and seeds subsequent live deltas',async()=>{
+ usage(10000,100);
+ const s=source(), first=await s.flushThread('t',true);
+ expect(first.rows).toHaveLength(1);
+ expect(first.rows[0]).toMatchObject({key:'bb:t:e1',freshIn:10000,flags:BACKFILLED|ESTIMATED});
+ expect(db.prepare('SELECT partial FROM thread_cov WHERE thread_id=?').get('t')).toEqual({partial:1});
+ usage(10100,100);
+ const next=await source().flushThread('t',true);
+ expect(next.rows).toHaveLength(1);expect(next.rows[0].freshIn).toBe(100);expect(next.rows[0].flags & (BACKFILLED|RECOVERED)).toBe(0);
+});
+it('backfills each Codex counter scope independently, including candidates',async()=>{
+ db.prepare("UPDATE threads SET provider_id='codex'").run();usage(10000,100);usage(8000,80,'child');usage(10200,200);
+ const result=await source().flushThread('t',false);
+ expect(result.rows).toEqual([]);
+ expect(result.candidates.map(r=>[r.freshIn,r.conv,!!(r.flags&BACKFILLED)])).toEqual([[10000,'',true],[8000,'nested:child',true],[200,'',false]]);
+});
+it('assigns historical calls to their compaction intervals after both compactions are loaded',async()=>{
+ const before=row({key:'before'});context(40000);const c1=event('thread/compacted');context(10000);
+ const between1=row({key:'between1'}),between2=row({key:'between2'});context(50000);const c2=event('thread/compacted');context(12000);const after=row({key:'after'});
+ const s=source();await s.flushThread('t',false);
+ s.onRowsApplied([after,between2,before,between1]);
+ expect(db.prepare('SELECT compaction_id,calls_hit,calls_miss,first_gap_hit FROM compaction_effect ORDER BY compaction_id').all()).toEqual([
+  {compaction_id:`bbc:${c1.id}`,calls_hit:2,calls_miss:0,first_gap_hit:1},
+  {compaction_id:`bbc:${c2.id}`,calls_hit:1,calls_miss:0,first_gap_hit:1},
+ ]);
 });

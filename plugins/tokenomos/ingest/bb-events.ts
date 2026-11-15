@@ -2,7 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { PluginBbSdk, PluginLogger } from "@get-bb/plugin-sdk";
 import { setImmediate } from "node:timers/promises";
 import { z } from "zod";
-import { bandOf, ESTIMATED, RECOVERED, type UsageRow } from "../contract";
+import { bandOf, BACKFILLED, ESTIMATED, RECOVERED, type UsageRow } from "../contract";
 import type { Store } from "../store/write";
 import { normaliseTier } from "./tiers";
 import { createCompactions } from "./compactions";
@@ -104,7 +104,10 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
                 const make=(c:Components,key:string,flags:number):UsageRow=>{const promptTokens=c.freshIn+c.cacheRead+c.cacheWriteShort+c.cacheWriteLong;return {...c,key,ts:at,threadId,projectId:thread?.project_id??"",provider:thread?.provider_id??"",model:turn?.model||"unknown",tier:turn?.tier||"standard",tierRaw:turn?.tier_raw??"",promptTokens,band:bandOf(promptTokens),conv:d.parentToolCallId?`nested:${d.parentToolCallId}`:"",turnId,source:"bb-events",flags:flags|(!exact?ESTIMATED:0)};};
                 const last=components(u.last);
                 const estimated=u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens&&u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens+u.last.cachedInputTokens;
-                if(u.last.totalTokens>0) batch.push(make(last,`bb:${threadId}:${e.id}`,estimated?ESTIMATED:0));
+                if (!previous) {
+                  if (u.total.totalTokens>0) batch.push(make(components(u.total),`bb:${threadId}:${e.id}`,BACKFILLED|ESTIMATED));
+                  db.prepare("INSERT INTO thread_cov(thread_id,partial) VALUES (?,1) ON CONFLICT(thread_id) DO UPDATE SET partial=1").run(threadId);
+                } else if(u.last.totalTokens>0) batch.push(make(last,`bb:${threadId}:${e.id}`,estimated?ESTIMATED:0));
                 const gap=previous ? Math.max(0,u.total.totalTokens-(u.total.totalTokens>=previous.totalTokens?previous.totalTokens:0)-u.last.totalTokens) : 0;
                 if(gap>0) {
                   const total=components(u.total),base=previous&&u.total.totalTokens>=previous.totalTokens?components(previous):components({...u.total,totalTokens:0,inputTokens:0,cachedInputTokens:0,outputTokens:0,cacheReadInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});

@@ -43,7 +43,9 @@ export function createCompactions(db: Database, store: Store, now: () => number)
     for (const row of [...rows].sort((a,b)=>a.ts-b.ts)) {
       if (row.conv || !row.threadId) continue;
       const previous = store.getCursor<{ ts: number; model: string }>(`main-call:${row.threadId}`);
-      const c = db.prepare("SELECT * FROM compactions WHERE thread_id=? ORDER BY at DESC,seq DESC LIMIT 1").get(row.threadId) as Compaction | undefined;
+      // Summary usage precedes the compaction whose overhead it pays for.
+      for (const own of db.prepare("SELECT * FROM compactions WHERE thread_id=? AND turn_id=? AND at>=?").all(row.threadId,row.turnId ?? "",row.ts) as Compaction[]) overhead(own);
+      const c = db.prepare("SELECT * FROM compactions WHERE thread_id=? AND at<=? ORDER BY at DESC,seq DESC LIMIT 1").get(row.threadId,row.ts) as Compaction | undefined;
       if (c && row.ts>=c.at && !c.after_known && !(c as Compaction & {expired:number}).expired) {
         const key = `compaction-waiting:${row.threadId}`;
         const waiting = store.getCursor<UsageRow[]>(key) ?? [];
@@ -64,7 +66,6 @@ export function createCompactions(db: Database, store: Store, now: () => number)
           .run(c.id,row.model,row.tier,row.band,+(!cross&&hit),+(!cross&&!hit),+cross,+(first&&hit));
       }
       if (!previous || row.ts>=previous.ts) store.setCursor(`main-call:${row.threadId}`,{ts:row.ts,model:row.model});
-      if (c) overhead(c);
     }
   });
   applyEffects = applied;
