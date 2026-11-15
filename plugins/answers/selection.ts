@@ -1,5 +1,8 @@
 import TurndownService from 'turndown';
 const markdown = new TurndownService({ codeBlockStyle: 'fenced', headingStyle: 'atx', bulletListMarker: '-' });
+// Turndown has no table rules and glued cells together ("**Name**Value"); a quoted row reads as its cells joined by " | ".
+markdown.addRule('tableCell', { filter: ['th', 'td'], replacement: (content, node) => `${(node as Element).previousElementSibling ? ' | ' : ''}${content.replace(/\s*\n+\s*/g, ' ').trim()}` });
+markdown.addRule('tableRow', { filter: 'tr', replacement: content => `\n\n${content}\n\n` });
 export function clipSelection(range: Range, body: HTMLElement) {
   if (!range.intersectsNode(body)) return null;
   const clipped = range.cloneRange(), bounds = document.createRange();
@@ -32,6 +35,14 @@ export function selectionMarkdown(range: Range, body: HTMLElement) {
         wrapper.append(fragment); fragment = wrapper;
       }
       ancestor = ancestor.parentNode!;
+    }
+    // Cells or rows cut out of a table lose their tags when the HTML is parsed again outside one, so put the table back.
+    const top = Array.from(fragment.childNodes).find(node => node.nodeType === Node.ELEMENT_NODE) as Element | undefined;
+    if (top && /^(TD|TH|TR|TBODY|THEAD|TFOOT)$/.test(top.tagName)) {
+      const table = document.createElement('table'); let into: Element = table;
+      if (top.tagName !== 'TBODY' && top.tagName !== 'THEAD' && top.tagName !== 'TFOOT') into = into.appendChild(document.createElement('tbody'));
+      if (top.tagName === 'TD' || top.tagName === 'TH') into = into.appendChild(document.createElement('tr'));
+      into.append(fragment); fragment = table;
     }
     const container = document.createElement('div'); container.append(fragment);
     container.querySelectorAll('button,[aria-hidden="true"],[data-copy],svg').forEach(node => node.remove());

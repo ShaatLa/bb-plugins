@@ -24,6 +24,14 @@ describe('selection snapshots', () => {
     const two = document.createRange(); two.setStart(rest, 1); two.setEnd(next, 4);
     expect(selectionMarkdown(two, body)).toMatch(/^- +inner text\n- +next$/);
   });
+  it('quotes a table row as its cells joined by a bar, not glued together', () => {
+    document.body.innerHTML = '<main><table><tbody><tr><td><strong>Tasks / Work Board</strong></td><td>No, not embeddable</td></tr><tr><td>Info</td><td>Yes</td></tr></tbody></table></main>';
+    const body = document.querySelector('main')!, cells = body.querySelectorAll('td');
+    const row = document.createRange(); row.setStart(cells[0]!.querySelector('strong')!.firstChild!, 0); row.setEnd(cells[1]!.firstChild!, cells[1]!.textContent!.length);
+    expect(selectionMarkdown(row, body)).toBe('**Tasks / Work Board** | No, not embeddable');
+    const both = document.createRange(); both.selectNodeContents(body.querySelector('tbody')!);
+    expect(selectionMarkdown(both, body)).toBe('**Tasks / Work Board** | No, not embeddable\n\nInfo | Yes');
+  });
   it('drops renderer chrome and falls back when conversion is empty', () => {
     const { body, range } = selected('<div>text<button>Copy</button><svg>icon</svg><i aria-hidden="true">hidden</i></div>', 'div');
     range.selectNodeContents(body); expect(selectionMarkdown(range, body)).toBe('text');

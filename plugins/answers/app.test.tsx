@@ -567,6 +567,12 @@ it('splits quote lines from plain text in user messages', async () => {
   expect(quoteSegments('> 1. **Bold**\n\nMy note\n\n> 2. Next\n> line')).toEqual([{ quote:true, text:'1. **Bold**' }, { quote:false, text:'My note' }, { quote:true, text:'2. Next\nline' }]);
   expect(quoteSegments('plain only')).toEqual([{ quote:false, text:'plain only' }]);
 });
+it('echoes a question as one plain line: the owner\'s words first, Markdown marks dropped', async () => {
+  const { echoLine } = await import('./app');
+  expect(echoLine('> **Tasks / Work Board** | No\n\nCan we ask @thread:thr_a?\n\n> more')).toBe('Can we ask @thread:thr_a?');
+  expect(echoLine('> **Tasks / Work Board** | No')).toBe('Tasks / Work Board | No');
+  expect(echoLine('- see [docs](https://x.y) and `code`, *em* or snake_case_name')).toBe('see docs and code, em or snake_case_name');
+});
 
 it('debounces history search queries', async () => {
   const { slot, list } = await setup();
