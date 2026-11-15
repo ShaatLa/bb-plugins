@@ -25,11 +25,22 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
   }
 }
 
-const WORDS: Record<string, string> = { python: 'Running a Python script', python3: 'Running a Python script', node: 'Running a Node script', tsx: 'Running a Node script', bash: 'Running a shell script', sh: 'Running a shell script', zsh: 'Running a shell script',
-  grep: 'Searching', rg: 'Searching', ag: 'Searching', find: 'Searching', fd: 'Searching', cat: 'Reading files', head: 'Reading files', tail: 'Reading files', sed: 'Editing files', less: 'Reading files', wc: 'Counting lines', ls: 'Listing files', tree: 'Listing files',
-  curl: 'Fetching a URL', wget: 'Fetching a URL', tsc: 'Type-checking', vitest: 'Running tests', jest: 'Running tests', pytest: 'Running tests', sleep: 'Waiting', rsync: 'Copying files', cp: 'Copying files', mv: 'Moving files', rm: 'Removing files', mkdir: 'Creating folders' };
-const WITH_SUBCOMMAND = new Set(['git', 'gh', 'bb', 'npm', 'pnpm', 'yarn', 'bun', 'go', 'cargo', 'make', 'docker', 'brew', 'uv', 'pip', 'pip3']);
-/** A shell command in a few words, as one would say it: the first step that does the work, past `cd`, env settings and wrappers. */
+// A few broad kinds, so every command gets a plain phrase; anything not recognised is just "Running a command".
+const KIND: Record<string, string> = {};
+for (const [label, programs] of Object.entries({
+  'Running a script': 'python python3 node tsx deno ruby perl php bash sh zsh osascript',
+  'Searching': 'grep egrep rg ag find fd locate',
+  'Reading files': 'cat head tail less more bat jq awk wc ls tree stat file',
+  'Editing files': 'sed tee patch cp mv rm mkdir touch rsync ln chmod',
+  'Running tests': 'vitest jest pytest mocha',
+  'Building': 'tsc make cargo go swift xcodebuild gradle',
+  'Using git': 'git gh',
+  'Installing packages': 'brew pip pip3 uv',
+  'Fetching from the web': 'curl wget',
+  'Waiting': 'sleep',
+})) for (const program of programs.split(' ')) KIND[program] ??= label;
+const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+/** A shell command as a broad kind of work, from the first step that does the work (past `cd`, env settings and wrappers). */
 export function commandLabel(command: string): string {
   for (const step of command.split(/&&|\|\||;|\||\n/)) {
     const words = step.trim().split(/\s+/).filter(Boolean);
@@ -37,9 +48,8 @@ export function commandLabel(command: string): string {
     const program = words[0]?.split('/').pop()?.replace(/^\(+/, '');
     if (!program || ['cd', 'export', 'set', 'source', '.', 'echo', 'printf', 'for', 'do', 'done', 'then', 'fi', 'if', 'true', 'test', '[', 'local', 'unset'].includes(program) || program.startsWith('#')) continue;
     if (program === 'sed' && words[1] === '-n') return 'Reading files';
-    if (WORDS[program]) return WORDS[program]!;
-    if (WITH_SUBCOMMAND.has(program)) { const sub = words.slice(1).filter((w, i, all) => !w.startsWith('-') && !['-C', '-c', '--git-dir', '--prefix', '--cwd'].includes(all[i - 1] ?? '')).slice(0, program === 'npm' && words[1] === 'run' ? 2 : 1); return `Running ${[program, ...sub].join(' ')}`; }
-    return `Running ${program}`;
+    if (PACKAGE_MANAGERS.has(program)) { const args = words.slice(1).join(' '); return /\btest\b/.test(args) ? 'Running tests' : /\bbuild\b/.test(args) ? 'Building' : /\b(?:i|install|add|ci)\b/.test(args) ? 'Installing packages' : 'Running a command'; }
+    return KIND[program] ?? 'Running a command';
   }
   return 'Running a command';
 }
