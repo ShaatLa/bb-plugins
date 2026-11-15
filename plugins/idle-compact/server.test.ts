@@ -204,7 +204,7 @@ it("logs the compactions it made for compactions.list, pages them, and prunes en
   const { items, nextCursor } = await list({});
   expect(nextCursor).toBeUndefined();
   expect(items).toEqual([
-    { id: `${String(t0).padStart(15, "0")}:thr_a`, threadId: "thr_a", at: t0, trigger: "threshold", usedTokensBefore: 900_000, contextWindow: 1_000_000 },
+    { id: `${String(t0).padStart(15, "0")}:${String(t0).padStart(15, "0")}:thr_a`, threadId: "thr_a", at: t0, trigger: "threshold", usedTokensBefore: 900_000, contextWindow: 1_000_000 },
     expect.objectContaining({ at: t0 + IDLE_MS, trigger: "idle", usedTokensBefore: 300_000 }),
   ]);
   const page = await list({ limit: 1 });
@@ -242,14 +242,23 @@ it("gives same-millisecond compactions distinct ids in write order, and a read w
   expect(await list({ since: t0, after: read.items[0].id })).toEqual({ items: [] });
 });
 
-it("prunes by the current clock, not the ordering key, after a clock that ran fast", async () => {
+it("prunes by the real acceptance time, not the ordering key, after a clock that ran fast", async () => {
   const day = 86_400_000, t0 = Date.parse("2026-11-14T12:00:00Z");
-  const entry = (at: number, threadId: string) => [`log:${String(at).padStart(15, "0")}:${threadId}`, { id: `${String(at).padStart(15, "0")}:${threadId}`, threadId, at, trigger: "idle", usedTokensBefore: 1, contextWindow: null }] as const;
+  const pad = (ms: number) => String(ms).padStart(15, "0");
+  const entry = (key: number, at: number, threadId: string) => [`log:${pad(key)}:${pad(at)}:${threadId}`, { id: `${pad(key)}:${pad(at)}:${threadId}`, threadId, at, trigger: "idle", usedTokensBefore: 1, contextWindow: null }] as const;
   // Left by an instance whose clock ran 40 days fast, next to an entry 20 days old by the real clock.
-  const h = await setup({ used: 900_000, seed: [entry(t0 + 40 * day, "thr_fast"), entry(t0 - 20 * day, "thr_old")] });
+  const h = await setup({ used: 900_000, seed: [entry(t0 + 40 * day, t0 + 40 * day, "thr_fast"), entry(t0 - 20 * day, t0 - 20 * day, "thr_old")] });
+  const list = () => h.host.harness.behavior.callRpc("compactions.list", {}) as Promise<any>;
   await h.emit("thread.idle"); await h.advance(0);
-  const { items } = await (h.host.harness.behavior.callRpc("compactions.list", {}) as Promise<any>);
+  const { items } = await list();
   expect(items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_old", t0 - 20 * day], ["thr_fast", t0 + 40 * day], ["thr_a", t0]]);
+  // thr_a's ordering key is 40 days ahead; it is still pruned 30 days after its real acceptance.
+  h.setClock(30 * day + 1);
+  expect((await list()).items.map((item: any) => item.threadId)).toEqual(["thr_fast"]);
+  await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
+  await h.emit("thread.active"); h.state.used = 910_000; await h.emit("thread.idle"); await h.advance(0);
+  expect((await h.host.bb.storage.kv.list("log:")).map(key => key.split(":").at(-1)).sort()).toEqual(["thr_a", "thr_fast"]);
+  expect((await list()).items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_fast", t0 + 40 * day], ["thr_a", t0 + 30 * day + 1]]);
 });
 
 it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per write", async () => {
@@ -267,7 +276,7 @@ it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per writ
   h.setClock(1);
   expect((await list({})).items.map((item: any) => item.at)).toEqual([t0 + LOG_RETENTION_MS]);
   expect(await kv.list("log:")).toHaveLength(2); // hidden, not yet pruned
-  for (let i = 1; i <= 25; i++) await kv.set(`log:${String(t0 - i).padStart(15, "0")}:thr_old`, { id: "", threadId: "thr_old", at: t0 - i, trigger: "idle", usedTokensBefore: 1, contextWindow: null });
+  for (let i = 1; i <= 25; i++) await kv.set(`log:${String(t0 - i).padStart(15, "0")}:${String(t0 - i).padStart(15, "0")}:thr_old`, { id: "", threadId: "thr_old", at: t0 - i, trigger: "idle", usedTokensBefore: 1, contextWindow: null });
   await compactAgain(920_000);
   expect(await kv.list("log:")).toHaveLength(2 + 6); // 26 expired, 20 pruned
   await compactAgain(930_000);
