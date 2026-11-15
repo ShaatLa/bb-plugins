@@ -26,3 +26,21 @@ it('shows nothing without Idle Compact', async () => {
   const slot = renderSlot({ component: () => <CompactButton threadId="thr_a" status="idle" onError={() => {}} /> }, {}, { sdk: { plugins: { list } } } as any);
   await waitFor(() => expect(list).toHaveBeenCalled()); expect(slot.queryByRole('button')).toBeNull();
 });
+it('queues a compaction during a turn on Idle Compact 0.4.0, then cancels it', async () => {
+  let queued = false;
+  const callRpc = vi.fn(({ method, input }: any) => {
+    if (method === 'compactState') return Promise.resolve({ queued, running: false });
+    if (method === 'compact') { expect(input).toEqual({ threadId: 'thr_a', queue: true }); queued = true; return Promise.resolve({ ok: true, queued: true }); }
+    queued = false; return Promise.resolve({ ok: true });
+  });
+  const slot = renderSlot({ component: () => <CompactButton threadId="thr_a" status="running" onError={() => {}} /> }, {}, { sdk: { plugins: { list: () => Promise.resolve({ plugins: [plugin({ version: '0.4.0' })] }), callRpc } } } as any);
+  fireEvent.click(await slot.findByRole('button', { name: 'Compact' }));
+  fireEvent.click(await slot.findByRole('button', { name: 'Compact queued' }));
+  await slot.findByRole('button', { name: 'Compact' });
+  expect(callRpc.mock.calls.map(c => c[0].method)).toContain('cancelQueuedCompact');
+});
+it('restores a queued request after a reload', async () => {
+  const callRpc = vi.fn(() => Promise.resolve({ queued: true, running: false }));
+  const slot = renderSlot({ component: () => <CompactButton threadId="thr_a" status="running" onError={() => {}} /> }, {}, { sdk: { plugins: { list: () => Promise.resolve({ plugins: [plugin({ version: '0.4.0' })] }), callRpc } } } as any);
+  expect(await slot.findByRole('button', { name: 'Compact queued' })).toBeTruthy();
+});
