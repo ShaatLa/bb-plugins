@@ -62,7 +62,7 @@ export function summary(db: Database, o: SummaryOptions) {
   const top = new Set([...modelCosts].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,4).map(([k]) => k));
   const key = (r: Hour) => o.by === 'provider' ? r.provider : top.has(r.model) ? r.model : 'other';
   const keys = [...new Set(rows.map(key))];
-  const buckets = starts.map(start => ({ start, series: Object.fromEntries(keys.map(k => [k, { ...empty(), calls: 0 }])) }));
+  const buckets: { start: number; series: Record<string, Cost & { calls: number }>; localSavedUsd?: number }[] = starts.map(start => ({ start, series: Object.fromEntries(keys.map(k => [k, { ...empty(), calls: 0 }])) }));
   const breakdown = new Map(keys.map(k => [k, { key: k, label: k, cost: empty(), calls: 0 }]));
   // Start accumulators at the first priced row so an entirely unknown group stays null.
   const seen = new Set<string>();
@@ -73,6 +73,11 @@ export function summary(db: Database, o: SummaryOptions) {
     buckets[i].series[k] = { ...(seen.has(`${i}:${k}`) ? add(bucket, c) : structuredClone(c)), calls: bucket.calls + r.calls };
     b.cost = seen.has(k) ? add(b.cost, c) : structuredClone(c); b.calls += r.calls;
     seen.add(`${i}:${k}`); seen.add(k);
+    // Local calls cost $0; what the same tokens would cost on the reference model is drawn as a saving.
+    if (r.provider === 'local-models') {
+      const saved = price({ ...r, provider: '', model: o.referenceModel, tier: 'standard' }).usd;
+      if (saved) buckets[i].localSavedUsd = (buckets[i].localSavedUsd ?? 0) + saved;
+    }
   });
   const oldest = (db.prepare(`SELECT MIN(hour) AS hour FROM usage_hourly WHERE 1=1 ${filter}`).get(...params) as { hour: number | null }).hour;
   const previous = oldest === null || previousFrom < oldest ? null : combine(previousRows, o.overrides);

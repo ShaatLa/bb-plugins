@@ -85,6 +85,12 @@ it('walks both edges with cycles, skips unknown ids and deduplicates sums', () =
   expect(threadCosts(db,['a'],false,overrides).threads[0].total.tokens.freshIn).toBe(100);
   expect(topThreads(db,'week',0,2,overrides,now)).toMatchObject({ hasMore:true,items:[{ threadId:'a' },{ threadId:'b' }] });
 });
+it('prices local calls at the reference model per bucket, outside the spend', () => {
+  createStore(db).applyRows([row('cloud'),row('local',{ provider:'local-models',model:'local-qwen' })]);
+  const s=summary(db,opts), hit=s.buckets.filter(b => b.localSavedUsd);
+  expect(hit).toHaveLength(1); expect(hit[0].localSavedUsd).toBeCloseTo(s.localSavings.usd!);
+  expect(hit[0].series['local-models'].usd).toBe(0);
+});
 it('keeps local tool usage free in mixed lifetime totals', () => {
   note('a');
   createStore(db).applyRows([row('cloud'),row('local',{ provider:'local-models',model:'local-qwen' })]);

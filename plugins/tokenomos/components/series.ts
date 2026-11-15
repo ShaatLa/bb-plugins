@@ -11,7 +11,8 @@ export type Slot = { id: string; n: number; label: string };
 /** A cost with the number of calls behind it, as a bucket series carries it. */
 export type CallCost = Cost & { calls: number };
 export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost> } & Record<string, unknown>;
-export type ChartModel = { slots: Slot[]; rows: Row[]; metric: Shown; totalCost: Record<string, CallCost> };
+// `saved`: local-model calls priced at the reference model, drawn on top of the cost bar but not in its total.
+export type ChartModel = { slots: Slot[]; rows: Row[]; metric: Shown; totalCost: Record<string, CallCost>; saved: boolean };
 
 const zero = (): CallCost => ({ usd: null, tokens: { freshIn: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, estimated: false, partial: false, calls: 0 });
 export function addCost(a: CallCost, b: CallCost): CallCost {
@@ -70,7 +71,8 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
     }
     const row: Row = { start: bucket.start, label: bucketLabel(range, bucket.start, t), title: bucketTitle(range, bucket.start, t), total: 0, costs };
     for (const [id, cost] of Object.entries(costs)) { row[id] = value(cost); row.total += value(cost); }
+    if (metric === "usd" && bucket.localSavedUsd) row.saved = bucket.localSavedUsd;
     return row;
   });
-  return { slots, rows, metric, totalCost };
+  return { slots, rows, metric, totalCost, saved: rows.some((r) => Number(r.saved) > 0) };
 }

@@ -29,7 +29,19 @@ function segment(slots: Slot[], index: number) {
   };
 }
 
-export function Legend({ slots }: { slots: Slot[] }) {
+const LOCAL = seriesColor(3);
+const HATCH = `repeating-linear-gradient(135deg, ${LOCAL} 0 1.5px, transparent 1.5px 4px)`;
+
+/** The saved segment: hatched in the local-models colour, with a thin outline and a rounded top. */
+function SavedSegment(props: { x?: number; y?: number; width?: number; height?: number }) {
+  const { x = 0, y = 0, width = 0, height = 0 } = props;
+  if (height <= 0 || width <= 0) return <g />;
+  const r = Math.min(4, width / 2, height);
+  const d = `M${x},${y + height} V${y + r} Q${x},${y} ${x + r},${y} H${x + width - r} Q${x + width},${y} ${x + width},${y + r} V${y + height} Z`;
+  return <path d={d} fill="url(#tokenomos-saved)" stroke={LOCAL} strokeOpacity={0.7} strokeWidth={1} className="transition-opacity hover:opacity-80" />;
+}
+
+export function Legend({ slots, saved }: { slots: Slot[]; saved?: boolean }) {
   const t = useT();
   return (
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label={t("chart.legend")}>
@@ -39,6 +51,12 @@ export function Legend({ slots }: { slots: Slot[] }) {
           {s.label}
         </li>
       ))}
+      {saved && (
+        <li className="flex items-center gap-1.5">
+          <span aria-hidden className="size-2.5 rounded-[2px] border" style={{ background: HATCH, borderColor: LOCAL }} />
+          {t("chart.saved")}
+        </li>
+      )}
     </ul>
   );
 }
@@ -53,6 +71,7 @@ function DataTable({ model, summary, t }: { model: ChartModel; summary: SummaryO
             <TableHead>{t("chart.interval", { unit })}</TableHead>
             {model.slots.map((s) => <TableHead key={s.id} className="text-right">{s.label}</TableHead>)}
             <TableHead className="text-right">{t("chart.total")}</TableHead>
+            {model.saved && <TableHead className="text-right">{t("chart.saved")}</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -61,6 +80,7 @@ function DataTable({ model, summary, t }: { model: ChartModel; summary: SummaryO
               <TableCell className="whitespace-nowrap">{row.title}</TableCell>
               {model.slots.map((s) => <TableCell key={s.id} className="text-right tabular-nums">{row[s.id] ? fmtMetric(model.metric, Number(row[s.id]), t) : "—"}</TableCell>)}
               <TableCell className="text-right tabular-nums">{fmtMetric(model.metric, row.total, t)}</TableCell>
+              {model.saved && <TableCell className="text-right tabular-nums">{row.saved ? fmtMetric("usd", Number(row.saved), t) : "—"}</TableCell>}
             </TableRow>
           ))}
         </TableBody>
@@ -81,18 +101,34 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
   return (
     <Card className={cn("space-y-3 transition-opacity", stale && "opacity-60")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {model.slots.length > 1 ? <Legend slots={model.slots} /> : <span className="text-xs text-muted-foreground">{heading(model.metric, t)}</span>}
+        {model.slots.length > 1 || model.saved ? <Legend slots={model.slots} saved={model.saved} /> : <span className="text-xs text-muted-foreground">{heading(model.metric, t)}</span>}
         <Button variant="ghost" size="sm" aria-pressed={asTable} onClick={() => setAsTable((v) => !v)}>{t("chart.table")}</Button>
       </div>
       {empty ? <Muted>{t("chart.empty")}</Muted> : asTable ? <DataTable model={model} summary={summary} t={t} /> : (
         <ChartContainer config={config} className="aspect-auto h-64 w-full" role="img" aria-label={t("chart.aria", { n: model.rows.length })} data-bucket-count={model.rows.length}>
           <BarChart data={model.rows} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} barCategoryGap="20%">
+            <defs>
+              <pattern id="tokenomos-saved" width={4} height={4} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width={1.5} height={4} fill={LOCAL} />
+              </pattern>
+            </defs>
             <CartesianGrid vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} interval={interval} tickMargin={6} />
             <YAxis tickLine={false} axisLine={false} width={44} tickFormatter={(v: number) => axisTick(model.metric, v, t)} />
             <ChartTooltip shared={false} cursor={false} content={
               <ChartTooltipContent hideLabel formatter={(_v, _n, item) => {
                 const row = item.payload as Row, id = String(item.dataKey), cost = row.costs[id];
+                if (id === "saved") return (
+                  <div className="grid w-full gap-1">
+                    <div className="text-muted-foreground">{row.title}</div>
+                    <div className="flex items-center gap-2">
+                      <span aria-hidden className="h-0.5 w-3 rounded-full" style={{ background: LOCAL }} />
+                      <span className="text-muted-foreground">{t("chart.saved")}</span>
+                      <span className="ml-auto font-medium tabular-nums text-foreground">{fmtMetric("usd", Number(row.saved), t)}</span>
+                    </div>
+                    <div className="text-muted-foreground">{t("chart.savedTip", { model: summary.localSavings.referenceModel })}</div>
+                  </div>
+                );
                 const slot = model.slots.find((s) => s.id === id);
                 if (!cost || !slot) return null;
                 return (
@@ -112,6 +148,7 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
               }} />
             } />
             {model.slots.map((s, i) => <Bar key={s.id} dataKey={s.id} stackId="usage" fill={`var(--color-${s.id})`} maxBarSize={56} shape={segment(model.slots, i)} isAnimationActive={false} />)}
+            {model.saved && <Bar dataKey="saved" stackId="usage" maxBarSize={56} shape={<SavedSegment />} isAnimationActive={false} />}
           </BarChart>
         </ChartContainer>
       )}

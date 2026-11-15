@@ -134,7 +134,7 @@ export const rpcContract = defineRpcContract({
     input: z.object({ range: rangeSchema, by: z.enum(["provider", "model"]), projectId: z.string().optional() }),
     output: z.object({
       range: rangeSchema, from: num, to: num,
-      buckets: z.array(z.object({ start: num, series: z.record(z.string(), costSchema.extend({ calls: count })) })),
+      buckets: z.array(z.object({ start: num, series: z.record(z.string(), costSchema.extend({ calls: count })), localSavedUsd: num.optional() })),
       kpis: z.object({
         spendUsd: nullableNum, spendPrevUsd: nullableNum, tokens: num, tokensPrev: nullableNum,
         calls: count, callsPrev: count.nullable(), threads: count, medianThreadUsd: nullableNum,
