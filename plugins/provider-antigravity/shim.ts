@@ -151,7 +151,7 @@ function runPrompt(id,session,prompt,denialRecovery=false){
 }
 async function handle(request){
   const {id,method,params:p={}}=request;
-  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-antigravity',version:'0.3.0'}}});
+  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-antigravity',version:'0.4.0'}}});
   if(method==='authenticate')return send({id,result:{}});
   if(method==='session/new'){
     if(!models.length||typeof p.cwd!=='string')throw Error('No CLI models or workspace available.');
