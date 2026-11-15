@@ -62,7 +62,8 @@ function buildFakeCalls() {
           ? usageIdx
           : compactionIdx;
       if (idx >= arr.length) {
-        return Promise.resolve({ entries: [], nextCursor: null } as FakeCallResult);
+        const empty = arr === usageCalls ? { entries: [], nextCursor: null } : { items: [] };
+        return Promise.resolve(empty as FakeCallResult);
       }
       const item = arr[idx];
       if (pluginId === "local-models" || pluginId === "antigravity") {
@@ -432,4 +433,15 @@ it("pollCompactions ignores one 3 minutes away", async () => {
   // Origin should still be 'bb'.
   const c = db.prepare("SELECT origin FROM compactions WHERE id='c2'").get();
   expect(c).toEqual({ origin: "bb" });
+});
+
+it("compactions.list without nextCursor and with a malformed item still matches the valid items", async () => {
+  const fake = buildFakeCalls();
+  fake.pushCompaction({ items: [{ id: "x", threadId: "t", at: 1 }, { id: "a", threadId: "thr_live", at: 1_000_000, trigger: "idle", usedTokensBefore: 133259, contextWindow: 1000000 }] } as unknown as FakeCallResult);
+  const db = new Database(":memory:");
+  for (const sql of MIGRATIONS) db.exec(sql);
+  db.prepare("INSERT INTO compactions (id, thread_id, at) VALUES ('c1', 'thr_live', 1_050_000)").run();
+  const ext = createExtSource({ store: createStore(db), db, callRpc: fake.call, now: () => 2_000_000 });
+  const result = await ext.pollCompactions();
+  expect(result).toEqual({ matched: 1, available: true });
 });

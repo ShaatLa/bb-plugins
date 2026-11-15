@@ -18,7 +18,8 @@
     "dist",
     "server.ts",
     "app.tsx",
-    "skills"
+    "skills",
+    "README.md"
   ],
   "engines": {
     "bb": ">=0.46",

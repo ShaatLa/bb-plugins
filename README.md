@@ -11,6 +11,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
 | **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
+| **Tokenomos** | Token usage and API-equivalent cost across Claude Code, Codex, local-model and Antigravity threads, with usage-limit windows, four ranges, compaction and local-model savings estimates, and top threads. | `tokenomos` | [README](plugins/tokenomos/README.md) |
 
 The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
@@ -39,6 +40,7 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin lo
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
 ```
 
 For **Work Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:

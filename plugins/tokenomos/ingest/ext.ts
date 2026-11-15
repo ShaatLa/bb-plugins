@@ -16,11 +16,12 @@ const EntrySchema = z.object({
   cachedTokens: z.number(),
   completionTokens: z.number(),
   reasoningTokens: z.number().nullable(),
-  durationMs: z.number().optional(),
+  durationMs: z.number().nullish(),
 });
 
+// Entries are validated one by one so a single malformed entry is dropped, not the whole page.
 const UsageListSchema = z.object({
-  entries: z.array(EntrySchema),
+  entries: z.array(z.unknown()),
   nextCursor: z.string().nullable(),
 });
 
@@ -31,12 +32,13 @@ const CompactionItemSchema = z.object({
   at: z.number(),
   trigger: z.string(),
   usedTokensBefore: z.number(),
-  contextWindow: z.number(),
+  contextWindow: z.number().nullable(),
 });
 
 const CompactionsListSchema = z.object({
-  items: z.array(CompactionItemSchema),
-  nextCursor: z.string().nullable(),
+  items: z.array(z.unknown()),
+  // Idle Compact omits nextCursor when no more items remain.
+  nextCursor: z.string().nullish(),
 });
 
 /** Error codes that mean the remote API is unavailable */
@@ -147,9 +149,8 @@ export function createExtSource(o: {
       }
 
       const parsed = UsageListSchema.safeParse(result);
-      if (!parsed.success) {
-        return { rows: [], available: false };
-      }
+      // A malformed page is a contract break, not absence: surface it in source status.
+      if (!parsed.success) throw new Error(`${pluginId} usage.list returned an unexpected shape`);
 
       const data = parsed.data;
       if (data.entries.length === 0) break;
@@ -165,7 +166,10 @@ export function createExtSource(o: {
         }
       }
 
-      for (const entry of data.entries) {
+      for (const raw of data.entries) {
+        const one = EntrySchema.safeParse(raw);
+        if (!one.success) continue;
+        const entry = one.data;
         let threadId: string | null = entry.threadId;
         let projectId = "";
 
@@ -280,12 +284,16 @@ export function createExtSource(o: {
 
     const callWithCursor = async (
       params: Record<string, unknown>,
-    ): Promise<z.infer<typeof CompactionsListSchema> | null> => {
+    ): Promise<{ items: z.infer<typeof CompactionItemSchema>[]; nextCursor: string | null } | null> => {
       try {
         const result = await callRpc("idle-compact", "compactions.list", params);
         const parsed = CompactionsListSchema.safeParse(result);
-        if (!parsed.success) return null;
-        return parsed.data;
+        if (!parsed.success) throw new Error("idle-compact compactions.list returned an unexpected shape");
+        const items = parsed.data.items.flatMap((item) => {
+          const one = CompactionItemSchema.safeParse(item);
+          return one.success ? [one.data] : [];
+        });
+        return { items, nextCursor: parsed.data.nextCursor ?? null };
       } catch (err: any) {
         if (isUnavailable(err)) return null;
         throw err;

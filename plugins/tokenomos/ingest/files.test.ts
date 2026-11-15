@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, copyFileSync, unlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { zstdCompressSync } from 'node:zlib';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS } from '../store/schema';
@@ -79,5 +80,36 @@ describe('incremental records', () => {
     const source = createCodexSource({ db, store, root: sessions, archivedRoot: archive });
     expect((await source.flushThread(thread(id, { isFork: true, createdAt: Date.now() + 1e12 }))).rows).toHaveLength(0);
     const outside = await source.scanOutside(new Set(), 0); expect(outside.rows[0].threadId).toBe(''); expect(outside.rows[0].projectId).toBe('~outside');
+  });
+});
+
+
+describe('compressed Codex transcripts', () => {
+  it('preserves the cursor when a plain rollout is compressed and archived', async () => {
+    const sessions = join(dir, 'sessions'), date = join(sessions, '2026', '11', '12'), archive = join(dir, 'archive');
+    mkdirSync(date, { recursive: true }); mkdirSync(archive);
+    const name = `rollout-root-${id}.jsonl`, path = join(date, name), archived = join(archive, name + '.zst');
+    const content = fixture('codex-root.jsonl'); writeFileSync(path, content);
+    const source = createCodexSource({ db, store, root: sessions, archivedRoot: archive }); const t = thread(id, { provider: 'codex' });
+    let batch = await source.flushThread(t); expect(batch.rows).toHaveLength(1); apply(batch);
+    db.prepare('DELETE FROM usage_raw').run();
+    writeFileSync(archived, zstdCompressSync(Buffer.from(content))); unlinkSync(path);
+    expect(await source.locate(t)).toBe(true);
+    batch = await source.flushThread(t); expect(batch.rows).toHaveLength(0); apply(batch);
+    const cursor = db.prepare('SELECT "offset", watermark_ts FROM file_cursor WHERE path = ?').get(archived) as { offset: number; watermark_ts: number };
+    expect(cursor.offset).toBe(Buffer.byteLength(content)); expect(cursor.watermark_ts).toBeGreaterThan(0);
+    expect((await source.flushThread(t)).rows).toHaveLength(0);
+    const record = JSON.parse(content.trimEnd().split('\n').at(-1)!); record.payload.response_id += '-new'; record.timestamp = new Date(cursor.watermark_ts + 1000).toISOString();
+    writeFileSync(archived, zstdCompressSync(Buffer.from(content + JSON.stringify(record) + '\n')));
+    batch = await source.flushThread(t); expect(batch.rows.map(r => r.key)).toEqual([`cx:${record.payload.response_id}`]); apply(batch);
+  });
+  it('indexes compressed files in dated session folders', async () => {
+    const sessions = join(dir, 'sessions'), date = join(sessions, '2026', '11', '12'), archive = join(dir, 'archive');
+    mkdirSync(date, { recursive: true }); mkdirSync(archive);
+    writeFileSync(join(date, 'rollout-compressed.jsonl.zst'), zstdCompressSync(Buffer.from(fixture('codex-root.jsonl'))));
+    const source = createCodexSource({ db, store, root: sessions, archivedRoot: archive });
+    expect(await source.locate(thread(id))).toBe(true);
+    const batch = await source.flushThread(thread(id)); expect(batch.rows).toHaveLength(1); apply(batch);
+    expect((await source.scanOutside(new Set([id]), 0)).rows).toHaveLength(0);
   });
 });
