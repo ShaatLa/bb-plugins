@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent } from '@testing-library/react';
+import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { WorkLog, groupRows, summarize, type Row } from './work-log';
 import { ActivityLabelContext } from './robot-loader';
@@ -70,6 +70,16 @@ it('discovers a live turn and uses its range for earlier pages', async () => {
   expect(timeline).not.toHaveBeenCalled(); fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
   fireEvent.click(await slot.findByRole('button', { name: 'Earlier' })); await slot.findByText('Ran 2 commands');
   expect(details.mock.calls[1]![0]).toEqual({ threadId: 'discovery', turnId: 'discovered', sourceSeqStart: '7', sourceSeqEnd: '42', beforeCursor: 'cursor' });
+});
+it('reads a running turn from its own steps: it has no turn row yet', async () => {
+  const details = vi.fn().mockResolvedValue({ rows: [work('live')], olderCursor: null });
+  const timeline = vi.fn(async () => ({ rows: [{ kind: 'turn', turnId: 'done-before', sourceSeqStart: 1, sourceSeqEnd: 5, startedAt: 0 }, { kind: 'conversation', turnId: 'running', sourceSeqStart: 9, sourceSeqEnd: 9, startedAt: 100 }, { kind: 'work', turnId: 'running', sourceSeqStart: 10, sourceSeqEnd: 11, startedAt: 200 }] }));
+  const slot = renderSlot({ component: () => <WorkLog threadId="running-turn" live /> }, {}, { sdk: { threads: { timeline, timelineTurnSummaryDetails: details }, subscribe: () => () => {} } } as any);
+  fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
+  await waitFor(() => expect(details).toHaveBeenCalled());
+  expect((timeline.mock.calls as unknown as [Record<string, unknown>][])[0]![0]).not.toHaveProperty('summaryOnly');
+  expect(details.mock.calls[0]![0]).toEqual({ threadId: 'running-turn', turnId: 'running', sourceSeqStart: '9', sourceSeqEnd: String(Number.MAX_SAFE_INTEGER) });
+  expect(slot.queryByText('Turn details are not available yet')).toBeNull();
 });
 it('shows the skeleton only before the first response and reports errors', async () => {
   let resolve!: (value: any) => void;

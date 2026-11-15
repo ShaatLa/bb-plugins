@@ -123,10 +123,15 @@ function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Pr
         if (!entry.pending) entry.pending = (async () => {
           let id = turnId, start = sourceSeqStart, end = sourceSeqEnd, started: number | undefined;
           if (!id || start == null || end == null) {
-            const timeline = await sdk.threads.timeline({ threadId, summaryOnly: 'true' });
-            const turn = timeline.rows.filter((r): r is Turn => r.kind === 'turn' && (!id || r.turnId === id)).at(-1);
-            if (!turn) throw new Error('Turn details are not available yet');
-            id = turn.turnId; start = turn.sourceSeqStart; end = turn.sourceSeqEnd; started = turn.startedAt;
+            // The newest segments hold the live turn. summaryOnly now returns no rows, and a running turn has no 'turn' row
+            // yet, only its own steps: those give its id and first seq, and its end stays open.
+            const timeline = await sdk.threads.timeline({ threadId, segmentLimit: '3' });
+            const current = id ?? timeline.rows.filter(r => 'turnId' in r && r.turnId).at(-1)?.turnId as string | undefined;
+            const turn = timeline.rows.find((r): r is Turn => r.kind === 'turn' && r.turnId === current);
+            const steps = timeline.rows.filter(r => 'turnId' in r && r.turnId === current);
+            if (turn) { id = turn.turnId; start = turn.sourceSeqStart; end = turn.sourceSeqEnd; started = turn.startedAt; }
+            else if (current && steps.length) { id = current; start ??= Math.min(...steps.map(r => r.sourceSeqStart)); end = Number.MAX_SAFE_INTEGER; started = Math.min(...steps.map(r => r.startedAt ?? Infinity)); if (!Number.isFinite(started)) started = undefined; }
+            else throw new Error('Turn details are not available yet');
           }
           entry.turn = { turnId: id, sourceSeqStart: start, sourceSeqEnd: end, startedAt: started ?? entry.turn?.startedAt };
           return sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: id, sourceSeqStart: String(start), sourceSeqEnd: String(end) });
