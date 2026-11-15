@@ -32,7 +32,7 @@ const CompactionItemSchema = z.object({
   threadId: z.string(),
   at: z.number(),
   trigger: z.string(),
-  usedTokensBefore: z.number(),
+  usedTokensBefore: z.number().nullable(), // null for Idle Compact 0.3.0 "manual" entries
   contextWindow: z.number().nullable(),
 });
 

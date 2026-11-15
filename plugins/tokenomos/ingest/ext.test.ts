@@ -565,3 +565,15 @@ it('commits compaction origins and cursor together and replays failed or abandon
   expect(db.prepare('SELECT cursor FROM ext_cursor').get()).toEqual({cursor:'one'});
   expect(db.prepare('SELECT origin FROM compactions').get()).toEqual({origin:'idle-compact'});
 });
+
+it("accepts Idle Compact 0.3.0 manual entries with a null size and an unknown trigger", async () => {
+  const fake = buildFakeCalls();
+  fake.pushCompaction({ items: [{ id: "m", threadId: "thr_m", at: 1_000_000, trigger: "manual", usedTokensBefore: null, contextWindow: null }] } as unknown as FakeCallResult);
+  const db = new Database(":memory:");
+  for (const sql of MIGRATIONS) db.exec(sql);
+  db.prepare("INSERT INTO compactions (id, thread_id, at) VALUES ('c', 'thr_m', 1_030_000)").run();
+  const ext = createExtSource({ store: createStore(db), db, callRpc: fake.call, now: () => 2_000_000 });
+  const result = await ext.pollCompactions();
+  result.commit?.();
+  expect(result.matched).toBe(1);
+});
