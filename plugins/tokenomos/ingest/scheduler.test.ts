@@ -286,3 +286,10 @@ it('drains 10000 background events in five scheduler flushes, without a new live
  expect(s.file.flushThread).toHaveBeenCalledTimes(1);expect(s.total()).toBe(100);
  expect(s.store.getCursor('backfill-progress')).toMatchObject({done:true,processedThreads:1});
 });
+it('passes all provider sessions to the file source when a new identity arrives later',async()=>{
+ const events:TestEvent[]=[{id:'one',seq:1,createdAt:1,type:'thread/identity',data:{providerThreadId:'first'},scope:{kind:'thread'}}];
+ const s=setup('claude-code',true,true,events);await s.emit();await s.step();
+ expect(s.file.flushThread.mock.calls.at(-1)![0]).toMatchObject({providerThreadIds:['first']});
+ events.push({id:'two',seq:2,createdAt:2,type:'thread/identity',data:{providerThreadId:'second'},scope:{kind:'thread'}});
+ await s.emit();await s.step();expect(s.file.flushThread.mock.calls.at(-1)![0]).toMatchObject({providerThreadIds:['first','second']});
+});

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MIGRATIONS } from '../store/schema';
 import { createStore } from '../store/write';
 import { createClaudeSource } from './claude';
@@ -13,7 +13,7 @@ import type { ThreadInfo, Batch } from './files';
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, 'fixtures', name), 'utf8');
 const id = '01a1d157-0ade-75d1-8e8f-0f548a9da5c4';
 let dir: string, db: Database.Database, store: ReturnType<typeof createStore>;
-const thread = (providerThreadId: string, extra: Partial<ThreadInfo> = {}): ThreadInfo => ({ threadId: 'thread', providerThreadId, provider: 'claude-code', projectId: 'project', createdAt: 0, isFork: false, cwd: null, ...extra });
+const thread = (providerThreadId: string, extra: Partial<ThreadInfo> = {}): ThreadInfo => ({ threadId: 'thread', providerThreadId, providerThreadIds:[providerThreadId], provider: 'claude-code', projectId: 'project', createdAt: 0, isFork: false, cwd: null, ...extra });
 const apply = (b: Batch) => db.transaction(() => { store.applyRows(b.rows); b.commit(); })();
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'tokenomos-')); db = new Database(':memory:'); for (const sql of [...MIGRATIONS]) db.exec(sql); store = createStore(db); });
 afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -143,15 +143,15 @@ describe('bounded asynchronous ingestion', () => {
   });
 });
 
-it.each(['plain', 'zstd'])('finishes a single oversized %s line across the byte budget', async format => {
+it.each(['plain', 'zstd'])('skips and counts a single oversized %s JSON line across the byte budget', async format => {
   const data = JSON.parse(fixture('claude.jsonl').split('\n')[0]); data.padding = 'x'.repeat(5 * 1024 * 1024);
   const path = join(dir, format === 'zstd' ? 'oversized.jsonl.zst' : 'oversized.jsonl');
   const content = JSON.stringify(data) + '\n'; writeFileSync(path, format === 'zstd' ? zstdCompressSync(Buffer.from(content)) : content);
   const { readFile, LIMIT } = await import('./files');
   const parse = (line: any) => ({ key: line.message.id, ts: Date.parse(line.timestamp), threadId: 'thread', projectId: 'project', provider: 'claude-code', model: 'test', tier: 'standard', tierRaw: '', promptTokens: 1, band: 0, conv: '', freshIn: 1, cacheRead: 0, cacheWriteShort: 0, cacheWriteLong: 0, output: 0, reasoning: 0, turnId: null, source: 'claude-file' as const, flags: 0 });
-  let more = true, total = 0, runs = 0;
-  while (more && runs++ < 10) { const batch = await readFile(db, path, thread('large'), parse, { remaining: LIMIT }); total += batch.rows.length; more = !!batch.more; apply(batch); }
-  expect(more).toBe(false); expect(total).toBe(1);
+  let more = true, total = 0, errors = 0, runs = 0;
+  while (more && runs++ < 10) { const batch = await readFile(db, path, thread('large'), parse, { remaining: LIMIT }); total += batch.rows.length; errors += batch.parseErrors; more = !!batch.more; apply(batch); }
+  expect(more).toBe(false); expect(total).toBe(0); expect(errors).toBe(1);
 });
 
 it('resumes a compressed cursor after cancellation without replaying rows', async () => {
@@ -198,4 +198,94 @@ describe('transcript compaction markers', () => {
     expect(db.prepare('SELECT before_tokens,after_tokens,before_known,after_known FROM compactions').all()).toEqual([{before_tokens:335606,after_tokens:50367,before_known:1,after_known:1}]);
     expect((await source.flushThread(thread(session,{provider:'codex'}))).compactions).toEqual([]);
   });
+});
+
+it.each(['claude','codex'])('filters 5 MiB %s records and preserves bounded compaction metadata under 50 ms slices',async(provider)=>{
+ const big='x'.repeat(5*1024*1024),stamp='2026-11-10T14:16:45.660Z';
+ const date=join(dir,'2026','11','10');mkdirSync(date,{recursive:true});
+ let source:ReturnType<typeof createClaudeSource>, t:ThreadInfo;
+ if(provider==='claude'){
+   const base=JSON.parse(fixture('claude.jsonl').split('\n')[0]);
+   const ignored={type:'user',message:{content:big}};
+   const hugeUsage={type:'assistant',message:{content:big,id:base.message.id,model:base.message.model,usage:{input_tokens:123,cache_read_input_tokens:456,output_tokens:78}},requestId:base.requestId,timestamp:base.timestamp};
+   const marker={type:'system',subtype:'compact_boundary',timestamp:stamp,compactMetadata:{preTokens:100,postTokens:10},padding:big};
+   writeFileSync(join(date,'session.jsonl'),[ignored,hugeUsage,marker].map(x=>JSON.stringify(x)).join('\n')+'\n');
+   source=createClaudeSource({db,store,root:join(dir,'2026','11')});t=thread('session');
+ }else{
+   const lines=fixture('codex-compaction.jsonl').trimEnd().split('\n').map(x=>JSON.parse(x));
+   const meta={...lines[0],payload:{base_instructions:big,...lines[0].payload}};
+   const ignored={type:'response_item',payload:{content:big}};
+   const marker={...lines[2],payload:{replacement_history:big}};
+   const hugeUsage={...lines[1],payload:{tool_result:big,...lines[1].payload,usage:{input_tokens:1000,cached_input_tokens:200,cache_write_input_tokens:50,output_tokens:300,reasoning_output_tokens:7}}};
+   writeFileSync(join(date,'rollout-large.jsonl'),[meta,ignored,hugeUsage,marker,lines[3]].map(x=>JSON.stringify(x)).join('\n')+'\n');
+   source=createCodexSource({db,store,root:dir,archivedRoot:join(dir,'archive')});t=thread(lines[0].payload.id,{provider:'codex'});
+ }
+ const parse=JSON.parse;let maxParse=0,maxGap=0,oversizedParses=0,last=performance.now();
+ const spy=vi.spyOn(JSON,'parse').mockImplementation((text,...rest)=>{
+   if(Buffer.byteLength(text)>=1024*1024)oversizedParses++;
+   const start=performance.now();const value=parse(text,...rest);maxParse=Math.max(maxParse,performance.now()-start);return value;
+ });
+ const timer=setInterval(()=>{const now=performance.now();maxGap=Math.max(maxGap,now-last);last=now;},1);
+ let errors=0,rows=0,markers=0;
+ try{
+   expect(await source.locate(t)).toBe(true);
+   let more=true,runs=0;
+   while(more && runs++<30){const b=await source.flushThread(t);errors+=b.parseErrors;rows+=b.rows.length;markers+=b.compactions?.length??0;apply(b);more=!!b.more;}
+   expect(more).toBe(false);expect(errors).toBe(0);expect(rows).toBe(provider==='claude'?1:2);expect(markers).toBeGreaterThan(0);
+   const paid=db.prepare('SELECT fresh_in,cache_read,cache_write_short,output FROM usage_raw ORDER BY ts LIMIT 1').get();
+   expect(paid).toEqual(provider==='claude'?{fresh_in:123,cache_read:456,cache_write_short:0,output:78}:{fresh_in:750,cache_read:200,cache_write_short:50,output:300});
+   await new Promise<void>(resolve=>setTimeout(resolve,1));
+ }finally{clearInterval(timer);spy.mockRestore();}
+ console.log(`${provider} 5 MiB records: max parse ${maxParse.toFixed(2)} ms; max slice ${maxGap.toFixed(2)} ms`);
+ expect(oversizedParses).toBe(0);expect(maxParse).toBeLessThan(50);expect(maxGap).toBeLessThan(50);
+});
+
+it('reads two initial Claude sessions and subagents, then a later session with independent cursors',async()=>{
+ const project=join(dir,'project');mkdirSync(project);
+ const original=JSON.parse(fixture('claude.jsonl').split('\n')[0]);
+ const line=(id:string)=>JSON.stringify({...original,message:{...original.message,id}})+'\n';
+ writeFileSync(join(project,'first.jsonl'),line('msg-first'));writeFileSync(join(project,'earlier.jsonl'),line('msg-earlier'));
+ mkdirSync(join(project,'first','subagents'),{recursive:true});writeFileSync(join(project,'first','subagents','agent-one.jsonl'),line('msg-child'));
+ const source=createClaudeSource({db,store,root:dir});
+ const info=thread('first',{providerThreadIds:['first','earlier']});let b=await source.flushThread(info);expect(b.rows).toHaveLength(3);apply(b);
+ writeFileSync(join(project,'second.jsonl'),line('msg-second'));
+ info.providerThreadIds.push('second');
+ expect(await source.locate(info)).toBe(true);b=await source.flushThread(info);
+ expect(b.rows.map(r=>r.key)).toEqual([`cc:msg-second:${original.requestId}`]);apply(b);
+ expect((await source.flushThread(info)).rows).toEqual([]);
+ expect(db.prepare('SELECT root_session,COUNT(*) n FROM file_cursor GROUP BY root_session ORDER BY root_session').all()).toEqual([{root_session:'earlier',n:1},{root_session:'first',n:2},{root_session:'second',n:1}]);
+ expect(db.prepare('SELECT COUNT(*) n FROM usage_raw').get()).toEqual({n:4});
+});
+it('reads both Codex roots and native children, including a root added later',async()=>{
+ const date=join(dir,'2026','11','10');mkdirSync(date,{recursive:true});
+ const lines=fixture('codex-root.jsonl').trimEnd().split('\n').map(x=>JSON.parse(x));
+ const write=(session:string,response:string,root=session)=>{
+   const copy=structuredClone(lines);copy[0].payload={...copy[0].payload,id:session,session_id:root};
+   for(const l of copy)if(l.type==='token_usage_record')l.payload.response_id=response;
+   writeFileSync(join(date,`rollout-${session}.jsonl`),copy.map(x=>JSON.stringify(x)).join('\n')+'\n');
+ };
+ write('first','resp-first');write('child','resp-child','first');write('earlier','resp-earlier');
+ const source=createCodexSource({db,store,root:dir,archivedRoot:join(dir,'archive')});
+ const info=thread('first',{provider:'codex',providerThreadIds:['first','earlier']});let b=await source.flushThread(info);expect(b.rows).toHaveLength(3);apply(b);
+ write('second','resp-second');info.providerThreadIds.push('second');expect(await source.locate(info)).toBe(true);
+ b=await source.flushThread(info);expect(b.rows.map(r=>r.key)).toEqual(['cx:resp-second']);apply(b);
+ expect((await source.flushThread(info)).rows).toEqual([]);
+ expect(db.prepare('SELECT root_session,COUNT(*) n FROM file_cursor GROUP BY root_session ORDER BY root_session').all()).toEqual([{root_session:'earlier',n:1},{root_session:'first',n:2},{root_session:'second',n:1}]);
+ expect(db.prepare('SELECT COUNT(*) n FROM usage_raw').get()).toEqual({n:4});
+});
+it.each(['claude','codex'])('locates any available %s session when another session file is missing',async(provider)=>{
+ const folder=provider==='claude'?join(dir,'project'):join(dir,'2026','11','10');mkdirSync(folder,{recursive:true});
+ let existing:string;
+ if(provider==='claude'){existing='present';writeFileSync(join(folder,'present.jsonl'),fixture('claude.jsonl'));}
+ else{existing=id;writeFileSync(join(folder,'rollout-present.jsonl'),fixture('codex-root.jsonl'));}
+ const source=provider==='claude'?createClaudeSource({db,store,root:dir}):createCodexSource({db,store,root:dir,archivedRoot:join(dir,'archive')});
+ const info=thread('missing',{providerThreadIds:['missing',existing]});
+ expect(await source.locate(info)).toBe(true);const b=await source.flushThread(info);expect(b.rows.length).toBeGreaterThan(0);apply(b);
+});
+it('extracts usage through nested tool inputs without mistaking strings or nested ids for metadata',async()=>{
+ const {jsonFields}=await import('./files');
+ const data={type:'assistant',message:{content:[{id:'tool',input:{text:'\\\\\\" } ] { "usage": {"input_tokens":9999}, "id":"fake"',nested:[1,{quoted:'braces { } and escaped \\"'}]}}],id:'msg_real',model:'m',usage:{input_tokens:123,details:{cached:45}}},requestId:'request',timestamp:'2026-11-15T12:00:00Z'};
+ expect(await jsonFields(Buffer.from(JSON.stringify(data)),['message.id','message.usage','requestId'])).toEqual({'message.id':'msg_real','message.usage':{input_tokens:123,details:{cached:45}},requestId:'request'});
+ const controller=new AbortController();controller.abort();
+ await expect(jsonFields(Buffer.from(JSON.stringify(data)),['message.usage'],controller.signal)).rejects.toThrow();
 });

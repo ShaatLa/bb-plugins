@@ -177,13 +177,15 @@ export function createScheduler(o: {
         if (eventBatch.touched) invalidate();
         return true; // Drain compaction metadata before consuming calls at later timestamps.
       }
-      const session = db.prepare('SELECT provider_thread_id FROM provider_session WHERE thread_id=? ORDER BY rowid DESC LIMIT 1').get(id) as { provider_thread_id: string } | undefined;
+      const sessions = db.prepare('SELECT provider_thread_id FROM provider_session WHERE thread_id=? ORDER BY rowid').all(id) as {provider_thread_id:string}[];
+      const dtoSession='providerThreadId' in dto ? dto.providerThreadId as string|null : null;
+      const providerThreadIds=[...new Set([...sessions.map(s=>s.provider_thread_id),...(dtoSession?[dtoSession]:[])])];
       let cwd: string | null = null;
       if (dto.environmentId) {
         if (!environments.has(dto.environmentId)) environments.set(dto.environmentId, (await sdk.environments.get({ environmentId: dto.environmentId })).path);
         cwd = environments.get(dto.environmentId) ?? null;
       }
-      const info: ThreadInfo = { threadId:id, providerThreadId:session?.provider_thread_id ?? ('providerThreadId' in dto ? dto.providerThreadId as string | null : null),
+      const info: ThreadInfo = { threadId:id, providerThreadId:providerThreadIds.at(-1) ?? null, providerThreadIds,
         provider:dto.providerId ?? '',projectId:dto.projectId ?? '',createdAt:dto.createdAt,isFork:!!dto.sourceThreadId,cwd };
       const found = desiredFile ? await o.files[desiredFile].locate(info, signal) : false;
       if (stopped) return false;

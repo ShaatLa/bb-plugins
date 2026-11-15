@@ -10,13 +10,87 @@ import type { UsageRow } from '../contract';
 import { createCompactions, type FileCompaction } from './compactions';
 import { createStore } from '../store/write';
 
-export type ThreadInfo = { threadId: string; providerThreadId: string | null; provider: string; projectId: string; createdAt: number; isFork: boolean; cwd: string | null };
+export type ThreadInfo = { threadId: string; providerThreadId: string | null; providerThreadIds: string[]; provider: string; projectId: string; createdAt: number; isFork: boolean; cwd: string | null };
 export type Batch = { rows: UsageRow[]; compactions?: FileCompaction[]; parseErrors: number; more?: boolean; commit(): void };
 export interface FileSource {
   locate(t: ThreadInfo, signal?: AbortSignal): Promise<boolean>;
   flushThread(t: ThreadInfo, signal?: AbortSignal): Promise<Batch>;
   scanOutside(knownSessions: Set<string>, sinceTs: number, signal?: AbortSignal): Promise<{ rows: UsageRow[]; compactions?: FileCompaction[]; more?: boolean; commit(): void }>;
 }
+export const MAX_JSON_BYTES = 1024 * 1024;
+export function parseJsonLine(bytes: Buffer): any {
+  if (bytes.length >= MAX_JSON_BYTES) throw new Error('Transcript JSON exceeds the synchronous parse limit');
+  return JSON.parse(bytes.toString('utf8'));
+}
+// Metadata strings are decoded individually; large transcript bodies never reach JSON.parse.
+export function stringField(head: string, name: string): string | undefined {
+  const value = new RegExp('"' + name + '"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")').exec(head)?.[1];
+  return value === undefined ? undefined : JSON.parse(value);
+}
+export const lineHead = (bytes: Buffer) => bytes.toString('utf8', 0, Math.min(bytes.length, 8192));
+// Read only selected object paths; skip bodies without allocating strings or parsing their JSON.
+export async function jsonFields(bytes: Buffer, paths: string[], signal?: AbortSignal): Promise<Record<string,any>> {
+  const found:Record<string,any> = {}, pause=cooperation(signal);
+  const whitespace = async (pos:number) => {
+    while (pos<bytes.length && (bytes[pos]===32 || bytes[pos]===9 || bytes[pos]===13 || bytes[pos]===10)) {
+      if ((pos & 4095)===0) await pause(); pos++;
+    }
+    return pos;
+  };
+  const stringEnd = async (start:number) => {
+    let pos=start+1;
+    for (;;) {
+      await pause(); const end=Math.min(pos+65536,bytes.length), relative=bytes.subarray(pos,end).indexOf(34);
+      if (relative<0) { pos=end; if (pos>=bytes.length) throw new Error('Unterminated transcript string'); continue; }
+      const quote=pos+relative;
+      let back=quote-1; while (back>=start && bytes[back]===92) { if ((back & 4095)===0) await pause(); back--; }
+      if ((quote-back-1)%2===0) return quote+1;
+      pos=quote+1;
+    }
+  };
+  const valueEnd = async (start:number) => {
+    if (bytes[start]===34) return stringEnd(start);
+    if (bytes[start]===123 || bytes[start]===91) {
+      let depth=0;
+      for (let pos=start;pos<bytes.length;pos++) {
+        if ((pos & 4095)===0) await pause();
+        const c=bytes[pos];
+        if (c===34) { pos=await stringEnd(pos)-1; continue; }
+        if (c===123 || c===91) depth++;
+        if ((c===125 || c===93) && --depth===0) return pos+1;
+      }
+      throw new Error('Unterminated transcript object');
+    }
+    let pos=start;
+    while (pos<bytes.length && ![44,125,93,32,9,10,13].includes(bytes[pos])) { if ((pos & 4095)===0) await pause(); pos++; }
+    return pos;
+  };
+  const object = async (start:number, prefix:string):Promise<number> => {
+    let pos=await whitespace(start+1);
+    while (pos<bytes.length && bytes[pos]!==125) {
+      await pause(); if (bytes[pos]!==34) throw new Error('Invalid transcript field');
+      const end=await stringEnd(pos);
+      const key=end-pos<=512 ? JSON.parse(bytes.toString('utf8',pos,end)) as string : '';
+      pos=await whitespace(end); if (bytes[pos++]!==58) throw new Error('Invalid transcript field');
+      pos=await whitespace(pos); const path=prefix ? `${prefix}.${key}` : key;
+      if (paths.includes(path)) {
+        const end=await valueEnd(pos);
+        if (end-pos>65536) throw new Error(`Transcript field ${path} exceeds metadata limit`);
+        found[path]=JSON.parse(bytes.toString('utf8',pos,end)); pos=end;
+      } else if (bytes[pos]===123 && paths.some(p=>p.startsWith(path+'.'))) pos=await object(pos,path);
+      else pos=await valueEnd(pos);
+      pos=await whitespace(pos);
+      if (bytes[pos]===125) return pos+1;
+      if (bytes[pos++]!==44) throw new Error('Invalid transcript object');
+      pos=await whitespace(pos);
+    }
+    if (bytes[pos]!==125) throw new Error('Unterminated transcript object');
+    return pos+1;
+  };
+  const start=await whitespace(0); if (bytes[start]!==123) throw new Error('Invalid transcript object');
+  await object(start,''); signal?.throwIfAborted(); return found;
+}
+
 export const LIMIT = 2 * 1024 * 1024;
 export function cooperation(signal?: AbortSignal) {
   let last = performance.now();
@@ -67,7 +141,7 @@ function oGetComplete(db: Database, name: string): string | null {
   const row = db.prepare('SELECT value FROM cursor WHERE name = ?').get(name) as { value: string } | undefined;
   return row ? JSON.parse(row.value) : null;
 }
-export async function readFile(db: Database, path: string, t: ThreadInfo, parse: (line: any) => UsageRow | FileCompaction | null, budget: { remaining: number }, signal?: AbortSignal, move = false): Promise<Batch> {
+export async function readFile(db: Database, path: string, t: ThreadInfo, parse: (line: any) => UsageRow | FileCompaction | null, budget: { remaining: number }, signal?: AbortSignal, move = false, decode: (bytes: Buffer, signal?:AbortSignal) => any = parseJsonLine): Promise<Batch> {
   signal?.throwIfAborted(); const st = await stat(path); const compressed = path.endsWith('.zst');
   let old = db.prepare('SELECT *, "offset" AS offset FROM file_cursor WHERE path = ?').get(path) as Cursor | undefined;
   if (!old && move) {
@@ -119,9 +193,10 @@ export async function readFile(db: Database, path: string, t: ThreadInfo, parse:
     let markerMax = old?.compaction_watermark_ts ?? 0;
     const existsRow = db.prepare('SELECT 1 FROM usage_raw WHERE key = ?');
     while (pos < end) {
-      const next = bytes.indexOf(10, pos); const text = bytes.toString('utf8', pos, next); pos = next + 1;
+      const next = bytes.indexOf(10, pos); const raw = bytes.subarray(pos, next); pos = next + 1;
       await pause(); let line: any;
-      try { line = JSON.parse(text); } catch { parseErrors++; continue; }
+      try { line = await decode(raw,signal); } catch (error) { signal?.throwIfAborted(); parseErrors++; continue; }
+      if (line === null) continue;
       const row = parse(line);
       if (row && 'before' in row) {
         if (!Number.isFinite(row.at) || !Number.isFinite(row.before) || row.before < 0 || (row.after !== null && (!Number.isFinite(row.after) || row.after < 0)) || (t.isFork && row.at < t.createdAt)) continue;
@@ -158,4 +233,4 @@ export async function readFile(db: Database, path: string, t: ThreadInfo, parse:
 export function combine(batches: Batch[]): Batch {
   return { rows: batches.flatMap(b => b.rows), compactions: batches.flatMap(b => b.compactions ?? []), parseErrors: batches.reduce((n, b) => n + b.parseErrors, 0), more: batches.some(b => b.more), commit() { for (const b of batches) b.commit(); } };
 }
-export const outsideThread = (id: string, provider: string): ThreadInfo => ({ threadId: '', providerThreadId: id, provider, projectId: '~outside', createdAt: 0, isFork: false, cwd: null });
+export const outsideThread = (id: string, provider: string): ThreadInfo => ({ threadId: '', providerThreadId: id, providerThreadIds:[id], provider, projectId: '~outside', createdAt: 0, isFork: false, cwd: null });
