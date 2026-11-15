@@ -73,6 +73,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   const release = (threadId: string) => { inflight.delete(threadId); if (retry.delete(threadId)) void runQueued(threadId); };
   // taken: queued requests a pending dispatch took; a cancel removes them, so a refused call does not bring them back.
   const taken = new Set<string>();
+  // pending: a compact call has not returned yet. Unlike running, a stop that arrives first does not clear it.
+  const pending = new Set<string>();
   // Every compaction this plugin dispatches. running is set before the call, since the compaction's stop can arrive before
   // the call returns. A queued request runs at most once: bb has no acceptance a restart could read back, so its key goes
   // before the call and comes back only if the call is refused. A restart in between loses the request, never repeats it.
@@ -80,6 +82,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     running.add(threadId);
     const wasQueued = queued.delete(threadId);
     if (wasQueued) taken.add(threadId);
+    pending.add(threadId);
     try {
       if (wasQueued) await bb.storage.kv.delete(QUEUED + threadId);
       await bb.sdk.threads.compact({ threadId });
@@ -88,10 +91,11 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
       if (taken.delete(threadId)) queued.add(threadId);
       stopped(threadId);
       // Also stores a request made while the call was pending, which queue() kept in memory only.
+      pending.delete(threadId);
       if (queued.has(threadId)) await bb.storage.kv.set(QUEUED + threadId, true).catch(cause => bb.log.warn(`Compact ${threadId}: queued request not saved again: ${message(cause)}`));
       throw error;
     }
-    taken.delete(threadId);
+    taken.delete(threadId); pending.delete(threadId);
     // The accepted compaction also covers a request made while the call was pending. If its stop already came, the hook's
     // recheck then ran with a request in place, so it runs again.
     const covered = queued.delete(threadId);
@@ -227,7 +231,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     queued.add(threadId);
     // A request made while a compact call is pending stays in memory: if that call is accepted it covers the request, and
     // a restart before then must not find a key and compact again. dispatch() stores it if the call is refused.
-    if (!running.has(threadId)) await bb.storage.kv.set(QUEUED + threadId, true);
+    if (!pending.has(threadId)) await bb.storage.kv.set(QUEUED + threadId, true);
     bb.log.info(`Compact ${threadId}: queued until the thread stops`);
     // The thread may have stopped between the status read and the request; its stop event has then already passed.
     const thread = await bb.sdk.threads.get({ threadId });

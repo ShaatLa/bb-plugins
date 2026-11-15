@@ -512,3 +512,13 @@ it("does not compact again after a restart when a request was made while an acce
   await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
+
+it("does not compact again after a restart when a request was made after the stop of an accepted call that is still pending", async () => {
+  const h = await setup({ used: 900_000 });
+  h.compact.mockImplementationOnce(() => new Promise(() => {}));
+  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.active"); await h.emit("thread.idle"); // the compaction's stop, before its call returns
+  await queueing(h).call("compact", { queue: true });
+  await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
