@@ -22,6 +22,10 @@ Performance: activity consumers share bounded SDK reads and immutable dispatch a
 
 Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
 
+## Agent cost (0.39.0)
+
+With the optional Tokenomos plugin installed, the task rail shows what agents spent on the task (API-equivalent price). A thread counts from "Thread attached" to "Thread detached", or until now while linked. Workers often stay linked to old tasks while moving on, so at any moment a thread's time belongs to the task it was attached to most recently. Commenters (a manager, a reviewer) and parent-fallback links do not count. Epics and tasks with subtasks sum their whole tree: the time windows go to Tokenomos (`costs.sum` with `spans`, descendants included) in one call, so shared threads count once. `~` marks an estimate or incomplete data; without Tokenomos the line is hidden.
+
 ## Public RPC for other plugins (0.36.0)
 
 `threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?, iconName, cssColor}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. `status.iconName` is a shared app icon (`work-board/status-<glyph>`, registered with `app.experimental_icons`, drawn in currentColor), so another plugin renders `<Icon name={status.iconName} />` inside `style={{ color: status.cssColor }}` and gets the same glyph and theme color as Work Board (0.37.0). The contract only grows with fields.

@@ -2,7 +2,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createTasksStore } from "../db";
 import { formatTaskCost } from "../components/task-cost";
-import { getTaskCost, taskCostThreadIds } from ".";
+import { getTaskCost, taskCostSpans } from ".";
 
 const SUM = {
   priceVersion: "2026-11",
@@ -23,20 +23,51 @@ function setup() {
 }
 
 describe("task cost", () => {
-  it("counts linked threads, past and present, but not commenters, parent fallbacks or mistakes", () => {
+  it("builds one span per attachment and none for commenters or parent fallbacks", () => {
     const { db, store, task, system } = setup();
-    store.upsertTaskThread({ taskId: task.id, threadId: "thr_live", presetName: "Default", title: "Live", liveStatus: "working" });
-    system("thr_archived", "Thread detached (archived): @thread:thr_archived (attached x)");
-    system("thr_attached", "Thread attached: @thread:thr_attached");
+    const at = (comment: { id: string }, iso: string) =>
+      db.prepare("UPDATE comments SET created_at = ? WHERE id = ?").run(iso, comment.id);
+    const t = (h: number) => Date.parse(`2026-10-26T${String(h).padStart(2, "0")}:00:00.000Z`);
+    // A worker attached, moved on (manual detach), came back and is still linked.
+    at(system("thr_worker", "Thread attached: @thread:thr_worker"), "2026-10-26T09:00:00.000Z");
+    at(system("thr_worker", "Thread detached (manual): @thread:thr_worker (attached x)"), "2026-10-26T11:00:00.000Z");
+    at(system("thr_worker", "Thread attached: @thread:thr_worker"), "2026-10-26T15:00:00.000Z");
+    store.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", presetName: "Attached", title: "W", liveStatus: "idle" });
+    db.prepare("UPDATE task_threads SET attached_at = ? WHERE thread_id = 'thr_worker'").run("2026-10-26T15:00:00.000Z");
+    // Old link with only a detach left: spans from task creation.
+    db.prepare("UPDATE tasks SET created_at = ? WHERE id = ?").run("2026-10-26T08:00:00.000Z", task.id);
+    at(system("thr_old", "Thread detached (archived): @thread:thr_old (attached x)"), "2026-10-26T10:00:00.000Z");
     store.createComment({ taskId: task.id, kind: "agent", authorName: "Manager", threadId: "thr_manager", body: "Status?" });
     system("thr_parent", "Thread attached (parent fallback): @thread:thr_parent");
     system("thr_parent", "Thread detached (replaced): @thread:thr_parent (attached x)");
-    store.upsertTaskThread({ taskId: task.id, threadId: "thr_parent_now", presetName: "Parent thread", title: "Lead", liveStatus: "idle" });
-    system("thr_parent_now", "Thread attached (parent fallback): @thread:thr_parent_now");
-    system("thr_mistake", "Thread attached: @thread:thr_mistake");
-    system("thr_mistake", "Thread detached (manual): @thread:thr_mistake (attached x)");
+    store.upsertTaskThread({ taskId: task.id, threadId: "thr_lead", presetName: "Parent thread", title: "Lead", liveStatus: "idle" });
 
-    expect(new Set(taskCostThreadIds(db, task.id).threadIds)).toEqual(new Set(["thr_live", "thr_archived", "thr_attached"]));
+    const { spans, taskCount } = taskCostSpans(db, task.id);
+    expect(taskCount).toBe(1);
+    expect(spans).toEqual([
+      { threadId: "thr_worker", from: t(15), to: null },
+      { threadId: "thr_worker", from: t(9), to: t(11) },
+      { threadId: "thr_old", from: t(8), to: t(10) },
+    ]);
+  });
+
+  it("gives a thread's time to the task it was attached to most recently", () => {
+    const { db, store, task, system } = setup();
+    const other = store.createTask({ projectId: task.projectId, title: "Next" });
+    const at = (comment: { id: string }, iso: string) =>
+      db.prepare("UPDATE comments SET created_at = ? WHERE id = ?").run(iso, comment.id);
+    const t = (h: number) => Date.parse(`2026-10-26T${String(h).padStart(2, "0")}:00:00.000Z`);
+    // Attached here 09-17, but moved to another task 11-13 without detaching here.
+    at(system("thr_worker", "Thread attached: @thread:thr_worker"), "2026-10-26T09:00:00.000Z");
+    at(store.createComment({ taskId: other.id, kind: "system", authorName: "Work Board", threadId: "thr_worker", body: "Thread attached: @thread:thr_worker" }), "2026-10-26T11:00:00.000Z");
+    at(store.createComment({ taskId: other.id, kind: "system", authorName: "Work Board", threadId: "thr_worker", body: "Thread detached (manual): @thread:thr_worker (attached x)" }), "2026-10-26T13:00:00.000Z");
+    at(system("thr_worker", "Thread detached (manual): @thread:thr_worker (attached x)"), "2026-10-26T17:00:00.000Z");
+
+    expect(taskCostSpans(db, task.id).spans).toEqual([
+      { threadId: "thr_worker", from: t(13), to: t(17) },
+      { threadId: "thr_worker", from: t(9), to: t(11) },
+    ]);
+    expect(taskCostSpans(db, other.id).spans).toEqual([{ threadId: "thr_worker", from: t(11), to: t(13) }]);
   });
 
   it("collects an epic's members and their subtasks into one deduplicated set", async () => {
@@ -52,17 +83,17 @@ describe("task cost", () => {
     attach(sub.id, "thr_shared");
     attach(member.id, "thr_shared");
 
-    expect(taskCostThreadIds(bb.storage.database(), epic.id)).toEqual({
-      threadIds: expect.arrayContaining(["thr_member", "thr_sub", "thr_shared"]),
-      taskCount: 2,
-    });
-    expect(taskCostThreadIds(bb.storage.database(), epic.id).threadIds).toHaveLength(3);
+    const { spans, taskCount } = taskCostSpans(bb.storage.database(), epic.id);
+    expect(taskCount).toBe(2);
+    // thr_shared is attached to both; the tree owns its time once.
+    expect(spans.map((span) => span.threadId).sort()).toEqual(["thr_member", "thr_shared", "thr_sub"]);
+    expect(spans.every((span) => span.to === null)).toBe(true);
     harness.sdk.stub("plugins.callRpc", async () => SUM as never);
     expect(await getTaskCost(bb, epic.id)).toMatchObject({ taskCount: 2 });
     expect(harness.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
   });
 
-  it("asks Tokenomos for the deduplicated sum including descendants", async () => {
+  it("asks Tokenomos for the sum over spans including descendants", async () => {
     const { bb, harness, task, system } = setup();
     system("thr_agent", "Thread attached: @thread:thr_agent");
     harness.sdk.stub("plugins.callRpc", async () => SUM as never);
@@ -71,17 +102,17 @@ describe("task cost", () => {
     expect(harness.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
       pluginId: "tokenomos",
       method: "costs.sum",
-      input: { threadIds: ["thr_agent"], includeDescendants: true },
+      input: { spans: [{ threadId: "thr_agent", from: expect.any(Number), to: null }], includeDescendants: true },
     });
   });
 
-  it("marks the sum partial when a task has more threads than one call takes", async () => {
+  it("marks the sum partial when a task has more spans than one call takes", async () => {
     const { bb, harness, task, system } = setup();
-    for (let i = 0; i < 201; i++) system(`thr_${i}`, `Thread attached: @thread:thr_${i}`);
+    for (let i = 0; i < 2001; i++) system(`thr_${i}`, `Thread attached: @thread:thr_${i}`);
     harness.sdk.stub("plugins.callRpc", async () => SUM as never);
 
     expect((await getTaskCost(bb, task.id))?.partial).toBe(true);
-    expect((harness.sdk.callsTo("plugins.callRpc")[0]![0] as { input: { threadIds: string[] } }).input.threadIds).toHaveLength(200);
+    expect((harness.sdk.callsTo("plugins.callRpc")[0]![0] as { input: { spans: unknown[] } }).input.spans).toHaveLength(2000);
   });
 
   it("hides the cost when Tokenomos is missing or the task has no threads", async () => {
