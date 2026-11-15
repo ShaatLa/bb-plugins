@@ -1,3 +1,5 @@
+import { listTokenUsage, tokenUsageContract } from "./token-usage.ts";
+import path from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { registerUsageSource } from "./usage-source.ts";
@@ -29,6 +31,9 @@ export default function plugin(bb: BbPluginApi) {
     }),
   });
   registerUsageSource(bb);
+  bb.rpc.register(tokenUsageContract, {
+    "usage.list": input => listTokenUsage(path.join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "bridge-data", "usage.jsonl"), input),
+  });
   const host = bb.hosts.experimental_client({ contract: settingsHostContract });
   const diagnostics = async (hostId: string, checkUpdates = false) => {
     const { agyCommand } = await settings.get();

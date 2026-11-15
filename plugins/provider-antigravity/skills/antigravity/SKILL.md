@@ -54,3 +54,15 @@ the worktree and BB current/parent thread storage. Parent access requires BB
 metadata; prompt paths do not grant access. No shell/write permissions are
 granted. Session-only agy settings allow these three tools, preserving native
 ask/deny rules. Full mode and other tools keep their existing behavior.
+
+Per-generation token counts are available to local consumers through plugin
+`antigravity`, read-only RPC `usage.list`, input `{ after?: string, limit?: number }`
+or null (default 200, max 1000). Entries are oldest first; pass nextCursor back
+unchanged and retain the last non-null cursor when a poll returns an empty page.
+A cursor whose entry has rotated away restarts from the oldest retained entry;
+consumers must deduplicate by id. The journal rotates above 8 MiB to
+`usage.1.jsonl`, retaining one archive. The local bridge journal starts with newly launched shims, has no historical
+backfill or remote-host aggregation, and uses agy 1.5.9 stream-json DONE-step
+usage. Prompt tokens include cache reads; completion tokens include reasoning.
+Missing counts are omitted, never estimated. See `TOKEN_USAGE.md` in the plugin
+source for the entry schema, observed CLI evidence, deployment and retention limits.
