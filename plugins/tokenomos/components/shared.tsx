@@ -54,3 +54,6 @@ export function useHeld<T>(data: T | undefined, key: string): { value: T | undef
   if (data !== undefined) held.current = { key, value: data };
   return { value: held.current?.value, stale: data === undefined && held.current !== undefined, key: held.current?.key ?? key };
 }
+
+/** RPC inputs are JSON, so an unset project is left out instead of passed as `undefined`. */
+export const scope = (project?: string) => (project ? { projectId: project } : {});

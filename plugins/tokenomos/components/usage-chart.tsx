@@ -5,15 +5,16 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import { Button } from "./ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { cn } from "../lib/utils";
-import { fmtCost, fmtTokens, fmtUsd, totalTokens, type By } from "./format";
+import { fmtCost, fmtMetric, fmtTokens, totalTokens, type By, type Metric, type Shown } from "./format";
 import { buildChart, type ChartModel, type Row, type Slot } from "./series";
 import { seriesColor } from "./colors";
 import { useT, type T } from "./i18n";
 import { Card, Muted } from "./shared";
 import type { SummaryOutput } from "./types";
 
-const fmtMetric = (metric: ChartModel["metric"], v: number, t: T) => (metric === "usd" ? fmtUsd(v, t) : fmtTokens(v, t));
-const axisTick = (metric: ChartModel["metric"], v: number, t: T) => (metric === "tokens" ? fmtTokens(v, t) : v < 10 ? `$${fmtTokens(+v.toFixed(2), t)}` : `$${fmtTokens(v, t)}`);
+const axisTick = (metric: Shown, v: number, t: T) => (metric !== "usd" ? fmtTokens(v, t) : v < 10 ? `$${fmtTokens(+v.toFixed(2), t)}` : `$${fmtTokens(v, t)}`);
+const unitLabel = (metric: Shown, t: T) => (metric === "usd" ? "~$" : metric === "calls" ? t("chart.unitCalls") : t("chart.unitTokens"));
+const heading = (metric: Shown, t: T) => t(metric === "usd" ? "chart.spend" : metric === "calls" ? "chart.calls" : "chart.tokens");
 
 /** Segment with a square baseline and a 4px rounded data end; only the top visible segment of a stack rounds. */
 function segment(slots: Slot[], index: number) {
@@ -43,7 +44,7 @@ export function Legend({ slots }: { slots: Slot[] }) {
 }
 
 function DataTable({ model, summary, t }: { model: ChartModel; summary: SummaryOutput; t: T }) {
-  const unit = model.metric === "usd" ? "~$" : t("chart.unitTokens");
+  const unit = unitLabel(model.metric, t);
   return (
     <div className="overflow-x-auto">
       <Table>
@@ -69,18 +70,18 @@ function DataTable({ model, summary, t }: { model: ChartModel; summary: SummaryO
   );
 }
 
-export function UsageChart({ summary, by, stale }: { summary: SummaryOutput; by: By; stale: boolean }) {
+export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOutput; by: By; metric: Metric; stale: boolean }) {
   const t = useT();
   const [asTable, setAsTable] = useState(false);
   const range: Range = summary.range;
-  const model = useMemo(() => buildChart(summary, by, range, t), [summary, by, range, t]);
+  const model = useMemo(() => buildChart(summary, by, range, t, metric), [summary, by, range, t, metric]);
   const config = useMemo<ChartConfig>(() => Object.fromEntries(model.slots.map((s) => [s.id, { label: s.label, color: seriesColor(s.n) }])), [model]);
   const empty = model.rows.every((r) => r.total === 0);
   const interval = range === "day" ? 2 : range === "month" ? 4 : 0;
   return (
     <Card className={cn("space-y-3 transition-opacity", stale && "opacity-60")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {model.slots.length > 1 ? <Legend slots={model.slots} /> : <span className="text-xs text-muted-foreground">{model.metric === "usd" ? t("chart.spend") : t("chart.tokens")}</span>}
+        {model.slots.length > 1 ? <Legend slots={model.slots} /> : <span className="text-xs text-muted-foreground">{heading(model.metric, t)}</span>}
         <Button variant="ghost" size="sm" aria-pressed={asTable} onClick={() => setAsTable((v) => !v)}>{t("chart.table")}</Button>
       </div>
       {empty ? <Muted>{t("chart.empty")}</Muted> : asTable ? <DataTable model={model} summary={summary} t={t} /> : (
@@ -104,6 +105,7 @@ export function UsageChart({ summary, by, stale }: { summary: SummaryOutput; by:
                     </div>
                     <div className="text-muted-foreground tabular-nums">
                       {t("chart.tipDetail", { total: fmtTokens(totalTokens(cost.tokens), t), cacheRead: fmtTokens(cost.tokens.cacheRead, t), output: fmtTokens(cost.tokens.output, t) })}
+                      {" · "}{t("calls.count", { n: cost.calls })}
                     </div>
                   </div>
                 );

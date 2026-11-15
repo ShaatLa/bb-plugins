@@ -3,75 +3,39 @@ import { experimental_useRpcQuery as useQuery, useBbNavigate } from "@get-bb/plu
 import { rpcContract, type Range } from "../contract";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { fmtCost, fmtInt, fmtSaving, fmtTokens, fmtWhen, providerName } from "./format";
-import { useT, type T } from "./i18n";
-import { Card, Muted, Section, SkeletonBlock, useHeld } from "./shared";
-import type { SummaryOutput } from "./types";
+import { useT } from "./i18n";
+import { Card, Muted, Section, SkeletonBlock, scope, useHeld } from "./shared";
 
 const num = "text-right tabular-nums";
-
-/** The server labels provider rows with the raw id, so known providers get their display name. */
-const rowName = (b: { key: string; label: string }, t: T) => {
-  const name = providerName(b.key, t);
-  return name === b.key ? b.label : name;
-};
-
-export function Breakdown({ summary }: { summary: SummaryOutput }) {
-  const t = useT();
-  return (
-    <Section title={t("breakdown.title")}>
-      <Card className="overflow-x-auto p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("breakdown.name")}</TableHead>
-              <TableHead className={num}>{t("breakdown.freshIn")}</TableHead>
-              <TableHead className={num}>{t("breakdown.cacheRead")}</TableHead>
-              <TableHead className={num}>{t("breakdown.cacheWrite")}</TableHead>
-              <TableHead className={num}>{t("breakdown.output")}</TableHead>
-              <TableHead className={num}>{t("breakdown.calls")}</TableHead>
-              <TableHead className={num}>~$</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {summary.breakdown.length === 0 && <TableRow><TableCell colSpan={7} className="text-muted-foreground">{t("breakdown.empty")}</TableCell></TableRow>}
-            {summary.breakdown.map((b) => (
-              <TableRow key={b.key}>
-                <TableCell className="font-medium">{rowName(b, t)}</TableCell>
-                <TableCell className={num}>{fmtTokens(b.cost.tokens.freshIn, t)}</TableCell>
-                <TableCell className={num}>{fmtTokens(b.cost.tokens.cacheRead, t)}</TableCell>
-                <TableCell className={num}>{fmtTokens(b.cost.tokens.cacheWrite, t)}</TableCell>
-                <TableCell className={num}>{fmtTokens(b.cost.tokens.output, t)}</TableCell>
-                <TableCell className={num}>{fmtInt(b.calls, t)}</TableCell>
-                <TableCell className={num}>{fmtCost(b.cost, t) ?? t("noPrice")}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
-    </Section>
-  );
-}
+// Fixed numeric columns keep the rows aligned: name | calls | tokens | range cost | total.
+const COLS = "grid-cols-[minmax(0,1fr)_4.5rem_5rem_8rem_6.5rem]";
 
 const PAGE = 50;
 
 /** One page of top threads; the last mounted page offers "More" while the server says more exist. */
-function ThreadsPage({ range, offset, isLast, onMore }: { range: Range; offset: number; isLast: boolean; onMore: () => void }) {
+function ThreadsPage({ range, project, offset, isLast, onMore }: { range: Range; project?: string; offset: number; isLast: boolean; onMore: () => void }) {
   const { toThread } = useBbNavigate();
   const t = useT();
-  const query = useQuery({ contract: rpcContract, method: "topThreads", input: { range, offset, limit: PAGE } });
-  const { value: data, stale } = useHeld(query.data, range);
+  const query = useQuery({ contract: rpcContract, method: "topThreads", input: { range, offset, limit: PAGE, ...scope(project) } });
+  const { value: data, stale } = useHeld(query.data, `${range}/${project ?? ""}`);
   if (!data) return query.isLoading ? <SkeletonBlock rows={3} /> : null;
   return (
     <ul className={stale ? "divide-y divide-border opacity-60" : "divide-y divide-border"}>
       {data.items.map((th) => (
         <li key={th.threadId}>
           <button type="button" onClick={() => toThread(th.threadId)}
-            className="grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-4 px-3 py-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-            <span className="min-w-0 truncate">{th.title || th.threadId}<span className="text-xs text-muted-foreground"> · {providerName(th.provider, t)}</span></span>
-            <span className={`${num} w-20`} title={t("threads.ownTitle")}>{fmtCost(th.own, t) ?? t("noPrice")}</span>
-            <span className={`${num} w-32 text-muted-foreground`} title={t("threads.totalTitle")}>{fmtCost(th.total, t) ?? t("noPrice")}</span>
+            className={`grid w-full ${COLS} items-center gap-x-3 px-3 py-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>
+            <span className="min-w-0">
+              <span className="block truncate">{th.title || th.threadId}</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {[th.projectName, th.model, providerName(th.provider, t), th.childCount > 0 ? t("threads.children", { n: th.childCount }) : null].filter(Boolean).join(" · ")}
+              </span>
+            </span>
+            <span className={num}>{fmtInt(th.calls, t)}</span>
+            <span className={num}>{fmtTokens(th.tokens, t)}</span>
+            <span className={`${num} font-medium`}>{fmtCost(th.rangeCost, t) ?? t("noPrice")}</span>
+            <span className={`${num} text-muted-foreground`} title={t("threads.totalTitle")}>{fmtCost(th.total, t) ?? t("noPrice")}</span>
           </button>
         </li>
       ))}
@@ -80,33 +44,39 @@ function ThreadsPage({ range, offset, isLast, onMore }: { range: Range; offset: 
   );
 }
 
-export function Threads({ range }: { range: Range }) {
+export function Threads({ range, project }: { range: Range; project?: string }) {
   const t = useT();
-  return <Section title={t("threads.title")} collapseKey="threads"><ThreadsBody range={range} /></Section>;
+  return <Section title={t("threads.title")} collapseKey="threads"><ThreadsBody range={range} project={project} /></Section>;
 }
 
-function ThreadsBody({ range }: { range: Range }) {
+function ThreadsBody({ range, project }: { range: Range; project?: string }) {
   const t = useT();
   const [pages, setPages] = useState(1);
-  const first = useQuery({ contract: rpcContract, method: "topThreads", input: { range, offset: 0, limit: PAGE } });
-  useEffect(() => setPages(1), [range]);
+  const first = useQuery({ contract: rpcContract, method: "topThreads", input: { range, offset: 0, limit: PAGE, ...scope(project) } });
+  useEffect(() => setPages(1), [range, project]);
   return first.data && first.data.items.length === 0 ? <Card><Muted>{t("threads.empty")}</Muted></Card> : (
-    <Card className="p-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 whitespace-nowrap border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-        <span>{t("threads.thread")}</span><span className={`${num} w-20`}>{t("threads.own")}</span><span className={`${num} w-32`}>{t("threads.total")}</span>
-      </div>
-      <div className="divide-y divide-border">
-        {Array.from({ length: pages }, (_, i) => <ThreadsPage key={i} range={range} offset={i * PAGE} isLast={i === pages - 1} onMore={() => setPages(pages + 1)} />)}
+    <Card className="overflow-x-auto p-0">
+      <div className="min-w-[36rem]">
+        <div className={`grid ${COLS} items-center gap-x-3 whitespace-nowrap border-b border-border px-3 py-1.5 text-xs text-muted-foreground`}>
+          <span>{t("threads.thread")}</span>
+          <span className={num}>{t("threads.calls")}</span>
+          <span className={num}>{t("threads.tokens")}</span>
+          <span className={num}>{t(`threads.range.${range}`)}</span>
+          <span className={num} title={t("threads.totalTitle")}>{t("threads.total")}</span>
+        </div>
+        <div className="divide-y divide-border">
+          {Array.from({ length: pages }, (_, i) => <ThreadsPage key={i} range={range} project={project} offset={i * PAGE} isLast={i === pages - 1} onMore={() => setPages(pages + 1)} />)}
+        </div>
       </div>
     </Card>
   );
 }
 
-export function Compactions({ range }: { range: Range }) {
+export function Compactions({ range, project }: { range: Range; project?: string }) {
   const { toThread } = useBbNavigate();
   const t = useT();
-  const query = useQuery({ contract: rpcContract, method: "compactions", input: { range } });
-  const { value: data, stale } = useHeld(query.data, range);
+  const query = useQuery({ contract: rpcContract, method: "compactions", input: { range, ...scope(project) } });
+  const { value: data, stale } = useHeld(query.data, `${range}/${project ?? ""}`);
   return (
     <Section title={t("compactions.title")} collapseKey="compactions" action={data && data.items.length > 0 ? <CompactionTotal items={data.items} /> : null}>
       {!data && query.isLoading ? <SkeletonBlock rows={2} /> : !data?.items.length ? <Card><Muted>{t("compactions.empty")}</Muted></Card> : (

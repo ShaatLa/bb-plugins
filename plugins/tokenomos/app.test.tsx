@@ -20,15 +20,37 @@ const HOUR = 3_600_000;
 const STEP = { day: HOUR, week: 24 * HOUR, month: 24 * HOUR, "3m": 7 * 24 * HOUR } as const;
 
 type Input = { range: keyof typeof COUNTS; by: "provider" | "model" };
+// Mon 09:00 is busy in calls, Sun 09:00 in dollars, Wed 14:00 in tokens; weekdays count from Monday = 0.
+const HEAT = [
+  { weekday: 0, hour: 9, usd: 20, tokens: 1_000_000, calls: 50 },
+  { weekday: 6, hour: 9, usd: 277, tokens: 5_000_000, calls: 40 },
+  { weekday: 2, hour: 14, usd: 5, tokens: 9_000_000, calls: 900 },
+];
+const kpis = (over: Record<string, unknown> = {}) => ({
+  spendUsd: 12.4, spendPrevUsd: 10, tokens: 94_000_000, tokensPrev: 80_000_000, calls: 1234, callsPrev: 1000, threads: 37,
+  medianThreadUsd: 0.42, perCallUsd: 0.01, cacheHitRate: 0.87, estimated: true, partial: false, ...over,
+});
+
 function summary({ range, by }: Input, over: Record<string, unknown> = {}) {
   const from = Date.UTC(2026, 10, 1);
   const keys = by === "provider" ? ["claude-code", "codex"] : ["claude-opus-4", "gpt-5", "qwen3", "m4", "m5", "m6"];
   return {
     range, from, to: from + COUNTS[range] * STEP[range],
-    buckets: Array.from({ length: COUNTS[range] }, (_, i) => ({ start: from + i * STEP[range], series: Object.fromEntries(keys.map((k, j) => [k, cost(i + j + 1)])) })),
+    buckets: Array.from({ length: COUNTS[range] }, (_, i) => ({ start: from + i * STEP[range], series: Object.fromEntries(keys.map((k, j) => [k, { ...cost(i + j + 1), calls: i + j + 1 }])) })),
     totals: cost(12.4, 5_000_000, 87_000_000, 2_000_000, { estimated: true }),
     previous: cost(10),
     cacheReadShare: 0.87,
+    kpis: kpis(),
+    mix: {
+      rows: [
+        { component: "freshIn", tokens: 5_000_000, usd: 25, usdPerMTok: 5 },
+        { component: "cacheWrite", tokens: 1_000_000, usd: 6.25, usdPerMTok: 6.25 },
+        { component: "cacheRead", tokens: 87_000_000, usd: 43.5, usdPerMTok: 0.5 },
+        { component: "output", tokens: 2_000_000, usd: 50, usdPerMTok: 25 },
+      ],
+      reasoningTokens: 400_000,
+    },
+    heatmap: { cells: HEAT, busiest: HEAT[1] },
     breakdown: keys.map((k) => ({ key: k, label: k === "claude-code" ? "Claude Code" : k, cost: cost(3), calls: 42 })),
     compactionSavings: { usd: 1.5, tokens: 340_000, partial: true, excludesOwnCost: true },
     localSavings: { usd: 0.8, tokens: 1_200_000, partial: false, excludesOwnCost: false, referenceModel: "claude-sonnet-4" },
@@ -36,7 +58,7 @@ function summary({ range, by }: Input, over: Record<string, unknown> = {}) {
   };
 }
 
-const thread = (id: string) => ({ threadId: id, title: `Thread ${id}`, projectId: "p", provider: "codex", own: cost(1.25), total: cost(2.5) });
+const thread = (id: string) => ({ threadId: id, title: `Thread ${id}`, projectId: "p", provider: "codex", own: cost(1.25), total: cost(2.5), calls: 321, tokens: 4_500_000, rangeCost: cost(1.75), model: "gpt-5", projectName: "Atlas", childCount: 3 });
 const compaction = {
   id: "c1", threadId: "t9", title: "Compacted thread", at: Date.UTC(2026, 10, 3, 12), beforeTokens: 900_000, afterTokens: 120_000, origin: "idle-compact" as const,
   saving: { usd: -0.05, tokens: 780_000, partial: true, excludesOwnCost: true },
@@ -46,16 +68,26 @@ const compaction = {
 /** Expected texts per UI language; number formats follow the locale (en-US vs ru-RU). */
 const L = {
   en: {
-    spend: "Spend (API equivalent)", money: "~$12.40", cache: "cache read 87%", delta: "+24% vs previous period",
+    spend: "Spend (API equivalent)", money: "~$12.40", cacheHit: "Cache hit rate", pct87: "87%", delta: "+24% vs previous period",
+    median: "Median thread", medianValue: "$0.42", perCall: "$0.01 per call", footnote: "~ includes list-price estimates", tokensDelta: "+18% vs previous period", callsDelta: "+23% vs previous period",
+    allProjects: "All projects", metrics: ["Cost", "Tokens", "Calls"], calls: "Calls", callsUnit: "Interval (calls)",
+    mixTitle: "Token mix", mixSub: "where tokens go vs where money goes", mixHead: ["Component", "Tokens", "%", "Cost", "%", "$ per 1M"], mixRows: ["Input", "Cache write", "Cache read", "Output"], reasoning: "↳ reasoning tokens",
+    activity: "Activity by hour", busiestCost: "busiest: Sun 09:00, ~$277.00", busiestCalls: "busiest: Wed 14:00, 900 calls", tip: "~$277.00 · 5M tok. · 40 calls", wk: "Mon", children: "3 child threads",
+    threadHead: ["Thread", "Calls", "Tokens", "Last 7 days", "Total"], threadSub: "Atlas · gpt-5 · Codex · 3 child threads", threadNums: ["321", "4.5M", "$1.75", "$2.50"],
     compaction: "Compaction ~", saving: "~$1.50", ownCost: "excludes the cost of the compaction itself", noPrevious: "no data for the previous period",
-    noPrice: "no price", table: "Table", tabs: ["Day", "Week", "Month", "3 months", "By provider", "By model"],
+    noPrice: "no price", table: "Table", tabs: ["Day", "Week", "Month", "3 months", "Cost", "Tokens", "Calls", "By provider", "By model"],
     more: "More", cost: "(cost)", netCost: "−~$0.05", partial: "partial", month: "Month", byModel: "By model",
     sourceName: "Claude Code (files)", rows: "1,234", degraded: /Degraded threads: 2/, save: "Save", reset: "Reset", prune: "Clear old data", input: "claude-opus-4: Input",
   },
   ru: {
-    spend: "Расход (API-эквивалент)", money: "~$12,40", cache: "чтение из кэша 87 %", delta: "+24 % к прошлому периоду",
+    spend: "Расход (API-эквивалент)", money: "~$12,40", cacheHit: "Попадание в кэш", pct87: "87 %", delta: "+24 % к прошлому периоду",
+    median: "Медианный тред", medianValue: "$0,42", perCall: "$0,01 за вызов", footnote: "~ включает оценки по прайс-листу", tokensDelta: "+18 % к прошлому периоду", callsDelta: "+23 % к прошлому периоду",
+    allProjects: "Все проекты", metrics: ["Расход", "Токены", "Вызовы"], calls: "Вызовы", callsUnit: "Интервал (вызовы)",
+    mixTitle: "Структура токенов", mixSub: "куда уходят токены и куда — деньги", mixHead: ["Компонент", "Токены", "%", "Стоимость", "%", "$ за 1 млн"], mixRows: ["Вход", "Запись кэша", "Чтение кэша", "Выход"], reasoning: "↳ токены рассуждений",
+    activity: "Активность по часам", busiestCost: "пик: вс 09:00, ~$277,00", busiestCalls: "пик: ср 14:00, 900 вызовов", tip: "~$277,00 · 5M ток. · 40 вызовов", wk: "пн", children: "3 дочерних треда",
+    threadHead: ["Тред", "Вызовы", "Токены", "Последние 7 дней", "Всего"], threadSub: "Atlas · gpt-5 · Codex · 3 дочерних треда", threadNums: ["321", "4,5M", "$1,75", "$2,50"],
     compaction: "Компакция ~", saving: "~$1,50", ownCost: "без учёта стоимости самой компакции", noPrevious: "нет данных за прошлый период",
-    noPrice: "нет цены", table: "Таблица", tabs: ["День", "Неделя", "Месяц", "3 месяца", "По провайдерам", "По моделям"],
+    noPrice: "нет цены", table: "Таблица", tabs: ["День", "Неделя", "Месяц", "3 месяца", "Расход", "Токены", "Вызовы", "По провайдерам", "По моделям"],
     more: "Ещё", cost: "затраты", netCost: "−~$0,05", partial: "частично", month: "Месяц", byModel: "По моделям",
     sourceName: "Claude Code (файлы)", rows: "1 234", degraded: /Деградировавших тредов: 2/, save: "Сохранить", reset: "Сбросить", prune: "Очистить старые данные", input: "claude-opus-4: Вход",
   },
@@ -102,8 +134,12 @@ describe.each(LANGS)("page (%s)", (lang) => {
   it("renders KPI tiles with the cache-read share and estimated money", async () => {
     const { slot } = await open();
     expect(await slot.findByText(x.money)).toBeTruthy();
-    expect(slot.getByText(x.cache)).toBeTruthy();
+    expect(norm((await slot.findByText(x.cacheHit)).parentElement)).toContain(x.pct87);
+    expect(norm(slot.getByText(x.median).parentElement)).toContain(`${x.medianValue}${x.perCall}`);
+    expect(norm(slot.getByText(x.footnote))).toBe(x.footnote);
     expect(slot.getByText(x.delta)).toBeTruthy();
+    expect(slot.getByText(x.tokensDelta)).toBeTruthy();
+    expect(slot.getByText(x.callsDelta)).toBeTruthy();
     expect(slot.getByText(x.compaction)).toBeTruthy();
     expect(slot.getByText(x.saving)).toBeTruthy();
     expect(slot.getByText("vs claude-sonnet-4")).toBeTruthy();
@@ -116,10 +152,77 @@ describe.each(LANGS)("page (%s)", (lang) => {
   });
 
   it("shows tokens only and the no-price text when usd is null", async () => {
-    const { slot } = await open("week/provider", { summary: (i: Input) => summary(i, { totals: cost(null), previous: null }) });
+    const { slot } = await open("week/provider", { summary: (i: Input) => summary(i, { totals: cost(null), previous: null, kpis: kpis({ spendUsd: null, medianThreadUsd: null, perCallUsd: null }) }) });
     const tile = (await slot.findByText(x.spend)).parentElement!;
     expect(norm(tile)).toContain(x.noPrice);
     expect(norm(tile)).not.toContain("$");
+  });
+
+  it("switches the metric: the chart table follows Cost / Tokens / Calls", async () => {
+    const { slot } = await open();
+    await slot.findByText(x.money);
+    expect(slot.getAllByRole("tab").filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.textContent)).toContain(x.metrics[0]);
+    fireEvent.mouseDown(slot.getByRole("tab", { name: x.metrics[2] }), { button: 0 });
+    fireEvent.click(slot.getByRole("button", { name: x.table }));
+    expect(norm((await slot.findAllByRole("table"))[0]!.querySelector("th"))).toBe(x.callsUnit);
+  });
+
+  it("lists the projects and keeps the chosen one in the URL and the requests", async () => {
+    const { slot } = await open("week/model/p1", { projects: () => ({ items: [{ projectId: "p1", name: "Atlas" }, { projectId: "p2", name: "Borealis" }] }) });
+    const select = (await slot.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(select.options).map((o) => o.textContent)).toEqual([x.allProjects, "Atlas", "Borealis"]));
+    expect(select.value).toBe("p1");
+    await waitFor(() => expect(slot.inspection.rpcCalls.filter((c) => ["summary", "topThreads", "compactions"].includes(c.method)).every((c) => (c.input as { projectId?: string }).projectId === "p1")).toBe(true));
+    fireEvent.change(select, { target: { value: "p2" } });
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "toPluginPanel", options: { subPath: "week/model/p2", replace: true } });
+    fireEvent.change(select, { target: { value: "" } });
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ options: { subPath: "week/model", replace: true } });
+  });
+
+  it("explains the token mix: bars for tokens and cost, a table with a reasoning row", async () => {
+    const { slot } = await open();
+    const card = (await slot.findByText(x.mixTitle)).closest("div.rounded-lg") as HTMLElement;
+    expect(norm(card)).toContain(x.mixSub);
+    expect(within(card).getAllByRole("img").length).toBe(2);
+    const table = within(card).getByRole("table");
+    expect(within(table).getAllByRole("columnheader").map((h) => norm(h))).toEqual(x.mixHead);
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows.map((row) => norm(row.querySelector("td")))).toEqual([...x.mixRows, x.reasoning].map((n) => n.trim()));
+    expect(norm(rows[2]!)).toContain("87M");
+    expect(norm(rows[2]!)).toContain(lang === "en" ? "$0.50" : "$0,50"); // $ per 1M for cache read
+  });
+
+  it("draws the activity heatmap, names the busiest hour and follows the metric", async () => {
+    const { slot } = await open();
+    const header = (await slot.findByText(x.activity)).parentElement!;
+    expect(norm(header)).toContain(x.busiestCost);
+    const grid = slot.getByRole("grid");
+    expect(within(grid).getAllByRole("row")).toHaveLength(7);
+    expect(within(grid).getAllByRole("gridcell")).toHaveLength(7 * 24);
+    const cell = within(grid).getAllByRole("gridcell")[6 * 24 + 9]!;
+    expect(cell.getAttribute("data-level")).toBe("4"); // the busiest cell is the strongest tint
+    fireEvent.pointerEnter(cell);
+    expect(norm(slot.getByRole("tooltip"))).toContain(x.tip);
+    fireEvent.pointerLeave(grid);
+    expect(slot.queryByRole("tooltip")).toBeNull();
+    fireEvent.mouseDown(slot.getByRole("tab", { name: x.metrics[2] }), { button: 0 });
+    expect(norm((await slot.findByText(x.activity)).parentElement)).toContain(x.busiestCalls);
+  });
+
+  it("shows a single row for the day range", async () => {
+    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { heatmap: { cells: [HEAT[2]], busiest: HEAT[2] } }) });
+    await slot.findByText(x.activity);
+    expect(within(slot.getByRole("grid")).getAllByRole("row")).toHaveLength(1);
+    expect(within(slot.getByRole("grid")).getAllByRole("row")[0]!.textContent).toContain(x.wk === "Mon" ? "Wed" : "ср");
+  });
+
+  it("lays out the thread rows: name, then project · model · provider · children, then fixed numeric columns", async () => {
+    const { slot } = await open();
+    const row = await slot.findByRole("button", { name: /Thread t3(?!\d)/ });
+    expect(norm(row)).toContain(x.threadSub);
+    expect(norm(row)).toContain(x.threadNums.join(""));
+    const head = (await slot.findByText(x.threadHead[0]!)).parentElement!;
+    expect(Array.from(head.children).map((c) => norm(c))).toEqual(x.threadHead);
   });
 
   it.each(Object.entries(COUNTS))("draws %s with %i buckets", async (range, count) => {
@@ -158,7 +261,7 @@ describe.each(LANGS)("page (%s)", (lang) => {
 
   it("opens a thread from the list and pages with the more button", async () => {
     const { slot } = await open();
-    const row = await slot.findByRole("button", { name: /Thread t3\b/ });
+    const row = await slot.findByRole("button", { name: /Thread t3(?!\d)/ });
     fireEvent.click(row);
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "toThread", threadId: "t3" });
     fireEvent.click(slot.getByRole("button", { name: x.more }));
@@ -184,13 +287,13 @@ describe.each(LANGS)("backfill banner (%s)", (lang) => {
   const running = { processedThreads: 860, totalThreads: 4690, done: false, startedAt: 1 };
 
   it("shows progress and marks the KPI money with ~ while the import runs", async () => {
-    const { slot } = await page("week/provider", { status: status(running), summary: (i: Input) => summary(i, { totals: cost(12.4) }) }, lang);
+    const { slot } = await page("week/provider", { status: status(running), summary: (i: Input) => summary(i, { kpis: kpis({ estimated: false }) }) }, lang);
     expect(await slot.findByText(banner)).toBeTruthy();
     expect(await slot.findByText(L[lang].money)).toBeTruthy();
   });
 
   it.each([["done", { ...running, done: true }], ["absent", undefined]])("hides the banner when the import is %s", async (_name, backfill) => {
-    const { slot } = await page("week/provider", { status: status(backfill), summary: (i: Input) => summary(i, { totals: cost(12.4) }) }, lang);
+    const { slot } = await page("week/provider", { status: status(backfill), summary: (i: Input) => summary(i, { kpis: kpis({ estimated: false }) }) }, lang);
     expect(await slot.findByText(lang === "en" ? "$12.40" : "$12,40")).toBeTruthy();
     expect(slot.queryByRole("status")).toBeNull();
   });
@@ -237,15 +340,15 @@ describe.each(LANGS)("settings (%s)", (lang) => {
 describe("language", () => {
   it("defaults to English and switches to Russian through the language setting", async () => {
     const en = await page("week/provider", {}, "en");
-    expect(await en.slot.findByText("Breakdown")).toBeTruthy();
+    expect(await en.slot.findByText("Token mix")).toBeTruthy();
     cleanup();
     const ru = await page("week/provider", {}, "ru");
-    expect(await ru.slot.findByText("Разбивка")).toBeTruthy();
+    expect(await ru.slot.findByText("Структура токенов")).toBeTruthy();
     cleanup();
     // An unknown value falls back to English.
     const app = await loadPluginApp(() => import("./app"));
     const odd = renderSlot(app.navPanels[0]!, { subPath: "week/provider" }, { rpc: handlers(), settings: { language: "de" } });
-    expect(await odd.findByText("Breakdown")).toBeTruthy();
+    expect(await odd.findByText("Token mix")).toBeTruthy();
   });
 
   it("has the same keys and placeholders in both dictionaries", () => {
@@ -286,6 +389,8 @@ describe("helpers", () => {
 
   it("round-trips the sub path and falls back to week/provider", () => {
     expect(parseSubPath(toSubPath("3m", "model"))).toEqual({ range: "3m", by: "model" });
+    expect(parseSubPath(toSubPath("day", "provider", "~outside"))).toEqual({ range: "day", by: "provider", project: "~outside" });
+    expect(toSubPath("day", "provider", "a/b")).toBe("day/provider/a%2Fb");
     expect(parseSubPath("nonsense")).toEqual({ range: "week", by: "provider" });
     expect(parseSubPath("")).toEqual({ range: "week", by: "provider" });
   });

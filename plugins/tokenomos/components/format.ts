@@ -88,10 +88,27 @@ export const providerName = (id: string, t: T) => (id === "local-models" ? t("pr
 
 export const RANGE_SEGMENTS = ["day", "week", "month", "3m"] as const;
 export type By = "provider" | "model";
+/** What the chart and heatmap plot; "cost" falls back to tokens while nothing is priced. */
+export type Metric = "cost" | "tokens" | "calls";
+export const METRICS = ["cost", "tokens", "calls"] as const;
+export type Shown = "usd" | "tokens" | "calls";
 
-/** subPath `week/model` ↔ { range, by }; anything unknown falls back to week/provider. */
-export function parseSubPath(subPath: string): { range: Range; by: By } {
-  const [r, b] = subPath.split("/").map(decodeURIComponent);
-  return { range: (RANGE_SEGMENTS as readonly string[]).includes(r) ? (r as Range) : "week", by: b === "model" ? "model" : "provider" };
+export const fmtMetric = (metric: Shown, v: number, t: T) => (metric === "usd" ? fmtUsd(v, t) : fmtTokens(v, t));
+
+/** Signed whole-percent change "+24%" / "−5%"; null when there is nothing to compare against. */
+export function pctChange(now: number, before: number | null, t: T): string | null {
+  if (before === null || before <= 0) return null;
+  const pct = Math.round(((now - before) / before) * 100);
+  return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${fmtPercent(Math.abs(pct) / 100, t)}`;
 }
-export const toSubPath = (range: Range, by: By) => `${range}/${by}`;
+
+/** Monday-first weekday index (as the server counts it) → short local name. 2024-01-01 is a Monday. */
+export const weekdayName = (index: number, t: T) => weekday(new Date(2024, 0, 1 + index), t);
+export const hourLabel = (hour: number) => `${pad(hour)}:00`;
+
+/** subPath `week/model/<projectId>` ↔ { range, by, project }; anything unknown falls back to week/provider, all projects. */
+export function parseSubPath(subPath: string): { range: Range; by: By; project?: string } {
+  const [r, b, p] = subPath.split("/").map((part) => { try { return decodeURIComponent(part); } catch { return part; } });
+  return { range: (RANGE_SEGMENTS as readonly string[]).includes(r!) ? (r as Range) : "week", by: b === "model" ? "model" : "provider", project: p || undefined };
+}
+export const toSubPath = (range: Range, by: By, project?: string) => `${range}/${by}${project ? `/${encodeURIComponent(project)}` : ""}`;
