@@ -40,6 +40,24 @@ The same holds for `bb thread compact`. The plugin re-checks the idle period rig
 its call, so the window stays at that server-side moment; closing it needs a conditional
 dispatch in bb.
 
+## Compaction log
+
+Other plugins can read the compactions this plugin made through the RPC method
+`compactions.list` (`bb.sdk.plugins.callRpc`, plugin `idle-compact`). It is read-only;
+Idle Compact works the same whether anything reads it.
+
+```
+input:  { since?: number /* ms, exclusive */, after?: string /* nextCursor */, limit?: number /* 1–500, default 100 */ }
+output: { items: { id, threadId, at, trigger: "idle" | "threshold", usedTokensBefore, contextWindow: number | null }[], nextCursor?: string }
+```
+
+- An entry is written when the server accepts the compaction (`at`, ms). Refused or failed
+  attempts, and compactions started by anything else, are not logged.
+- `trigger` is `idle` for the 50-minute check and `threshold` for compacting at once by
+  window share. The size after compaction is not known here; read it from the thread.
+- Items are in time order; `id` is stable across reloads. Page with `after`, since two
+  entries can share a millisecond. Entries older than 30 days are deleted.
+
 ## Commands
 
 ```

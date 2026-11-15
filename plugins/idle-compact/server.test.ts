@@ -187,3 +187,32 @@ it("does not compact when the threshold is raised above the usage while the atte
   await h.emit("thread.idle"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
 });
+
+it("logs the compactions it made for compactions.list, pages them, and prunes entries past 30 days", async () => {
+  const h = await setup({ used: 900_000 });
+  const list = (input: object) => h.host.harness.behavior.callRpc("compactions.list", input) as Promise<any>;
+  const t0 = h.now();
+  await h.emit("thread.idle"); await h.advance(0); // at once, over 80% of the window
+  await h.emit("thread.active"); h.state.used = 300_000; await h.emit("thread.idle"); // its own compaction turn ends
+  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(IDLE_MS); // a real turn, then 50 minutes idle
+  await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
+  // A compaction the server refuses is not logged.
+  await h.emit("thread.active"); h.state.used = 310_000; h.compact.mockRejectedValueOnce(new Error("Context can only be compacted while the thread is idle or errored"));
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(3);
+  const { items, nextCursor } = await list({});
+  expect(nextCursor).toBeUndefined();
+  expect(items).toEqual([
+    { id: `${String(t0).padStart(15, "0")}:thr_a`, threadId: "thr_a", at: t0, trigger: "threshold", usedTokensBefore: 900_000, contextWindow: 1_000_000 },
+    expect.objectContaining({ at: t0 + IDLE_MS, trigger: "idle", usedTokensBefore: 300_000 }),
+  ]);
+  const page = await list({ limit: 1 });
+  expect(page).toEqual({ items: [items[0]], nextCursor: items[0].id });
+  expect(await list({ after: page.nextCursor })).toEqual({ items: [items[1]] });
+  expect(await list({ since: t0 })).toEqual({ items: [items[1]] });
+  await expect(list({ limit: 501 })).rejects.toThrow();
+  // A compaction 31 days later prunes the older entries.
+  await h.emit("thread.active"); h.state.used = 400_000; h.setClock(31 * 86_400_000);
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect((await list({})).items).toEqual([expect.objectContaining({ usedTokensBefore: 400_000, trigger: "idle" })]);
+});

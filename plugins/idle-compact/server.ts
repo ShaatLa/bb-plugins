@@ -7,10 +7,24 @@
 //
 // It also compacts, as the former auto-compact plugin did, any thread that goes idle or fails with its context at or past
 // a share of the model's window: right away, while the cache is warm, instead of mid-turn at the provider's own limit.
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 
 export const IDLE_MS = 50 * 60_000;
 export const WARM_MS = 57 * 60_000;
+export const LOG_RETENTION_MS = 30 * 86_400_000;
+
+// A read-only log of the compactions this plugin dispatched, for other plugins (Tokenomos) through bb.sdk.plugins.callRpc.
+// An entry's id is its storage key without the prefix: the zero-padded time then the thread, so ids sort by time and stay
+// stable across reloads.
+export type Compaction = { id: string; threadId: string; at: number; trigger: "idle" | "threshold"; usedTokensBefore: number; contextWindow: number | null };
+export const rpcContract = defineRpcContract({
+  "compactions.list": {
+    input: z.object({ since: z.number().int().nonnegative().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }).strict(),
+    output: z.custom<{ items: Compaction[]; nextCursor?: string }>(),
+  },
+});
+const LOG = "log:";
 // OWN marks a compaction this plugin dispatched: the idle (or failure) that ends that compaction turn starts no checks, so
 // a thread still over the threshold afterwards is not compacted again until a real turn. shortcut: a marker whose end
 // event was missed (a reload mid-turn) makes the next real stop skip its checks once.
@@ -89,8 +103,26 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     try { await bb.sdk.threads.compact({ threadId }); }
     catch (error) { await bb.storage.kv.delete(OWN + threadId); if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
     finally { inflight.delete(threadId); }
+    // A failed log write must not report the compaction itself as failed.
+    await record({ threadId, trigger: full ? "threshold" : "idle", usedTokensBefore: used, contextWindow: window ?? null }).catch(error => bb.log.warn(`Compaction log ${threadId}: ${message(error)}`));
     return full ? `compacted ${used} tokens at ${percent}% of the window` : `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
+  async function record(entry: Omit<Compaction, "id" | "at">) {
+    const at = now(), id = `${String(at).padStart(15, "0")}:${entry.threadId}`;
+    await bb.storage.kv.set(LOG + id, { ...entry, id, at });
+    const oldest = String(at - LOG_RETENTION_MS).padStart(15, "0");
+    for (const key of await bb.storage.kv.list(LOG)) if (key.slice(LOG.length) < oldest) await bb.storage.kv.delete(key);
+  }
+  bb.rpc.register(rpcContract, {
+    "compactions.list": async ({ since, after, limit = 100 }) => {
+      const ids = (await bb.storage.kv.list(LOG)).map(key => key.slice(LOG.length)).sort()
+        .filter(id => (after == null || id > after) && (since == null || Number(id.slice(0, 15)) > since));
+      const items: Compaction[] = [];
+      for (const id of ids.slice(0, limit)) { const entry = await bb.storage.kv.get<Compaction>(LOG + id); if (entry) items.push(entry); }
+      return ids.length > limit ? { items, nextCursor: ids[limit - 1] } : { items };
+    },
+  });
+
   const atOnce = (threadId: string, period: number) => {
     if (config.thresholdPercent === "off") return;
     void attempt(threadId, now(), () => periods.get(threadId) === period, true).then(result => bb.log.info(`Compact ${threadId}: ${result}`), error => bb.log.warn(`Compact ${threadId} failed: ${message(error)}`));
