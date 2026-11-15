@@ -2,7 +2,7 @@ import type { BbPluginApi, PluginBbSdk } from '@get-bb/plugin-sdk';
 import type { Database } from 'better-sqlite3';
 import { performance } from 'node:perf_hooks';
 import { setImmediate } from 'node:timers/promises';
-import { RECOVERED, type SourceId, type UsageRow, type ThreadDtoLike } from '../contract';
+import { BACKFILLED, RECOVERED, type SourceId, type UsageRow, type ThreadDtoLike } from '../contract';
 import type { Store } from '../store/write';
 import type { Settings } from '../rpc';
 import type { FileSource, ThreadInfo } from './files';
@@ -91,6 +91,9 @@ export function createScheduler(o: {
           do {
             const rows = batch.rows.slice(offset, Math.min(offset + 100, end)).filter(owns);
             const result = store.applyRows(rows);
+            for (const id of new Set(rows.filter(r => r.source === 'bb-events' && (r.flags & (BACKFILLED|RECOVERED))).map(r => r.threadId))) {
+              db.prepare("INSERT INTO thread_cov(thread_id,partial) VALUES (?,1) ON CONFLICT(thread_id) DO UPDATE SET partial=1").run(id);
+            }
             sources!.bbEvents.onRowsApplied(rows);
             if (result.inserted || result.updated) invalidate();
             offset = Math.min(offset + 100, end);
@@ -108,8 +111,11 @@ export function createScheduler(o: {
     const raw = db.prepare('SELECT COUNT(*) n FROM usage_raw WHERE thread_id=?').get(id) as { n: number };
     return total.n === raw.n;
   };
-  const setSource = (id: string, source: SourceId, state = 'ok') => db.prepare(`INSERT INTO thread_source(thread_id,source,since_ts,state) VALUES (?,?,?,?)
+  const setSource = (id: string, source: SourceId, state = 'ok') => {
+    if (!current(id)) store.setCursor(`initial-source:${id}`, source);
+    db.prepare(`INSERT INTO thread_source(thread_id,source,since_ts,state) VALUES (?,?,?,?)
     ON CONFLICT(thread_id) DO UPDATE SET source=excluded.source,since_ts=excluded.since_ts,state=excluded.state`).run(id, source, Date.now(), state);
+  };
   const candidates = (id: string, after = ''): UsageRow[] => (db.prepare('SELECT b.* FROM bb_candidate b WHERE thread_id=? AND key>? AND NOT EXISTS (SELECT 1 FROM usage_raw r WHERE r.key=b.key) ORDER BY key LIMIT 1000').all(id, after) as Array<Record<string, any>>).map(r => ({
     key:r.key,ts:r.ts,threadId:r.thread_id,projectId:r.project_id,provider:r.provider,model:r.model,tier:r.tier,tierRaw:r.tier_raw,promptTokens:r.prompt_tokens,band:r.band,conv:r.conv,
     freshIn:r.fresh_in,cacheRead:r.cache_read,cacheWriteShort:r.cache_write_short,cacheWriteLong:r.cache_write_long,output:r.output,reasoning:r.reasoning,turnId:r.turn_id||null,source:'bb-events',flags:r.flags,
@@ -134,8 +140,18 @@ export function createScheduler(o: {
       store.noteThread(dto);
       const desiredFile = fileId(dto.providerId ?? '');
       // Always keep event metadata/candidates, even while waiting for a local file.
-      const eventBatch = await sources!.bbEvents.flushThread(id, current(id)?.source === 'bb-events');
+      if (!current(id) && !desiredFile) setSource(id, dto.providerId === 'local-models' ? 'local-log' : dto.providerId === 'antigravity' && agyAvailable ? 'agy-log' : 'bb-events');
+      const fallbackOwned = current(id)?.source === 'bb-events'
+        && (store.getCursor<string>(`initial-source:${id}`) ?? 'bb-events') === 'bb-events'
+        && !store.getCursor<boolean>(`file-found:${id}`)
+        && !db.prepare('SELECT 1 FROM source_interval WHERE thread_id=? LIMIT 1').get(id);
+      const eventBatch = await sources!.bbEvents.flushThread(id, fallbackOwned);
       if (stopped) return false;
+      if (eventBatch.more) {
+        dirty.add(id);
+        if (eventBatch.touched) invalidate();
+        return true; // Drain compaction metadata before consuming calls at later timestamps.
+      }
       const session = db.prepare('SELECT provider_thread_id FROM provider_session WHERE thread_id=? ORDER BY rowid DESC LIMIT 1').get(id) as { provider_thread_id: string } | undefined;
       let cwd: string | null = null;
       if (dto.environmentId) {
@@ -191,7 +207,6 @@ export function createScheduler(o: {
           db.prepare('INSERT OR REPLACE INTO source_interval VALUES (?,?,?)').run(id,from,'bb-events');
           store.deleteContribution(id,sourceId,from);
           setSource(id,sourceId,'degraded');
-          db.prepare("INSERT INTO thread_cov(thread_id,partial) VALUES (?,1) ON CONFLICT(thread_id) DO UPDATE SET partial=1").run(id);
           invalidate();
         })();
         await applyCandidates(id, signal, true);

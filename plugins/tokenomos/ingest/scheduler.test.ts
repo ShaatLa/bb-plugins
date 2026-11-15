@@ -2,6 +2,7 @@ import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/tes
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MIGRATIONS } from '../store/schema';
 import { createStore } from '../store/write';
+import { createBbEvents } from './bb-events';
 import { createScheduler } from './scheduler';
 import type { UsageRow } from '../contract';
 
@@ -12,16 +13,17 @@ const settingsValue = {rawRetentionDays:30,rollupRetentionDays:200,referenceMode
 let dispose: (()=>Promise<void>) | undefined;
 beforeEach(()=> {vi.useFakeTimers();vi.setSystemTime(1_000_000);});
 afterEach(async()=> {await dispose?.();dispose=undefined;vi.useRealTimers();});
-function setup(provider='claude-code', found=true, available=true) {
+type TestEvent = {id:string;seq:number;createdAt:number;type:string;data:unknown;scope:{kind:'thread'}|{kind:'turn';turnId:string}};
+function setup(provider='claude-code', found=true, available=true, realEvents?:TestEvent[]) {
   const thread = makeThreadResponse({id:'t',projectId:'p',providerId:provider,environmentId:null,createdAt:1});
-  const {bb,harness} = createFakePluginHost({pluginId:'tokenomos',sdk:{threads:{list:async()=>[],get:async()=>thread}}});
+  const {bb,harness} = createFakePluginHost({pluginId:'tokenomos',sdk:{threads:{list:async()=>[],get:async()=>thread,events:{list:async a=>(realEvents??[]).filter(e=>e.seq>Number(a.afterSeq)).slice(0,100)}}}});
   dispose=()=>harness.lifecycle.dispose();
   const db=bb.storage.database();bb.storage.migrate(db,MIGRATIONS);const store=createStore(db);
   const settings=bb.settings.define({rawRetentionDays:{type:'number',label:'raw',default:30},rollupRetentionDays:{type:'number',label:'rollup',default:200},referenceModel:{type:'string',label:'ref',default:settingsValue.referenceModel},priceOverrides:{type:'string',label:'price',default:'{}'},includeOutsideBb:{type:'boolean',label:'outside',default:false}});
   const file={locate:vi.fn(async()=>found),flushThread:vi.fn(async(_info?: unknown, _signal?: AbortSignal)=>({rows:[] as UsageRow[],parseErrors:0,commit:vi.fn(),more:undefined as boolean | undefined})),scanOutside:vi.fn(async()=>({rows:[],commit:vi.fn()}))};
-  const events={flushThread:vi.fn(async()=>({rows:[] as UsageRow[],candidates:[] as UsageRow[],touched:false})),coverage:vi.fn(async()=>({uncoveredStreak:0,firstUncoveredStart:null as number|null,lastCoveredTurnStart:null as number|null})),onRowsApplied:vi.fn()};
+  const events={flushThread:vi.fn(async()=>({rows:[] as UsageRow[],candidates:[] as UsageRow[],touched:false,...({} as {more?:boolean})})),coverage:vi.fn(async()=>({uncoveredStreak:0,firstUncoveredStart:null as number|null,lastCoveredTurnStart:null as number|null})),onRowsApplied:vi.fn()};
   const ext={pollUsage:vi.fn(async()=>({rows:[] as UsageRow[],available})),pollCompactions:vi.fn(async()=>({matched:0,available:true}))};
-  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:()=>({bbEvents:events,ext})});
+  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?createBbEvents({db,store,sdk,log:bb.log}):events,ext})});
   const service = harness.behavior.runService('ingest');
   const emit=()=>harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:1});
   const step=()=>vi.advanceTimersByTimeAsync(5000);
@@ -152,4 +154,47 @@ it('accepts thread events while a file flush is awaiting IO',async()=>{
   expect(event.errors).toEqual([]);expect(s.db.prepare("SELECT id FROM threads WHERE id='live'").get()).toEqual({id:'live'});
   release();await vi.advanceTimersByTimeAsync(0);await s.step();
   expect(s.harness.logEntries.filter(e=>e.level==='warn')).toEqual([]);
+});
+it('drains event metadata before reading a transcript',async()=>{
+ const s=setup();s.events.flushThread.mockResolvedValue({rows:[],candidates:[],touched:true,more:true});
+ await s.emit();await s.step();expect(s.file.locate).not.toHaveBeenCalled();expect(s.file.flushThread).not.toHaveBeenCalled();
+ s.events.flushThread.mockResolvedValue({rows:[],candidates:[],touched:true,more:false});await s.step();expect(s.file.flushThread).toHaveBeenCalled();
+});
+it('attributes a transcript call after C2 to C2 when its metadata is beyond the 500-event flush limit',async()=>{
+ const events:TestEvent[]=[];
+ const add=(type:string,at:number,data:unknown={providerThreadId:'s'})=>events.push({id:`e${events.length+1}`,seq:events.length+1,createdAt:at,type,data,scope:{kind:'thread'}});
+ const context=(at:number,usedTokens:number)=>add('thread/contextWindowUsage/updated',at,{providerThreadId:'s',contextWindowUsage:{usedTokens,estimated:false}});
+ context(100,40000);add('thread/compacted',200);context(300,10000);
+ while(events.length<500)add('thread/identity',400);
+ context(900,50000);add('thread/compacted',1000);const c2=events.at(-1)!.id;context(1100,12000);
+ const s=setup('claude-code',true,true,events);
+ s.file.flushThread.mockImplementation(async()=>{
+   expect(s.db.prepare('SELECT id FROM compactions WHERE id=?').get(`bbc:${c2}`)).toBeDefined();
+   return {rows:[row({key:'before',ts:150}),row({key:'after',ts:1200})],parseErrors:0,commit:vi.fn(),more:false};
+ });
+ await s.emit();await s.step();await s.step();
+ expect(s.db.prepare('SELECT compaction_id,calls_hit,calls_miss FROM compaction_effect').all()).toEqual([{compaction_id:`bbc:${c2}`,calls_hit:1,calls_miss:0}]);
+ expect(s.db.prepare("SELECT key FROM compaction_seen WHERE key='after'").get()).toEqual({key:'after'});
+});
+it('counts file turn one plus last-only fallback turns two through four once (400 tokens)',async()=>{
+ const events:TestEvent[]=[];
+ for(let turn=2;turn<=4;turn++){
+   const base=turn*200000;const count=(n:number)=>({totalTokens:n,inputTokens:n,cachedInputTokens:0,outputTokens:0});
+   for(const [type,at,data] of [
+     ['turn/started',base,{providerThreadId:'s'}],
+     ['thread/tokenUsage/updated',base+1,{providerThreadId:'s',tokenUsage:{total:count(turn*100),last:count(100)}}],
+     ['turn/completed',base+2,{providerThreadId:'s'}],
+   ] as const)events.push({id:`e${events.length+1}`,seq:events.length+1,createdAt:at,type,data,scope:{kind:'turn',turnId:`t${turn}`}});
+ }
+ const s=setup('claude-code',true,true,events);
+ s.file.flushThread.mockResolvedValue({rows:[row({key:'file-turn-one',ts:100000})],parseErrors:0,commit:vi.fn(),more:false});
+ await s.emit();await s.step();expect(s.total()).toBe(400);
+ expect(s.db.prepare('SELECT partial FROM thread_cov').get()).toEqual({partial:1});
+ expect(s.db.prepare("SELECT flags FROM usage_raw WHERE source='bb-events'").all()).toHaveLength(3);
+});
+it('marks backfill partial only when the scheduler applies its rows',async()=>{
+ const count={totalTokens:300000,inputTokens:300000,cachedInputTokens:0,outputTokens:0};
+ const events:TestEvent[]=[{id:'e',seq:1,createdAt:1,type:'thread/tokenUsage/updated',data:{providerThreadId:'s',tokenUsage:{total:count,last:{...count,totalTokens:10000,inputTokens:10000}}},scope:{kind:'thread'}}];
+ const s=setup('other',false,false,events);await s.emit();await s.step();
+ expect(s.total()).toBe(300000);expect(s.db.prepare('SELECT partial FROM thread_cov').get()).toEqual({partial:1});
 });

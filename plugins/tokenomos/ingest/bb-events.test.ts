@@ -4,6 +4,7 @@ import type { PluginBbSdk, PluginLogger } from '@get-bb/plugin-sdk';
 import { readFileSync } from 'node:fs';
 import { type UsageRow, BACKFILLED, ESTIMATED, RECOVERED } from '../contract';
 import { MIGRATIONS } from '../store/schema';
+import { costUsd } from '../pricing/price';
 import { createStore } from '../store/write';
 import { createBbEvents, onRowsApplied } from './bb-events';
 
@@ -83,16 +84,16 @@ it('backfills one accumulated snapshot per new counter and seeds subsequent live
  const s=source(), first=await s.flushThread('t',true);
  expect(first.rows).toHaveLength(1);
  expect(first.rows[0]).toMatchObject({key:'bb:t:e1',freshIn:10000,flags:BACKFILLED|ESTIMATED});
- expect(db.prepare('SELECT partial FROM thread_cov WHERE thread_id=?').get('t')).toEqual({partial:1});
+ expect(db.prepare('SELECT partial FROM thread_cov WHERE thread_id=?').get('t')).toBeUndefined();
  usage(10100,100);
  const next=await source().flushThread('t',true);
  expect(next.rows).toHaveLength(1);expect(next.rows[0].freshIn).toBe(100);expect(next.rows[0].flags & (BACKFILLED|RECOVERED)).toBe(0);
 });
-it('backfills each Codex counter scope independently, including candidates',async()=>{
+it('keeps only last calls as candidates for new Codex counter scopes',async()=>{
  db.prepare("UPDATE threads SET provider_id='codex'").run();usage(10000,100);usage(8000,80,'child');usage(10200,200);
  const result=await source().flushThread('t',false);
  expect(result.rows).toEqual([]);
- expect(result.candidates.map(r=>[r.freshIn,r.conv,!!(r.flags&BACKFILLED)])).toEqual([[10000,'',true],[8000,'nested:child',true],[200,'',false]]);
+ expect(result.candidates.map(r=>[r.freshIn,r.conv,!!(r.flags&BACKFILLED)])).toEqual([[100,'',false],[80,'nested:child',false],[200,'',false]]);
 });
 it('assigns historical calls to their compaction intervals after both compactions are loaded',async()=>{
  const before=row({key:'before'});context(40000);const c1=event('thread/compacted');context(10000);
@@ -103,4 +104,21 @@ it('assigns historical calls to their compaction intervals after both compaction
   {compaction_id:`bbc:${c1.id}`,calls_hit:2,calls_miss:0,first_gap_hit:1},
   {compaction_id:`bbc:${c2.id}`,calls_hit:1,calls_miss:0,first_gap_hit:1},
  ]);
+});
+it('uses the observed last-call band to price backfilled and recovered aggregates',async()=>{
+ request('r','gpt-6.1-sol');event('turn/started');accept('r');usage(300000,10000);
+ const first=(await source().flushThread('t',true)).rows[0];
+ expect(first).toMatchObject({promptTokens:300000,band:0});expect(costUsd(first,first.model,first.tier,first.band)).toBeCloseTo(0.60);
+ usage(610000,10000);
+ const recovered=(await source().flushThread('t',true)).rows.find(r=>r.flags&RECOVERED)!;
+ expect(recovered).toMatchObject({promptTokens:300000,band:0});expect(costUsd(recovered,recovered.model,recovered.tier,recovered.band)).toBeCloseTo(0.60);
+});
+it('does not mark exact file-backed threads partial while collecting initial or gap candidates',async()=>{
+ usage(200,100);const s=source();const first=await s.flushThread('t',false);
+ expect(first.candidates[0]).toMatchObject({freshIn:100});expect(first.candidates[0].flags & BACKFILLED).toBe(0);
+ usage(500,100);expect((await s.flushThread('t',false)).candidates.some(r=>r.flags&RECOVERED)).toBe(true);
+ expect(db.prepare('SELECT * FROM thread_cov').all()).toEqual([]);
+});
+it('defaults an aggregate to band zero when no last call was observed',async()=>{
+ usage(300000,0);expect((await source().flushThread('t',true)).rows[0]).toMatchObject({promptTokens:300000,band:0});
 });

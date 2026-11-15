@@ -101,12 +101,11 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
                 const scope=thread?.provider_id==="codex" ? d.parentToolCallId??"" : "";
                 const old=db.prepare("SELECT prev_total FROM bb_counter WHERE thread_id=? AND provider_thread_id=? AND scope=?").get(threadId,d.providerThreadId,scope) as {prev_total:string}|undefined;
                 const previous=old ? JSON.parse(old.prev_total) as Counts|null : null;
-                const make=(c:Components,key:string,flags:number):UsageRow=>{const promptTokens=c.freshIn+c.cacheRead+c.cacheWriteShort+c.cacheWriteLong;return {...c,key,ts:at,threadId,projectId:thread?.project_id??"",provider:thread?.provider_id??"",model:turn?.model||"unknown",tier:turn?.tier||"standard",tierRaw:turn?.tier_raw??"",promptTokens,band:bandOf(promptTokens),conv:d.parentToolCallId?`nested:${d.parentToolCallId}`:"",turnId,source:"bb-events",flags:flags|(!exact?ESTIMATED:0)};};
+                const make=(c:Components,key:string,flags:number):UsageRow=>{const promptTokens=c.freshIn+c.cacheRead+c.cacheWriteShort+c.cacheWriteLong;return {...c,key,ts:at,threadId,projectId:thread?.project_id??"",provider:thread?.provider_id??"",model:turn?.model||"unknown",tier:turn?.tier||"standard",tierRaw:turn?.tier_raw??"",promptTokens,band:bandOf(flags & (BACKFILLED|RECOVERED) ? (u.last.totalTokens>0 ? last.freshIn+last.cacheRead+last.cacheWriteShort+last.cacheWriteLong : 0) : promptTokens),conv:d.parentToolCallId?`nested:${d.parentToolCallId}`:"",turnId,source:"bb-events",flags:flags|(!exact?ESTIMATED:0)};};
                 const last=components(u.last);
                 const estimated=u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens&&u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens+u.last.cachedInputTokens;
-                if (!previous) {
+                if (!previous && fallbackOwned) {
                   if (u.total.totalTokens>0) batch.push(make(components(u.total),`bb:${threadId}:${e.id}`,BACKFILLED|ESTIMATED));
-                  db.prepare("INSERT INTO thread_cov(thread_id,partial) VALUES (?,1) ON CONFLICT(thread_id) DO UPDATE SET partial=1").run(threadId);
                 } else if(u.last.totalTokens>0) batch.push(make(last,`bb:${threadId}:${e.id}`,estimated?ESTIMATED:0));
                 const gap=previous ? Math.max(0,u.total.totalTokens-(u.total.totalTokens>=previous.totalTokens?previous.totalTokens:0)-u.last.totalTokens) : 0;
                 if(gap>0) {
@@ -116,7 +115,6 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
                   const sum=recovered.freshIn+recovered.cacheRead+recovered.cacheWriteShort+recovered.cacheWriteLong+recovered.output;
                   if(sum!==gap) {for(const k of Object.keys(recovered) as Array<keyof Components>) recovered[k]=0;recovered.freshIn=gap;}
                   batch.push(make(recovered,`bbr:${threadId}:${e.id}`,RECOVERED|ESTIMATED));
-                  db.prepare("INSERT INTO thread_cov(thread_id,partial) VALUES (?,1) ON CONFLICT(thread_id) DO UPDATE SET partial=1").run(threadId);
                 }
                 db.prepare("INSERT OR REPLACE INTO bb_counter VALUES (?,?,?,?)").run(threadId,d.providerThreadId,scope,JSON.stringify(u.total));
                 break;
