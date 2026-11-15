@@ -531,7 +531,7 @@ it('reorders queued messages with keyboard neighbours', async () => {
 it('shows sidebar project, worktree branch, and context remaining', async () => {
   const thread = { id:'thr_one', projectId:'pr_one', environment:{ name:'Checkout', branchName:'answers/3g', isWorktree:true }, parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[{ id:'pr_one', name:'Plugins' }] }, context: () => Promise.resolve({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) }); fireEvent.click(await recipients.findByRole('option'));
-  expect(await slot.findByText('Plugins')).toBeTruthy(); expect(slot.getByText('answers/3g').parentElement!.getAttribute('title')).toBe('Worktree'); expect(await slot.findByRole('button', { name:'Context window 38% used' })).toBeTruthy();
+  expect(await slot.findByText('Plugins')).toBeTruthy(); expect(slot.getByText('answers/3g').parentElement!.getAttribute('title')).toBe('Worktree'); fireEvent.click(await slot.findByRole('button', { name:'Context window 38% used' })); expect(slot.getByRole('dialog', { name:'Context window' }).textContent).toContain('62% left');
 });
 
 it('pauses queue and context polling while hidden and refetches when visible', async () => {
