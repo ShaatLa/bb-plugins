@@ -74,5 +74,7 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
     if (metric === "usd" && bucket.localSavedUsd) row.saved = bucket.localSavedUsd;
     return row;
   });
-  return { slots, rows, metric, totalCost, saved: rows.some((r) => Number(r.saved) > 0) };
+  // A series that is zero in this metric (local models in dollars) would only add an empty legend entry.
+  const shown = slots.filter((s) => rows.some((r) => Number(r[s.id]) > 0));
+  return { slots: shown.length ? shown : slots, rows, metric, totalCost, saved: rows.some((r) => Number(r.saved) > 0) };
 }
