@@ -23,3 +23,12 @@ it('ignores malformed saved selections', async () => {
   function Reader() { return <span>{useOpenChat().threadId ?? 'none'}</span>; }
   expect(render(<Reader />).container.textContent).toBe('none');
 });
+it('follows the open chat\'s working state without a refetch until its turn completes', async () => {
+  vi.resetModules();
+  const { useOpenChat, setOpenChat } = await import('./open-chat');
+  function Reader() { const chat = useOpenChat(); return <span>{chat.threadId}:{chat.revision}:{String(chat.working)}</span>; }
+  const view = render(<Reader />);
+  act(() => setOpenChat('thr_a', false)); expect(view.container.textContent).toBe('thr_a:1:false');
+  act(() => setOpenChat('thr_a', true)); expect(view.container.textContent).toBe('thr_a:1:true');
+  act(() => setOpenChat('thr_a', false)); expect(view.container.textContent).toBe('thr_a:2:false');
+});

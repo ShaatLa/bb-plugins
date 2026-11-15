@@ -4,14 +4,13 @@ export const OPEN_CHAT_KEY = 'bb-plugin-answers:page:selected';
 function initialThread() {
   try { const value: unknown = JSON.parse(localStorage.getItem(OPEN_CHAT_KEY) ?? 'null'); return typeof value === 'string' && value ? value : undefined; } catch { return undefined; }
 }
-let snapshot = { threadId: initialThread(), revision: 0 }, working = false;
+let snapshot = { threadId: initialThread(), revision: 0, working: false };
 const listeners = new Set<() => void>();
+// revision moves when the chat changes or its turn completes (tabs refetch); working follows the open chat's agent.
 export function setOpenChat(threadId: string | undefined, isWorking: boolean) {
-  const changed = snapshot.threadId !== threadId;
-  const completed = !changed && working && !isWorking;
-  working = isWorking;
-  if (!changed && !completed) return;
-  snapshot = { threadId, revision: snapshot.revision + 1 };
+  const changed = snapshot.threadId !== threadId, completed = !changed && snapshot.working && !isWorking;
+  if (!changed && snapshot.working === isWorking) return;
+  snapshot = { threadId, revision: snapshot.revision + (changed || completed ? 1 : 0), working: isWorking };
   listeners.forEach(listener => listener());
 }
 export function useOpenChat() {
