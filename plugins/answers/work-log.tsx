@@ -93,41 +93,52 @@ function WorkGroup({ rows }: { rows: Work[] }) {
 }
 
 type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; live?: boolean; children?: ReactNode };
-// shortcut: an autonomous turn is timed from mount until expanded; use a shared turn clock when the SDK exposes one without fetching.
+// What the agent is doing right now: the latest still-running action, else it is thinking (reasoning has no timeline row).
+export function currentActivity(rows: Row[]) {
+  let pending: Work | undefined;
+  const visit = (rows: Row[]) => { for (const row of rows) { if (row.kind === 'turn') visit(row.children ?? []); else if (row.kind === 'work' && row.status === 'pending') pending = row; } };
+  visit(rows); return pending ? workLabel(pending).split('\n')[0]! : 'Thinking';
+}
+// A live log reads its turn while collapsed too, so the line can say what is happening; a finished one reads on expand only.
 export function WorkLog(props: Props) {
-  const [open, setOpen] = useState(false), [now, setNow] = useState(Date.now), [mountedAt] = useState(Date.now), [turnStartedAt, setTurnStartedAt] = useState<number>();
+  const [open, setOpen] = useState(false), [now, setNow] = useState(Date.now), [mountedAt] = useState(Date.now);
+  const log = useTurnLog(props, open || !!props.live);
   useEffect(() => { if (!props.live) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [props.live]);
+  const took = duration((props.live ? now : props.completedAt ?? props.startedAt ?? mountedAt) - (props.startedAt ?? log.startedAt ?? mountedAt));
+  const label = !props.live ? `Worked for ${took}` : log.page ? `${currentActivity(log.page.rows)} · ${took}` : `Working for ${took}`;
   return <div className="flow-root text-sm leading-relaxed">
-    {props.children && <div className="float-left mr-2">{props.children}</div>}
-    <button type="button" className="py-1 text-xs text-muted-foreground" aria-expanded={open} onClick={() => setOpen(!open)}>{props.live ? 'Working' : 'Worked'} for {duration((props.live ? now : props.completedAt ?? props.startedAt ?? mountedAt) - (props.startedAt ?? turnStartedAt ?? mountedAt))} <Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="inline size-3" /></button>
-    {open && <LogDetails key={`${props.threadId}:${props.turnId}`} {...props} onStartedAt={setTurnStartedAt} />}
+    {props.children && <div className="float-left mr-2 flex">{props.children}</div>}
+    {/* Beside the robot the line is as tall as the robot, so it reads centred on it. */}
+    <button type="button" title={label} className={`flex max-w-full items-center gap-1 text-left text-xs text-muted-foreground ${props.children ? 'h-8' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
+    {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} />}
   </div>;
 }
-function LogDetails({ threadId, turnId, sourceSeqStart, sourceSeqEnd, answerSeq, live, onStartedAt }: Props & { onStartedAt: (at: number) => void }) {
+function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Props, enabled: boolean) {
   const sdk = useSdk(), key = `${threadId}:${turnId ?? 'active'}`;
-  const [page, setPage] = useState(() => cache.get(key)?.page), [error, setError] = useState(''), [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(() => cache.get(key)?.page), [error, setError] = useState(''), [loading, setLoading] = useState(false), [startedAt, setStartedAt] = useState(() => cache.get(key)?.turn?.startedAt);
   useEffect(() => {
+    if (!enabled) return;
     let active = true, timer: ReturnType<typeof setTimeout> | undefined;
     const entry: NonNullable<ReturnType<typeof cache.get>> = cache.get(key) ?? { finished: false }; cache.set(key, entry);
+    setPage(entry.page); setStartedAt(entry.turn?.startedAt);
     const read = async () => {
       entry.lastRead = Date.now(); setError('');
       try {
         if (!entry.pending) entry.pending = (async () => {
-          let id = turnId, start = sourceSeqStart, end = sourceSeqEnd;
+          let id = turnId, start = sourceSeqStart, end = sourceSeqEnd, started: number | undefined;
           if (!id || start == null || end == null) {
             const timeline = await sdk.threads.timeline({ threadId, summaryOnly: 'true' });
             const turn = timeline.rows.filter((r): r is Turn => r.kind === 'turn' && (!id || r.turnId === id)).at(-1);
             if (!turn) throw new Error('Turn details are not available yet');
-            id = turn.turnId; start = turn.sourceSeqStart; end = turn.sourceSeqEnd;
-            if (active) onStartedAt(turn.startedAt);
+            id = turn.turnId; start = turn.sourceSeqStart; end = turn.sourceSeqEnd; started = turn.startedAt;
           }
-          entry.turn = { turnId: id, sourceSeqStart: start, sourceSeqEnd: end };
+          entry.turn = { turnId: id, sourceSeqStart: start, sourceSeqEnd: end, startedAt: started ?? entry.turn?.startedAt };
           return sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: id, sourceSeqStart: String(start), sourceSeqEnd: String(end) });
         })();
         const next = await entry.pending;
         if (entry.page && live) { const ids = new Set(next.rows.map(r => r.id)); next.rows = [...entry.page.rows.filter(r => !ids.has(r.id) && r.sourceSeqEnd < (next.rows[0]?.sourceSeqStart ?? 0)), ...next.rows]; next.olderCursor = entry.page.olderCursor; }
         entry.page = next; entry.finished = !live;
-        if (active) setPage(entry.page);
+        if (active) { setPage(entry.page); setStartedAt(entry.turn?.startedAt); }
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : String(cause)); }
       finally { entry.pending = undefined; }
     };
@@ -135,7 +146,7 @@ function LogDetails({ threadId, turnId, sourceSeqStart, sourceSeqEnd, answerSeq,
     if (!entry.page || !entry.finished) { if (!entry.lastRead || !live) void read(); else schedule(); }
     const unsubscribe = live ? sdk.subscribe({ event: 'thread:changed', threadId, callback: schedule }) : undefined;
     return () => { active = false; clearTimeout(timer); unsubscribe?.(); };
-  }, [sdk, key, live]);
+  }, [sdk, key, live, enabled]);
   const earlier = async () => {
     const turn = cache.get(key)?.turn;
     if (!page?.olderCursor || !turn || loading) return;
@@ -145,6 +156,9 @@ function LogDetails({ threadId, turnId, sourceSeqStart, sourceSeqEnd, answerSeq,
       const next = { ...older, rows: [...older.rows, ...page.rows] }; cache.get(key)!.page = next; setPage(next);
     } catch (cause) { setError(String(cause)); } finally { setLoading(false); }
   };
+  return { page, error, loading, earlier, startedAt };
+}
+function LogDetails({ page, error, loading, earlier, threadId, answerSeq }: ReturnType<typeof useTurnLog> & { threadId: string; answerSeq?: number | null }) {
   return <div className="ml-1 space-y-2 border-l border-border-seam pl-3">
     {!page && !error && <div aria-label="Loading work log" className="space-y-2 py-1"><div className="h-2 w-36 rounded bg-muted" /><div className="h-2 w-24 rounded bg-muted" /></div>}
     {page?.olderCursor && <button type="button" className="text-xs text-muted-foreground" disabled={loading} onClick={() => void earlier()}>Earlier</button>}
