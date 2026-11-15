@@ -770,3 +770,12 @@ it('updates pool attachments with revision checks and forwards steer', async () 
   await call('poolSend', { threadId: 't', ids: [id], send: { mode: 'steer' } });
   expect((send.mock.calls[0] as any[])[0]).toMatchObject({ mode: 'steer-if-active', input: [{ type: 'text' }, { type: 'localFile', path: 'file.txt' }] });
 });
+
+it('reads a thread\'s cost from Tokenomos and stays quiet when it is missing', async () => {
+  const {harness}=setup(), cost={usd:1.5,tokens:{freshIn:1,cacheRead:2,cacheWrite:3,output:4},estimated:false,partial:false};
+  let input:any; harness.sdk.stub('plugins.callRpc',async(args:any)=>{input=args;return {priceVersion:'v1',threads:[{threadId:'thr_a',own:cost,total:{...cost,usd:2},descendantCount:2,updatedAt:1}]};});
+  expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:true,own:cost,total:{...cost,usd:2},descendantCount:2});
+  expect(input).toMatchObject({pluginId:'tokenomos',method:'costs.threads',input:{threadIds:['thr_a'],includeDescendants:true}});
+  harness.sdk.stub('plugins.callRpc',async()=>{throw new Error('Plugin tokenomos is not installed');});
+  expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:false,own:null,total:null,descendantCount:0});
+});

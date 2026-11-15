@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, inlinePreviewSchema, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -238,6 +238,13 @@ export default function plugin(bb: BbPluginApi) {
       const outputSchema=z.object({kind:z.string()}).passthrough();
       try {const result=await bb.sdk.plugins.callRpc({pluginId:'inline-vis',method:'preparePreview',input:{threadId:p.threadId,file:p.file,source:p.source},outputSchema}); const parsed=inlinePreviewSchema.safeParse(result); return parsed.success ? parsed.data : {kind:'error' as const,message:'Unexpected preview'};}
       catch (e) {return {kind:'error' as const,message:(e instanceof Error ? e.message : String(e)).slice(0,500)};}
+    },
+    // Tokenomos' cost of a thread and its sub-threads; fail-soft, so Answers works the same without it.
+    async threadCost(raw:z.infer<typeof inputs.threadCost>) {
+      const p=inputs.threadCost.parse(raw);
+      try {const result=tokenomosThreads.parse(await bb.sdk.plugins.callRpc({pluginId:'tokenomos',method:'costs.threads',input:{threadIds:[p.threadId],includeDescendants:true},outputSchema:tokenomosThreads})),t=result.threads[0]; if (t) return {available:true,own:t.own,total:t.total,descendantCount:t.descendantCount};}
+      catch { /* not installed, not running, or another shape */ }
+      return {available:false,own:null,total:null,descendantCount:0};
     },
     async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
       inputs.workBoardProjects.parse(raw);
