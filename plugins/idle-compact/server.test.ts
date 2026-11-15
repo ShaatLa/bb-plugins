@@ -5,7 +5,7 @@ import plugin, { IDLE_MS, LOG_RETENTION_MS, WARM_MS } from "./server.js";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.useRealTimers(); });
 
-async function setup({ used = 250_000, provider = "claude-code", status = "idle" } = {}) {
+async function setup({ used = 250_000, provider = "claude-code", status = "idle", seed = [] as readonly (readonly [string, unknown])[] } = {}) {
   vi.useFakeTimers();
   let clock = Date.parse("2026-11-14T12:00:00Z");
   const now = () => clock;
@@ -16,6 +16,7 @@ async function setup({ used = 250_000, provider = "claude-code", status = "idle"
     timeline: async () => (await state.timeline, { contextWindowUsage: { usedTokens: state.used, modelContextWindow: 1_000_000, estimated: true } }) as any,
     compact,
   } } as any });
+  for (const [key, value] of seed) await host.bb.storage.kv.set(key, value as never);
   await plugin(host.bb, now);
   cleanups.push(() => host.harness.lifecycle.dispose());
   const thread = makeThreadResponse({ id: "thr_a" } as any);
@@ -232,12 +233,23 @@ it("gives same-millisecond compactions distinct ids in write order, and a read w
   let read: any = null; const pending = list({}).then(result => { read = result; });
   await h.advance(0);
   expect(read).toBeNull(); // the second entry is not visible ahead of the first
+  h.setClock(5 * 60_000); // a stalled storage write does not move the acceptance time
   release(); await pending;
-  expect(read.items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_a", t0], ["thr_b", t0 + 1]]);
+  expect(read.items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_a", t0], ["thr_b", t0]]);
   expect(read.items[0].id < read.items[1].id).toBe(true);
   expect(await list({ after: read.items[0].id })).toEqual({ items: [read.items[1]] });
   expect(await list({ since: t0 - 1, after: read.items[0].id })).toEqual({ items: [read.items[1]] });
-  expect(await list({ since: t0 + 1, after: read.items[0].id })).toEqual({ items: [] });
+  expect(await list({ since: t0, after: read.items[0].id })).toEqual({ items: [] });
+});
+
+it("prunes by the current clock, not the ordering key, after a clock that ran fast", async () => {
+  const day = 86_400_000, t0 = Date.parse("2026-11-14T12:00:00Z");
+  const entry = (at: number, threadId: string) => [`log:${String(at).padStart(15, "0")}:${threadId}`, { id: `${String(at).padStart(15, "0")}:${threadId}`, threadId, at, trigger: "idle", usedTokensBefore: 1, contextWindow: null }] as const;
+  // Left by an instance whose clock ran 40 days fast, next to an entry 20 days old by the real clock.
+  const h = await setup({ used: 900_000, seed: [entry(t0 + 40 * day, "thr_fast"), entry(t0 - 20 * day, "thr_old")] });
+  await h.emit("thread.idle"); await h.advance(0);
+  const { items } = await (h.host.harness.behavior.callRpc("compactions.list", {}) as Promise<any>);
+  expect(items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_old", t0 - 20 * day], ["thr_fast", t0 + 40 * day], ["thr_a", t0]]);
 });
 
 it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per write", async () => {

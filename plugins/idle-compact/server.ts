@@ -107,17 +107,22 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     return full ? `compacted ${used} tokens at ${percent}% of the window` : `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }
 
-  // Log writes run one at a time and `at` strictly increases, so ids are unique and every new id sorts after all written
-  // ones: a reader's `after` cursor never passes an entry still to come. Reads wait for pending writes.
+  // `at` is the real time the server accepted the compaction. The id's time part is a separate ordering key: writes run one
+  // at a time and the key strictly increases (max(at, previous + 1)), so ids are unique and every new id sorts after all
+  // written ones; a reader's `after` cursor never passes an entry still to come. Reads wait for pending writes. The key is
+  // never below `at`, so pruning by key against the current clock never drops an entry younger than 30 days.
   // shortcut: an old instance whose compaction resolves after a reload can still write a lower id; per-instance only.
+  // shortcut: each write and read lists every log key. One entry per accepted compaction for 30 days: 10 concurrent threads
+  // compacting twice an hour around the clock is about 14,400 keys (~1 MB listed); index the log if that is ever reached.
   const ids = (keys: string[]) => keys.map(key => key.slice(LOG.length)).sort();
-  let lastAt = 0, writes: Promise<unknown> = bb.storage.kv.list(LOG).then(keys => { const last = ids(keys).at(-1); lastAt = last ? Number(last.slice(0, 15)) : 0; }, error => bb.log.warn(`Compaction log: ${message(error)}`));
+  let lastKey = 0, writes: Promise<unknown> = bb.storage.kv.list(LOG).then(keys => { const last = ids(keys).at(-1); lastKey = last ? Number(last.slice(0, 15)) : 0; }, error => bb.log.warn(`Compaction log: ${message(error)}`));
   const record = (entry: Omit<Compaction, "id" | "at">) => {
+    const at = now();
     writes = writes.catch(() => {}).then(async () => {
-      const at = lastAt = Math.max(now(), lastAt + 1), id = `${String(at).padStart(15, "0")}:${entry.threadId}`;
+      const key = lastKey = Math.max(at, lastKey + 1), id = `${String(key).padStart(15, "0")}:${entry.threadId}`;
       await bb.storage.kv.set(LOG + id, { ...entry, id, at });
-      // Bounded, so a backlog after a quiet month is cleared over several writes rather than in one.
-      const oldest = String(at - LOG_RETENTION_MS).padStart(15, "0");
+      // At most 20 deletes per write, so a backlog after a quiet month is cleared over several writes.
+      const oldest = String(now() - LOG_RETENTION_MS).padStart(15, "0");
       for (const old of ids(await bb.storage.kv.list(LOG)).filter(id => id < oldest).slice(0, 20)) await bb.storage.kv.delete(LOG + old);
     });
     // A failed log write must not report the compaction itself as failed.
@@ -131,9 +136,10 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
       let more = false;
       for (const id of ids(await bb.storage.kv.list(LOG))) {
         if ((after != null && id <= after) || (since != null && Number(id.slice(0, 15)) <= since)) continue;
-        // Entries pruned since the listing, or past retention but not yet pruned, are skipped without counting.
+        // Entries pruned since the listing, past retention but not yet pruned, or (by `at`) not after `since` are skipped
+        // without counting; the key prefilter above is safe because the key is never below `at`.
         const entry = await bb.storage.kv.get<Compaction>(LOG + id);
-        if (!entry || entry.at < oldest) continue;
+        if (!entry || entry.at < oldest || (since != null && entry.at <= since)) continue;
         if (items.length === limit) { more = true; break; }
         items.push(entry);
       }

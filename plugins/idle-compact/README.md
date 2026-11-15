@@ -55,12 +55,15 @@ output: { items: { id, threadId, at, trigger: "idle" | "threshold", usedTokensBe
   attempts, and compactions started by anything else, are not logged.
 - `trigger` is `idle` for the 50-minute check and `threshold` for compacting at once by
   window share. The size after compaction is not known here; read it from the thread.
-- Items are in time order. `at` strictly increases (a compaction in the same millisecond
-  as the previous one is logged 1 ms later), `id` is unique and stable across reloads,
-  and a new entry always sorts after every entry already readable, so paging with `after`
-  never skips one. Within one plugin instance only: a compaction that resolves after a
-  reload is logged by the old instance and can land behind the new one's entries.
-- Entries older than 30 days are not returned and are deleted, at most 20 per new entry.
+- Items are in log order, which is time order unless the clock moved back. `at` is the
+  real acceptance time; `id` is unique and stable across reloads, and a new entry always
+  sorts after every entry already readable, so paging with `after` never skips one.
+  Within one plugin instance only: a compaction that resolves after a reload is logged by
+  the old instance and can land behind the new one's entries.
+- Entries whose `at` is more than 30 days old by the current clock are not returned, and
+  are deleted, at most 20 per new entry. The log holds one entry per compaction for 30
+  days: 10 threads compacting twice an hour around the clock is about 14,400 entries.
+  Each read and write lists them all.
 
 ## Commands
 
