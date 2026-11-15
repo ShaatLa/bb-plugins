@@ -98,16 +98,21 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";
     if (stale()) return stale()!;
-    // The attempt is recorded first, so a failed compaction is not retried on the same usage.
-    await bb.storage.kv.set(COMPACTED + threadId, used);
-    await bb.storage.kv.set(OWN + threadId, true);
-    // shortcut: neither the SDK nor the server has a conditional compact, so a turn starting between this check and the
-    // server's dispatch is not seen; only a bb change (a conditional dispatch) closes it.
-    if (stale() || inflight.has(threadId)) { const reason = stale() ?? "skipped: an earlier compaction has not finished"; if (stale()) { await bb.storage.kv.delete(COMPACTED + threadId); await bb.storage.kv.delete(OWN + threadId); } return reason; }
+    // The in-flight guard is taken before any marker is written and held until they are cleaned up, so this check never
+    // touches the markers of a compaction (automatic or from the header) that another call is dispatching.
+    if (inflight.has(threadId)) return "skipped: an earlier compaction has not finished";
     inflight.add(threadId);
-    try { await bb.sdk.threads.compact({ threadId }); }
-    catch (error) { await bb.storage.kv.delete(OWN + threadId); if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
-    finally { inflight.delete(threadId); }
+    try {
+      // The attempt is recorded first, so a failed compaction is not retried on the same usage.
+      await bb.storage.kv.set(COMPACTED + threadId, used);
+      await bb.storage.kv.set(OWN + threadId, true);
+      // shortcut: neither the SDK nor the server has a conditional compact, so a turn starting between this check and the
+      // server's dispatch is not seen; only a bb change (a conditional dispatch) closes it.
+      const reason = stale();
+      if (reason) { await bb.storage.kv.delete(COMPACTED + threadId); await bb.storage.kv.delete(OWN + threadId); return reason; }
+      try { await bb.sdk.threads.compact({ threadId }); }
+      catch (error) { await bb.storage.kv.delete(OWN + threadId); if (NOT_IDLE.test(message(error))) return "skipped: the server found the thread no longer idle"; if (UNSUPPORTED.test(message(error))) return `skipped: provider ${thread.providerId} cannot compact`; throw error; }
+    } finally { inflight.delete(threadId); }
     record({ threadId, trigger: full ? "threshold" : "idle", usedTokensBefore: used, contextWindow: window ?? null });
     return full ? `compacted ${used} tokens at ${percent}% of the window` : `compacted ${used} tokens after ${Math.round((now() - since) / 60_000)} min idle`;
   }

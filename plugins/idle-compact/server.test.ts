@@ -313,3 +313,22 @@ it("compacts from the header button regardless of provider, settings and size, l
   await compact();
   expect((await list()).at(-1)).toMatchObject({ trigger: "manual", usedTokensBefore: null });
 });
+
+it("leaves a header compaction alone when an automatic check overlaps it", async () => {
+  const h = await setup({ used: 900_000 });
+  let open!: () => void, accept!: () => void;
+  h.state.timeline = new Promise<void>(resolve => { open = resolve; });
+  h.compact.mockImplementationOnce(() => new Promise(resolve => { accept = () => resolve({ ok: true }); }));
+  await h.emit("thread.idle"); await h.advance(0); // the check at once waits on the usage
+  const manual = h.host.harness.behavior.callRpc("compact", { threadId: "thr_a" });
+  await h.advance(0);
+  // Its compaction turn starts while the automatic check would be writing its markers.
+  const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
+  vi.spyOn(kv, "set").mockImplementation(async (key, value) => { await set(key, value); if (key === "compacted:thr_a") { vi.mocked(kv.set).mockRestore(); void h.emit("thread.active"); } });
+  open(); await h.advance(0); // both read the usage; the header call dispatches
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  accept(); await manual;
+  h.state.used = 850_000; await h.emit("thread.idle"); await h.advance(IDLE_MS); // its turn ends, still over the threshold
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect((await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items).toEqual([expect.objectContaining({ trigger: "manual", usedTokensBefore: 900_000 })]);
+});
