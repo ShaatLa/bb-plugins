@@ -32,4 +32,5 @@ it('says a shell command in a few words', async () => {
   expect(commandLabel("sed -n 1,20p app.tsx")).toBe('Reading files');
   expect(commandLabel('/opt/homebrew/bin/jq . file')).toBe('Running jq');
   expect(commandLabel('cd x')).toBe('Running a command');
+  expect(stateOf([{ type: 'item/started', data: { item: { type: 'commandExecution', command: 'make', description: 'Build the release' } } }]).label).toBe('Build the release');
 });

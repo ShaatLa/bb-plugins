@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSdk } from '@get-bb/plugin-sdk/app';
 import type { Activity } from './robot-loader';
 
-type Item = { type?: string; command?: string; tool?: string; server?: string; path?: string | null; url?: string; queries?: string[]; changes?: { path: string }[]; presentation?: { label: { pending: string }; title?: string } };
+type Item = { type?: string; command?: string; description?: string; tool?: string; server?: string; path?: string | null; url?: string; queries?: string[]; changes?: { path: string }[]; presentation?: { label: { pending: string }; title?: string } };
 type Row = { type: string; data?: { item?: Item; parentToolCallId?: string | null } | null };
 export type AgentState = { activity: Activity; label: string };
 const name = (path?: string | null) => path?.split('/').pop() ?? '';
@@ -46,7 +46,8 @@ export function commandLabel(command: string): string {
 
 /** The words beside the robot for the same item, bb-style ("Running npm test", "Reading app.tsx"). */
 export function labelOf(item: Item): string {
-  if (item.type === 'commandExecution') return commandLabel(item.command ?? '');
+  // A provider's own one-line description of the command wins; bb's schema has it, though no provider here fills it yet.
+  if (item.type === 'commandExecution') return item.description?.trim().split('\n')[0] || commandLabel(item.command ?? '');
   if (item.presentation) return `${item.presentation.label.pending}${item.presentation.title ? ` ${item.presentation.title}` : ''}`;
   switch (item.type) {
     case 'reasoning': return 'Thinking';
