@@ -176,6 +176,8 @@ it('splits a late answer from its question when an update arrived in between', a
   const question = document.querySelector('[data-history-ids="ans_q"]')!, update = document.querySelector('[data-history-ids="ans_upd"]')!, answer = document.querySelector('[data-history-ids="ans_q:answer"]')!;
   expect(before(question, update) && before(update, answer)).toBe(true);
   expect(question.textContent).toContain('Working on it'); expect(question.textContent).not.toContain('Final answer');
+  // "Answered below" carries the arrow; the interim reply under it drops the clock that would repeat it.
+  expect(within(question as HTMLElement).queryByLabelText('Interim reply')).toBeNull();
   expect(within(answer as HTMLElement).queryByText('Working on it')).toBeNull();
   fireEvent.click(within(question as HTMLElement).getByRole('button', { name:'Answered below' }));
   await waitFor(() => expect(answer.hasAttribute('data-flash')).toBe(true));
