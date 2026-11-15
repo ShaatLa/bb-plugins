@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { setImmediate } from "node:timers/promises";
 import { z } from "zod";
 import { bandOf, type UsageRow } from "../contract";
 import type { Store } from "../store/write";
@@ -21,7 +22,7 @@ const EntrySchema = z.object({
 
 // Entries are validated one by one so a single malformed entry is dropped, not the whole page.
 const UsageListSchema = z.object({
-  entries: z.array(z.unknown()),
+  entries: z.array(z.unknown()).max(500),
   nextCursor: z.string().nullable(),
 });
 
@@ -100,6 +101,7 @@ export function createExtSource(o: {
   db: Database;
   callRpc: (pluginId: string, method: string, input: unknown) => Promise<unknown>;
   now?: () => number;
+  signal?: AbortSignal;
 }) {
   const { store, db, callRpc } = o;
   const now = o.now ?? (() => Date.now());
@@ -118,7 +120,7 @@ export function createExtSource(o: {
     let existingPendingIds: string[] = [];
     try {
       const pendingRows = db.prepare(
-        "SELECT id FROM ext_pending WHERE source=?",
+        "SELECT id FROM ext_pending WHERE source=? ORDER BY at LIMIT 200",
       ).all(pluginId) as Array<{ id: string }>;
       existingPendingIds = pendingRows.map((e) => e.id);
     } catch {
@@ -133,9 +135,10 @@ export function createExtSource(o: {
       // Table may not exist yet in tests; treat cursor as null.
     }
 
-    // Paginate through results, max 20 pages.
+    // Bound usage history to two pages per poll.
     let page = 0;
-    while (page < 20) {
+    while (page < 2) {
+      o.signal?.throwIfAborted();
       let result: unknown;
       try {
         result = await callRpc(
@@ -148,6 +151,7 @@ export function createExtSource(o: {
         throw err;
       }
 
+      o.signal?.throwIfAborted();
       const parsed = UsageListSchema.safeParse(result);
       // A malformed page is a contract break, not absence: surface it in source status.
       if (!parsed.success) throw new Error(`${pluginId} usage.list returned an unexpected shape`);
@@ -155,6 +159,7 @@ export function createExtSource(o: {
       const data = parsed.data;
       if (data.entries.length === 0) break;
 
+      db.transaction(() => {
       // Save the latest non-null cursor.
       if (data.nextCursor !== null) {
         cursor = data.nextCursor;
@@ -214,7 +219,9 @@ export function createExtSource(o: {
         rows.push(makeUsageRow(entry, pluginId, threadId ?? "", projectId));
       }
 
+      })();
       page++;
+      await setImmediate(undefined,{signal:o.signal});
     }
 
     // Also retry every ext_pending entry for this plugin.
@@ -222,9 +229,10 @@ export function createExtSource(o: {
     let pendingRows: UsageRow[] = [];
     try {
       const pendingEntries = db.prepare(
-        "SELECT * FROM ext_pending WHERE source=? ORDER BY at",
-      ).all(pluginId) as Array<{ id: string; entry: string; at: number }>;
+        `SELECT * FROM ext_pending WHERE id IN (SELECT value FROM json_each(?)) ORDER BY at`,
+      ).all(JSON.stringify(existingPendingIds)) as Array<{ id: string; entry: string; at: number }>;
 
+      db.transaction(() => {
       for (const p of pendingEntries) {
         // Skip entries inserted on this poll (not in existing set).
         if (!existingPendingIds.includes(p.id)) continue;
@@ -261,7 +269,9 @@ export function createExtSource(o: {
         pendingRows.push(makeUsageRow(entry, pluginId, threadId, projectId));
         db.prepare("DELETE FROM ext_pending WHERE id=?").run(p.id);
       }
-    } catch {
+      })();
+    } catch (error) {
+      o.signal?.throwIfAborted();
       // Table may not exist in tests.
     }
 
@@ -286,7 +296,9 @@ export function createExtSource(o: {
       params: Record<string, unknown>,
     ): Promise<{ items: z.infer<typeof CompactionItemSchema>[]; nextCursor: string | null } | null> => {
       try {
+        o.signal?.throwIfAborted();
         const result = await callRpc("idle-compact", "compactions.list", params);
+        o.signal?.throwIfAborted();
         const parsed = CompactionsListSchema.safeParse(result);
         if (!parsed.success) throw new Error("idle-compact compactions.list returned an unexpected shape");
         const items = parsed.data.items.flatMap((item) => {
@@ -312,6 +324,7 @@ export function createExtSource(o: {
 
       if (items.length > 0) lastId = items[items.length - 1].id;
 
+      db.transaction(() => {
       for (const item of items) {
         // Look for a row in compactions with the same thread_id and at
         // within ±MATCH_MS; set its origin to idle-compact.
@@ -329,8 +342,10 @@ export function createExtSource(o: {
         }
       }
 
+      })();
       page++;
       cursor = lastId;
+      await setImmediate(undefined,{signal:o.signal});
     }
 
     // Save cursor for the next poll.

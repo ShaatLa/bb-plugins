@@ -7,7 +7,7 @@ import { prune } from './store/prune.js';
 
 export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string };
 export type SettingsHandle = { get(): Promise<Settings>; experimental_set(values: { priceOverrides: string }): Promise<unknown> };
-export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHandle, sdk: PluginBbSdk = bb.sdk) {
+export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHandle, sdk: PluginBbSdk = bb.sdk, loop?: () => { p99Ms: number; maxMs: number }) {
   const options = async () => { const s = await settings.get(); return { ...s, overrides: parseOverrides(s.priceOverrides), now: Date.now() }; };
   let cached: { at: number; value: Awaited<ReturnType<typeof sdk.system.usageLimits>> } | undefined;
   let pending: Promise<void> | undefined;
@@ -25,7 +25,7 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
       }
       return { ...read.limits(db,cached!.value,o.now,o.overrides), fetchedAt: cached!.at };
     },
-    status: async () => { await settings.get(); return read.status(db); },
+    status: async () => { await settings.get(); return { ...read.status(db), ...(loop ? { loop: loop() } : {}) }; },
     prices: async () => read.prices((await options()).overrides),
     setPriceOverride: async i => {
       const overrides = (await options()).overrides;

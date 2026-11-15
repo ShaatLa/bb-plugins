@@ -445,3 +445,17 @@ it("compactions.list without nextCursor and with a malformed item still matches 
   const result = await ext.pollCompactions();
   expect(result).toEqual({ matched: 1, available: true });
 });
+it('caps usage at two pages and retries at most 200 pending entries per poll',async()=>{
+  const entry=(id:string):UsageEntry=>({id,ts:100,source:'thread',threadId:'t',providerThreadId:null,model:'m',promptTokens:1,cachedTokens:0,completionTokens:0,reasoningTokens:null});
+  db.transaction(()=>{for(let i=0;i<250;i++)db.prepare('INSERT INTO ext_pending VALUES (?,?,?,?)').run(`p${i}`,'local-models',JSON.stringify(entry(`p${i}`)),i);})();
+  const callRpc=vi.fn(async(_plugin:string,_method:string,input:unknown)=>{
+    const after=Number((input as {after?:string}).after??0);
+    return {entries:Array.from({length:500},(_,i)=>entry(`${after+i+1}`)),nextCursor:String(after+500)};
+  });
+  const s=createExtSource({db,store:createStore(db),callRpc});
+  const first=await s.pollUsage('local-models');expect(callRpc).toHaveBeenCalledTimes(2);expect(first.rows).toHaveLength(1200);
+  expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:50});
+  expect(db.prepare('SELECT cursor FROM ext_cursor').get()).toEqual({cursor:'1000'});
+  const second=await s.pollUsage('local-models');expect(second.rows).toHaveLength(1050);
+  expect(callRpc.mock.calls[2][2]).toMatchObject({after:'1000'});
+});

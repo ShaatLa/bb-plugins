@@ -1,5 +1,6 @@
 import type { Database } from "better-sqlite3";
 import type { PluginBbSdk, PluginLogger } from "@get-bb/plugin-sdk";
+import { setImmediate } from "node:timers/promises";
 import { z } from "zod";
 import { bandOf, ESTIMATED, RECOVERED, type UsageRow } from "../contract";
 import type { Store } from "../store/write";
@@ -31,7 +32,7 @@ function components(c: Counts): Components {
 }
 type Turn = {model:string;tier:string;tier_raw:string;request_id:string};
 
-export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:PluginLogger;now?:()=>number}) {
+export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:PluginLogger;now?:()=>number;signal?:AbortSignal}) {
   const {db,store,sdk,log} = o;
   const now = o.now ?? Date.now;
   const effects = createCompactions(db,store,now);
@@ -41,8 +42,11 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
       let cursor = (db.prepare("SELECT last_seq FROM bb_cursor WHERE thread_id=?").get(threadId) as {last_seq:number}|undefined)?.last_seq ?? 0;
       const rows:UsageRow[]=[];
       let touched=false;
-      for (;;) {
-        const page = await sdk.threads.events.list({threadId,afterSeq:String(cursor),limit:"100",order:"asc",types:[...TYPES]});
+      let more = false;
+      for (let pageNumber=0; pageNumber<5; pageNumber++) {
+        o.signal?.throwIfAborted();
+        const page = await sdk.threads.events.list({threadId,afterSeq:String(cursor),limit:"100",order:"asc",types:[...TYPES],signal:o.signal});
+        o.signal?.throwIfAborted();
         const batch:UsageRow[]=[];
         db.transaction(()=>{
           let errors=0;
@@ -126,12 +130,15 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
           db.prepare("INSERT OR REPLACE INTO bb_cursor VALUES (?,?)").run(threadId,cursor);
         })();
         rows.push(...batch);
-        if(page.length<100) break;
+        more = page.length === 100;
+        if (!more) break;
+        await setImmediate(undefined,{signal:o.signal});
       }
       effects.resolve(threadId);
-      return {rows:fallbackOwned?rows:[],candidates:fallbackOwned?[]:rows,touched};
+      return {rows:fallbackOwned?rows:[],candidates:fallbackOwned?[]:rows,touched,more};
     },
     async coverage(threadId:string) {
+      o.signal?.throwIfAborted();
       const source=(db.prepare("SELECT source FROM thread_source WHERE thread_id=?").get(threadId) as {source:string}|undefined)?.source;
       const fileSource=source==="claude-file"||source==="codex-file" ? source : (db.prepare("SELECT provider_id FROM threads WHERE id=?").get(threadId) as {provider_id:string}|undefined)?.provider_id==="codex"?"codex-file":"claude-file";
       const turns=db.prepare(`SELECT started_at,EXISTS(SELECT 1 FROM usage_raw u WHERE u.thread_id=t.thread_id AND source=? AND conv='' AND ts BETWEEN t.started_at AND t.completed_at+120000) AS covered

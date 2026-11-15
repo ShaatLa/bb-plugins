@@ -153,6 +153,7 @@ export const rpcContract = defineRpcContract({
       sources: z.array(z.object({
         id: z.string(), lastIngestAt: nullableNum, rows: count, lastError: z.string().nullable(), state: z.string(),
       })),
+      loop: z.object({ p99Ms: num.nonnegative(), maxMs: num.nonnegative() }).optional(),
       degradedThreads: count,
       disk: z.object({ bytes: num, pages: num, freePages: num, rows: z.record(z.string(), num) }),
     }),

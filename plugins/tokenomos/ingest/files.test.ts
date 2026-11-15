@@ -113,3 +113,55 @@ describe('compressed Codex transcripts', () => {
     expect((await source.scanOutside(new Set([id]), 0)).rows).toHaveLength(0);
   });
 });
+
+describe('bounded asynchronous ingestion', () => {
+  it.each(['plain', 'zstd'])('consumes a large %s transcript over multiple flushes', async (format) => {
+    const project = join(dir, 'project'); mkdirSync(project);
+    const sourceLines = fixture('claude.jsonl').trimEnd().split('\n'), base = JSON.parse(sourceLines[0]);
+    const lines = Array.from({ length: 5000 }, (_, i) => JSON.stringify({ ...base, timestamp: new Date(Date.parse(base.timestamp) + i).toISOString(), message: { ...base.message, id: `message-${i}` }, padding: 'x'.repeat(1100) })).join('\n') + '\n';
+    expect(Buffer.byteLength(lines)).toBeGreaterThan(5 * 1024 * 1024);
+    // The shared reader also handles compressed streams; Codex supplies their normal entry point.
+    const path = join(project, format === 'zstd' ? 'large.jsonl.zst' : 'large.jsonl');
+    writeFileSync(path, format === 'zstd' ? zstdCompressSync(Buffer.from(lines)) : lines);
+    const { readFile, LIMIT } = await import('./files');
+    const parse = (line: any) => ({ key: line.message.id, ts: Date.parse(line.timestamp), threadId: 'thread', projectId: 'project', provider: 'claude-code', model: 'test', tier: 'standard', tierRaw: '', promptTokens: 1, band: 0, conv: '', freshIn: 1, cacheRead: 0, cacheWriteShort: 0, cacheWriteLong: 0, output: 0, reasoning: 0, turnId: null, source: 'claude-file' as const, flags: 0 });
+    let more = true, runs = 0, total = 0;
+    while (more && runs < 10) { const b = await readFile(db, path, thread('large'), parse, { remaining: LIMIT }); total += b.rows.length; more = !!b.more; apply(b); runs++; }
+    expect(runs).toBeGreaterThan(2); expect(more).toBe(false); expect(total).toBe(5000);
+    expect(db.prepare('SELECT count(*) n FROM usage_raw').get()).toEqual({ n: 5000 });
+  });
+  it('honors an already aborted signal', async () => {
+    const signal = AbortSignal.abort();
+    await expect(createClaudeSource({ db, store, root: dir }).locate(thread('x'), signal)).rejects.toThrow();
+    await expect(createCodexSource({ db, store, root: dir, archivedRoot: dir }).locate(thread('x'), signal)).rejects.toThrow();
+  });
+  it('does not use synchronous filesystem or compression calls in ingest modules', async () => {
+    const { readdir, readFile } = await import('node:fs/promises');
+    for (const name of await readdir(import.meta.dirname)) if (name.endsWith('.ts') && !name.endsWith('.test.ts')) {
+      expect(await readFile(join(import.meta.dirname, name), 'utf8'), name).not.toMatch(/Sync\s*\(/);
+    }
+  });
+});
+
+it.each(['plain', 'zstd'])('finishes a single oversized %s line across the byte budget', async format => {
+  const data = JSON.parse(fixture('claude.jsonl').split('\n')[0]); data.padding = 'x'.repeat(5 * 1024 * 1024);
+  const path = join(dir, format === 'zstd' ? 'oversized.jsonl.zst' : 'oversized.jsonl');
+  const content = JSON.stringify(data) + '\n'; writeFileSync(path, format === 'zstd' ? zstdCompressSync(Buffer.from(content)) : content);
+  const { readFile, LIMIT } = await import('./files');
+  const parse = (line: any) => ({ key: line.message.id, ts: Date.parse(line.timestamp), threadId: 'thread', projectId: 'project', provider: 'claude-code', model: 'test', tier: 'standard', tierRaw: '', promptTokens: 1, band: 0, conv: '', freshIn: 1, cacheRead: 0, cacheWriteShort: 0, cacheWriteLong: 0, output: 0, reasoning: 0, turnId: null, source: 'claude-file' as const, flags: 0 });
+  let more = true, total = 0, runs = 0;
+  while (more && runs++ < 10) { const batch = await readFile(db, path, thread('large'), parse, { remaining: LIMIT }); total += batch.rows.length; more = !!batch.more; apply(batch); }
+  expect(more).toBe(false); expect(total).toBe(1);
+});
+
+it('resumes a compressed cursor after cancellation without replaying rows', async () => {
+  const base = JSON.parse(fixture('claude.jsonl').split('\n')[0]);
+  const content = Array.from({ length: 3500 }, (_, i) => JSON.stringify({ ...base, timestamp: new Date(Date.parse(base.timestamp) + i).toISOString(), message: { ...base.message, id: `resume-${i}` }, padding: 'x'.repeat(800) })).join('\n') + '\n';
+  const path = join(dir, 'resume.jsonl.zst'); writeFileSync(path, zstdCompressSync(Buffer.from(content)));
+  const { readFile, LIMIT } = await import('./files');
+  const parse = (line: any) => ({ key: line.message.id, ts: Date.parse(line.timestamp), threadId: 'thread', projectId: 'project', provider: 'claude-code', model: 'test', tier: 'standard', tierRaw: '', promptTokens: 1, band: 0, conv: '', freshIn: 1, cacheRead: 0, cacheWriteShort: 0, cacheWriteLong: 0, output: 0, reasoning: 0, turnId: null, source: 'claude-file' as const, flags: 0 });
+  const controller = new AbortController(); let batch = await readFile(db, path, thread('resume'), parse, { remaining: LIMIT }, controller.signal); expect(batch.more).toBe(true); apply(batch); controller.abort();
+  let more = true, runs = 0;
+  while (more && runs++ < 8) { batch = await readFile(db, path, thread('resume'), parse, { remaining: LIMIT }); more = !!batch.more; apply(batch); }
+  expect(more).toBe(false); expect(db.prepare('SELECT count(*) n FROM usage_raw').get()).toEqual({ n: 3500 });
+});

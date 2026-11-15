@@ -70,3 +70,10 @@ it('retains applied calls while an after snapshot is pending, including across f
 it('pairs historical snapshots before applying the pending timeout, even across a page boundary',async()=>{
  context(40000);event('thread/compacted');for(let i=0;i<98;i++)event('thread/identity',{providerThreadId:'s'},null);context(10000);time+=86400001;await source().flushThread('t',false);expect(db.prepare('SELECT after_tokens,after_known,expired FROM compactions').get()).toEqual({after_tokens:10000,after_known:1,expired:0});
 });
+it('caps a flush at five pages and resumes at its saved cursor',async()=>{
+  for(let i=0;i<601;i++)event('thread/identity',{providerThreadId:`s${i}`},null);
+  const s=source();expect((await s.flushThread('t',false)).more).toBe(true);expect(list).toHaveBeenCalledTimes(5);
+  expect(db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:500});
+  expect((await s.flushThread('t',false)).more).toBe(false);expect(list).toHaveBeenCalledTimes(7);
+  expect(db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:601});
+});

@@ -29,14 +29,17 @@ it('ingests events and transcripts, resumes after reload and reprices without ne
   try {
     plugin(host.bb);harness.behavior.runService('ingest');
     append('one');await harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:seq});await vi.advanceTimersByTimeAsync(5000);
-    expect((await cost()).cost).toMatchObject({usd:0.0004,tokens:{freshIn:100,output:20}});
+    await vi.waitFor(async () => expect((await cost()).cost).toMatchObject({usd:0.0004,tokens:{freshIn:100,output:20}}));
     const next=await harness.lifecycle.reload(plugin);harness=next.harness;harness.behavior.runService('ingest');
     append('two');await harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:seq});await vi.advanceTimersByTimeAsync(5000);
-    expect((await cost()).cost).toMatchObject({usd:0.0008,tokens:{freshIn:200,output:40}});
+    await vi.waitFor(async () => expect((await cost()).cost).toMatchObject({usd:0.0008,tokens:{freshIn:200,output:40}}));
     const before=harness.experimental_rpcInvalidations.length;
     await harness.behavior.setSettings({priceOverrides:JSON.stringify({'claude-sonnet-5-5':{input:6}})});await vi.advanceTimersByTimeAsync(5000);
     expect((await cost()).cost.usd).toBeCloseTo(0.0016);
     expect((await cost()).cost.tokens.freshIn).toBe(200);expect(harness.experimental_rpcInvalidations.length).toBeGreaterThan(before);
+    const status = await harness.behavior.callRpc('status',{}) as {loop:{p99Ms:number;maxMs:number}};
+    expect(status.loop.p99Ms).toBeGreaterThanOrEqual(0);expect(status.loop.maxMs).toBeGreaterThanOrEqual(0);
+    expect((await harness.behavior.runCli(['status'])).stdout).toContain('Event loop (last minute): p99');
     expect(harness.logEntries.filter(e=>e.level==='warn')).toEqual([]);
   } finally {await harness.lifecycle.dispose();rmSync(root,{recursive:true,force:true});vi.unstubAllEnvs();vi.useRealTimers();}
 });
