@@ -82,22 +82,23 @@ function ThreadsPage({ range, offset, isLast, onMore }: { range: Range; offset: 
 
 export function Threads({ range }: { range: Range }) {
   const t = useT();
+  return <Section title={t("threads.title")} collapseKey="threads"><ThreadsBody range={range} /></Section>;
+}
+
+function ThreadsBody({ range }: { range: Range }) {
+  const t = useT();
   const [pages, setPages] = useState(1);
   const first = useQuery({ contract: rpcContract, method: "topThreads", input: { range, offset: 0, limit: PAGE } });
   useEffect(() => setPages(1), [range]);
-  return (
-    <Section title={t("threads.title")}>
-      {first.data && first.data.items.length === 0 ? <Card><Muted>{t("threads.empty")}</Muted></Card> : (
-        <Card className="p-0">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-            <span>{t("threads.thread")}</span><span className={`${num} w-20`}>{t("threads.own")}</span><span className={`${num} w-24`}>{t("threads.total")}</span>
-          </div>
-          <div className="divide-y divide-border">
-            {Array.from({ length: pages }, (_, i) => <ThreadsPage key={i} range={range} offset={i * PAGE} isLast={i === pages - 1} onMore={() => setPages(pages + 1)} />)}
-          </div>
-        </Card>
-      )}
-    </Section>
+  return first.data && first.data.items.length === 0 ? <Card><Muted>{t("threads.empty")}</Muted></Card> : (
+    <Card className="p-0">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+        <span>{t("threads.thread")}</span><span className={`${num} w-20`}>{t("threads.own")}</span><span className={`${num} w-24`}>{t("threads.total")}</span>
+      </div>
+      <div className="divide-y divide-border">
+        {Array.from({ length: pages }, (_, i) => <ThreadsPage key={i} range={range} offset={i * PAGE} isLast={i === pages - 1} onMore={() => setPages(pages + 1)} />)}
+      </div>
+    </Card>
   );
 }
 
@@ -107,7 +108,7 @@ export function Compactions({ range }: { range: Range }) {
   const query = useQuery({ contract: rpcContract, method: "compactions", input: { range } });
   const { value: data, stale } = useHeld(query.data, range);
   return (
-    <Section title={t("compactions.title")}>
+    <Section title={t("compactions.title")} collapseKey="compactions" action={data && data.items.length > 0 ? <CompactionTotal items={data.items} /> : null}>
       {!data && query.isLoading ? <SkeletonBlock rows={2} /> : !data?.items.length ? <Card><Muted>{t("compactions.empty")}</Muted></Card> : (
         <Card className={stale ? "p-0 opacity-60" : "p-0"}>
           <ul className="divide-y divide-border">
@@ -134,5 +135,22 @@ export function Compactions({ range }: { range: Range }) {
         </Card>
       )}
     </Section>
+  );
+}
+
+/** Overall saving for the period: sum of known estimates, with the count of compactions that have no estimate. */
+function CompactionTotal({ items }: { items: { saving: { usd: number | null; partial: boolean; excludesOwnCost: boolean } }[] }) {
+  const t = useT();
+  const known = items.filter((c) => c.saving.usd !== null);
+  const usd = known.reduce((sum, c) => sum + (c.saving.usd ?? 0), 0);
+  const unknown = items.length - known.length;
+  const approx = known.some((c) => c.saving.partial || c.saving.excludesOwnCost);
+  const total = known.length ? fmtSaving({ usd }, t) : null;
+  return (
+    <span className="text-xs text-muted-foreground tabular-nums">
+      {t("compactions.count", { n: items.length, count: fmtInt(items.length, t) })}
+      {total && <> · {t("compactions.saved")} <span className="font-medium text-foreground">{total}</span>{approx ? "*" : ""}</>}
+      {unknown > 0 && <> · {t("compactions.noData", { n: unknown, count: fmtInt(unknown, t) })}</>}
+    </span>
   );
 }

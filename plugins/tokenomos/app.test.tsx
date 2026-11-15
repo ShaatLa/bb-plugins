@@ -309,3 +309,34 @@ describe("helpers", () => {
     expect(byModel.rows).toHaveLength(7);
   });
 });
+
+describe("collapsible sections and compaction total", () => {
+  it("collapses Threads without fetching it and remembers the choice", async () => {
+    localStorage.clear();
+    const topThreads = vi.fn((i: { offset: number }) => ({ items: [thread(`t${i.offset}`)], hasMore: false }));
+    const { slot } = await page("week/provider", { topThreads });
+    const header = await slot.findByRole("button", { name: "Threads" });
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    header.click();
+    expect(localStorage.getItem("tokenomos:section:threads")).toBe("closed");
+    slot.unmount();
+    topThreads.mockClear();
+    const again = await page("week/provider", { topThreads });
+    expect((await again.slot.findByRole("button", { name: "Threads" })).getAttribute("aria-expanded")).toBe("false");
+    expect(topThreads).not.toHaveBeenCalled();
+    localStorage.clear();
+  });
+
+  it("shows the overall compaction saving and how many have no data", async () => {
+    localStorage.clear();
+    const items = [
+      { ...compaction, id: "a", saving: { usd: 1.25, tokens: 1, partial: false, excludesOwnCost: false } },
+      { ...compaction, id: "b", saving: { usd: 0.75, tokens: 1, partial: false, excludesOwnCost: false } },
+      { ...compaction, id: "c", saving: { usd: null, tokens: 0, partial: true, excludesOwnCost: true } },
+    ];
+    const { slot } = await page("week/provider", { compactions: () => ({ items }) });
+    const header = await slot.findByText(/3 compactions/);
+    expect(norm(header)).toContain("saved ~$2.00");
+    expect(norm(header)).toContain("1 without data");
+  });
+});

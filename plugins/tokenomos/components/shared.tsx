@@ -1,18 +1,36 @@
 import type { ReactNode } from "react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import { cn } from "../lib/utils";
 import { Skeleton } from "./ui/skeleton";
 
-export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+export function Section({ title, action, children, collapseKey }: { title: string; action?: ReactNode; children: ReactNode; collapseKey?: string }) {
+  const [open, setOpen] = useState(() => !collapseKey || readOpen(collapseKey));
+  const toggle = () => { const next = !open; setOpen(next); if (collapseKey) writeOpen(collapseKey, next); };
   return (
     <section className="space-y-2">
       <div className="flex min-h-8 items-center justify-between gap-2">
-        <h2 className="text-sm font-medium text-foreground">{title}</h2>
+        {collapseKey ? (
+          <button type="button" onClick={toggle} aria-expanded={open}
+            className="flex items-center gap-1 rounded-sm text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-4 text-muted-foreground" aria-hidden />
+            <h2>{title}</h2>
+          </button>
+        ) : <h2 className="text-sm font-medium text-foreground">{title}</h2>}
         {action}
       </div>
-      {children}
+      {open && children}
     </section>
   );
+}
+
+// Collapsed state is a per-browser view preference, so it lives in localStorage.
+const storageKey = (key: string) => `tokenomos:section:${key}`;
+function readOpen(key: string): boolean {
+  try { return localStorage.getItem(storageKey(key)) !== "closed"; } catch { return true; }
+}
+function writeOpen(key: string, open: boolean) {
+  try { localStorage.setItem(storageKey(key), open ? "open" : "closed"); } catch { /* storage unavailable */ }
 }
 
 export const Card = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
