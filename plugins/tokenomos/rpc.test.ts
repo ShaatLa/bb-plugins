@@ -16,6 +16,8 @@ describe('RPC and CLI', () => {
     const { harness,settings }=setup();
     try {
       for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'week',by:'provider' },topThreads:{ range:'week',offset:0,limit:50 },compactions:{ range:'week' },status:{},prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
+      await expect(harness.behavior.callRpc('costs.sum',{ spans:[{ threadId:'missing',from:0,to:null }],includeDescendants:true })).resolves.toMatchObject({ threadCount:0,cost:{ partial:true } });
+      await expect(harness.behavior.callRpc('costs.sum',{ spans:[{ threadId:'x',from:5,to:1 }],includeDescendants:false })).rejects.toThrow();
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ input:7 } });
       expect(JSON.parse((await settings.get()).priceOverrides)['claude-sonnet-5-5'].input).toBe(7);
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ output:17 } });

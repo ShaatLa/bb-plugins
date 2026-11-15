@@ -43,6 +43,7 @@ Cost shape everywhere: `{ usd: number | null, tokens: { freshIn, cacheRead, cach
 Other plugins should use only these two. Both are tagged `usage` and accept 1 to 2000 thread IDs; one call dedupes shared threads and descendants, so send a whole set (an epic) in one call rather than summing per-item results.
 
 - `costs.sum` input `{ threadIds: string[], includeDescendants: boolean }` → `{ priceVersion, cost: Cost, threadCount, updatedAt }`. `cost` is the deduplicated sum.
+- `costs.sum` also accepts `{ spans: { threadId, from, to: number | null }[], includeDescendants }` to count only calls made while each thread was inside its time windows (epoch ms; `to: null` means now). Overlapping spans are merged, a descendant uses the union of its roots' spans, and `threadCount` counts threads with at least one counted call. Hours cut by a span edge are exact for the last 30 days and whole-hour estimates (`estimated: true`) before that.
 - `costs.threads` same input → `{ priceVersion, threads: [{ threadId, own: Cost, total: Cost, descendantCount, updatedAt }] }`. `total` includes descendants when `includeDescendants` is true.
 
 Unknown thread IDs are skipped and make the result `partial`.

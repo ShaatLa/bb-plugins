@@ -198,6 +198,68 @@ export function costSum(db: Database, threadIds: string[], includeDescendants: b
   cost.partial ||= threadIds.some(id => !roots.has(id));
   return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: ids.length, updatedAt: Math.max(0,...[...data.values()].map(d => d.updatedAt)) };
 }
+export type Span = { threadId: string; from: number; to: number | null };
+type Interval = [number, number];
+function merge(list: Interval[]): Interval[] {
+  const out: Interval[] = [];
+  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    const last = out.at(-1);
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
+  }
+  return out;
+}
+/**
+ * costs.sum limited to time windows: a call counts only inside its thread's spans (a descendant
+ * uses the union of its roots' spans). Whole hours come from hourly rollups; an hour cut by a span
+ * edge is counted per call while raw rows are kept, and whole (marking the result estimated) after.
+ */
+export function costSumSpans(db: Database, spans: Span[], includeDescendants: boolean, o: { overrides?: Overrides; now: number; rawRetentionDays: number; rollupRetentionDays: number }) {
+  const rootSpans = new Map<string, Interval[]>();
+  for (const s of spans) {
+    const to = Math.min(s.to ?? o.now, o.now);
+    const list = rootSpans.get(s.threadId) ?? [];
+    if (to > s.from) list.push([s.from, to]);
+    rootSpans.set(s.threadId, list);
+  }
+  const edges = tree(db, [...rootSpans.keys()], includeDescendants);
+  const perThread = new Map<string, Interval[]>();
+  for (const e of edges) perThread.set(e.id, [...(perThread.get(e.id) ?? []), ...rootSpans.get(e.root)!]);
+  const rawFloor = Math.ceil((o.now - o.rawRetentionDays * 86_400_000) / HOUR) * HOUR, rollupFloor = o.now - o.rollupRetentionDays * 86_400_000;
+  const groupCols = `provider,model,tier,band,SUM(fresh_in) AS fresh_in,SUM(cache_read) AS cache_read,SUM(cache_write_short) AS cache_write_short,SUM(cache_write_long) AS cache_write_long,SUM(output) AS output`;
+  const rawStmt = db.prepare(`SELECT ${groupCols},COUNT(*) AS calls,MAX(ts) AS last FROM usage_raw WHERE thread_id=? AND ts>=? AND ts<? GROUP BY provider,model,tier,band`);
+  const hourStmt = db.prepare(`SELECT ${groupCols},SUM(calls) AS calls,MAX(hour) AS last FROM usage_hourly WHERE thread_id=? AND hour>=? AND hour<? GROUP BY provider,model,tier,band`);
+  const price = priceContext(o.overrides ?? {});
+  let cost = empty(), updatedAt = 0;
+  const counted = new Set<string>();
+  const roots = new Set(edges.map(e => e.root));
+  cost.partial = [...rootSpans.keys()].some(id => !roots.has(id));
+  for (const [threadId, list] of perThread) {
+    const intervals = merge(list), hours: Interval[] = [];
+    const rows: (Group & { last: number })[] = [];
+    for (const [a, b] of intervals) {
+      if (a < rollupFloor) cost.partial = true;
+      // Whole hours come from the hourly rollup; only the cut hours at the edges need per-call rows.
+      const A = Math.ceil(a / HOUR) * HOUR, B = Math.floor(b / HOUR) * HOUR;
+      if (A < B) hours.push([A, B]);
+      const edges: Interval[] = A > B ? [[a, b]] : [[a, A], [B, b]];
+      for (const [x, y] of edges) {
+        if (x >= y) continue;
+        const h = Math.floor(x / HOUR) * HOUR;
+        if (h >= rawFloor) rows.push(...rawStmt.all(threadId, x, y) as (Group & { last: number })[]);
+        else { hours.push([h, h + HOUR]); cost.estimated = true; }
+      }
+    }
+    // Expanded hours of neighbouring spans may meet; merge so each hour counts once.
+    for (const [h0, h1] of merge(hours)) rows.push(...hourStmt.all(threadId, h0, h1) as (Group & { last: number })[]);
+    for (const r of rows) {
+      if (!r.calls) continue;
+      counted.add(threadId); cost = add(cost, price(r)); updatedAt = Math.max(updatedAt, r.last);
+    }
+  }
+  const cov = db.prepare('SELECT 1 FROM thread_cov WHERE partial=1 AND thread_id IN (SELECT value FROM json_each(?)) LIMIT 1').get(JSON.stringify([...counted]));
+  if (cov) cost.partial = true;
+  return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: counted.size, updatedAt };
+}
 export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now(), projectId?: string, projectNames = new Map<string,string>()) {
   const { from,to } = rangeBounds(range,now);
   const rows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<=? AND thread_id!=''

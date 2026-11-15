@@ -37,7 +37,7 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     },
     wakeCost: async i => {const o=await options();return wakeCost(db,i.threadId,o.now,o.overrides);},
     'costs.threads': async i => read.threadCosts(db,i.threadIds,i.includeDescendants,(await options()).overrides),
-    'costs.sum': async i => read.costSum(db,i.threadIds,i.includeDescendants,(await options()).overrides),
+    'costs.sum': async i => { const o = await options(); return 'spans' in i ? read.costSumSpans(db,i.spans,i.includeDescendants,o) : read.costSum(db,i.threadIds,i.includeDescendants,o.overrides); },
     summary: async i => read.summary(db,{ ...await options(), ...i }),
     topThreads: async i => { const o = await options(); return read.topThreads(db,i.range,i.offset,i.limit,o.overrides,o.now,i.projectId,await projectNames()); },
     compactions: async i => { const o = await options(); return read.compactionsInRange(db,i.range,o.overrides,o.now,i.projectId); },

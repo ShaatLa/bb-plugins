@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MIGRATIONS } from './schema.js';
 import { fixture } from './fixture.js';
-import { rangeBounds, summary, threadCosts, costSum, compactionEstimate, compactionsInRange, topThreads, type Effect } from './read.js';
+import { rangeBounds, summary, threadCosts, costSum, costSumSpans, compactionEstimate, compactionsInRange, topThreads, type Effect } from './read.js';
 import { createStore } from './write.js';
 import { RECOVERED, ESTIMATED, type UsageRow } from '../contract.js';
 
@@ -91,6 +91,36 @@ it('keeps local tool usage free in mixed lifetime totals', () => {
   const s=costSum(db,['a'],false,overrides);
   expect(s.cost).toMatchObject({ usd:0.00036,partial:false,tokens:{ freshIn:200 } });
   expect(threadCosts(db,['a'],false,overrides).threads[0].own).toEqual(s.cost);
+});
+describe('costs.sum with spans', () => {
+  const o = { overrides, now, rawRetentionDays: 30, rollupRetentionDays: 200 };
+  const fresh = (r: ReturnType<typeof costSumSpans>) => r.cost.tokens.freshIn;
+  it('counts only calls inside the spans, each once across overlapping spans', () => {
+    note('a');
+    createStore(db).applyRows([row('in',{ ts: now-3*HOUR }),row('out',{ ts: now-10*HOUR }),row('late',{ ts: now-HOUR/2 })]);
+    const r=costSumSpans(db,[{ threadId:'a',from:now-4*HOUR,to:now-2*HOUR },{ threadId:'a',from:now-5*HOUR,to:now-3*HOUR+1 }],false,o);
+    expect(fresh(r)).toBe(100); expect(r).toMatchObject({ threadCount:1,updatedAt:now-3*HOUR,cost:{ partial:false,estimated:false } });
+    expect(fresh(costSumSpans(db,[{ threadId:'a',from:now-4*HOUR,to:null }],false,o))).toBe(200);
+    expect(costSumSpans(db,[{ threadId:'a',from:now-9*HOUR,to:now-8*HOUR }],false,o)).toMatchObject({ threadCount:0,cost:{ usd:0 } });
+  });
+  it('limits a descendant to the union of its roots\' spans and dedupes it', () => {
+    note('r1'); note('r2'); note('c','r1'); db.prepare("UPDATE threads SET lifecycle_owner_id='r2' WHERE id='c'").run();
+    createStore(db).applyRows([row('c1',{ threadId:'c',ts:now-3*HOUR }),row('c2',{ threadId:'c',ts:now-6*HOUR }),row('c3',{ threadId:'c',ts:now-9*HOUR })]);
+    const r=costSumSpans(db,[{ threadId:'r1',from:now-4*HOUR,to:now-2*HOUR },{ threadId:'r2',from:now-7*HOUR,to:now-2*HOUR }],true,o);
+    expect(fresh(r)).toBe(200); expect(r.threadCount).toBe(1);
+    expect(fresh(costSumSpans(db,[{ threadId:'r1',from:now-4*HOUR,to:now-2*HOUR }],false,o))).toBe(0);
+  });
+  it('uses hourly rollups past raw retention, marking a cut hour estimated', () => {
+    note('a'); const old=now-40*86_400_000;
+    createStore(db).applyRows([row('old',{ ts: old+10*60_000 })]);
+    db.prepare('DELETE FROM usage_raw').run();
+    expect(costSumSpans(db,[{ threadId:'a',from:old,to:old+HOUR }],false,o)).toMatchObject({ threadCount:1,cost:{ estimated:false } });
+    expect(costSumSpans(db,[{ threadId:'a',from:old+30*60_000,to:old+HOUR }],false,o)).toMatchObject({ threadCount:1,cost:{ estimated:true } });
+    expect(costSumSpans(db,[{ threadId:'a',from:now-300*86_400_000,to:old+HOUR }],false,o).cost.partial).toBe(true);
+  });
+  it('marks an unknown root partial', () => {
+    expect(costSumSpans(db,[{ threadId:'missing',from:0,to:null }],false,o)).toMatchObject({ threadCount:0,cost:{ partial:true } });
+  });
 });
 const effect: Effect = { model:'claude-sonnet-5-5',tier:'standard',band:0,calls_hit:2,calls_miss:1,calls_cross:0,first_gap_hit:1,overhead_fresh_in:10,overhead_cache_read:20,overhead_cache_write:30,overhead_output:40 };
 it('prices hit/miss, rewrite and overhead by hand, keeps negative and cross savings', () => {

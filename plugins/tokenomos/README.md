@@ -75,7 +75,14 @@ output: { priceVersion: string,
 
 // costs.sum
 input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
+     |  { spans: { threadId: string, from: number, to: number | null }[] /* 1–2000 */,
+          includeDescendants: boolean }
 output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number }
+// spans: вызов считается, только если его время попало в окно своего треда (to: null — до сейчас).
+// Пересекающиеся окна одного треда объединяются, вызов считается один раз. Потомок считается
+// по объединению окон своих корней. threadCount — треды хотя бы с одним учтённым вызовом.
+// Целые часы берутся из почасовых итогов; час, разрезанный границей окна, считается по вызовам,
+// пока сырые записи хранятся (30 дней), а позже — целиком, с пометкой estimated.
 ```
 
 Оба RPC имеют тег `usage` и вызываются через `bb.sdk.plugins.callRpc({ pluginId: "tokenomos", method, input, outputSchema, signal })`. Пример вызова со сроком ожидания 3 секунды:
