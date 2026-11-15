@@ -2,7 +2,7 @@ import { useState } from "react";
 import { experimental_useRpcQuery as useQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../contract";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
-import { NativeSelect } from "./ui/native-select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { METRICS, RANGE_SEGMENTS, parseSubPath, toSubPath, type By, type Metric } from "./format";
 import { ActivityHeatmap } from "./activity";
 import { BackfillBanner, useBackfilling } from "./backfill";
@@ -14,17 +14,23 @@ import { Compactions, Threads } from "./tables";
 import { Watchlist } from "./watchlist";
 import { UsageChart } from "./usage-chart";
 
+// Radix Select forbids an empty item value, so "all projects" gets a sentinel.
+const ALL = "__all__";
+
 /** "All projects" plus the known projects; a project from the URL that is not listed stays selectable. */
 function ProjectSelect({ value, onChange }: { value?: string; onChange: (project?: string) => void }) {
   const t = useT();
   const { data } = useQuery({ contract: rpcContract, method: "projects", input: {} });
   const items = data?.items ?? [];
   return (
-    <NativeSelect aria-label={t("project.label")} value={value ?? ""} onChange={(e) => onChange(e.target.value || undefined)}>
-      <option value="">{t("project.all")}</option>
-      {value && !items.some((p) => p.projectId === value) && <option value={value}>{value}</option>}
-      {items.map((p) => <option key={p.projectId} value={p.projectId}>{p.name}</option>)}
-    </NativeSelect>
+    <Select value={value ?? ALL} onValueChange={(v) => onChange(v === ALL ? undefined : v)}>
+      <SelectTrigger aria-label={t("project.label")} className="w-auto min-w-40 max-w-56 gap-3"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value={ALL}>{t("project.all")}</SelectItem>
+        {value && !items.some((p) => p.projectId === value) && <SelectItem value={value}>{value}</SelectItem>}
+        {items.map((p) => <SelectItem key={p.projectId} value={p.projectId}>{p.name}</SelectItem>)}
+      </SelectContent>
+    </Select>
   );
 }
 
