@@ -434,6 +434,8 @@ export const taskCostSchema = z
     estimated: z.boolean(),
     partial: z.boolean(),
     threadCount: z.number(),
+    /** Tasks in the tree (the task, epic members, subtasks) whose threads were counted. */
+    taskCount: z.number(),
   })
   .strict();
 export type TaskCost = z.infer<typeof taskCostSchema>;

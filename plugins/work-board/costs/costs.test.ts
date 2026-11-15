@@ -36,7 +36,30 @@ describe("task cost", () => {
     system("thr_mistake", "Thread attached: @thread:thr_mistake");
     system("thr_mistake", "Thread detached (manual): @thread:thr_mistake (attached x)");
 
-    expect(new Set(taskCostThreadIds(db, task.id))).toEqual(new Set(["thr_live", "thr_archived", "thr_attached"]));
+    expect(new Set(taskCostThreadIds(db, task.id).threadIds)).toEqual(new Set(["thr_live", "thr_archived", "thr_attached"]));
+  });
+
+  it("collects an epic's members and their subtasks into one deduplicated set", async () => {
+    const { bb, harness, store, task } = setup();
+    const epic = store.createTask({ projectId: task.projectId, title: "Epic", type: "epic" });
+    const member = store.createTask({ projectId: epic.projectId, title: "Member", epicId: epic.id });
+    const sub = store.createTask({ projectId: epic.projectId, title: "Sub", parentTaskId: member.id });
+    store.createTask({ projectId: epic.projectId, title: "Outside" });
+    const attach = (taskId: string, threadId: string) =>
+      store.createComment({ taskId, kind: "system", authorName: "Work Board", threadId, body: `Thread attached: @thread:${threadId}` });
+    attach(member.id, "thr_member");
+    attach(sub.id, "thr_sub");
+    attach(sub.id, "thr_shared");
+    attach(member.id, "thr_shared");
+
+    expect(taskCostThreadIds(bb.storage.database(), epic.id)).toEqual({
+      threadIds: expect.arrayContaining(["thr_member", "thr_sub", "thr_shared"]),
+      taskCount: 2,
+    });
+    expect(taskCostThreadIds(bb.storage.database(), epic.id).threadIds).toHaveLength(3);
+    harness.sdk.stub("plugins.callRpc", async () => SUM as never);
+    expect(await getTaskCost(bb, epic.id)).toMatchObject({ taskCount: 2 });
+    expect(harness.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
   });
 
   it("asks Tokenomos for the deduplicated sum including descendants", async () => {
@@ -44,7 +67,7 @@ describe("task cost", () => {
     system("thr_agent", "Thread attached: @thread:thr_agent");
     harness.sdk.stub("plugins.callRpc", async () => SUM as never);
 
-    await expect(getTaskCost(bb, task.id)).resolves.toEqual({ ...SUM.cost, threadCount: 3 });
+    await expect(getTaskCost(bb, task.id)).resolves.toEqual({ ...SUM.cost, threadCount: 3, taskCount: 1 });
     expect(harness.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
       pluginId: "tokenomos",
       method: "costs.sum",
@@ -77,7 +100,7 @@ describe("task cost", () => {
   });
 
   it("formats dollars, approximate sums and token-only totals", () => {
-    const cost = { ...SUM.cost, threadCount: 3 };
+    const cost = { ...SUM.cost, threadCount: 3, taskCount: 1 };
     expect(formatTaskCost(cost).amount).toBe("$12.40");
     expect(formatTaskCost({ ...cost, partial: true }).amount).toBe("~$12.40");
     expect(formatTaskCost({ ...cost, usd: null }).amount).toBe("56K tokens");

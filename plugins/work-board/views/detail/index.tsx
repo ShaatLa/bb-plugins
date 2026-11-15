@@ -735,7 +735,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
-          <TaskCostLine key={`cost-${task.id}`} taskId={task.id} />
+          <TaskCostLine key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
           <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>
