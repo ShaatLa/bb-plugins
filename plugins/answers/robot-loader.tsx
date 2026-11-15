@@ -11,6 +11,8 @@ export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read
 
 // What the open chat's agent is doing now (see useAgentActivity); robots without their own activity follow it.
 export const ActivityContext = createContext<Activity>('think');
+// The same moment in words, shown beside a live robot (see WorkLog); null outside a chat.
+export const ActivityLabelContext = createContext<string | null>(null);
 
 const css = `
 .ar-move{animation:ar-move 8s linear infinite}

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { activityOf, sceneOf } from './activity';
+import { activityOf, sceneOf, stateOf } from './activity';
 
 const started = (item: object) => ({ type: 'item/started', data: { item } });
 it.each([
@@ -13,4 +13,11 @@ it('reads the newest top-level event: an open item, thinking between items, wait
   expect(activityOf([{ type: 'item/completed', data: {} }, started({ type: 'fileChange' })])).toBe('think');
   expect(activityOf([{ type: 'turn/completed', data: {} }])).toBe('rest');
   expect(activityOf([{ type: 'item/started', data: { item: { type: 'fileRead' }, parentToolCallId: 'x' } }, started({ type: 'agentMessage' })])).toBe('write');
+});
+
+it('words the same item the robot acts out', () => {
+  expect(stateOf([started({ type: 'commandExecution', command: 'npm test\n--watch' })])).toEqual({ activity: 'terminal', label: 'Running npm test' });
+  expect(stateOf([started({ type: 'fileRead', path: 'src/app.tsx' })])).toEqual({ activity: 'read', label: 'Reading app.tsx' });
+  expect(stateOf([{ type: 'item/completed', data: {} }, started({ type: 'fileRead', path: 'a' })])).toEqual({ activity: 'think', label: 'Thinking' });
+  expect(stateOf([{ type: 'turn/completed', data: {} }]).activity).toBe('rest');
 });

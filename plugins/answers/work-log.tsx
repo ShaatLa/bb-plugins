@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useState, type ReactNode } from 'react';
+import { ActivityLabelContext } from './robot-loader';
 import { experimental_Icon as Icon, useSdk } from '@get-bb/plugin-sdk/app';
 import { AgentMarkdown } from './inline-vis';
 import type { IconName } from './empty';
@@ -93,23 +94,18 @@ function WorkGroup({ rows }: { rows: Work[] }) {
 }
 
 type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; live?: boolean; children?: ReactNode };
-// What the agent is doing right now: the latest still-running action, else it is thinking (reasoning has no timeline row).
-export function currentActivity(rows: Row[]) {
-  let pending: Work | undefined;
-  const visit = (rows: Row[]) => { for (const row of rows) { if (row.kind === 'turn') visit(row.children ?? []); else if (row.kind === 'work' && row.status === 'pending') pending = row; } };
-  visit(rows); return pending ? workLabel(pending).split('\n')[0]! : 'Thinking';
-}
-// A live log reads its turn while collapsed too, so the line can say what is happening; a finished one reads on expand only.
+// shortcut: an autonomous turn is timed from mount until expanded; use a shared turn clock when the SDK exposes one without fetching.
 export function WorkLog(props: Props) {
   const [open, setOpen] = useState(false), [now, setNow] = useState(Date.now), [mountedAt] = useState(Date.now);
-  const log = useTurnLog(props, open || !!props.live);
+  // The words come from the same events as the robot's scene (useAgentActivity), so they change together and cost no request.
+  const doing = useContext(ActivityLabelContext), log = useTurnLog(props, open);
   useEffect(() => { if (!props.live) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [props.live]);
   const took = duration((props.live ? now : props.completedAt ?? props.startedAt ?? mountedAt) - (props.startedAt ?? log.startedAt ?? mountedAt));
-  const label = !props.live ? `Worked for ${took}` : log.page ? `${currentActivity(log.page.rows)} · ${took}` : `Working for ${took}`;
+  const label = !props.live ? `Worked for ${took}` : doing ? `${doing} · ${took}` : `Working for ${took}`;
   return <div className="flow-root text-sm leading-relaxed">
     {props.children && <div className="float-left mr-2 flex">{props.children}</div>}
-    {/* Beside the robot the line is as tall as the robot, so it reads centred on it. */}
-    <button type="button" title={label} className={`flex max-w-full items-center gap-1 text-left text-xs text-muted-foreground ${props.children ? 'h-8' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
+    {/* The figure fills the lower part of the robot's 32 px box (head at 9 px, feet at its bottom), so the line centres on the figure, not the box. */}
+    <button type="button" title={label} className={`flex max-w-full items-center gap-1 text-left text-xs text-muted-foreground ${props.children ? 'h-8 pt-[9px]' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
     {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} />}
   </div>;
 }

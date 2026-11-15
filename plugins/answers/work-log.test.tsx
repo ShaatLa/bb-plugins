@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { WorkLog, groupRows, summarize, type Row } from './work-log';
+import { ActivityLabelContext } from './robot-loader';
 
 const work = (id: string, workKind = 'command', extra = {}): Row => ({ id, kind: 'work', workKind, threadId: 'thread', turnId: 'turn', sourceSeqStart: 1, sourceSeqEnd: 2, startedAt: 0, createdAt: 0, completedAt: 1000, status: 'completed', command: 'pwd', activityIntents: [], ...extra } as unknown as Row);
 const conversation = (id: string, messageSeq: number): Row => ({ id, kind: 'conversation', role: 'assistant', messageSeq, text: id } as Row);
@@ -31,34 +32,28 @@ it('fetches only on expand and caches a finished turn across collapse and remoun
   const again = setup('cache', {}, details); fireEvent.click(again.slot.getByRole('button', { name: /Worked for/ }));
   await again.slot.findByText('Ran 1 command'); expect(details).toHaveBeenCalledOnce();
 });
-it('says what a live turn is doing while collapsed, from one read, and ticks', async () => {
+it('ticks the live line while collapsed without fetching, in the words of the robot\'s scene', () => {
   vi.useFakeTimers(); vi.setSystemTime(72000);
-  const details = vi.fn(async () => ({ rows: [work('done'), work('run', 'command', { status: 'pending', command: 'npm test\n--watch=false' })], olderCursor: null }));
-  const { slot, subscribe } = setup('tick', { live: true }, details);
+  const { slot, details, subscribe } = setup('tick', { live: true });
   expect(slot.getByRole('button', { name: /Working for 1m 12s/ })).toBeTruthy();
-  await act(async () => {});
-  expect(slot.getByRole('button', { name: /^Running npm test · 1m 12s$/ })).toBeTruthy();
   act(() => vi.advanceTimersByTime(1000));
-  expect(slot.getByRole('button', { name: /Running npm test · 1m 13s/ })).toBeTruthy();
-  expect(details).toHaveBeenCalledOnce(); expect(subscribe).toHaveBeenCalledOnce();
-  expect(slot.queryByLabelText('Loading work log')).toBeNull();
+  expect(slot.getByRole('button', { name: /Working for 1m 13s/ })).toBeTruthy();
+  expect(details).not.toHaveBeenCalled(); expect(subscribe).not.toHaveBeenCalled(); slot.unmount();
+  const said = renderSlot({ component: () => <ActivityLabelContext.Provider value="Running npm test"><WorkLog threadId="said" startedAt={0} live /></ActivityLabelContext.Provider> }, {}, { sdk: {} } as any);
+  expect(said.getByRole('button', { name: /^Running npm test · 1m 13s$/ })).toBeTruthy();
 });
-it('says Thinking when nothing is running', async () => {
-  const { slot } = setup('thinking', { live: true });
-  expect(await slot.findByRole('button', { name: /^Thinking · / })).toBeTruthy();
-});
-it('throttles live events, keeps previous rows, and unsubscribes on unmount', async () => {
+it('throttles live events, keeps previous rows, and unsubscribes on collapse', async () => {
   vi.useFakeTimers(); vi.setSystemTime(10000);
   const details = vi.fn(async () => ({ rows: [work('a')], olderCursor: null }));
   const { slot, subscribe } = setup('live', { live: true }, details);
+  fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
   await act(async () => {});
-  fireEvent.click(slot.getByRole('button', { name: /Thinking/ }));
   const listener = subscribe.mock.calls[0]![0] as any;
   act(() => { listener.callback(); listener.callback(); vi.advanceTimersByTime(1999); });
   expect(details).toHaveBeenCalledOnce(); expect(slot.getByText('Ran 1 command')).toBeTruthy();
   await act(async () => { vi.advanceTimersByTime(1); }); expect(details).toHaveBeenCalledTimes(2);
-  fireEvent.click(slot.getByRole('button', { name: /Thinking/ })); expect(subscribe).toHaveBeenCalledOnce();
-  slot.unmount(); expect(subscribe.mock.results[0]!.value).toHaveBeenCalledOnce();
+  fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
+  expect(subscribe.mock.results[0]!.value).toHaveBeenCalledOnce();
 });
 it('loads earlier rows and preserves the final answer exclusion', async () => {
   const details = vi.fn().mockResolvedValueOnce({ rows: [work('b'), conversation('final', 20)], olderCursor: 'older' }).mockResolvedValueOnce({ rows: [conversation('progress', 5)], olderCursor: null });
@@ -72,7 +67,7 @@ it('discovers a live turn and uses its range for earlier pages', async () => {
   const details = vi.fn().mockResolvedValueOnce({ rows: [work('new')], olderCursor: 'cursor' }).mockResolvedValueOnce({ rows: [work('old')], olderCursor: null });
   const timeline = vi.fn(async () => ({ rows: [{ kind: 'turn', turnId: 'discovered', sourceSeqStart: 7, sourceSeqEnd: 42, startedAt: 0 }] }));
   const slot = renderSlot({ component: () => <WorkLog threadId="discovery" live /> }, {}, { sdk: { threads: { timeline, timelineTurnSummaryDetails: details }, subscribe: () => () => {} } } as any);
-  fireEvent.click(await slot.findByRole('button', { name: /Thinking/ })); expect(timeline).toHaveBeenCalledOnce();
+  expect(timeline).not.toHaveBeenCalled(); fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
   fireEvent.click(await slot.findByRole('button', { name: 'Earlier' })); await slot.findByText('Ran 2 commands');
   expect(details.mock.calls[1]![0]).toEqual({ threadId: 'discovery', turnId: 'discovered', sourceSeqStart: '7', sourceSeqEnd: '42', beforeCursor: 'cursor' });
 });
