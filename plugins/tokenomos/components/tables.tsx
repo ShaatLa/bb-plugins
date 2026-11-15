@@ -71,7 +71,7 @@ function ThreadsPage({ range, offset, isLast, onMore }: { range: Range; offset: 
             className="grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-4 px-3 py-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <span className="min-w-0 truncate">{th.title || th.threadId}<span className="text-xs text-muted-foreground"> · {providerName(th.provider, t)}</span></span>
             <span className={`${num} w-20`} title={t("threads.ownTitle")}>{fmtCost(th.own, t) ?? t("noPrice")}</span>
-            <span className={`${num} w-24 text-muted-foreground`} title={t("threads.totalTitle")}>{fmtCost(th.total, t) ?? t("noPrice")}</span>
+            <span className={`${num} w-32 text-muted-foreground`} title={t("threads.totalTitle")}>{fmtCost(th.total, t) ?? t("noPrice")}</span>
           </button>
         </li>
       ))}
@@ -92,8 +92,8 @@ function ThreadsBody({ range }: { range: Range }) {
   useEffect(() => setPages(1), [range]);
   return first.data && first.data.items.length === 0 ? <Card><Muted>{t("threads.empty")}</Muted></Card> : (
     <Card className="p-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-        <span>{t("threads.thread")}</span><span className={`${num} w-20`}>{t("threads.own")}</span><span className={`${num} w-24`}>{t("threads.total")}</span>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 whitespace-nowrap border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+        <span>{t("threads.thread")}</span><span className={`${num} w-20`}>{t("threads.own")}</span><span className={`${num} w-32`}>{t("threads.total")}</span>
       </div>
       <div className="divide-y divide-border">
         {Array.from({ length: pages }, (_, i) => <ThreadsPage key={i} range={range} offset={i * PAGE} isLast={i === pages - 1} onMore={() => setPages(pages + 1)} />)}
