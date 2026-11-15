@@ -66,10 +66,10 @@ it('renders files and saves and clears revision-aware Viewed marks', async () =>
   await waitFor(() => expect(files).toHaveBeenCalledWith({ environmentId: 'env', target: { type: 'branch_committed', mergeBaseBranch: 'main' }, ignoreWhitespace: false }));
 });
 it('shows linked tasks and opens their in-app route', async () => {
-  const openUrl = vi.fn(() => true);
-  const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-1', title: 'Task', status: { id: 'done', name: 'Done', icon: 'Check', color: '#008800', future: true }, projectName: 'Project', archived: true, url: '/plugins/work-board/work-board/task/WB-1', future: true }] }) }, { openUrl });
+  const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-1', title: 'Task', status: { id: 'done', name: 'Done', icon: 'Check', color: '#008800', future: true }, projectName: 'Project', archived: true, url: '/plugins/work-board/work-board/task/WB-1', future: true }] }) });
+  const moved = vi.fn(); window.addEventListener('popstate', moved);
   fireEvent.click(await slot.findByText('WB-1 Task'));
-  expect(openUrl).toHaveBeenCalledWith('/plugins/work-board/work-board/task/WB-1');
+  expect(window.location.pathname).toBe('/plugins/work-board/work-board/task/WB-1'); expect(moved).toHaveBeenCalledOnce(); window.removeEventListener('popstate', moved);
   expect(slot.getByText('Done')).toBeTruthy();
 });
 it.each([undefined, () => { throw new Error('offline'); }])('fails softly without Work Board', async handler => {

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { useSdk, useBbNavigate, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
+import { useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
 import { useOpenChat } from './open-chat';
+import { openAppRoute } from './lib/app-route';
 import { gitContract, boardContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
 
 const git = { pluginId: 'bb--git', contract: gitContract };
@@ -122,12 +123,12 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
   </section>;
 }
 export function WorkBoardTab() {
-  const chat = useOpenChat(), visible = useTabVisible(), navigate = useBbNavigate();
+  const chat = useOpenChat(), visible = useTabVisible();
   const tasks = useQuery({ pluginId: 'work-board', contract: boardContract, method: 'threadTasks', input: { threadId: chat.threadId ?? '' }, enabled: visible && !!chat.threadId });
   useEffect(() => { if (visible && chat.threadId) void tasks.refetch(); }, [visible, chat.threadId, chat.revision]);
   if (!chat.threadId) return <Empty>No chat open</Empty>;
   if (tasks.error) return <Empty>Work Board unavailable</Empty>;
   if (!tasks.data) return <Empty>Loading…</Empty>;
   if (!tasks.data.tasks.length) return <Empty>No linked tasks</Empty>;
-  return <div className="p-4"><InfoSection label="Work Board" count={tasks.data.tasks.length}><InfoList limit={5} items={tasks.data.tasks} getKey={task => task.key} renderItem={task => <InfoListRow leading={<Icon name="ListTodo" />} name={<span className={task.archived ? 'opacity-50' : undefined}>{task.key} {task.title}</span>} context={task.projectName} trailing={<span style={{ color: task.status.color }} className={`flex items-center gap-1 ${task.archived ? 'opacity-50' : ''}`}>{task.status.icon && <Icon name={task.status.icon} className="size-3" />}{task.status.name}</span>} onSelect={() => { if (task.url.startsWith('/plugins/work-board/')) navigate.openUrl(task.url); }} />} /></InfoSection></div>;
+  return <div className="p-4"><InfoSection label="Work Board" count={tasks.data.tasks.length}><InfoList limit={5} items={tasks.data.tasks} getKey={task => task.key} renderItem={task => <InfoListRow leading={<Icon name="ListTodo" />} name={<span className={task.archived ? 'opacity-50' : undefined}>{task.key} {task.title}</span>} context={task.projectName} trailing={<span style={{ color: task.status.color }} className={`flex items-center gap-1 ${task.archived ? 'opacity-50' : ''}`}>{task.status.icon && <Icon name={task.status.icon} className="size-3" />}{task.status.name}</span>} onSelect={() => { if (task.url.startsWith('/plugins/work-board/')) openAppRoute(task.url); }} />} /></InfoSection></div>;
 }

@@ -1,3 +1,4 @@
+import { openAppRoute } from './lib/app-route';
 import { useEffect, useRef, useState } from 'react';
 import { experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_useProviders, useRpc, useSdk, useSettings } from '@get-bb/plugin-sdk/app';
 import { Button } from './components/ui/button';
@@ -94,13 +95,10 @@ function useUpdates(enabled: boolean) {
   }, [sdk, enabled]);
   return state;
 }
-// shortcut: the SDK cannot open bb's settings, so this moves bb's router the way its own links do (a history entry plus popstate);
-// if bb changes its routing this opens nothing, and a navigate.toSettings in the SDK should replace it.
 function openUpdates(event: React.MouseEvent) {
   if (event.metaKey || event.ctrlKey || event.shiftKey) return;
   event.preventDefault();
-  history.pushState({ usr: null, key: Math.random().toString(36).slice(2, 10), idx: ((history.state as { idx?: number } | null)?.idx ?? 0) + 1 }, '', '/settings/updates');
-  dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+  openAppRoute('/settings/updates');
 }
 // bb's sidebar update badges, same markup: "bb" when bb can update, a plug with the count of plugin updates; both open Settings › Updates.
 function UpdateBadges({ bb, plugins }: { bb: boolean; plugins: number }) {
