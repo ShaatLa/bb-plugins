@@ -1,5 +1,5 @@
 import { taskKeyRegex } from './task-links';
-import { Component, Fragment, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, createContext, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
@@ -114,6 +114,9 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
   }, [ref, enabled]);
 }
 // bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
+// Set by the chat: opens bb's "Editing message" box for one of the owner's sent messages.
+export const EditSentContext = createContext<((item: Item) => void) | null>(null);
+
 function ReadTicks({ at }: { at: number }) {
   const label = `Read ${new Date(at).toLocaleString()}`;
   return <svg role="img" aria-label={label} viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"><title>{label}</title><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></svg>;
@@ -214,6 +217,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const rpc = useRpc<AnswersRpcContract>();
   // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
+  const editSent = useContext(EditSentContext);
   const group = members?.length ? members : [item], last = group.at(-1)!;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
@@ -297,7 +301,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const robotProps = { ref: robotButton, type: 'button' as const, 'aria-haspopup': 'menu' as const, 'aria-expanded': menu === 'robot', className: 'cursor-pointer rounded-md', onClick: () => setMenu(menu === 'robot' ? null : 'robot') };
   // bb's own working spinner while the answer is pending; a failed turn shows its own notice instead.
   const replyButton = item.kind !== 'saved' && item.kind !== 'update' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>;
-  const status = item.status === 'waiting' && item.failedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center text-muted-foreground"><RobotLoader label="Waiting for the answer" /></span> : item.status;
+  const status = item.status === 'waiting' && item.failedAt === null && item.dismissedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center text-muted-foreground"><RobotLoader label="Waiting for the answer" /></span> : item.status;
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
   const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><AgentMarkdown content={content} threadId={item.threadId} /></div>;
   return <li ref={card} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={compact ? 'group space-y-1.5 py-2' : chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
@@ -327,6 +331,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         <Button size="sm" {...iconProps(copied ? 'Copied' : 'Copy')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void navigator.clipboard?.writeText(group.map(member => member.question).filter(Boolean).join('\n\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}><Icon name={copied ? 'Check' : 'Copy'} aria-hidden /></Button>
         {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Answers' : 'Save to Answers')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
+        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
     </div>}
     {(clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? 'ml-auto flex h-6 px-2 text-xs text-muted-foreground' : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>}

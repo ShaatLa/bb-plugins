@@ -14,9 +14,9 @@ import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown> } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; editMessage?: (input: any) => any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { threads: { send, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -147,6 +147,16 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Copy' })); expect(writeText).toHaveBeenCalledWith('Question one');
   fireEvent.click(slot.getByRole('button', { name:'Save to Answers' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
+});
+it('edits a sent message as bb does: Edit opens "Editing message" in the composer and submits through threads.editMessage', async () => {
+  const editMessage = vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:9 }));
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, questionSeq:7 }], nextCursor:null }), editMessage }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Question one');
+  fireEvent.click(slot.getByRole('button', { name:'Edit message' }));
+  expect(slot.getByText('Editing message')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name:'Submit edit' }));
+  await waitFor(() => expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', expectedRequestSequence:7, input:[expect.objectContaining({ type:'text', text:'Question one' })] })));
+  await waitFor(() => expect(slot.queryByText('Editing message')).toBeNull());
 });
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));

@@ -517,7 +517,7 @@ describe('ingestion driver',()=>{
   });
   await driver.schedule('t');
   expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','100',undefined],['desc','50',undefined],['asc','100','100']]);
-  expect(calls.every(c=>c.types.length===6)).toBe(true);
+  expect(calls.every(c=>c.types.length===7)).toBe(true);
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
   expect(invalidate).toHaveBeenCalled();

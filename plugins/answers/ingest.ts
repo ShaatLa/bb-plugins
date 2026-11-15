@@ -24,7 +24,7 @@ export function failRequest(db: Database.Database, threadId:string, requestId:st
 }
 // A leading [tag] (a letter, 3–60 chars, then whitespace) marks a script's message; '[ANV-12](link)' and '[x]' do not match.
 export const SCRIPT_TAG = /^\[([A-Za-z][^\]\n]{2,59})\]\s/;
-export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed'] as const;
+export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed','system/operation'] as const;
 export const cap = (text: string, max: number) => text.length <= max ? text : text.slice(0, max - '… (truncated, open in chat)'.length) + '… (truncated, open in chat)';
 export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any; createdAt?: number };
 
@@ -51,6 +51,17 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
  for (const e of events) {
   if (e.seq <= cursor) continue;
   const d = e.data ?? {}, turn = e.scope?.turnId;
+  if (e.type === 'system/operation' && d.operation === 'edit_message' && typeof d.metadata?.cutoffSequence === 'number') {
+   // bb deleted this thread's events from the edited message on; the chat drops what they made, as bb's does.
+   const cut = d.metadata.cutoffSequence, removed = d.metadata.removedTurnId ?? null;
+   const from = (db.prepare("SELECT created_at FROM items WHERE thread_id=? AND kind='mine' AND question_seq=?").get(threadId,cut) as {created_at:number}|undefined)?.created_at ?? null;
+   const gone = `thread_id=? AND kind IN ('mine','update','for_me') AND (coalesce(question_seq,answer_seq,interim_seq,-1)>=? OR (kind='update' AND question_seq IS NULL AND answer_seq IS NULL AND created_at>=coalesce(?,9e15)))`;
+   db.prepare(`UPDATE items SET dismissed_at=coalesce(dismissed_at,?),updated_at=? WHERE ${gone} AND id IN (SELECT item_id FROM pool_entries WHERE item_id IS NOT NULL)`).run(now,now,threadId,cut,from);
+   db.prepare(`DELETE FROM items WHERE ${gone} AND id NOT IN (SELECT item_id FROM pool_entries WHERE item_id IS NOT NULL)`).run(threadId,cut,from);
+   // shortcut: an earlier question answered by a removed turn keeps that answer; reopen it if edits of deferred threads matter.
+   if (removed) { db.prepare('DELETE FROM turn_updates WHERE thread_id=? AND turn_id=?').run(threadId,removed); if (active === removed) active = null; }
+   cursor=e.seq; continue;
+  }
   if (e.type === 'client/turn/requested') {
    if (d.retryOfRequestId && d.requestId) {
     // A retried non-owner request keeps its original trigger.
@@ -124,11 +135,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    } else if (d.status === 'failed' || d.status === 'interrupted') {
     db.prepare(`UPDATE items SET interim=candidate,interim_seq=candidate_seq,updated_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND length(trim(candidate))>0`).run(now,threadId,turn,turn);
     if (d.status==='failed') db.prepare("UPDATE items SET failed_at=?,read_at=NULL,notify_state=?,updated_at=? WHERE thread_id=? AND turn_id=? AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL").run(e.createdAt ?? now,Number(live),now,threadId,turn);
-    // The user pressed Stop (often to resend a reworded message): the message was cancelled, so it leaves the
-    // plugin entirely; the chat still has it. One already quoted in a reply pool is only hidden, to keep the pool valid.
+    // The user pressed Stop: like bb, the chat keeps the message with no reply, but it leaves the inbox and its waiting.
     if (d.status === 'interrupted') {
      const cancelled = `thread_id=? AND turn_id=? AND kind='mine' AND status='waiting' AND resolve_turn_id IS NULL AND steer_seq IS NULL`;
-     db.prepare(`DELETE FROM items WHERE ${cancelled} AND id NOT IN (SELECT item_id FROM pool_entries WHERE item_id IS NOT NULL)`).run(threadId,turn);
      db.prepare(`UPDATE items SET dismissed_at=?,updated_at=? WHERE ${cancelled} AND dismissed_at IS NULL`).run(now,now,threadId,turn);
     }
    }
