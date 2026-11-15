@@ -3,11 +3,12 @@ import type { Database } from 'better-sqlite3';
 import { rpcContract } from './contract.js';
 import { parseOverrides, type Overrides } from './pricing/price.js';
 import * as read from './store/read.js';
+import { watchlist, wakeCost } from './store/context';
 import { prune } from './store/prune.js';
 
-export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string };
+export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string; contextWatchTokens?:number };
 export type SettingsHandle = { get(): Promise<Settings>; experimental_set(values: { priceOverrides: string }): Promise<unknown> };
-export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHandle, sdk: PluginBbSdk = bb.sdk, loop?: () => { p99Ms: number; maxMs: number }) {
+export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHandle, sdk: PluginBbSdk = bb.sdk, loop?: () => { p99Ms: number; maxMs: number }, watchlistState?: (active:boolean)=>void) {
   const options = async () => {
     const s = await settings.get();
     let overrides: Overrides = {}, priceOverridesError: string | null = null;
@@ -29,7 +30,14 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     }
     return projectCache!.names;
   };
+  let watched: {at:number;key:string;value:ReturnType<typeof watchlist>}|undefined;
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
+    watchlist: async () => {
+      const o=await options(), threshold=o.contextWatchTokens ?? 300000, key=JSON.stringify([threshold,o.overrides]);
+      if (!watched || o.now-watched.at>=30000 || watched.key!==key) watched={at:o.now,key,value:watchlist(db,o.now,threshold,o.overrides)};
+      watchlistState?.(watched.value.items.length>0);return watched.value;
+    },
+    wakeCost: async i => {const o=await options();return wakeCost(db,i.threadId,o.now,o.overrides);},
     'costs.threads': async i => read.threadCosts(db,i.threadIds,i.includeDescendants,(await options()).overrides),
     'costs.sum': async i => read.costSum(db,i.threadIds,i.includeDescendants,(await options()).overrides),
     summary: async i => read.summary(db,{ ...await options(), ...i }),

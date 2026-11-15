@@ -92,3 +92,18 @@ it('lists only retained usage projects, resolves names, and coalesces the five-m
     }
   } finally {vi.useRealTimers(); await harness.lifecycle.dispose();}
 });
+it('exposes wakeCost unknown/not_found, CLI, and a 30 second watchlist memo',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(10000000);const {harness,db}=setup();
+ try{
+  db.prepare("INSERT INTO threads(id,provider_id,title) VALUES ('ctx','codex','Context')").run();
+  const unknown=await harness.behavior.callRpc('wakeCost',{threadId:'ctx'});expect(unknown).toMatchObject({contextTokens:null,coldCostUsd:null});
+  await expect(harness.behavior.callRpc('wakeCost',{threadId:'absent'})).rejects.toMatchObject({code:'not_found'});
+  db.prepare("INSERT INTO usage_raw(key,thread_id,provider,model,ts,prompt_tokens,fresh_in) VALUES ('call','ctx','codex','gpt-6.1-sol',?,300000,300000)").run(Date.now());
+  expect(await harness.behavior.callRpc('watchlist',{})).toMatchObject({items:[{threadId:'ctx',contextTokens:300000}]});
+  const cli=await harness.behavior.runCli(['wake-cost','ctx','--json']);expect(cli.exitCode).toBe(0);expect(JSON.parse(cli.stdout)).toMatchObject({threadId:'ctx',contextTokens:300000});
+  expect((await harness.behavior.runCli(['wake-cost','ctx'])).stdout).toContain('estimate');
+  db.prepare('UPDATE usage_raw SET prompt_tokens=10').run();
+  await vi.advanceTimersByTimeAsync(29999);expect((await harness.behavior.callRpc('watchlist',{}) as {items:unknown[]}).items).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);expect(await harness.behavior.callRpc('watchlist',{})).toEqual({items:[]});
+ }finally{await harness.lifecycle.dispose();vi.useRealTimers();}
+});

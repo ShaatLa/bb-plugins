@@ -224,4 +224,11 @@ export const MIGRATIONS: string[] = [
   // WP11: dashboard project filters and compaction range scans.
   `CREATE INDEX usage_hourly_project_hour ON usage_hourly(project_id, hour)`,
   `CREATE INDEX compactions_at ON compactions(at)`,
+  // Current-context provenance; legacy rows fail closed to assumed TTL.
+  `ALTER TABLE usage_raw ADD COLUMN write_split INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE usage_raw ADD COLUMN provider_thread_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE bb_candidate ADD COLUMN provider_thread_id TEXT NOT NULL DEFAULT ''`,
+  `CREATE TABLE cache_ttl(thread_id TEXT NOT NULL,provider_thread_id TEXT NOT NULL,at INTEGER NOT NULL,ttl_ms INTEGER NOT NULL,PRIMARY KEY(thread_id,provider_thread_id)) STRICT`,
+  `CREATE TABLE context_cleared(thread_id TEXT PRIMARY KEY,at INTEGER NOT NULL) STRICT`,
+
 ];

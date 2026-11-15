@@ -8,11 +8,12 @@ import { normaliseTier } from "./tiers";
 import { createCompactions } from "./compactions";
 export { onRowsApplied } from "./compactions";
 
-const TYPES = ["thread/tokenUsage/updated","thread/contextWindowUsage/updated","thread/compacted","client/turn/requested","turn/input/accepted","turn/started","turn/completed","thread/identity"] as const;
+const TYPES = ["thread/context/cleared","thread/tokenUsage/updated","thread/contextWindowUsage/updated","thread/compacted","client/turn/requested","turn/input/accepted","turn/started","turn/completed","thread/identity"] as const;
 const n = z.number().finite().nonnegative();
 const counts = z.object({ totalTokens:n,inputTokens:n,cachedInputTokens:n,outputTokens:n,reasoningOutputTokens:n.optional(),cacheReadInputTokens:n.optional(),cacheWriteInputTokens:n.optional() });
 const identity = z.object({providerThreadId:z.string()});
 const schemas = {
+  "thread/context/cleared":identity,
   "client/turn/requested":z.object({requestId:z.string(),input:z.array(z.object({type:z.string(),text:z.string().optional()})),execution:z.object({model:z.string().nullish(),serviceTier:z.string().nullish()})}),
   "turn/input/accepted":identity.extend({clientRequestId:z.string()}),
   "turn/started":identity,
@@ -60,6 +61,7 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
             const at=e.createdAt;
             if (turnId) db.prepare("INSERT OR IGNORE INTO turns(thread_id,turn_id) VALUES (?,?)").run(threadId,turnId);
             switch(e.type) {
+              case 'thread/context/cleared': db.prepare('INSERT INTO context_cleared VALUES (?,?) ON CONFLICT(thread_id) DO UPDATE SET at=MAX(at,excluded.at)').run(threadId,at); break;
               case "client/turn/requested": {
                 const d=schemas[e.type].parse(e.data);
                 db.prepare("INSERT OR IGNORE INTO requests(request_id,thread_id,model,tier,tier_raw,at,compact) VALUES (?,?,?,?,?,?,?)")
@@ -102,14 +104,17 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
               }
               case "thread/tokenUsage/updated": {
                 const d=schemas[e.type].parse(e.data),u=d.tokenUsage;
-                if(u.promptCacheTtlMs!==undefined) store.setCursor(`cache-ttl:${threadId}`,u.promptCacheTtlMs);
+                if(u.promptCacheTtlMs!==undefined) {
+                  store.setCursor(`cache-ttl:${threadId}`,u.promptCacheTtlMs);
+                  db.prepare('INSERT INTO cache_ttl VALUES (?,?,?,?) ON CONFLICT(thread_id,provider_thread_id) DO UPDATE SET at=excluded.at,ttl_ms=excluded.ttl_ms WHERE excluded.at>=at').run(threadId,d.providerThreadId,at,u.promptCacheTtlMs);
+                }
                 if(turnId&&u.last.totalTokens>0) db.prepare("UPDATE turns SET reported_usage=1 WHERE thread_id=? AND turn_id=?").run(threadId,turnId);
                 const exact=db.prepare("SELECT * FROM turns WHERE thread_id=? AND turn_id=? AND request_id<>''").get(threadId,turnId??"") as Turn|undefined;
                 const turn=exact??db.prepare("SELECT * FROM turns WHERE thread_id=? AND request_id<>'' ORDER BY started_at DESC LIMIT 1").get(threadId) as Turn|undefined;
                 const scope=thread?.provider_id==="codex" ? d.parentToolCallId??"" : "";
                 const old=db.prepare("SELECT prev_total FROM bb_counter WHERE thread_id=? AND provider_thread_id=? AND scope=?").get(threadId,d.providerThreadId,scope) as {prev_total:string}|undefined;
                 const previous=old ? JSON.parse(old.prev_total) as Counts|null : null;
-                const make=(c:Components,key:string,flags:number):UsageRow=>{const promptTokens=c.freshIn+c.cacheRead+c.cacheWriteShort+c.cacheWriteLong;return {...c,key,ts:at,threadId,projectId:thread?.project_id??"",provider:thread?.provider_id??"",model:turn?.model||"unknown",tier:turn?.tier||"standard",tierRaw:turn?.tier_raw??"",promptTokens,band:bandOf(flags & (BACKFILLED|RECOVERED) ? (u.last.totalTokens>0 ? last.freshIn+last.cacheRead+last.cacheWriteShort+last.cacheWriteLong : 0) : promptTokens),conv:d.parentToolCallId?`nested:${d.parentToolCallId}`:"",turnId,source:"bb-events",flags:flags|(!exact?ESTIMATED:0)};};
+                const make=(c:Components,key:string,flags:number):UsageRow=>{const promptTokens=c.freshIn+c.cacheRead+c.cacheWriteShort+c.cacheWriteLong;return {...c,providerThreadId:d.providerThreadId,key,ts:at,threadId,projectId:thread?.project_id??"",provider:thread?.provider_id??"",model:turn?.model||"unknown",tier:turn?.tier||"standard",tierRaw:turn?.tier_raw??"",promptTokens,band:bandOf(flags & (BACKFILLED|RECOVERED) ? (u.last.totalTokens>0 ? last.freshIn+last.cacheRead+last.cacheWriteShort+last.cacheWriteLong : 0) : promptTokens),conv:d.parentToolCallId?`nested:${d.parentToolCallId}`:"",turnId,source:"bb-events",flags:flags|(!exact?ESTIMATED:0)};};
                 const last=components(u.last);
                 const estimated=u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens&&u.last.totalTokens!==u.last.inputTokens+u.last.outputTokens+u.last.cachedInputTokens;
                 if (!previous && fallbackOwned) {
@@ -135,8 +140,8 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
           effects.resolve(threadId, false);
           // Persist rows with the read cursor so a later source failure cannot lose usage.
           const saveCandidate = db.prepare(`INSERT OR REPLACE INTO bb_candidate
-            (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags)
-            VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags)`);
+            (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags,provider_thread_id)
+            VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags,@providerThreadId)`);
           for (const row of [...batch,...initial]) saveCandidate.run({ ...row, turnId: row.turnId ?? '' });
           db.prepare("INSERT OR REPLACE INTO bb_cursor VALUES (?,?)").run(threadId,cursor);
         })();

@@ -27,13 +27,13 @@ function setup(provider='claude-code', found=true, available=true, realEvents?:T
   const ext={pollUsage:vi.fn(async()=>({rows:[] as UsageRow[],available})),pollCompactions:vi.fn(async()=>({matched:0,available:true}))};
   if(resumeMetadata){for(const dto of (listed??[]).slice(0,100))store.noteThread(dto);store.setCursor('backfill-metadata',{archived:false,offset:100,done:false,total:100});}
   let actualEvents:ReturnType<typeof createBbEvents>|undefined;
-  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?(actualEvents=createBbEvents({db,store,sdk,log:bb.log})):events,ext:externalRpc?createExtSource({db,store,callRpc:externalRpc}):ext})});
+  const scheduler=createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?(actualEvents=createBbEvents({db,store,sdk,log:bb.log})):events,ext:externalRpc?createExtSource({db,store,callRpc:externalRpc}):ext})});
   const service = harness.behavior.runService('ingest');
   const emit=()=>harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:1});
   const step=()=>vi.advanceTimersByTimeAsync(5000);
   const source=()=>db.prepare('SELECT source,state FROM thread_source WHERE thread_id=?').get('t');
   const total=()=> (db.prepare('SELECT SUM(fresh_in) n FROM thread_tokens').get() as {n:number}).n;
-  return {bb,harness,db,store,file,events,ext,thread,emit,step,source,total,service,list,actualEvents};
+  return {bb,harness,db,store,file,events,ext,thread,emit,step,source,total,service,list,actualEvents,scheduler};
 }
 it.each([['claude-code',true,true,'claude-file'],['codex',true,true,'codex-file'],['local-models',false,true,'local-log'],['antigravity',false,true,'agy-log'],['antigravity',false,false,'bb-events'],['other',false,false,'bb-events']])('selects %s (file %s, RPC %s)',async(provider,found,available,expected)=>{
   const s=setup(provider,found,available);await s.emit();await s.step();expect(s.source()).toMatchObject({source:expected});
@@ -292,4 +292,11 @@ it('passes all provider sessions to the file source when a new identity arrives 
  expect(s.file.flushThread.mock.calls.at(-1)![0]).toMatchObject({providerThreadIds:['first']});
  events.push({id:'two',seq:2,createdAt:2,type:'thread/identity',data:{providerThreadId:'second'},scope:{kind:'thread'}});
  await s.emit();await s.step();expect(s.file.flushThread.mock.calls.at(-1)![0]).toMatchObject({providerThreadIds:['first','second']});
+});
+it('invalidates an active watchlist every five minutes and stops when it becomes empty',async()=>{
+ const s=setup('other');await vi.advanceTimersByTimeAsync(5000);s.scheduler.noteWatchlist(true);
+ const before=s.harness.experimental_rpcInvalidations.length;
+ await vi.advanceTimersByTimeAsync(299999);expect(s.harness.experimental_rpcInvalidations).toHaveLength(before);
+ await vi.advanceTimersByTimeAsync(1);expect(s.harness.experimental_rpcInvalidations).toHaveLength(before+1);
+ s.scheduler.noteWatchlist(false);await vi.advanceTimersByTimeAsync(300000);expect(s.harness.experimental_rpcInvalidations).toHaveLength(before+1);
 });

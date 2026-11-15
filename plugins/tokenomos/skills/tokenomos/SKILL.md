@@ -16,6 +16,7 @@ Tokenomos counts tokens and API-equivalent spend across BB threads: what the sam
 ## CLI
 
 ```sh
+bb tokenomos wake-cost <threadId> [--json]
 bb tokenomos status [--json]
 bb tokenomos summary [--range day|week|month|3m] [--json]
 ```
@@ -71,3 +72,7 @@ Other UI methods (`summary`, `topThreads`, `compactions`, `limits`, `status`, `p
 - Local models cost 0 in spend. Their savings (`localSavings`) are a separate estimate priced against the reference model.
 - Antigravity has no usage source in this repository, so its threads show no data until its plugin exposes `usage.list`.
 - Tokenomos stores token counts, IDs, timestamps, model names and thread titles. It never stores message text.
+
+## Before waking an idle thread
+
+Before sending work to a thread idle longer than its cache TTL, run `bb tokenomos wake-cost <threadId> --json`. If `cacheLikelyExpired` is true and `coldCostUsd` exceeds $0.50, prefer a fresh child thread. Unknown context or cost is not zero. An assumed TTL and its expiry prediction are estimates. The command distinguishes unknown context from a `not_found` thread.

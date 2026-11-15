@@ -162,3 +162,12 @@ it('keeps retained interval effects when recomputing with only a suffix of raw c
  db.prepare('DELETE FROM usage_raw WHERE ts<?').run(calls[2].ts);effects.recompute('t');
  expect(db.prepare('SELECT * FROM compaction_effect').all()).toEqual(saved);
 });
+it('persists TTL with event time/session and records a context-cleared boundary',async()=>{
+ const at=time+1;
+ event('thread/tokenUsage/updated',{providerThreadId:'s',tokenUsage:{total:count(100),last:count(100),promptCacheTtlMs:300000}});
+ const s=source();await s.flushThread('t',true);
+ expect(db.prepare('SELECT * FROM cache_ttl').get()).toEqual({thread_id:'t',provider_thread_id:'s',at,ttl_ms:300000});
+ expect(db.prepare('SELECT provider_thread_id FROM bb_candidate').get()).toEqual({provider_thread_id:'s'});
+ const e=event('thread/context/cleared',{providerThreadId:'s'},null);await s.flushThread('t',true);
+ expect(db.prepare('SELECT * FROM context_cleared').get()).toEqual({thread_id:'t',at:e.createdAt});
+});

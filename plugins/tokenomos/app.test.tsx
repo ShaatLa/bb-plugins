@@ -415,6 +415,50 @@ describe("helpers", () => {
   });
 });
 
+describe.each(LANGS)("watchlist (%s)", (lang) => {
+  const x = lang === "en"
+    ? { title: "Watchlist", sub: "threads with a large context that are still working", head: ["Thread", "Context", "Calls / h", "~$ per call", "~$ last hour"], row: "Codex · gpt-5412K12$0.35$4.20", threads: "Threads" }
+    : { title: "Под наблюдением", sub: "треды с большим контекстом, которые продолжают работать", head: ["Тред", "Контекст", "Вызовов / ч", "~$ за вызов", "~$ за час"], row: "Codex · gpt-5412K12$0,35$4,20", threads: "Треды" };
+  const item = { threadId: "w1", title: "Long refactor", provider: "codex", model: "gpt-5", contextTokens: 412_000, callsLastHour: 12, readCostPerCallUsd: 0.35, costLastHourUsd: 4.2, lastCallAt: Date.UTC(2026, 10, 3, 12) };
+  const open = (items: unknown[]) => page("week/provider", { watchlist: () => ({ items }) }, lang);
+
+  it("renders the section with a subtitle, the column headers and the row numbers", async () => {
+    localStorage.clear();
+    const { slot } = await open([item]);
+    const header = await slot.findByRole("button", { name: x.title });
+    expect(norm(header.parentElement)).toContain(x.sub);
+    const row = await slot.findByRole("button", { name: /Long refactor/ });
+    expect(norm(row.closest("ul")!.previousElementSibling).replace(/\s/g, "")).toBe(x.head.join("").replace(/\s/g, ""));
+    expect(norm(row).replace(/Long refactor/, "").replace(/\s/g, "")).toBe(x.row.replace(/\s/g, ""));
+    // It sits above the Threads section and does not depend on the range or project.
+    expect(header.compareDocumentPosition(await slot.findByRole("button", { name: x.threads })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slot.inspection.rpcCalls.find((c) => c.method === "watchlist")?.input).toEqual({});
+  });
+
+  it("shows no price for null costs", async () => {
+    const { slot } = await open([{ ...item, readCostPerCallUsd: null, costLastHourUsd: null }]);
+    expect(norm(await slot.findByRole("button", { name: /Long refactor/ }))).toContain(L[lang].noPrice);
+  });
+
+  it("is hidden entirely when there are no items", async () => {
+    const { slot } = await open([]);
+    await slot.findByText(L[lang].money);
+    await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "watchlist")).toBe(true));
+    expect(slot.queryByText(x.title)).toBeNull();
+  });
+
+  it("opens the thread on click and collapses like Threads", async () => {
+    localStorage.clear();
+    const { slot } = await open([item]);
+    fireEvent.click(await slot.findByRole("button", { name: /Long refactor/ }));
+    expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "toThread", threadId: "w1" });
+    fireEvent.click(slot.getByRole("button", { name: x.title }));
+    expect(localStorage.getItem("tokenomos:section:watchlist")).toBe("closed");
+    expect(slot.queryByRole("button", { name: /Long refactor/ })).toBeNull();
+    localStorage.clear();
+  });
+});
+
 describe("collapsible sections and compaction total", () => {
   it("collapses Threads without fetching it and remembers the choice", async () => {
     localStorage.clear();

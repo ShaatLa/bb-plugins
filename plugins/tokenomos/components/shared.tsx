@@ -4,7 +4,7 @@ import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import { cn } from "../lib/utils";
 import { Skeleton } from "./ui/skeleton";
 
-export function Section({ title, action, children, collapseKey }: { title: string; action?: ReactNode; children: ReactNode; collapseKey?: string }) {
+export function Section({ title, subtitle, action, children, collapseKey }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode; collapseKey?: string }) {
   const [open, setOpen] = useState(() => !collapseKey || readOpen(collapseKey));
   const toggle = () => { const next = !open; setOpen(next); if (collapseKey) writeOpen(collapseKey, next); };
   return (
@@ -17,6 +17,7 @@ export function Section({ title, action, children, collapseKey }: { title: strin
             <h2>{title}</h2>
           </button>
         ) : <h2 className="text-sm font-medium text-foreground">{title}</h2>}
+        {subtitle && <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{subtitle}</span>}
         {action}
       </div>
       {open && children}

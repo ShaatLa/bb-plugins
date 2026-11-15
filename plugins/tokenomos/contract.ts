@@ -15,6 +15,8 @@ export const bandOf = (promptTokens: number): number => BAND_EDGES.filter((edge)
 
 export type UsageRow = {
   key: string;
+  writeSplit?: boolean;
+  providerThreadId?: string;
   ts: number;
   threadId: string; // "" outside bb
   projectId: string; // "" unknown, "~outside", "~local-calls"
@@ -106,7 +108,19 @@ const limitWindow = z.object({
   byModel: z.array(z.object({ model: z.string(), cost: costSchema })).nullable(),
 });
 
+export const watchlistItemSchema = z.object({
+  threadId:z.string(), title:z.string(), provider:z.string(), model:z.string(), contextTokens:num,
+  callsLastHour:count, readCostPerCallUsd:nullableNum, costLastHourUsd:nullableNum, lastCallAt:num,
+});
+export const wakeCostSchema = z.object({
+  threadId:z.string(), provider:z.string(), model:z.string(), contextTokens:nullableNum,
+  lastCallAt:nullableNum, idleMinutes:nullableNum, ttlMinutes:num, ttlSource:z.enum(['observed','assumed']),
+  cacheLikelyExpired:z.boolean().nullable(), coldCostUsd:nullableNum, warmCostUsd:nullableNum,
+});
+
 export const rpcContract = defineRpcContract({
+  watchlist:{tags,input:z.object({}),output:z.object({items:z.array(watchlistItemSchema).max(20)})},
+  wakeCost:{tags,input:z.object({threadId:z.string().min(1)}),output:wakeCostSchema},
   "costs.threads": {
     tags,
     input: costsInput,

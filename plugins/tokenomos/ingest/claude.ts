@@ -80,7 +80,7 @@ export function createClaudeSource(o: { store: Store; db: Database; root?: strin
       const cacheWriteLong = u.cache_creation?.ephemeral_1h_input_tokens ?? 0, output = u.output_tokens ?? 0;
       if (!(freshIn + cacheRead + cacheWriteShort + cacheWriteLong + output)) return null;
       const promptTokens = freshIn + cacheRead + cacheWriteShort + cacheWriteLong, tierRaw = u.speed ?? '';
-      return { key: `cc:${m.id}:${line.requestId}`, ts: Date.parse(line.timestamp), threadId: t.threadId, projectId: t.projectId, provider: 'claude-code', model: m.model ?? 'unknown', tier: normaliseTier(tierRaw), tierRaw, promptTokens, band: bandOf(promptTokens), conv: p === path ? '' : `sub:${basename(p, '.jsonl')}`, freshIn, cacheRead, cacheWriteShort, cacheWriteLong, output, reasoning: u.output_tokens_details?.thinking_tokens ?? 0, turnId: null, source: 'claude-file', flags: 0 };
+      return { writeSplit:u.cache_creation != null && typeof u.cache_creation==='object' && ('ephemeral_5m_input_tokens' in u.cache_creation || 'ephemeral_1h_input_tokens' in u.cache_creation), providerThreadId:t.providerThreadId ?? '', key: `cc:${m.id}:${line.requestId}`, ts: Date.parse(line.timestamp), threadId: t.threadId, projectId: t.projectId, provider: 'claude-code', model: m.model ?? 'unknown', tier: normaliseTier(tierRaw), tierRaw, promptTokens, band: bandOf(promptTokens), conv: p === path ? '' : `sub:${basename(p, '.jsonl')}`, freshIn, cacheRead, cacheWriteShort, cacheWriteLong, output, reasoning: u.output_tokens_details?.thinking_tokens ?? 0, turnId: null, source: 'claude-file', flags: 0 };
       }, budget, signal, false, decodeClaude));
     }
     return combine(batches);

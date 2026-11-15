@@ -289,3 +289,11 @@ it('extracts usage through nested tool inputs without mistaking strings or neste
  const controller=new AbortController();controller.abort();
  await expect(jsonFields(Buffer.from(JSON.stringify(data)),['message.usage'],controller.signal)).rejects.toThrow();
 });
+it('persists explicit Claude write-split provenance and the provider session',async()=>{
+ const project=join(dir,'project');mkdirSync(project);
+ const base=JSON.parse(fixture('claude.jsonl').split('\n')[0]);
+ base.message.usage.cache_creation={ephemeral_5m_input_tokens:10,ephemeral_1h_input_tokens:0};
+ writeFileSync(join(project,'session.jsonl'),JSON.stringify(base)+'\n');
+ const source=createClaudeSource({db,store,root:dir});apply(await source.flushThread(thread('session')));
+ expect(db.prepare('SELECT write_split,provider_thread_id FROM usage_raw').get()).toEqual({write_split:1,provider_thread_id:'session'});
+});

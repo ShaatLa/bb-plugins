@@ -35,17 +35,18 @@ const rowTokens = (row: UsageRow): Tokens => ({
 export function createStore(db: Database): Store {
   let version = 0;
 
-  const getRaw = db.prepare<[string], Tokens & { ts: number; thread_id: string; project_id: string; provider: string; model: string; tier: string; band: number }>(
-    `SELECT ts, thread_id, project_id, provider, model, tier, band, ${COMPONENT_COLUMNS} FROM usage_raw WHERE key = ?`,
+  const getRaw = db.prepare<[string], Tokens & { ts: number; thread_id: string; project_id: string; provider: string; model: string; tier: string; band: number;write_split:number;provider_thread_id:string }>(
+    `SELECT write_split,provider_thread_id,ts, thread_id, project_id, provider, model, tier, band, ${COMPONENT_COLUMNS} FROM usage_raw WHERE key = ?`,
   );
   const insertRaw = db.prepare(
     `INSERT INTO usage_raw (key, ts, thread_id, project_id, provider, model, tier, tier_raw, prompt_tokens, band, conv,
-       ${COMPONENT_COLUMNS}, turn_id, source, flags)
+       ${COMPONENT_COLUMNS}, turn_id, source, flags,write_split,provider_thread_id)
      VALUES (@key, @ts, @threadId, @projectId, @provider, @model, @tier, @tierRaw, @promptTokens, @band, @conv,
-       ${COMPONENT_PARAMS}, @turnId, @source, @flags)`,
+       ${COMPONENT_PARAMS}, @turnId, @source, @flags,@writeSplit,@providerThreadId)`,
   );
   const updateRaw = db.prepare(
     `UPDATE usage_raw SET ${COMPONENTS.map((c) => `${c} = @${c}`).join(", ")},
+       write_split=MAX(write_split,@writeSplit),provider_thread_id=CASE WHEN provider_thread_id='' THEN @providerThreadId ELSE provider_thread_id END,
        prompt_tokens = @fresh_in + @cache_read + @cache_write_short + @cache_write_long WHERE key = @key`,
   );
   const addHourly = db.prepare(
@@ -85,7 +86,7 @@ export function createStore(db: Database): Store {
     for (const row of rows) {
       const old = getRaw.get(row.key);
       if (!old) {
-        insertRaw.run({ ...row, ...rowTokens(row), turnId: row.turnId ?? "" });
+        insertRaw.run({ ...row, ...rowTokens(row), turnId: row.turnId ?? "", writeSplit:row.writeSplit ? 1 : 0, providerThreadId:row.providerThreadId ?? "" });
         roll(row, rowTokens(row), 1);
         inserted++;
         if (row.threadId !== "") touched.add(row.threadId);
@@ -95,14 +96,14 @@ export function createStore(db: Database): Store {
       const next = rowTokens(row);
       const delta = {} as Tokens;
       const merged = {} as Tokens;
-      let changed = false;
+      let changed = (!!row.writeSplit && !old.write_split) || (!old.provider_thread_id && !!row.providerThreadId);
       for (const c of COMPONENTS) {
         merged[c] = Math.max(old[c], next[c]);
         delta[c] = merged[c] - old[c];
         if (delta[c] > 0) changed = true;
       }
       if (!changed) continue;
-      updateRaw.run({ key: row.key, ...merged });
+      updateRaw.run({ key: row.key, ...merged,writeSplit:row.writeSplit?1:0,providerThreadId:row.providerThreadId??'' });
       // Rollups use the stored row's dimensions so they stay consistent with usage_raw.
       roll({ ts: old.ts, threadId: old.thread_id, projectId: old.project_id, provider: old.provider, model: old.model, tier: old.tier, band: old.band }, delta, 0);
       updated++;

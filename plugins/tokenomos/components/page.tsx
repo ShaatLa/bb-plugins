@@ -11,6 +11,7 @@ import { Kpis } from "./kpis";
 import { TokenMix } from "./mix";
 import { Card, Muted, SkeletonBlock, scope, useHeld } from "./shared";
 import { Compactions, Threads } from "./tables";
+import { Watchlist } from "./watchlist";
 import { UsageChart } from "./usage-chart";
 
 /** "All projects" plus the known projects; a project from the URL that is not listed stays selectable. */
@@ -63,9 +64,9 @@ export function TokenomosPage({ subPath }: { subPath: string }) {
               <TokenMix summary={summary} />
               <ActivityHeatmap summary={summary} metric={metric} range={summary.range} />
             </div>
-            {/* Watchlist goes here once its package lands. */}
           </div>
         )}
+        <Watchlist />
         <Threads range={range} project={project} />
         <Compactions range={range} project={project} />
         <BackfillBanner backfill={backfill} />

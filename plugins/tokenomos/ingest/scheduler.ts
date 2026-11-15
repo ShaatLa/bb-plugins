@@ -42,6 +42,8 @@ export function createScheduler(o: {
   let trailing: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
   let sources: ReturnType<typeof o.sources> | undefined;
+  let watchActive=false, lastWatchInvalidation=Date.now();
+  const noteWatchlist=(active:boolean) => { if(active && !watchActive) lastWatchInvalidation=Date.now(); watchActive=active; };
   let agyAvailable = false, lastExt = -Infinity, lastOutside = -Infinity;
   const status = (id: string, error: string | null = null, state = 'ok') => {
     db.prepare(`INSERT INTO source_status(source,last_ingest_at,rows,last_error,state) VALUES (?,?,0,?,?)
@@ -70,7 +72,7 @@ export function createScheduler(o: {
   for (const event of ['experimental_thread.events', 'thread.idle', 'thread.created'] as const) bb.events.on(event, ({ thread }) => note(thread, true));
   for (const event of ['experimental_thread.parentChanged', 'thread.archived', 'thread.unarchived', 'thread.deleted'] as const) bb.events.on(event, ({ thread }) => note(thread, false));
   o.settings.onChange((next, prev) => {
-    if (next.priceOverrides !== prev.priceOverrides || next.referenceModel !== prev.referenceModel || next.includeOutsideBb !== prev.includeOutsideBb) invalidate();
+    if (next.contextWatchTokens !== prev.contextWatchTokens || next.priceOverrides !== prev.priceOverrides || next.referenceModel !== prev.referenceModel || next.includeOutsideBb !== prev.includeOutsideBb) invalidate();
   });
   const current = (id: string) => db.prepare('SELECT * FROM thread_source WHERE thread_id=?').get(id) as Source | undefined;
   const owns = (row: UsageRow) => {
@@ -119,7 +121,7 @@ export function createScheduler(o: {
     ON CONFLICT(thread_id) DO UPDATE SET source=excluded.source,since_ts=excluded.since_ts,state=excluded.state`).run(id, source, Date.now(), state);
   };
   const candidates = (id: string, after = ''): UsageRow[] => (db.prepare('SELECT b.* FROM bb_candidate b WHERE thread_id=? AND key>? AND NOT EXISTS (SELECT 1 FROM usage_raw r WHERE r.key=b.key) ORDER BY key LIMIT 1000').all(id, after) as Array<Record<string, any>>).map(r => ({
-    key:r.key,ts:r.ts,threadId:r.thread_id,projectId:r.project_id,provider:r.provider,model:r.model,tier:r.tier,tierRaw:r.tier_raw,promptTokens:r.prompt_tokens,band:r.band,conv:r.conv,
+    key:r.key,providerThreadId:r.provider_thread_id,ts:r.ts,threadId:r.thread_id,projectId:r.project_id,provider:r.provider,model:r.model,tier:r.tier,tierRaw:r.tier_raw,promptTokens:r.prompt_tokens,band:r.band,conv:r.conv,
     freshIn:r.fresh_in,cacheRead:r.cache_read,cacheWriteShort:r.cache_write_short,cacheWriteLong:r.cache_write_long,output:r.output,reasoning:r.reasoning,turnId:r.turn_id||null,source:'bb-events',flags:r.flags,
   }));
   async function applyCandidates(id: string, signal: AbortSignal, recovered = false) {
@@ -202,9 +204,9 @@ export function createScheduler(o: {
       switchDeferred = !!old && old.source !== selected && !retained(id);
       sourceId = switchDeferred ? old!.source : selected;
       // Persist candidates before any file read can fail.
-      const insert = db.prepare(`INSERT OR REPLACE INTO bb_candidate (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags)
-        VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags)`);
-      db.transaction(() => { for (const r of pending) insert.run({ ...r, turnId:r.turnId ?? '' }); })();
+      const insert = db.prepare(`INSERT OR REPLACE INTO bb_candidate (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags,provider_thread_id)
+        VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags,@providerThreadId)`);
+      db.transaction(() => { for (const r of pending) insert.run({ ...r, turnId:r.turnId ?? '', providerThreadId:r.providerThreadId ?? '' }); })();
       const fileBatch = desiredFile && found && sourceId === desiredFile ? await o.files[desiredFile].flushThread(info, signal) : null;
       if (stopped) return false;
       // Observe arriving main rows before filtering: rows in a fallback interval cannot be applied again.
@@ -379,6 +381,7 @@ export function createScheduler(o: {
       try {
         let history:AsyncGenerator<void,void,unknown>|undefined, historyDone=false;
         while (!signal.aborted) {
+          if (watchActive && Date.now()-lastWatchInvalidation>=300000) {lastWatchInvalidation=Date.now();invalidate();}
           try {
             if (!history) { await metadata(signal); history=backfill(signal); }
             if (!historyDone) {
@@ -419,5 +422,5 @@ export function createScheduler(o: {
     }
   } });
   bb.onDispose(() => { stopped=true; controller?.abort(); if (trailing) clearTimeout(trailing); });
-  return { invalidate };
+  return { invalidate, noteWatchlist };
 }
