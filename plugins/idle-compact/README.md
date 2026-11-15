@@ -37,9 +37,14 @@ compactState { threadId } -> { queued: boolean, running: boolean }
 - `compact` compacts the thread now, like the header button, and is logged as `manual`.
   Without `queue` a thread in a turn is refused, as bb refuses it.
 - With `queue: true` a thread in a turn gets the compaction at its next stop (idle or
-  failed) instead, and the call returns `queued: true`. A repeat call is a no-op, and so is
-  a call while a compaction of the thread is already running (`ok` without `queued`). The
-  request survives a plugin restart.
+  failed) instead, and the call returns `queued: true`. A repeat call is a no-op, and so is a
+  call while a compaction this plugin dispatched is already accepted (`ok` without
+  `queued`). The request survives a plugin restart and runs at most once: bb has no
+  acceptance the plugin could read back after a restart, so the request is taken off just
+  before the compact call (and put back if bb refuses it). A restart in that moment loses
+  the request rather than compacting twice.
+- After a restart, a compaction the previous instance dispatched that is still running
+  keeps the thread's next turn waiting until it stops.
 - Until that compaction's own turn ends, a message that would start the thread's next turn
   waits in bb's queue (through the `message.dispatch` hook, shown as "Idle Compact is
   compacting the context first"), so it runs on the compacted context. A steer into the

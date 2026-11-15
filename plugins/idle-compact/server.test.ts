@@ -452,8 +452,36 @@ it("does not run a queued compaction again after a restart while the server was 
   h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
   h.state.status = "active";
   const next = await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
-  expect(await next.harness.behavior.callRpc("compactState", { threadId: "thr_a" })).toEqual({ queued: false, running: false });
+  // The compaction is still running: the new instance keeps the next turn waiting until its stop.
+  const hook = () => next.harness.registrations.hooks["message.dispatch"]!(makeMessageDispatchHookContext({ thread: { id: "thr_a", status: "active" as never }, attempt: "start-turn" }));
+  expect(await next.harness.behavior.callRpc("compactState", { threadId: "thr_a" })).toEqual({ queued: false, running: true });
+  expect(await hook()).toMatchObject({ action: "wait" });
   h.state.status = "idle";
   await next.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_a" } as any), lastAssistantText: null } as any); await h.advance(0);
+  expect(await hook()).toEqual({ action: "proceed" });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("does not run a queued compaction again after a restart that follows its stop", async () => {
+  const h = await setup({ status: "active" });
+  h.compact.mockImplementationOnce(() => new Promise(() => {}));
+  await queueing(h).call("compact", { queue: true });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.active"); await h.emit("thread.idle"); // its stop, before the call returns
+  await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a cancel made while the queued compaction's call is pending", async () => {
+  const h = await setup({ status: "active" });
+  const q = queueing(h), call = deferred();
+  h.compact.mockImplementationOnce(() => call.promise);
+  await q.call("compact", { queue: true });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  await q.call("cancelQueuedCompact");
+  call.reject(new Error("Context can only be compacted while the thread is idle or errored")); await h.advance(0);
+  expect(await q.state()).toEqual({ queued: false, running: false });
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
+  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });

@@ -71,17 +71,26 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // retry: threads whose queued compaction found another call holding the in-flight guard; whoever releases it runs it.
   const retry = new Set<string>();
   const release = (threadId: string) => { inflight.delete(threadId); if (retry.delete(threadId)) void runQueued(threadId); };
+  // taken: queued requests a pending dispatch took; a cancel removes them, so a refused call does not bring them back.
+  const taken = new Set<string>();
   // Every compaction this plugin dispatches. running is set before the call, since the compaction's stop can arrive before
-  // the call returns. A queued request is taken off in memory for the call, so the hook never holds on it alone after
-  // that stop; its key goes only once the server accepted, and a restart in between finds OWN and drops it.
+  // the call returns. A queued request runs at most once: bb has no acceptance a restart could read back, so its key goes
+  // before the call and comes back only if the call is refused. A restart in between loses the request, never repeats it.
   async function dispatch(threadId: string) {
     running.add(threadId);
     const wasQueued = queued.delete(threadId);
+    if (wasQueued) { taken.add(threadId); await bb.storage.kv.delete(QUEUED + threadId); }
     try { await bb.sdk.threads.compact({ threadId }); }
-    catch (error) { if (wasQueued) queued.add(threadId); stopped(threadId); throw error; }
+    catch (error) {
+      if (taken.delete(threadId)) { queued.add(threadId); await bb.storage.kv.set(QUEUED + threadId, true); }
+      stopped(threadId); throw error;
+    }
+    taken.delete(threadId);
     // The accepted compaction also covers a request made while the call was pending. If its stop already came, the hook's
-    // recheck then ran with that request still in place, so it runs again.
-    if (queued.delete(threadId) || wasQueued) { await bb.storage.kv.delete(QUEUED + threadId); if (!running.has(threadId)) void bb.experimental_hooks.recheck("message.dispatch"); }
+    // recheck then ran with a request in place, so it runs again.
+    const covered = queued.delete(threadId);
+    if (covered) await bb.storage.kv.delete(QUEUED + threadId);
+    if ((wasQueued || covered) && !running.has(threadId)) void bb.experimental_hooks.recheck("message.dispatch");
   }
   let generation = 0;
 
@@ -217,7 +226,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (thread.status === "idle" || thread.status === "error") void runQueued(threadId);
   }
   async function unqueue(threadId: string) {
-    const had = queued.delete(threadId);
+    const had = [queued.delete(threadId), taken.delete(threadId)].some(Boolean);
     await bb.storage.kv.delete(QUEUED + threadId);
     if (had) { bb.log.info(`Compact ${threadId}: queued compaction cancelled`); await bb.experimental_hooks.recheck("message.dispatch"); }
   }
@@ -304,6 +313,11 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   }
   // Queued requests survive a restart; one whose thread stopped meanwhile runs now. The recheck releases messages a previous
   // instance kept waiting behind a compaction whose end this one never sees.
+  // A compaction a previous instance dispatched may still be running: its thread's next turn keeps waiting until its stop.
+  for (const key of await bb.storage.kv.list(OWN)) {
+    const thread = await bb.sdk.threads.get({ threadId: key.slice(OWN.length) }).catch(() => null);
+    if (thread?.status === "active") running.add(thread.id);
+  }
   for (const key of await bb.storage.kv.list(QUEUED)) queued.add(key.slice(QUEUED.length));
   for (const threadId of queued) {
     const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
