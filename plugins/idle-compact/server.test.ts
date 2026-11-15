@@ -398,6 +398,62 @@ it("drops a queued compaction the server refuses, so the waiting message is not 
   const base = q.rechecks();
   h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
   expect(await q.state()).toEqual({ queued: false, running: false });
-  expect(q.rechecks()).toBe(base + 1);
+  expect(q.rechecks()).toBeGreaterThan(base);
   expect(await q.dispatch()).toEqual({ action: "proceed" });
+});
+
+const deferred = () => { let resolve!: () => void, reject!: (error: Error) => void; const promise = new Promise<{ ok: true }>((ok, fail) => { resolve = () => ok({ ok: true }); reject = fail; }); return { promise, resolve, reject }; };
+
+it("keeps a request made while an automatic compaction is in flight, and runs it when that one is refused", async () => {
+  const h = await setup({ used: 900_000 });
+  const q = queueing(h), auto = deferred();
+  h.compact.mockImplementationOnce(() => auto.promise);
+  await h.emit("thread.idle"); await h.advance(0); // the check at once is dispatching
+  expect(await q.call("compact", { queue: true })).toEqual({ ok: true, queued: true });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  auto.reject(new Error("Context can only be compacted while the thread is idle or errored")); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(2);
+  expect(await q.state()).toEqual({ queued: false, running: true });
+});
+
+it("lets an in-flight automatic compaction that the server accepts cover a request made meanwhile", async () => {
+  const h = await setup({ used: 900_000 });
+  const q = queueing(h), auto = deferred();
+  h.compact.mockImplementationOnce(() => auto.promise);
+  await h.emit("thread.idle"); await h.advance(0);
+  await q.call("compact", { queue: true });
+  // Its stop arrives before the call returns.
+  await h.emit("thread.active"); await h.emit("thread.idle");
+  const base = q.rechecks();
+  auto.resolve(); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await q.state()).toEqual({ queued: false, running: false });
+  expect(q.rechecks()).toBeGreaterThan(base);
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
+});
+
+it("releases waiting messages when a queued compaction's stop arrives before the call returns", async () => {
+  const h = await setup({ status: "active" });
+  const q = queueing(h), call = deferred();
+  h.compact.mockImplementationOnce(() => call.promise);
+  await q.call("compact", { queue: true });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.active"); await h.emit("thread.idle");
+  call.resolve(); await h.advance(0);
+  expect(await q.state()).toEqual({ queued: false, running: false });
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("does not run a queued compaction again after a restart while the server was accepting it", async () => {
+  const h = await setup({ status: "active" });
+  h.compact.mockImplementationOnce(() => new Promise(() => {})); // accepted, but the call never returns to this instance
+  await queueing(h).call("compact", { queue: true });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  h.state.status = "active";
+  const next = await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
+  expect(await next.harness.behavior.callRpc("compactState", { threadId: "thr_a" })).toEqual({ queued: false, running: false });
+  h.state.status = "idle";
+  await next.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_a" } as any), lastAssistantText: null } as any); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
 });
