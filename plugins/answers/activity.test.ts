@@ -1,5 +1,5 @@
-import { expect, it } from 'vitest';
-import { activityOf, sceneOf, stateOf } from './activity';
+import { describe, expect, it } from 'vitest';
+import { activityOf, labelOf, sceneOf, stateOf } from './activity';
 
 const started = (item: object) => ({ type: 'item/started', data: { item } });
 it.each([
@@ -34,4 +34,20 @@ it('says a shell command in a few words', async () => {
   expect(commandLabel('ffmpeg -i a.mp4 b.webm')).toBe('Running a command');
   expect(commandLabel('cd x')).toBe('Running a command');
   expect(stateOf([{ type: 'item/started', data: { item: { type: 'commandExecution', command: 'make', description: 'Build the release' } } }]).label).toBe('Build the release');
+});
+
+describe('scene and words agree', () => {
+  it.each([
+    [{ type: 'toolCall', tool: 'answers_list' }, 'read', 'Reading: answers list'],
+    [{ type: 'mcpToolCall', server: 'bb', tool: 'web_search' }, 'search', 'Searching: web search'],
+    [{ type: 'toolCall', tool: 'answers_resolve' }, 'terminal', 'Running answers resolve'],
+    [{ type: 'commandExecution', command: 'ls -la' }, 'read', 'Reading files'],
+    [{ type: 'commandExecution', command: 'cat a.log | grep error' }, 'read', 'Reading files'],
+    [{ type: 'commandExecution', command: 'rg TODO src' }, 'search', 'Searching'],
+    [{ type: 'commandExecution', command: 'sed -i s/a/b/ f' }, 'fix', 'Editing files'],
+    [{ type: 'commandExecution', command: 'sleep 30' }, 'wait', 'Waiting'],
+    [{ type: 'commandExecution', command: 'npm test' }, 'terminal', 'Running tests'],
+  ])('%o', (item, scene, label) => {
+    expect(sceneOf(item as never)).toBe(scene); expect(labelOf(item as never)).toBe(label);
+  });
 });

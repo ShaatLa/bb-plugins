@@ -18,8 +18,8 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
     case 'fileRead': case 'imageView': case 'webFetch': return 'read';
     case 'webSearch': case 'listFiles': case 'search': return 'search';
     case 'delegation': case 'backgroundTask': return 'wait';
-    // A shell command that only looks or reads gets that scene; anything else is terminal work.
-    case 'commandExecution': { const command = item.command ?? ''; return /(?:^|[\s|;&(])(?:rg|grep|egrep|ag|find|fd|locate)\s/.test(command) ? 'search' : /^\s*(?:cat|head|tail|less|more|sed -n|bat|jq|wc)\b/.test(command) ? 'read' : 'terminal'; }
+    // A shell command acts out the same kind of work its words name (commandLabel), so the two never disagree.
+    case 'commandExecution': return COMMAND_SCENE[commandLabel(item.command ?? '')] ?? 'terminal';
     case 'toolCall': case 'mcpToolCall': { const tool = `${item.server ?? ''} ${item.tool ?? ''}`; return SEARCH.test(tool) ? 'search' : READ.test(tool) ? 'read' : 'terminal'; }
     default: return 'think';
   }
@@ -40,6 +40,7 @@ for (const [label, programs] of Object.entries({
   'Waiting': 'sleep',
 })) for (const program of programs.split(' ')) KIND[program] ??= label;
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const COMMAND_SCENE: Record<string, Activity> = { 'Searching': 'search', 'Reading files': 'read', 'Editing files': 'fix', 'Waiting': 'wait' };
 /** A shell command as a broad kind of work, from the first step that does the work (past `cd`, env settings and wrappers). */
 export function commandLabel(command: string): string {
   for (const step of command.split(/&&|\|\||;|\||\n/)) {
@@ -58,6 +59,8 @@ export function commandLabel(command: string): string {
 export function labelOf(item: Item): string {
   // A provider's own one-line description of the command wins; bb's schema has it, though no provider here fills it yet.
   if (item.type === 'commandExecution') return item.description?.trim().split('\n')[0] || commandLabel(item.command ?? '');
+  // A tool's words follow its scene, so a reading robot never says "Running": "answers_list" reads, "web_search" searches.
+  if (item.type === 'toolCall' || item.type === 'mcpToolCall') { const scene = sceneOf(item), tool = (item.tool ?? 'a tool').replace(/_/g, ' '); return scene === 'search' ? `Searching: ${tool}` : scene === 'read' ? `Reading: ${tool}` : `Running ${tool}`; }
   if (item.presentation) return `${item.presentation.label.pending}${item.presentation.title ? ` ${item.presentation.title}` : ''}`;
   switch (item.type) {
     case 'reasoning': return 'Thinking';
@@ -71,7 +74,6 @@ export function labelOf(item: Item): string {
     case 'search': case 'listFiles': return 'Searching';
     case 'delegation': return 'Waiting for a subagent';
     case 'backgroundTask': return 'Waiting for background work';
-    case 'toolCall': case 'mcpToolCall': return `Running ${item.tool ?? 'a tool'}`;
     default: return 'Thinking';
   }
 }
