@@ -1,4 +1,8 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { TokenomosPage } from "./components/page";
+import { TokenomosSettings } from "./components/settings";
 
-// WP7 registers the page and settings section here.
-export default definePluginApp(() => {});
+export default definePluginApp((app) => {
+  app.slots.navPanel({ id: "tokenomos", title: "Tokenomos", icon: "ChartHistogram", path: "tokenomos", component: TokenomosPage });
+  app.slots.settingsSection({ id: "tokenomos-settings", title: "Tokenomos", component: TokenomosSettings });
+});
