@@ -785,6 +785,8 @@ export const tasksRpcContract = {
         epicId: idSchema.nullable().default(null),
         labelIds: taskLabelsSchema.default([]),
         template: nonBlankStringSchema.optional(),
+        // Ignored since executors were removed (0.33); still accepted because Answers sends it.
+        requesterThreadId: z.string().nullable().optional(),
       })
       .strict(),
     output: taskMutationResultSchema,
