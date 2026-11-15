@@ -612,3 +612,41 @@ Key acceptance checks:
   always marked partial.
 - Compaction savings rest on a stated counterfactual; shown with "~" and its
   assumptions.
+
+## 10. Early overspend warnings (owner-approved 2026-11-15, revision 2 after review thr_cmq7rpi3es)
+
+Source: Manager's ANV-781 investigation (thr_ukkbq8m5iq): Sonnet sessions ×2.5/week (main driver), cache reads of large contexts 57–73% of units, wakes after >1 h idle 6.6% (44 of 56 daily misses were messages from other threads), no-work notification turns 5.8% (fixed by the owner), Codex xhigh share 13%→35%.
+Live check (last 24 h): latest-call context ≥ 300k in 23 threads carrying 51% of all cache reads; ≥ 400k in 9 threads (35%); 200k flags 47 threads (noise).
+Constraint: plugin agent instructions apply only when a provider session is constructed and changing them busts the prompt cache, so they cannot carry live hints.
+
+### 10.0 Shared "current context" of a thread
+`currentContext(threadId)` = the newest of:
+- the latest eligible call: a `usage_raw` row of that thread with `conv = ""`, `provider` = the thread's own provider, no RECOVERED/BACKFILLED flag (individual calls only); context = its `promptTokens`, model/tier/band from the row; write kind = long or short only when the row carries an explicit duration split (new `usage_raw.write_split` flag, set by the Claude reader when `cache_creation.ephemeral_*` is present; unsplit Claude totals and all bb-event/OpenAI writes leave it 0) and only one kind is non-zero; otherwise unknown (TTL assumed, cold cost priced at the long rate and labelled an estimate);
+- a newer `context_last` snapshot or a newer compaction with `after_known = 1` (context = its used/after tokens), which overrides an older call; a newer compaction with unknown after makes the context unknown;
+- a newer `thread/context/cleared` boundary (ingested and persisted per thread) makes every earlier call/snapshot ineligible.
+Hypothetical wake/read costs use `bandOf(contextTokens)` of the chosen context; historical sums keep each row's own band.
+Returns `null` when nothing eligible is retained (reported as "unknown", distinct from `not_found` for an unknown thread). All money uses `costUsd`/`ratesFor` (tier, band, overrides, /1e6).
+
+### 10.1 Watchlist (page + RPC)
+- Setting `contextWatchTokens` (number 50k–1M, default 300000).
+- RPC `watchlist {}`: candidate threads = distinct thread_ids with an eligible call in the last 60 min (one ts-bounded indexed query), then `currentContext` for each candidate (bounded: at most 200 candidates, newest first); keep context ≥ threshold. Item: `{ threadId, title, provider, model, contextTokens, callsLastHour, readCostPerCallUsd | null (context × cache-read rate), costLastHourUsd | null (sum of actual row costs in the hour), lastCallAt }`, sorted by costLastHourUsd desc, max 20. Server memo 30 s.
+- Freshness: the scheduler invalidates `usage` at most every 5 min while the last watchlist result was non-empty, so items age out without client polling.
+- Page: collapsible "Watchlist" section under the range tabs, hidden when empty.
+- Agent notification thresholds (owner, 2026-11-15): 400k, then again at 600k; delivery method pending owner decision (ans_53555bbd), not in this package.
+
+### 10.2 Wake cost (CLI + RPC + skill rule)
+- RPC `wakeCost { threadId }`, CLI `bb tokenomos wake-cost <threadId> [--json]` → `{ threadId, provider, model, contextTokens | null, lastCallAt | null, idleMinutes | null, ttlMinutes, ttlSource: "observed" | "assumed", cacheLikelyExpired: boolean | null, coldCostUsd | null, warmCostUsd | null }`.
+- TTL: observed when the last eligible Claude call wrote a single cache kind (long → 60, short → 5), or when a bb `promptCacheTtlMs` was persisted with its event time and provider session id and both match the selected call (same session, event at or after the call); else assumed (Claude 60, OpenAI 30); rows without a provider-session id fail closed to assumed; `cacheLikelyExpired` only when idle > TTL, labelled an estimate when assumed.
+- `coldCostUsd`: Claude = context × the write rate of the observed kind (long if unknown); OpenAI = context × fresh-input rate (OpenAI bills cold prompt tokens as input). `warmCostUsd` = context × cache-read rate.
+- Skill rule (skills/tokenomos/SKILL.md): before sending work to a thread idle longer than its TTL, run `wake-cost`; if `cacheLikelyExpired` and `coldCostUsd` > $0.50, prefer a fresh child thread. The integrator sends the rule to the Manager thread (other projects' instructions are not edited by Tokenomos).
+
+### 10.3 Growth anomaly (daily, passive only) — DEFERRED by the owner (2026-11-15): ships separately after 10.0–10.2
+- Setting: `growthAlertRatio` (1.1–10, default 1.5). No messages to threads: any `threads.send` can start a paid turn (SDK: a send to an idle thread is `start-turn`), so the result is shown on the page and in `status` only. The Manager or owner reads it there (or via `bb tokenomos status`).
+- Report day = the last complete local day. `growth_report(day PK, state: pending|computed|expired, payload, updated_at)`; the daily schedule (07:30) and the scheduler (after each batch) process pending days of the last 48 h; older pending days expire.
+- Exact daily table: `daily_exact(day, provider, model_key, calls, fresh_tokens)` PK over the first three, updated inside `applyRows` (and `deleteContribution`) only for rows from per-call sources (`claude-file`, `codex-file`, `local-log`, `agy-log`) without RECOVERED/BACKFILLED flags; kept for rollup retention. When the table is introduced it is initialised in the same migration from retained `usage_raw` rows under the same filter, and `daily_exact_since` (the first local day fully inside raw retention at that moment, or the first complete day after a fresh install) is stored; reports require all 8 days ≥ `daily_exact_since`. bb-events rows (fallback, recovered or backfilled aggregates) never enter it, so the anomaly metric cannot see a multi-day gap lumped into one hour.
+- Reports are evaluated only by the daily schedule and by the scheduler at the end of a pass when no flush is in flight.
+- Completeness gate for a report day: the metadata/backfill cursor is done; after this plugin load the tail pass (paged `threads.list` comparing each DTO's `updatedAt` with `bb_cursor.flushed_at`, marking newer threads dirty and adding them to an in-memory `catchUp` set) has completed and `catchUp` is empty — a thread leaves `catchUp` after one complete flush (missing-transcript discovery retries do not re-add it); no thread whose selected source is a file source is in the continuing set (file discovery retries for missing transcripts do not block); for every plain file with mtime ≥ report-day start, no complete (newline-terminated) record lies after its cursor (a trailing fragment without a newline does not block; it is reported as incomplete coverage in status) and every `.zst` file has its `file-zstd-complete:<path>` marker; `ext_pending` holds no entry with `ts` ≤ report-day end; every available external source has a durable `caughtUpAt` later than the report-day end; no file or external source is `degraded`/`error` (`unavailable` ignored); all 8 days are after the first complete local day since install. Otherwise the day stays pending.
+- Metric per (provider, `resolveModel(model) ?? lower-cased raw model id`): calls and fresh tokens (freshIn + cacheWrite + output) of the report day vs the median of the 7 previous days. A metric flags when ratio ≥ growthAlertRatio AND its own gate holds (calls ≥ 200; fresh ≥ 1M). All 7 baseline days zero → "new model" under the same gate; a zero median with some prior activity is reported as "irregular use" without a ratio. Daily totals come from `daily_exact` only. Payload keeps the top 3 threads by fresh tokens.
+
+### 10.4 Out of scope (named)
+Window pace vs quota (owner removed limits), Codex reasoning-effort share (effort not stored yet), per-task Opus-vs-Sonnet efficiency and review rounds (no role/round data).
