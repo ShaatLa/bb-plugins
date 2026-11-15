@@ -3,6 +3,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { z } from "zod";
 import { MIGRATIONS } from "./store/schema";
 import { prune } from "./store/prune";
+import { parseOverrides } from "./pricing/price";
 
 import { createStore } from "./store/write";
 import { createClaudeSource } from "./ingest/claude";
@@ -17,15 +18,14 @@ const REFERENCE_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-
 
 const days = (min: number, max: number) => z.number().int().min(min).max(max);
 
-// priceOverrides must be a JSON object (e.g. {"model": {"input": 1}}); per-model shape is checked by pricing later.
 const priceOverridesSchema = z.string().refine((text) => {
   try {
-    const value: unknown = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value);
+    parseOverrides(text);
+    return true;
   } catch {
     return false;
   }
-}, "Нужен JSON-объект");
+}, "Нужен JSON-объект с допустимыми ценами моделей");
 
 export default function plugin(bb: BbPluginApi) {
   const loopDelay = monitorEventLoopDelay({ resolution: 10 });

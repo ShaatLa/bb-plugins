@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MIGRATIONS } from './schema.js';
 import { fixture } from './fixture.js';
-import { summary, threadCosts, costSum, compactionEstimate, compactionsInRange, limits, topThreads, type Effect } from './read.js';
+import { rangeBounds, summary, threadCosts, costSum, compactionEstimate, compactionsInRange, limits, topThreads, type Effect } from './read.js';
 import { createStore } from './write.js';
 import { RECOVERED, ESTIMATED, type UsageRow } from '../contract.js';
 
@@ -29,6 +29,27 @@ it('has 24/7/30/13 buckets, exact totals and share, previous coverage and outsid
   expect(summary(db,{ ...opts,includeOutsideBb: true }).totals.usd).toBeCloseTo(s.totals.usd!*2);
   store.applyRows([row('old',{ ts: s.from-20*24*HOUR })]);
   expect(summary(db,opts).previous?.usd).toBe(0);
+});
+it('includes the current partial hour and uses inclusive now for every range', () => {
+  const at=now+HOUR/2, store=createStore(db);
+  const day=rangeBounds('day',at);
+  store.applyRows([row('first',{ts:day.from}),row('current',{ts:at,flags:ESTIMATED}),row('previous',{ts:day.from-HOUR}),row('old',{ts:day.previousFrom-2*HOUR}),row('future',{ts:now+HOUR})]);
+  note('a');
+  for (const range of ['day','week','month','3m'] as const) {
+    const b=rangeBounds(range,at), s=summary(db,{...opts,range,now:at});
+    expect(b.to).toBe(at); expect(s.to).toBe(at);
+    expect(b.from-b.previousFrom).toBe(at-b.from);
+    expect(b.starts.at(-1)).toBe(range==='day' ? now : +new Date(2026,10,range==='3m' ? 9 : 15));
+    expect(s.buckets.at(-1)?.series['claude-code'].tokens.freshIn).toBe(range==='3m' ? 400 : 100);
+  }
+  const s=summary(db,{...opts,range:'day',now:at});
+  expect(s.from).toBe(now-23*HOUR); expect(s.buckets).toHaveLength(24);
+  expect(s.totals.tokens.freshIn).toBe(200); expect(s.totals.estimated).toBe(true);
+  expect(s.previous?.tokens.freshIn).toBe(100);
+  expect(topThreads(db,'day',0,50,overrides,at).items[0].own.tokens.freshIn).toBe(200);
+  db.prepare('INSERT INTO compactions(id,thread_id,at) VALUES (?,?,?)').run('current','a',at);
+  db.prepare('INSERT INTO compactions(id,thread_id,at) VALUES (?,?,?)').run('future','a',at+1);
+  expect(compactionsInRange(db,'day',overrides,at).items.map(i=>i.id)).toEqual(['current']);
 });
 it('groups top four models plus other and preserves unknown, recovered and estimated flags', () => {
   const store=createStore(db);

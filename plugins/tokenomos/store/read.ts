@@ -34,13 +34,12 @@ export function rangeBounds(range: Range, now: number) {
   const end = new Date(now);
   if (range === 'day') {
     end.setMinutes(0, 0, 0);
-    const to = +end, from = to - count * HOUR;
-    return { from, to, previousFrom: from - count * HOUR, starts: Array.from({ length: count }, (_, i) => from + i * HOUR) };
+    const to = now, from = +end - (count - 1) * HOUR;
+    return { from, to, previousFrom: from - (to - from), starts: Array.from({ length: count }, (_, i) => from + i * HOUR) };
   }
   end.setHours(0, 0, 0, 0); end.setDate(end.getDate() + 1);
   const starts = Array.from({ length: count }, (_, i) => { const d = new Date(end); d.setDate(d.getDate() - (count - i) * step); return +d; });
-  const prev = new Date(starts[0]); prev.setDate(prev.getDate() - count * step);
-  return { from: starts[0], to: +end, previousFrom: +prev, starts };
+  return { from: starts[0], to: now, previousFrom: starts[0] - (now - starts[0]), starts };
 }
 function flags(db: Database, from: number, to: number, outside: boolean) {
   return db.prepare(`SELECT COALESCE(MAX((r.flags & ?) != 0 OR c.partial = 1),0) AS partial,
@@ -53,9 +52,9 @@ export function summary(db: Database, o: SummaryOptions) {
   const outside = o.includeOutsideBb ? '' : "AND project_id != '~outside'";
   const query = db.prepare(`SELECT hour,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<? ${outside} GROUP BY hour,provider,model,tier,band`);
   type Hour = Group & { hour: number; provider: string };
-  const rows = query.all(from, to) as Hour[], previousRows = query.all(previousFrom, from) as Hour[];
+  const rows = query.all(from, to + 1) as Hour[], previousRows = query.all(Math.floor(previousFrom / HOUR) * HOUR, from) as Hour[];
   const price = priceContext(o.overrides);
-  const totals = combine(rows, o.overrides), f = flags(db, from, to, o.includeOutsideBb);
+  const totals = combine(rows, o.overrides), f = flags(db, from, to + 1, o.includeOutsideBb);
   totals.partial ||= !!f.partial; totals.estimated ||= !!f.estimated;
   const modelCosts = new Map<string, number>();
   for (const r of rows) modelCosts.set(r.model, (modelCosts.get(r.model) ?? 0) + (price(r).usd ?? 0));
@@ -110,7 +109,7 @@ function sumSavings(rows: Saving[]): Saving {
 export function compactionsInRange(db: Database, range: Range, overrides: Overrides = {}, now = Date.now()) {
   const { from, to } = rangeBounds(range, now);
   type Row = Compaction & { id: string; thread_id: string; title: string; at: number; origin: 'bb' | 'idle-compact' };
-  const rows = db.prepare(`SELECT c.*,COALESCE(t.title,'') AS title FROM compactions c LEFT JOIN threads t ON t.id=c.thread_id WHERE c.at>=? AND c.at<? ORDER BY c.at DESC`).all(from,to) as Row[];
+  const rows = db.prepare(`SELECT c.*,COALESCE(t.title,'') AS title FROM compactions c LEFT JOIN threads t ON t.id=c.thread_id WHERE c.at>=? AND c.at<=? ORDER BY c.at DESC`).all(from,to) as Row[];
   const effects = db.prepare('SELECT * FROM compaction_effect WHERE compaction_id=?');
   return { items: rows.map(c => ({ id: c.id, threadId: c.thread_id, title: c.title, at: c.at, beforeTokens: c.before_tokens, afterTokens: c.after_tokens, origin: c.origin, saving: compactionEstimate(effects.all(c.id) as Effect[],c,overrides) })) };
 }
@@ -155,7 +154,7 @@ export function costSum(db: Database, threadIds: string[], includeDescendants: b
 }
 export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now()) {
   const { from,to } = rangeBounds(range,now);
-  const rows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<? AND thread_id!='' GROUP BY thread_id,provider,model,tier,band`).all(from,to) as (Group & { thread_id: string })[];
+  const rows = db.prepare(`SELECT thread_id,provider,model,tier,band,${sums} FROM usage_hourly WHERE hour>=? AND hour<=? AND thread_id!='' GROUP BY thread_id,provider,model,tier,band`).all(from,to) as (Group & { thread_id: string })[];
   const costs = new Map<string, Cost>(), price = priceContext(overrides);
   for (const r of rows) costs.set(r.thread_id,costs.has(r.thread_id) ? add(costs.get(r.thread_id)!,price(r)) : price(r));
   const ids = [...costs].sort((a,b) => (b[1].usd ?? 0)-(a[1].usd ?? 0) || a[0].localeCompare(b[0])).slice(offset,offset+limit).map(([id]) => id);

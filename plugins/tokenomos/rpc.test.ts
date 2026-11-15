@@ -19,11 +19,29 @@ describe('RPC and CLI', () => {
       for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'week',by:'provider' },topThreads:{ range:'week',offset:0,limit:50 },compactions:{ range:'week' },status:{},prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ input:7 } });
       expect(JSON.parse((await settings.get()).priceOverrides)['claude-sonnet-5-5'].input).toBe(7);
+      await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ output:17 } });
+      expect(JSON.parse((await settings.get()).priceOverrides)['claude-sonnet-5-5']).toEqual({ input:7,output:17 });
       const p=await harness.behavior.callRpc('prices',{}) as { entries:{ model:string; rates:{ input:number } }[] };
       expect(p.entries.find(p => p.model==='claude-sonnet-5-5')?.rates.input).toBe(7);
       await expect(harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ input:100001 } })).rejects.toThrow();
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:null });
       expect((await settings.get()).priceOverrides).toBe('{}');
+    } finally { await harness.lifecycle.dispose(); }
+  });
+  it('keeps reads available with invalid persisted overrides and reports and clears the error', async () => {
+    const { harness,settings }=setup();
+    try {
+      for (const priceOverrides of ['not json','{"claude-sonnet-5-5":{"input":-1}}']) {
+        await settings.experimental_set({ priceOverrides });
+        for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'day',by:'provider' },topThreads:{ range:'day',offset:0,limit:50 },compactions:{ range:'day' },limits:{},prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
+        const status=await harness.behavior.callRpc('status',{}) as { sources:{ id:string;lastError:string|null;state:string }[] };
+        expect(status.sources.find(s => s.id==='priceOverrides')).toMatchObject({ state:'error',lastError:expect.stringContaining('Invalid priceOverrides:') });
+        const prices=await harness.behavior.callRpc('prices',{}) as { entries:{ model:string;rates:{input:number};overridden:boolean }[] };
+        expect(prices.entries.find(p => p.model==='claude-sonnet-5-5')).toMatchObject({ overridden:false,rates:{input:2} });
+      }
+      await settings.experimental_set({ priceOverrides:'{}' });
+      const status=await harness.behavior.callRpc('status',{}) as { sources:{ id:string }[] };
+      expect(status.sources.some(s => s.id==='priceOverrides')).toBe(false);
     } finally { await harness.lifecycle.dispose(); }
   });
   it('coalesces and caches limits requests for 60 seconds', async () => {

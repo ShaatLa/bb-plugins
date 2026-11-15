@@ -1,14 +1,20 @@
 import type { BbPluginApi, PluginBbSdk, PluginRpcHandlers } from '@get-bb/plugin-sdk';
 import type { Database } from 'better-sqlite3';
 import { rpcContract } from './contract.js';
-import { parseOverrides } from './pricing/price.js';
+import { parseOverrides, type Overrides } from './pricing/price.js';
 import * as read from './store/read.js';
 import { prune } from './store/prune.js';
 
 export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string };
 export type SettingsHandle = { get(): Promise<Settings>; experimental_set(values: { priceOverrides: string }): Promise<unknown> };
 export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHandle, sdk: PluginBbSdk = bb.sdk, loop?: () => { p99Ms: number; maxMs: number }) {
-  const options = async () => { const s = await settings.get(); return { ...s, overrides: parseOverrides(s.priceOverrides), now: Date.now() }; };
+  const options = async () => {
+    const s = await settings.get();
+    let overrides: Overrides = {}, priceOverridesError: string | null = null;
+    try { overrides = parseOverrides(s.priceOverrides); }
+    catch (error) { priceOverridesError = `Invalid priceOverrides: ${error instanceof Error ? error.message : String(error)}`; }
+    return { ...s, overrides, priceOverridesError, now: Date.now() };
+  };
   let cached: { at: number; value: Awaited<ReturnType<typeof sdk.system.usageLimits>> } | undefined;
   let pending: Promise<void> | undefined;
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
@@ -25,11 +31,15 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
       }
       return { ...read.limits(db,cached!.value,o.now,o.overrides), fetchedAt: cached!.at };
     },
-    status: async () => { await settings.get(); return { ...read.status(db), ...(loop ? { loop: loop() } : {}) }; },
+    status: async () => {
+      const o = await options(), result = read.status(db);
+      if (o.priceOverridesError) result.sources.push({ id: 'priceOverrides', lastIngestAt: null, rows: 0, lastError: o.priceOverridesError, state: 'error' });
+      return { ...result, ...(loop ? { loop: loop() } : {}) };
+    },
     prices: async () => read.prices((await options()).overrides),
     setPriceOverride: async i => {
       const overrides = (await options()).overrides;
-      if (i.rates === null) delete overrides[i.model]; else overrides[i.model] = i.rates;
+      if (i.rates === null) delete overrides[i.model]; else overrides[i.model] = { ...overrides[i.model], ...i.rates };
       const priceOverrides = JSON.stringify(overrides); parseOverrides(priceOverrides);
       await settings.experimental_set({ priceOverrides }); bb.rpc.experimental_invalidate(['usage']); return { ok: true };
     },
