@@ -6,12 +6,14 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,readFileSync,renameSync} from 'node:fs';
-import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,stat,appendFile} from 'node:fs/promises';
 import {join,resolve,relative,isAbsolute,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 
-const baseUrl=(process.env.LM_BASE_URL||'').replace(/\/+$/,'');
-if(!baseUrl){process.stderr.write('The local model server is not configured.\n');process.exit(1);}
+// LM_BASE_URL may list several servers, separated by commas or spaces; each model is served by the server that lists it.
+const baseUrls=(process.env.LM_BASE_URL||'').split(/[\s,]+/).filter(Boolean).map(url=>url.replace(/\/+$/,''));
+const baseUrl=baseUrls.join(', ');
+if(!baseUrls.length){process.stderr.write('The local model server is not configured.\n');process.exit(1);}
 const dataDir=process.env.LM_BB_DATA_DIR||join(tmpdir(),'local-models-bb');
 const permissionMode=process.argv.slice(2).find(arg=>arg.startsWith('--bb-permission-mode='))?.split('=')[1];
 if(!['full','accept-edits'].includes(permissionMode))throw Error('Unsupported or missing permission mode.');
@@ -23,12 +25,17 @@ const FIRST_BYTE_MS=env('LM_FIRST_BYTE_TIMEOUT_MS',20*60000),IDLE_MS=env('LM_IDL
 const RETRY_MS=env('LM_RETRY_DELAY_MS',5000),MAX_STEPS=env('LM_MAX_STEPS',60),OUTPUT_LIMIT=30000;
 mkdirSync(join(dataDir,'sessions'),{recursive:true,mode:0o700});
 const sessions=new Map(),clientPending=new Map();let clientNext=0;
-const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
+const write=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
+// Streamed text is coalesced per kind (<=50 ms); every other outgoing message flushes it first, so the order is kept.
+let pend=null,pendTimer=0;
+const flushText=()=>{clearTimeout(pendTimer);pendTimer=0;const p=pend;pend=null;if(p)write({method:'session/update',params:{sessionId:p.sessionId,update:{sessionUpdate:p.kind,content:{type:'text',text:p.text}}}});};
+const send=value=>{flushText();write(value);};
+const streamText=(sessionId,kind,text)=>{if(pend&&(pend.kind!==kind||pend.sessionId!==sessionId))flushText();(pend??={sessionId,kind,text:''}).text+=text;pendTimer||=setTimeout(flushText,50);};
 const fail=(id,message,code=-32602)=>send({id,error:{code,message}});
 const update=(sessionId,value)=>send({method:'session/update',params:{sessionId,update:value}});
 const minutes=ms=>ms<60000?Math.round(ms/1000)+' s':Math.round(ms/6000)/10+' min';
 const clip=text=>text.length<=OUTPUT_LIMIT?text:text.slice(0,OUTPUT_LIMIT/2)+'\n[... '+(text.length-OUTPUT_LIMIT)+' characters omitted ...]\n'+text.slice(-OUTPUT_LIMIT/2);
-const label=id=>{const [name,quant]=(id.split('/').at(-1)||id).split(':');return name.replace(/-GGUF$/i,'')+(quant?' ('+quant+')':'');};
+const label=id=>{const [name,quant]=(id.split('/').at(-1)||id).split(':');return name.replace(/-GGUF$/i,'')+(quant?' ('+quant+')':'')+(id.startsWith('splash/')?' · Splash':'');};
 function contextOf(model){
   const args=model.status?.args,index=Array.isArray(args)?args.indexOf('--ctx-size'):-1;
   // The --ctx-size the router loads with is the real limit; context_length is the trained one.
@@ -51,24 +58,30 @@ function reasoningParams(caps, effort) {
   return !level || !caps.knob ? {} : caps.knob === 'reasoning_effort' ? { reasoning_effort: level } : { chat_template_kwargs: { reasoning_strength: level } };
 }
 
+const failedProps=new Set();
 async function modelCaps(modelId,signal){
+  if(failedProps.has(modelId))return;
   if(capsCache[modelId])return capsCache[modelId];
   try{
-    const response=await fetch(baseUrl.replace(/\/v1$/,'')+'/props?model='+encodeURIComponent(modelId),{signal});
-    if(!response.ok)return;
+    const response=await fetch(serverOf(modelId).replace(/\/v1$/,'')+'/props?model='+encodeURIComponent(modelId),{signal});
+    if(!response.ok){await response.body?.cancel();failedProps.add(modelId);return;}
     const caps=deriveCaps(await response.json());capsCache[modelId]=caps;
     try{const file=join(dataDir,'model-caps.json'),temp=file+'.'+process.pid+'.tmp';writeFileSync(temp,JSON.stringify(capsCache),{mode:0o600});renameSync(temp,file);}catch{}
     return caps;
-  }catch{return;}
+  }catch{if(!signal.aborted)failedProps.add(modelId);return;}
 }
 let models=[];
+const visibleModels=()=>{const variants=new Set(models.filter(m=>m.value.startsWith('splash/')).map(m=>m.value.slice(7)));return process.env.LM_SPLASH==='1'?models.filter(m=>!variants.has(m.value)):models;};
+const serverOf=id=>models.find(model=>model.value===id)?.base??baseUrls[0];
 // Re-read while empty, so a router that was down when BB started this agent does not need a restart.
 async function loadModels(){
   if(models.length)return models;
-  models=await fetch(baseUrl+'/models',{signal:AbortSignal.timeout(10000)})
+  const lists=await Promise.all(baseUrls.map(base=>fetch(base+'/models',{signal:AbortSignal.timeout(10000)})
     .then(response=>response.ok?response.json():{data:[]})
-    .then(body=>(Array.isArray(body?.data)?body.data:[]).filter(model=>typeof model?.id==='string'&&model.id).map(model=>({value:model.id,name:label(model.id),ctx:contextOf(model)})))
-    .catch(()=>[]);
+    .then(body=>(Array.isArray(body?.data)?body.data:[]).filter(model=>typeof model?.id==='string'&&model.id).map(model=>({value:model.id,name:label(model.id),ctx:contextOf(model),base})))
+    .catch(()=>[])));
+  // The first server wins on duplicate ids.
+  models=lists.flat().filter((model,index,all)=>all.findIndex(other=>other.value===model.value)===index);
   return models;
 }
 
@@ -144,12 +157,14 @@ function save(session){
   writeFileSync(temporary,JSON.stringify({version:2,id,cwd,selected,effort,messages,usage,instructions}),{mode:0o600});renameSync(temporary,file);
 }
 function config(session){
-  const caps=capsCache[session.selected],levels=caps?[...(caps.none?['none']:[]),...caps.levels]:['low','medium','high'];
+  const caps=capsCache[session.selected],levels=caps?(caps.none||caps.levels.length?[...(caps.none?['none']:[]),...caps.levels]:['none']):['low','medium','high'];
   return {configOptions:[
-    {id:'model',name:'Model',category:'model',type:'select',currentValue:session.selected,options:models.map(m=>({value:m.value,name:m.name}))},
+    {id:'model',name:'Model',category:'model',type:'select',currentValue:session.selected,options:visibleModels().map(m=>({value:m.value,name:m.name}))},
     {id:'thought_level',name:'Reasoning effort',category:'thought_level',type:'select',currentValue:levels.includes(session.effort)?session.effort:nearest(levels,session.effort)??levels[0],options:levels.map(value=>({value,name:value==='xhigh'?'Extra high':value[0].toUpperCase()+value.slice(1)}))},
   ]};
 }
+// Token journal for other plugins (see usage-log.ts, which owns rotation); best effort, never fails a turn.
+const journal=(session,usage,started,firstAt)=>appendFile(join(dataDir,'usage.jsonl'),JSON.stringify({id:randomUUID(),ts:Date.now(),source:'thread',threadId:null,providerThreadId:session.id,model:session.selected,engine:String(session.selected).startsWith('splash/')?'splash':'llama',promptTokens:Number(usage.prompt_tokens)||0,cachedTokens:Number(usage.prompt_tokens_details?.cached_tokens)||0,completionTokens:Number(usage.completion_tokens)||0,reasoningTokens:usage.completion_tokens_details?.reasoning_tokens??null,durationMs:Date.now()-started,ttftMs:firstAt?firstAt-started:null})+'\n',{mode:0o600}).catch(()=>{});
 function emitUsage(session){if(session.usage)update(session.id,{sessionUpdate:'usage_update',...session.usage});}
 function getSession(id){const session=sessions.get(id);if(!session)throw Error('Unknown session.');return session;}
 function userContent(parts){
@@ -175,7 +190,7 @@ function takeInstructions(session,content){
   session.instructions=content.slice(0,end+22);
   return content.slice(end+22).trimStart();
 }
-const sleep=(ms,signal)=>new Promise(done=>{const timer=setTimeout(done,ms);signal.addEventListener('abort',()=>{clearTimeout(timer);done();},{once:true});});
+const sleep=(ms,signal)=>new Promise(done=>{const abort=()=>{clearTimeout(timer);done();},timer=setTimeout(()=>{signal.removeEventListener('abort',abort);done();},ms);signal.addEventListener('abort',abort,{once:true});});
 const reasonOf=error=>String(error?.cause?.code||error?.cause?.message||error?.message||error);
 // One streamed chat completion. Every failure mode ends in a thrown Error with a readable reason.
 async function streamCompletion(body,signal,onChunk,deadline){
@@ -187,8 +202,9 @@ async function streamCompletion(body,signal,onChunk,deadline){
     arm(Math.max(0,deadline-Date.now()),'the model server sent nothing for '+minutes(FIRST_BYTE_MS)+' (model load or prompt processing took too long)');
     try{
       let response;
-      try{response=await fetch(baseUrl+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:controller.signal});}
-      catch(error){const code=reasonOf(error);throw Error(reason||(/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(code)?'cannot reach the model server at '+baseUrl:'the model server dropped the connection')+' ('+code+')');}
+      const base=serverOf(body.model);
+      try{response=await fetch(base+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:controller.signal});}
+      catch(error){const code=reasonOf(error);throw Error(reason||(/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(code)?'cannot reach the model server at '+base:'the model server dropped the connection')+' ('+code+')');}
       // The router answers 503 while a model is still loading; wait for it within the first-byte budget.
       if(response.status===503&&Date.now()+RETRY_MS<deadline){await response.body?.cancel().catch(()=>{});await sleep(RETRY_MS,signal);if(signal.aborted)throw Error('Cancelled.');continue;}
       if(!response.ok){
@@ -244,13 +260,17 @@ function runShell(session,command,seconds,signal){
   return new Promise(done=>{
     const child=spawn(command,{shell:true,cwd:session.cwd,env:process.env,stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
     session.children.add(child);let output='',timedOut=false;
-    const collect=chunk=>{output+=chunk;if(output.length>4*OUTPUT_LIMIT)output=output.slice(0,OUTPUT_LIMIT)+output.slice(-2*OUTPUT_LIMIT);};
+    let ended=false;
+    // After the shell exits, a background child may still hold the pipes: keep draining them (discarded) so it is not killed by SIGPIPE.
+    const collect=chunk=>{if(ended)return;output+=chunk;if(output.length>4*OUTPUT_LIMIT)output=output.slice(0,OUTPUT_LIMIT)+output.slice(-2*OUTPUT_LIMIT);};
     child.stdout.setEncoding('utf8').on('data',collect);child.stderr.setEncoding('utf8').on('data',collect);
     const timer=setTimeout(()=>{timedOut=true;stopChild(child,'SIGKILL');},Math.min(Math.max(Number(seconds)||120,1),1800)*1000);
-    const finish=(code,error)=>{clearTimeout(timer);session.children.delete(child);
+    const finish=(code,error)=>{if(ended)return;ended=true;clearTimeout(timer);session.children.delete(child);
       const note=signal.aborted?'[cancelled by the user; the command was killed]':timedOut?'[timed out]':error?'[failed to start: '+error.message+']':'[exit code '+code+']';
       done({ok:!error&&code===0&&!timedOut&&!signal.aborted,text:clip(output)+(output.endsWith('\n')||!output?'':'\n')+note});};
     child.on('error',error=>finish(null,error));child.on('close',code=>finish(code));
+    // 'close' waits for the pipes, which a background child (server &) keeps open; 'exit' plus a short grace collects trailing output.
+    child.on('exit',code=>setTimeout(()=>finish(code),200).unref());
   });
 }
 async function execute(session,name,args,signal){
@@ -258,6 +278,7 @@ async function execute(session,name,args,signal){
   if(name==='shell'){if(typeof args.command!=='string'||!args.command.trim())throw Error('command is required.');return runShell(session,args.command,args.timeout_seconds,signal);}
   if(name==='read_file'){
     if(!path)throw Error('path is required.');
+    if((await stat(path)).size>5e6)return {ok:false,text:'The file is larger than 5 MB; use shell tools (sed -n, head, grep) to read parts of it.'};
     const lines=(await readFile(path,'utf8')).split('\n'),start=Math.max(1,Math.floor(Number(args.offset)||1)),count=Math.max(1,Math.floor(Number(args.limit)||400));
     const shown=lines.slice(start-1,start-1+count).map((line,index)=>(start+index)+'\t'+line).join('\n');
     return {ok:true,text:clip(shown)+(start-1+count<lines.length?'\n[file has '+lines.length+' lines; continue with offset '+(start+count)+']':'')};
@@ -280,7 +301,7 @@ async function execute(session,name,args,signal){
   }
   const route=session.mcpRoutes?.get(name);
   if(!route)throw Error('Unknown tool '+name+'.');
-  const result=await route.client.request('tools/call',{name:route.tool,arguments:args},signal);
+  const result=await route.client.request('tools/call',{name:route.tool,arguments:args},signal,env('LM_MCP_TIMEOUT_MS',10*60000));
   const text=(Array.isArray(result?.content)?result.content:[]).map(part=>part?.type==='text'?part.text:JSON.stringify(part)).join('\n')||JSON.stringify(result?.structuredContent??result??null);
   return {ok:!result?.isError,text:clip(String(text))};
 }
@@ -316,7 +337,6 @@ async function runTurn(session,signal,progress){
     if(session.usage && session.usage.used>0.7*session.usage.size){
       const users=session.messages.map((m,i)=>m.role==='user'?i:-1).filter(i=>i>=0),cut=users.at(-2)??0;
       for(let i=0;i<cut;i++)if(session.messages[i].role==='tool'&&session.messages[i].content?.length>200)session.messages[i].content='[old tool output removed to save context]';
-      save(session);
     }
     const reply={content:'',calls:[],finish:null,usage:null};progress.reply=reply;
     const deadline=Date.now()+FIRST_BYTE_MS,waitingId='lm-'+randomUUID();let waiting=false,real=false,lastProgress=0;
@@ -328,9 +348,10 @@ async function runTurn(session,signal,progress){
     const body={model:session.selected,stream:true,stream_options:{include_usage:true},return_progress:true,
       // The BB block lists ~34 absolute SKILL.md paths; without this trailing reminder LFM2.5 opened them first in 5 of 20 runs (0 of 20 with it).
       messages:[{role:'system',content:session.system+(session.instructions?'\n\n'+session.instructions+'\n\nReminder: the task is in the workspace '+session.cwd+'. The SKILL.md paths above are reference docs; open one only if the task needs it.':'')},...session.messages],tools,...reasoningParams(caps,session.effort)};
+    const started=Date.now();let firstAt=0;
     await streamCompletion(body,signal,event=>{
       const d=event.choices?.[0]?.delta;
-      if(d&&(d.content||d.reasoning_content||d.tool_calls?.length)){real=true;finishWait('completed');}
+      if(d&&(d.content||d.reasoning_content||d.tool_calls?.length)){firstAt||=Date.now();real=true;finishWait('completed');}
       if(waiting&&event.prompt_progress&&Date.now()-lastProgress>=2000){
         lastProgress=Date.now();const p=event.prompt_progress;
         const percent=Math.round(100*(p.processed??0)/(p.total||1));
@@ -339,11 +360,11 @@ async function runTurn(session,signal,progress){
       if(event.usage)reply.usage=event.usage;
       const choice=event.choices?.[0];if(!choice)return;
       const delta=choice.delta||{};
-      if(typeof delta.reasoning_content==='string'&&delta.reasoning_content)update(session.id,{sessionUpdate:'agent_thought_chunk',content:{type:'text',text:delta.reasoning_content}});
+      if(typeof delta.reasoning_content==='string'&&delta.reasoning_content)streamText(session.id,'agent_thought_chunk',delta.reasoning_content);
       if(typeof delta.content==='string'&&delta.content){
         const text=(progress.hadText&&!reply.content?'\n\n':'')+delta.content;
         reply.content+=delta.content;progress.hadText=true;
-        update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text}});
+        streamText(session.id,'agent_message_chunk',text);
       }
       for(const part of Array.isArray(delta.tool_calls)?delta.tool_calls:[]){
         const slot=reply.calls[part.index??0]??={id:'',name:'',arguments:''};
@@ -353,6 +374,7 @@ async function runTurn(session,signal,progress){
       }
       if(choice.finish_reason)reply.finish=choice.finish_reason;
     },deadline);finishWait('completed');
+    if(reply.usage)journal(session,reply.usage,started,firstAt);
     }catch(error){finishWait('failed');throw error;}
     progress.reply=null;
     if(reply.usage&&model?.ctx){
@@ -400,14 +422,14 @@ function runPrompt(id,session,prompt){
 async function openSession(params,stored){
   await loadModels();
   if(!models.length)throw Error('No local models available. Start the local model server at '+baseUrl+'.');
-  const selected=models.find(m=>m.value===stored?.selected)||models.find(m=>m.value===process.env.LM_DEFAULT_MODEL)||models[0];
+  const selected=models.find(m=>m.value===stored?.selected)||visibleModels().find(m=>m.value===process.env.LM_DEFAULT_MODEL||m.value==='splash/'+process.env.LM_DEFAULT_MODEL)||visibleModels()[0];
   const cwd=params.cwd||stored?.cwd;if(typeof cwd!=='string')throw Error('No workspace available.');
   const session={id:stored?.id??randomUUID(),cwd,selected:selected.value,effort:EFFORTS.includes(stored?.effort)?stored.effort:'medium',
     // Sessions stored by the Codex-based version carry no transcript; they continue without earlier context.
     messages:Array.isArray(stored?.messages)?stored.messages:[],usage:stored?.usage??null,instructions:typeof stored?.instructions==='string'?stored.instructions:null,
     system:systemPrompt(cwd),children:new Set(),running:false,allowShell:false};
   const previous=sessions.get(session.id);if(previous){previous.abort?.abort();closeMcp(previous);}
-  attachMcp(session,params.mcpServers);save(session);sessions.set(session.id,session);
+  attachMcp(session,params.mcpServers);if(!stored)save(session);sessions.set(session.id,session);
   return session;
 }
 async function handle(request){

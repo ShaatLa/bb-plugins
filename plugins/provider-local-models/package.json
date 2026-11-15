@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-local-models",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "bb": ">=0.46.1",
@@ -27,7 +27,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "@types/react": "^19.0.0"
   },
   "description": "Native BB provider for local llama.cpp models",
   "keywords": [
@@ -39,5 +40,8 @@
     "url": "https://github.com/ShaatLa/bb-plugins.git",
     "directory": "plugins/provider-local-models"
   },
-  "homepage": "https://github.com/ShaatLa/bb-plugins"
+  "homepage": "https://github.com/ShaatLa/bb-plugins",
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
 }

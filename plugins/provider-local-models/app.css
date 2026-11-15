@@ -14,3 +14,23 @@ button[aria-label*="\2063:"] > span:first-child > span:not(:first-child),
 button[aria-label*="\2063:"] > span:nth-child(2) {
   display: none;
 }
+
+.lm-settings { display: grid; gap: 1rem; font-size: .875rem; }
+.lm-settings section { border: 1px solid var(--border, #8886); border-radius: .5rem; padding: 1rem; }
+.lm-settings h3 { font-weight: 600; }
+.lm-settings p { margin: .5rem 0; }
+.lm-settings small { opacity: .75; overflow-wrap: anywhere; }
+.lm-settings a { text-decoration: underline; }
+.lm-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.lm-settings button, .lm-settings input { border: 1px solid var(--border, #8886); border-radius: .3rem; background: transparent; color: inherit; padding: .25rem .5rem; }
+.lm-settings button:not(:disabled) { cursor: pointer; }
+.lm-settings button:disabled { opacity: .5; }
+.lm-settings input { width: 8rem; }
+.lm-settings :focus-visible { outline: 2px solid var(--ring, currentColor); outline-offset: 2px; }
+.lm-table { overflow-x: auto; }
+.lm-settings table { width: 100%; border-collapse: collapse; text-align: left; }
+.lm-settings th, .lm-settings td { padding: .5rem; vertical-align: top; border-bottom: 1px solid var(--border, #8886); }
+.lm-settings pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
+.lm-settings [role="alert"] { color: var(--destructive, #c44); }
+.lm-confirm { max-width: min(36rem, 90vw); border: 1px solid var(--border, #8886); border-radius: .5rem; background: var(--background, Canvas); color: var(--foreground, CanvasText); padding: 1.5rem; }
+.lm-confirm::backdrop { background: #0008; }

@@ -18,7 +18,9 @@ cannot be disabled. Unknown capabilities send no reasoning parameters.
 `bb local-models ask "prompt" --model <id> --effort medium --max-tokens 1024
 --timeout 20m [--system "text"] [--json]` is a one-shot request without tools.
 `local_models_ask` offers the same task to agents (20-minute timeout), except
-local-models threads, to avoid recursive GPU requests. `bb local-models unload
+local-models threads, to avoid recursive GPU requests. Both hold a Machine Slots
+`local-model` use for the request (queueing behind other local-model work) when
+the Slots plugin is installed; inside your own slots-run lease they reuse it. `bb local-models unload
 <id>` or `unload --all` releases models. Server-side commands require the router
 to be reachable from the BB server machine.
 
