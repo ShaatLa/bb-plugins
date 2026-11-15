@@ -24,6 +24,33 @@ thread costs as much as waking it.
   whatever the settings, context size or keep. It is enabled only while the thread is idle
   or failed, since bb compacts nothing else; the stop ending that compaction runs no checks.
 
+## Compact from other plugins
+
+Other plugins call these through `bb.sdk.plugins.callRpc` (plugin `idle-compact`, from 0.4.0):
+
+```
+compact { threadId, queue?: boolean } -> { ok: true, queued?: true }
+cancelQueuedCompact { threadId } -> { ok: true }
+compactState { threadId } -> { queued: boolean, running: boolean }
+```
+
+- `compact` compacts the thread now, like the header button, and is logged as `manual`.
+  Without `queue` a thread in a turn is refused, as bb refuses it.
+- With `queue: true` a thread in a turn gets the compaction at its next stop (idle or
+  failed) instead, and the call returns `queued: true`. A repeat call is a no-op, and so is
+  a call while a compaction of the thread is already running (`ok` without `queued`). The
+  request survives a plugin restart.
+- Until that compaction's own turn ends, a message that would start the thread's next turn
+  waits in bb's queue (through the `message.dispatch` hook, shown as "Idle Compact is
+  compacting the context first"), so it runs on the compacted context. A steer into the
+  running turn is not held. Send now on the waiting message bypasses the wait, as bb
+  intends; the compaction then waits for the stop after that turn.
+- A refusal other than "not idle" (a provider that cannot compact, for one) drops the
+  request and releases the waiting message.
+- `cancelQueuedCompact` drops a queued request and releases what waited on it.
+- `compactState.running` is true from the dispatch of any compaction this plugin made until
+  its turn ends. Poll it; there is no change notification.
+
 ## Limitation
 
 bb has no conditional compaction. The server checks that the thread is idle and then

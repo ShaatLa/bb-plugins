@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeMessageDispatchHookContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin, { IDLE_MS, LOG_RETENTION_MS, WARM_MS } from "./server.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -331,4 +331,73 @@ it("leaves a header compaction alone when an automatic check overlaps it", async
   h.state.used = 850_000; await h.emit("thread.idle"); await h.advance(IDLE_MS); // its turn ends, still over the threshold
   expect(h.compact).toHaveBeenCalledTimes(1);
   expect((await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items).toEqual([expect.objectContaining({ trigger: "manual", usedTokensBefore: 900_000 })]);
+});
+
+function queueing(h: Awaited<ReturnType<typeof setup>>) {
+  const call = (method: string, input: object = {}) => h.host.harness.behavior.callRpc(method, { threadId: "thr_a", ...input }) as Promise<any>;
+  const dispatch = (status = "idle", attempt: "start-turn" | "join-turn" = "start-turn") => h.host.harness.registrations.hooks["message.dispatch"]!(makeMessageDispatchHookContext({ thread: { id: "thr_a", status: status as never }, attempt }));
+  return { call, dispatch, state: () => call("compactState"), rechecks: () => h.host.harness.recheckCount };
+}
+
+it("queues a compaction during a turn, runs it at the stop before the next message, then releases that message", async () => {
+  const h = await setup({ status: "active", used: 900_000 });
+  const q = queueing(h), base = q.rechecks();
+  expect(await q.call("compact", { queue: true })).toEqual({ ok: true, queued: true });
+  expect(await q.call("compact", { queue: true })).toEqual({ ok: true, queued: true }); // a repeat is a no-op
+  expect(await q.state()).toEqual({ queued: true, running: false });
+  expect(h.compact).not.toHaveBeenCalled();
+  // A steer joins the running turn; a message that would start the next turn waits.
+  expect(await q.dispatch("active", "join-turn")).toEqual({ action: "proceed" });
+  expect(await q.dispatch("active")).toMatchObject({ action: "wait" });
+  // The turn stops: the queued compaction runs instead of the automatic checks, and the message keeps waiting on its turn.
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await q.state()).toEqual({ queued: false, running: true });
+  expect(await q.dispatch("active")).toMatchObject({ action: "wait" });
+  expect(q.rechecks()).toBe(base);
+  // Its turn ends: bb is asked to dispatch the waiting message, and nothing else is compacted.
+  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(q.rechecks()).toBe(base + 1);
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
+  expect(await q.state()).toEqual({ queued: false, running: false });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect((await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items).toEqual([expect.objectContaining({ trigger: "manual", usedTokensBefore: 900_000 })]);
+});
+
+it("compacts at once when queued on a stopped thread, and cancels a queued request", async () => {
+  const h = await setup();
+  const q = queueing(h);
+  expect(await q.call("compact", { queue: true })).toEqual({ ok: true });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await q.call("compact", { queue: true })).toEqual({ ok: true }); // already compacting: nothing more
+  await h.emit("thread.active"); await h.emit("thread.idle");
+  h.state.status = "active"; await h.emit("thread.active");
+  await q.call("compact", { queue: true });
+  const base = q.rechecks();
+  expect(await q.call("cancelQueuedCompact")).toEqual({ ok: true });
+  expect(q.rechecks()).toBe(base + 1);
+  expect(await q.dispatch("active")).toEqual({ action: "proceed" });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a queued compaction across a restart", async () => {
+  const h = await setup({ status: "active" });
+  await queueing(h).call("compact", { queue: true });
+  // The thread stopped while the plugin was down: the compaction runs on start.
+  h.state.status = "idle";
+  await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("drops a queued compaction the server refuses, so the waiting message is not stuck behind it", async () => {
+  const h = await setup({ status: "active" });
+  const q = queueing(h);
+  await q.call("compact", { queue: true });
+  h.compact.mockRejectedValueOnce(new Error("Provider does not support context compaction"));
+  const base = q.rechecks();
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  expect(await q.state()).toEqual({ queued: false, running: false });
+  expect(q.rechecks()).toBe(base + 1);
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
 });
