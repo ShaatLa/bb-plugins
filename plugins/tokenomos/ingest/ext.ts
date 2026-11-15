@@ -106,289 +106,108 @@ export function createExtSource(o: {
   const { store, db, callRpc } = o;
   const now = o.now ?? (() => Date.now());
 
-  // Track the last wall-clock time at which the hourly full compactions scan ran.
-  let lastHourlyCompactionsScan: number = 0;
+  const readCursor = (source: string) => (db.prepare("SELECT cursor FROM ext_cursor WHERE source=?").get(source) as { cursor: string } | undefined)?.cursor ?? null;
+  const writeCursor = db.prepare("INSERT OR REPLACE INTO ext_cursor(source,cursor) VALUES(?,?)");
 
-  /** Poll usage data for a single plugin (local-models or antigravity). */
-  async function pollUsage(
-    pluginId: "local-models" | "antigravity",
-  ): Promise<{ rows: UsageRow[]; available: boolean }> {
-    const rows: UsageRow[] = [];
-
-    // Capture the set of pending entry ids before pagination (retry only
-    // entries that were already pending at the start of this poll).
-    let existingPendingIds: string[] = [];
-    try {
-      const pendingRows = db.prepare(
-        "SELECT id FROM ext_pending WHERE source=? ORDER BY at LIMIT 200",
-      ).all(pluginId) as Array<{ id: string }>;
-      existingPendingIds = pendingRows.map((e) => e.id);
-    } catch {
-      // Table may not exist in tests.
-    }
-
-    let cursor: string | null = null;
-    try {
-      const cr = db.prepare("SELECT cursor FROM ext_cursor WHERE source=?").get(pluginId) as { cursor: string } | undefined;
-      if (cr && cr.cursor) cursor = cr.cursor;
-    } catch {
-      // Table may not exist yet in tests; treat cursor as null.
-    }
-
-    // Bound usage history to two pages per poll.
-    let page = 0;
-    while (page < 2) {
+  async function pollUsage(pluginId: "local-models" | "antigravity") {
+    o.signal?.throwIfAborted();
+    const rows = new Map<string, UsageRow>();
+    const pending = new Map<string, z.infer<typeof EntrySchema>>();
+    const removed = new Set<string>();
+    const retries = db.prepare("SELECT id,entry FROM ext_pending WHERE source=? ORDER BY at LIMIT 200").all(pluginId) as Array<{ id: string; entry: string }>;
+    let cursor = readCursor(pluginId);
+    const consume = (entry: z.infer<typeof EntrySchema>, id = `${pluginId}:${entry.id}`) => {
+      let threadId = entry.threadId || "";
+      if (!threadId && entry.providerThreadId) {
+        threadId = (db.prepare("SELECT thread_id FROM provider_session WHERE provider_thread_id=?").get(entry.providerThreadId) as { thread_id: string } | undefined)?.thread_id ?? "";
+      }
+      // Standalone tools/CLI calls need no identity join; thread calls wait for it.
+      if (!threadId && (entry.providerThreadId !== null || entry.source === "thread") && now() - entry.ts < 86_400_000) {
+        pending.set(id, entry);
+        return;
+      }
+      const projectId = threadId
+        ? (db.prepare("SELECT project_id FROM threads WHERE id=?").get(threadId) as { project_id: string } | undefined)?.project_id ?? ""
+        : pluginId === "local-models" ? "~local-calls" : "";
+      const row = makeUsageRow(entry, pluginId, threadId, projectId);
+      rows.set(row.key, row); pending.delete(id); removed.add(id);
+    };
+    for (const item of retries) consume(EntrySchema.parse(JSON.parse(item.entry)), item.id);
+    // Keep polling read-only: failed later pages and abandoned batches replay from the durable cursor.
+    for (let page = 0; page < 2; page++) {
       o.signal?.throwIfAborted();
       let result: unknown;
-      try {
-        result = await callRpc(
-          pluginId,
-          "usage.list",
-          { after: cursor ?? undefined, limit: 500 },
-        );
-      } catch (err: any) {
-        if (isUnavailable(err)) return { rows: [], available: false };
-        throw err;
-      }
-
+      try { result = await callRpc(pluginId, "usage.list", { ...(cursor ? { after: cursor } : {}), limit: 500 }); }
+      catch (error) { if (isUnavailable(error)) return { rows: [] as UsageRow[], available: false, commit() {} }; throw error; }
       o.signal?.throwIfAborted();
       const parsed = UsageListSchema.safeParse(result);
-      // A malformed page is a contract break, not absence: surface it in source status.
       if (!parsed.success) throw new Error(`${pluginId} usage.list returned an unexpected shape`);
-
       const data = parsed.data;
-      if (data.entries.length === 0) break;
-
-      db.transaction(() => {
-      // Save the latest non-null cursor.
-      if (data.nextCursor !== null) {
-        cursor = data.nextCursor;
-        try {
-          db.prepare("INSERT OR REPLACE INTO ext_cursor(source,cursor) VALUES(?,?)")
-            .run(pluginId, cursor);
-        } catch {
-          // Table may not exist in tests.
-        }
-      }
-
       for (const raw of data.entries) {
         const one = EntrySchema.safeParse(raw);
-        if (!one.success) continue;
-        const entry = one.data;
-        let threadId: string | null = entry.threadId;
-        let projectId = "";
-
-        // If threadId is null, try to resolve via provider_session.
-        if (threadId === null && entry.providerThreadId !== null) {
-          const session = db.prepare(
-            "SELECT thread_id FROM provider_session WHERE provider_thread_id=?",
-          ).get(entry.providerThreadId) as { thread_id: string } | undefined;
-          if (session) {
-            threadId = session.thread_id;
-          }
-        }
-
-        // Still unknown? Insert into ext_pending if younger than 24 h
-        // and has a providerThreadId (waiting to be resolved).
-        const entryAge = now() - entry.ts;
-        if (threadId === null || threadId === "") {
-          if (entryAge < 24 * 3600 * 1000 && entry.providerThreadId !== null) {
-            const pendingId = `${pluginId}:${entry.id}`;
-            try {
-              db.prepare(
-                "INSERT OR REPLACE INTO ext_pending(id,source,entry,at) VALUES(?,?,?,?)",
-              ).run(pendingId, pluginId, JSON.stringify(entry), entry.ts);
-            } catch {
-              // Table may not exist in tests.
-            }
-            continue; // skip emitting for this entry
-          } else {
-            // No providerThreadId or older than 24 h: emit immediately.
-            threadId = "";
-            projectId = pluginId === "local-models" ? "~local-calls" : "";
-          }
-        }
-
-        // Look up projectId from the threads table.
-        if (threadId !== "") {
-          const thr = db.prepare("SELECT project_id FROM threads WHERE id=?")
-            .get(threadId) as { project_id: string } | undefined;
-          if (thr) projectId = thr.project_id;
-        }
-
-        rows.push(makeUsageRow(entry, pluginId, threadId ?? "", projectId));
+        if (one.success) consume(one.data);
       }
-
-      })();
-      page++;
-      await setImmediate(undefined,{signal:o.signal});
+      if (data.nextCursor !== null) cursor = data.nextCursor;
+      await setImmediate(undefined, { signal: o.signal });
+      if (!data.entries.length || data.nextCursor === null) break;
     }
-
-    // Also retry every ext_pending entry for this plugin.
-    // Spec: on retry, resolve, emit row, delete from pending.
-    let pendingRows: UsageRow[] = [];
-    try {
-      const pendingEntries = db.prepare(
-        `SELECT * FROM ext_pending WHERE id IN (SELECT value FROM json_each(?)) ORDER BY at`,
-      ).all(JSON.stringify(existingPendingIds)) as Array<{ id: string; entry: string; at: number }>;
-
-      db.transaction(() => {
-      for (const p of pendingEntries) {
-        // Skip entries inserted on this poll (not in existing set).
-        if (!existingPendingIds.includes(p.id)) continue;
-
-        const entry = JSON.parse(p.entry) as z.infer<typeof EntrySchema>;
-        let threadId: string | null = entry.threadId;
-        let projectId = "";
-
-        // Try to resolve via provider_session if we have a providerThreadId.
-        if (threadId === null && entry.providerThreadId !== null) {
-          const session = db.prepare(
-            "SELECT thread_id FROM provider_session WHERE provider_thread_id=?",
-          ).get(entry.providerThreadId) as { thread_id: string } | undefined;
-          if (session) {
-            threadId = session.thread_id;
-          }
-        }
-
-        // If still unresolved:
-        if (threadId === null || threadId === "") {
-          // Entries with providerThreadId=null can never resolve via
-          // provider_session; emit immediately with empty threadId.
-          // Entries with providerThreadId≠null but no session match also
-          // emit on retry (per spec).
-          threadId = "";
-          projectId = pluginId === "local-models" ? "~local-calls" : "";
-        } else {
-          // Resolved via provider_session; look up projectId.
-          const thr = db.prepare("SELECT project_id FROM threads WHERE id=?")
-            .get(threadId) as { project_id: string } | undefined;
-          if (thr) projectId = thr.project_id;
-        }
-
-        pendingRows.push(makeUsageRow(entry, pluginId, threadId, projectId));
-        db.prepare("DELETE FROM ext_pending WHERE id=?").run(p.id);
-      }
-      })();
-    } catch (error) {
+    return { rows: [...rows.values()], available: true, commit() {
       o.signal?.throwIfAborted();
-      // Table may not exist in tests.
-    }
-
-    rows.push(...pendingRows);
-    return { rows, available: true };
+      const insert = db.prepare("INSERT OR REPLACE INTO ext_pending(id,source,entry,at) VALUES(?,?,?,?)");
+      for (const [id, entry] of pending) insert.run(id, pluginId, JSON.stringify(entry), entry.ts);
+      db.prepare("DELETE FROM ext_pending WHERE id IN (SELECT value FROM json_each(?))").run(JSON.stringify([...removed]));
+      if (cursor !== null) writeCursor.run(pluginId, cursor);
+    } };
   }
 
-  /** Poll compaction data from idle-compact. */
-  async function pollCompactions(): Promise<{ matched: number; available: boolean }> {
-    const MATCH_MS = 120_000; // ±2 minutes
-    let matched = 0;
-
-    let cursor: string | null = null;
-    try {
-      const cr = db.prepare("SELECT cursor FROM ext_cursor WHERE source='idle-compact'").get() as { cursor: string } | undefined;
-      if (cr && cr.cursor) cursor = cr.cursor;
-    } catch {
-      // Table may not exist in tests.
-    }
-
-    const callWithCursor = async (
-      params: Record<string, unknown>,
-    ): Promise<{ items: z.infer<typeof CompactionItemSchema>[]; nextCursor: string | null } | null> => {
-      try {
-        o.signal?.throwIfAborted();
-        const result = await callRpc("idle-compact", "compactions.list", params);
-        o.signal?.throwIfAborted();
-        const parsed = CompactionsListSchema.safeParse(result);
-        if (!parsed.success) throw new Error("idle-compact compactions.list returned an unexpected shape");
-        const items = parsed.data.items.flatMap((item) => {
-          const one = CompactionItemSchema.safeParse(item);
-          return one.success ? [one.data] : [];
-        });
-        return { items, nextCursor: parsed.data.nextCursor ?? null };
-      } catch (err: any) {
-        if (isUnavailable(err)) return null;
-        throw err;
+  async function pollCompactions() {
+    o.signal?.throwIfAborted();
+    let cursor = readCursor("idle-compact");
+    const matched = new Set<string>();
+    const match = (items: unknown[]) => {
+      let lastId: string | null = null;
+      for (const raw of items) {
+        const parsed = CompactionItemSchema.safeParse(raw);
+        if (!parsed.success) continue;
+        const item = parsed.data;
+        lastId = item.id;
+        const existing = db.prepare("SELECT id FROM compactions WHERE thread_id=? AND at BETWEEN ? AND ?")
+          .get(item.threadId, item.at - 120_000, item.at + 120_000) as { id: string } | undefined;
+        if (existing) matched.add(existing.id);
       }
+      return lastId;
     };
-
-    // Main cursor-based scan.
-    let page = 0;
-    let lastId: string | null = null;
-    while (page < 20) {
-      const data = await callWithCursor({ after: cursor ?? undefined, limit: 500 });
-      if (!data) return { matched, available: true };
-
-      const items = data.items;
-      if (items.length === 0) break;
-
-      if (items.length > 0) lastId = items[items.length - 1].id;
-
-      db.transaction(() => {
-      for (const item of items) {
-        // Look for a row in compactions with the same thread_id and at
-        // within ±MATCH_MS; set its origin to idle-compact.
-        const existing = db.prepare(
-          "SELECT id FROM compactions WHERE thread_id=? AND at BETWEEN ? AND ?",
-        ).get(
-          item.threadId,
-          item.at - MATCH_MS,
-          item.at + MATCH_MS,
-        ) as { id: string } | undefined;
-        if (existing) {
-          db.prepare("UPDATE compactions SET origin='idle-compact' WHERE id=?")
-            .run(existing.id);
-          matched++;
-        }
-      }
-
-      })();
-      page++;
-      cursor = lastId;
-      await setImmediate(undefined,{signal:o.signal});
+    const call = async (input: Record<string, unknown>) => {
+      o.signal?.throwIfAborted();
+      let result: unknown;
+      try { result = await callRpc("idle-compact", "compactions.list", input); }
+      catch (error) { if (isUnavailable(error)) return null; throw error; }
+      o.signal?.throwIfAborted();
+      const parsed = CompactionsListSchema.safeParse(result);
+      if (!parsed.success) throw new Error("idle-compact compactions.list returned an unexpected shape");
+      return parsed.data;
+    };
+    for (let page = 0; page < 20; page++) {
+      const data = await call({ ...(cursor ? { after: cursor } : {}), limit: 500 });
+      if (!data) return { matched: 0, available: false, commit() {} };
+      const lastId = match(data.items);
+      // The last non-null page cursor is durable only when its matches are committed.
+      cursor = data.nextCursor ?? lastId ?? cursor;
+      await setImmediate(undefined, { signal: o.signal });
+      if (!data.items.length || data.nextCursor == null) break;
     }
-
-    // Save cursor for the next poll.
-    if (lastId !== null) {
-      try {
-        db.prepare("INSERT OR REPLACE INTO ext_cursor(source,cursor) VALUES(?,?)")
-          .run("idle-compact", lastId);
-      } catch {
-        // Table may not exist in tests.
-      }
+    const scanAt = now();
+    let scanned = false;
+    if (scanAt - (store.getCursor<number>("ext-compactions-overlap") ?? 0) >= 3_600_000) {
+      const overlap = await call({ since: scanAt - 7_200_000, limit: 500 });
+      if (overlap) { match(overlap.items); scanned = true; }
     }
-
-    // Hourly full scan: also call with a since parameter every hour.
-    const currentNow = now();
-    if (currentNow - lastHourlyCompactionsScan >= 3_600_000) {
-      lastHourlyCompactionsScan = currentNow;
-      try {
-        const hourlyData = await callWithCursor({
-          since: currentNow - 7_200_000,
-          limit: 500,
-        });
-        if (hourlyData) {
-          for (const item of hourlyData.items) {
-            const existing = db.prepare(
-              "SELECT id FROM compactions WHERE thread_id=? AND at BETWEEN ? AND ?",
-            ).get(
-              item.threadId,
-              item.at - MATCH_MS,
-              item.at + MATCH_MS,
-            ) as { id: string } | undefined;
-            if (existing) {
-              db.prepare("UPDATE compactions SET origin='idle-compact' WHERE id=?")
-                .run(existing.id);
-              matched++;
-            }
-          }
-        }
-      } catch {
-        // Ignore errors on the hourly scan; it's best-effort.
-      }
-    }
-
-    return { matched, available: true };
+    return { matched: matched.size, available: true, commit() {
+      o.signal?.throwIfAborted();
+      db.prepare("UPDATE compactions SET origin='idle-compact' WHERE id IN (SELECT value FROM json_each(?))").run(JSON.stringify([...matched]));
+      if (cursor !== null) writeCursor.run("idle-compact", cursor);
+      if (scanned) store.setCursor("ext-compactions-overlap", scanAt);
+    } };
   }
 
   return { pollUsage, pollCompactions };

@@ -114,6 +114,10 @@ beforeEach(() => {
 
 afterEach(() => db.close());
 
+function commit(batch: { rows?: UsageRow[]; commit(): void }) {
+  db.transaction(() => { if (batch.rows) createStore(db).applyRows(batch.rows); batch.commit(); })();
+}
+
 // ---- pollUsage tests ----
 
 it("paginates two pages then an empty page, saves cursor; second poll with empty page returns no rows", async () => {
@@ -182,7 +186,9 @@ it("paginates two pages then an empty page, saves cursor; second poll with empty
   expect(first.rows[1].key).toBe("lm:u2");
   expect(first.rows[2].key).toBe("lm:u3");
 
-  // Cursor should be saved to ext_cursor.
+  expect(db.prepare("SELECT cursor FROM ext_cursor WHERE source='local-models'").get()).toBeUndefined();
+  commit(first);
+  // Cursor is saved with the usage rows.
   const cr = db.prepare(
     "SELECT cursor FROM ext_cursor WHERE source='local-models'",
   ).get();
@@ -248,6 +254,7 @@ it("thread entry with providerThreadId only goes to ext_pending; provider_sessio
   const first = await src.pollUsage("local-models");
   expect(first.rows).toHaveLength(0);
 
+  commit(first);
   // Verify entry is in ext_pending.
   const pending = db.prepare(
     "SELECT * FROM ext_pending WHERE source='local-models'",
@@ -273,7 +280,9 @@ it("thread entry with providerThreadId only goes to ext_pending; provider_sessio
   expect(second.rows[0].threadId).toBe("resolved-thread");
   expect(second.rows[0].projectId).toBe("proj-x");
 
-  // Entry should be deleted from ext_pending.
+  expect(db.prepare("SELECT COUNT(*) n FROM ext_pending").get()).toEqual({n:1});
+  commit(second);
+  // Entry is deleted only with its applied usage row.
   const pendingAfter = db.prepare(
     "SELECT * FROM ext_pending WHERE source='local-models'",
   ).all();
@@ -390,6 +399,8 @@ it("pollCompactions matches a compaction within 2 minutes", async () => {
   expect(result.matched).toBe(1);
   expect(result.available).toBe(true);
 
+  expect(db.prepare("SELECT origin FROM compactions WHERE id='c1'").get()).toEqual({ origin:'bb' });
+  commit(result);
   // Verify origin was updated.
   const c = db.prepare("SELECT origin FROM compactions WHERE id='c1'").get();
   expect(c).toEqual({ origin: "idle-compact" });
@@ -443,7 +454,7 @@ it("compactions.list without nextCursor and with a malformed item still matches 
   db.prepare("INSERT INTO compactions (id, thread_id, at) VALUES ('c1', 'thr_live', 1_050_000)").run();
   const ext = createExtSource({ store: createStore(db), db, callRpc: fake.call, now: () => 2_000_000 });
   const result = await ext.pollCompactions();
-  expect(result).toEqual({ matched: 1, available: true });
+  expect(result).toMatchObject({ matched: 1, available: true });
 });
 it('caps usage at two pages and retries at most 200 pending entries per poll',async()=>{
   const entry=(id:string):UsageEntry=>({id,ts:100,source:'thread',threadId:'t',providerThreadId:null,model:'m',promptTokens:1,cachedTokens:0,completionTokens:0,reasoningTokens:null});
@@ -453,9 +464,104 @@ it('caps usage at two pages and retries at most 200 pending entries per poll',as
     return {entries:Array.from({length:500},(_,i)=>entry(`${after+i+1}`)),nextCursor:String(after+500)};
   });
   const s=createExtSource({db,store:createStore(db),callRpc});
-  const first=await s.pollUsage('local-models');expect(callRpc).toHaveBeenCalledTimes(2);expect(first.rows).toHaveLength(1200);
+  const first=await s.pollUsage('local-models');expect(callRpc).toHaveBeenCalledTimes(2);expect(first.rows).toHaveLength(1200);commit(first);
   expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:50});
   expect(db.prepare('SELECT cursor FROM ext_cursor').get()).toEqual({cursor:'1000'});
-  const second=await s.pollUsage('local-models');expect(second.rows).toHaveLength(1050);
+  const second=await s.pollUsage('local-models');expect(second.rows).toHaveLength(1050);commit(second);
   expect(callRpc.mock.calls[2][2]).toMatchObject({after:'1000'});
+});
+
+const usageEntry = (over: Partial<UsageEntry> = {}): UsageEntry => ({id:'u',ts:1_000_000,source:'thread',threadId:'t',providerThreadId:null,model:'m',promptTokens:100,cachedTokens:0,completionTokens:10,reasoningTokens:null,...over});
+
+it('replays page one when page two fails without moving the durable usage cursor',async()=>{
+  let fail=true;
+  const callRpc=vi.fn(async(_plugin:string,_method:string,input:unknown)=>{
+    const after=(input as {after?:string}).after;
+    if (!after) return {entries:[usageEntry()],nextCursor:'one'};
+    if (fail) throw new Error('page two failed');
+    return {entries:[usageEntry({id:'v'})],nextCursor:null};
+  });
+  const src=createExtSource({db,store:createStore(db),callRpc});
+  await expect(src.pollUsage('local-models')).rejects.toThrow('page two failed');
+  expect(db.prepare('SELECT * FROM ext_cursor').all()).toEqual([]);
+  expect(db.prepare('SELECT * FROM usage_raw').all()).toEqual([]);
+  fail=false;const batch=await src.pollUsage('local-models');
+  expect(batch.rows.map(r=>r.key)).toEqual(['lm:u','lm:v']);commit(batch);
+  expect(callRpc.mock.calls[2][2]).not.toHaveProperty('after');
+  expect(db.prepare('SELECT SUM(calls) n FROM thread_tokens').get()).toEqual({n:2});
+});
+
+it('replays an abandoned usage batch and rolls cursor/pending deletion back with a failed apply',async()=>{
+  const entry=usageEntry();
+  const callRpc=vi.fn(async(_plugin:string,_method:string,input:unknown)=>(input as {after?:string}).after ? {entries:[],nextCursor:null}:{entries:[entry],nextCursor:'one'});
+  const src=createExtSource({db,store:createStore(db),callRpc});
+  const abandoned=await src.pollUsage('local-models');
+  const replay=await src.pollUsage('local-models');expect(replay.rows).toEqual(abandoned.rows);
+  expect(()=>db.transaction(()=>{createStore(db).applyRows(replay.rows);replay.commit();throw new Error('crash');})()).toThrow('crash');
+  expect(db.prepare('SELECT * FROM ext_cursor').all()).toEqual([]);
+  expect(db.prepare('SELECT * FROM usage_raw').all()).toEqual([]);
+  commit(await src.pollUsage('local-models'));commit(abandoned);
+  expect(db.prepare('SELECT SUM(calls) n FROM thread_tokens').get()).toEqual({n:1});
+});
+
+it('keeps an unresolved entry across retries and assigns it when identity arrives one hour later',async()=>{
+  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(1_000_000);
+  try {
+    const entry=usageEntry({threadId:null,providerThreadId:'session'});
+    let delivered=false;
+    const src=createExtSource({db,store:createStore(db),callRpc:async()=>{
+      if (delivered) return {entries:[],nextCursor:null};
+      delivered=true;return {entries:[entry],nextCursor:'one'};
+    }});
+    commit(await src.pollUsage('local-models'));
+    const waiting=await src.pollUsage('local-models');expect(waiting.rows).toEqual([]);commit(waiting);
+    expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:1});
+    vi.setSystemTime(Date.now()+3_600_000);
+    db.prepare("INSERT INTO provider_session VALUES ('session','resolved')").run();
+    db.prepare("INSERT INTO threads(id,project_id) VALUES ('resolved','p')").run();
+    const resolved=await src.pollUsage('local-models');expect(resolved.rows[0]).toMatchObject({threadId:'resolved',projectId:'p'});
+    expect(()=>db.transaction(()=>{createStore(db).applyRows(resolved.rows);resolved.commit();throw new Error('crash');})()).toThrow('crash');
+    expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:1});
+    commit(await src.pollUsage('local-models'));
+    expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:0});
+    expect(db.prepare('SELECT thread_id FROM usage_raw').get()).toEqual({thread_id:'resolved'});
+  } finally {vi.useRealTimers();}
+});
+
+it.each(['local-models','antigravity'] as const)('emits unresolved %s usage only after 24 hours and deletes pending on commit',async(pluginId)=>{
+  const entry=usageEntry({threadId:null,providerThreadId:'missing'});let now=entry.ts;
+  let delivered=false;
+  const src=createExtSource({db,store:createStore(db),now:()=>now,callRpc:async()=>{
+    if (delivered) return {entries:[],nextCursor:null};delivered=true;return {entries:[entry],nextCursor:'one'};
+  }});
+  commit(await src.pollUsage(pluginId));now+=86_400_000-1;
+  const waiting=await src.pollUsage(pluginId);expect(waiting.rows).toEqual([]);commit(waiting);
+  now++;
+  const expired=await src.pollUsage(pluginId);expect(expired.rows).toHaveLength(1);
+  expect(expired.rows[0]).toMatchObject({threadId:'',projectId:pluginId==='local-models'?'~local-calls':''});
+  expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:1});
+  commit(expired);expect(db.prepare('SELECT COUNT(*) n FROM ext_pending').get()).toEqual({n:0});
+});
+
+it('commits compaction origins and cursor together and replays failed or abandoned polls',async()=>{
+  const item={id:'one',threadId:'t',at:1_000_000,trigger:'idle',usedTokensBefore:100,contextWindow:1000};
+  db.prepare("INSERT INTO compactions(id,thread_id,at) VALUES ('c','t',1000000)").run();
+  let fail=true;
+  const callRpc=vi.fn(async(_plugin:string,_method:string,input:unknown)=>{
+    if (!(input as {after?:string}).after) return {items:[item],nextCursor:'one'};
+    if (fail) throw new Error('compaction page two failed');
+    return {items:[],nextCursor:null};
+  });
+  const src=createExtSource({db,store:createStore(db),callRpc,now:()=>1_000_000});
+  await expect(src.pollCompactions()).rejects.toThrow('compaction page two failed');
+  expect(db.prepare('SELECT * FROM ext_cursor').all()).toEqual([]);
+  expect(db.prepare('SELECT origin FROM compactions').get()).toEqual({origin:'bb'});
+  fail=false;const abandoned=await src.pollCompactions();const replay=await src.pollCompactions();
+  expect(replay.matched).toBe(abandoned.matched);
+  expect(()=>db.transaction(()=>{replay.commit();throw new Error('crash');})()).toThrow('crash');
+  expect(db.prepare('SELECT * FROM ext_cursor').all()).toEqual([]);
+  expect(db.prepare('SELECT origin FROM compactions').get()).toEqual({origin:'bb'});
+  commit(await src.pollCompactions());
+  expect(db.prepare('SELECT cursor FROM ext_cursor').get()).toEqual({cursor:'one'});
+  expect(db.prepare('SELECT origin FROM compactions').get()).toEqual({origin:'idle-compact'});
 });

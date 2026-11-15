@@ -11,8 +11,8 @@ import type { createBbEvents } from './bb-events';
 type ThreadResponse = ThreadDtoLike & { createdAt: number; environmentId?: string | null; providerThreadId?: string | null };
 type BbEvents = Omit<Pick<ReturnType<typeof createBbEvents>, 'flushThread' | 'coverage'>, 'flushThread'> & { onRowsApplied(rows: UsageRow[]): void; flushThread(id: string, fallback: boolean): Promise<{ rows: UsageRow[]; candidates: UsageRow[]; touched: boolean; more?: boolean }> };
 type Ext = {
-  pollUsage(id: 'local-models' | 'antigravity'): Promise<{ rows: UsageRow[]; available: boolean }>;
-  pollCompactions(): Promise<{ matched: number; available: boolean }>;
+  pollUsage(id: 'local-models' | 'antigravity'): Promise<{ rows: UsageRow[]; available: boolean; commit?(): void }>;
+  pollCompactions(): Promise<{ matched: number; available: boolean; commit?(): void }>;
 };
 type Source = { source: SourceId; since_ts: number; state: string };
 type Batch = { rows: UsageRow[]; commit?(): void };
@@ -232,7 +232,11 @@ export function createScheduler(o: {
         status(source,null,result.available ? 'ok' : 'unavailable');
       } catch (e) { fail(source,e); }
     }
-    try { const result = await sources!.ext.pollCompactions(); if (!stopped && result.matched) invalidate(); } catch (e) { fail('compactions',e); }
+    try {
+      const result = await sources!.ext.pollCompactions();
+      await apply([{ rows:[], commit:result.commit }], signal);
+      if (!stopped && result.matched) invalidate();
+    } catch (e) { fail('compactions',e); }
   }
   async function* backfill(signal: AbortSignal) {
     type Cursor = { done: boolean; after?: { createdAt: number; id: string } };
