@@ -45,6 +45,13 @@ it('keeps fallback after raw expiry and exposes why',async()=>{
   s.file.flushThread.mockResolvedValue({rows:[row()],parseErrors:0,commit:vi.fn(),more:undefined});await s.emit();await s.step();
   expect(s.source()).toMatchObject({source:'bb-events'});expect(s.total()).toBe(100);expect(s.db.prepare('SELECT last_error FROM source_status WHERE source=?').get('bb-events')).toEqual({last_error:'Source switch deferred: raw rows have expired'});
 });
+it('does not degrade while a large transcript is still being caught up (more: true)',async()=>{
+  const s=setup();
+  s.events.flushThread.mockResolvedValueOnce({rows:[],candidates:[row({key:'bb',ts:900_000,source:'bb-events'})],touched:true});
+  s.events.coverage.mockResolvedValue({uncoveredStreak:3,firstUncoveredStart:900_000,lastCoveredTurnStart:null});
+  s.file.flushThread.mockResolvedValue({rows:[row({key:'old',ts:100_000})],parseErrors:0,commit:vi.fn(),more:true});
+  await s.emit();await s.step();expect(s.source()).toMatchObject({state:'ok'});
+});
 it('opens and closes degraded intervals without counting a later transcript of the same call twice',async()=>{
   const s=setup();
   s.events.flushThread.mockResolvedValueOnce({rows:[],candidates:[row({key:'bb',ts:900_000,source:'bb-events'})],touched:true});

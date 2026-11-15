@@ -183,7 +183,8 @@ export function createScheduler(o: {
       await applyCandidates(id, signal);
       // Recompute after applying file rows, so this batch can prevent a false degradation.
       const after = coverage && await sources!.bbEvents.coverage(id);
-      if (after && current(id)!.state !== 'degraded' && !covered && after.uncoveredStreak >= 3 && after.firstUncoveredStart !== null) {
+      // Judge coverage only once the file is fully read: a large transcript still being caught up looks "uncovered".
+      if (after && fileBatch && !fileBatch.more && current(id)!.state !== 'degraded' && !covered && after.uncoveredStreak >= 3 && after.firstUncoveredStart !== null) {
         const from = retained(id) ? after.firstUncoveredStart : Date.now();
         db.transaction(() => {
           db.prepare('INSERT OR IGNORE INTO source_interval VALUES (?,?,?)').run(id,0,sourceId);
