@@ -224,7 +224,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
   // files), without time or buttons; a click goes to the question.
-  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground").replace("py-2.5", "py-1.5")} flex cursor-pointer items-center gap-1.5 text-left hover:text-foreground`} onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate">{echoLine(member.question)}</span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
+  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground").replace("py-2.5", "py-1.5")} flex cursor-pointer items-center gap-1.5 text-left hover:text-foreground`} onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate [&_a]:pointer-events-none"><UserText text={echoLine(member.question)} prefixes={workBoard?.projects.map(p => p.prefix)} /></span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | 'robot' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null), robotButton = useRef<HTMLButtonElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
@@ -442,10 +442,12 @@ export function InlineCommentText({ text, prefixes }: { text: string; prefixes?:
     ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><Markdown content={part.text} /></div></div>
     : <div key={`t${index}`}><UserText text={part.text} prefixes={prefixes} /></div>)}</div>;
 }
-// One plain line for a question's echo: the owner's own words before any quote they replied to, without Markdown marks.
+// One line for a question's echo: the owner's own words (before any quote they replied to, or their inline comment), without
+// block and emphasis marks; mentions, links and task keys stay for UserText to draw as in the full bubble.
 export function echoLine(text: string) {
-  const lines = text.split('\n').filter(line => line.trim()), line = lines.find(l => !/^\s*>/.test(l)) ?? lines[0]?.replace(/^\s*(?:>\s?)+/, '') ?? '';
-  return line.replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/(\*\*|__|~~|`)(.+?)\1/g, '$2').replace(/(^|[^*\w])[*_]([^*_\n]+)[*_](?=[^*\w]|$)/g, '$1$2').trim();
+  const parsed = parseInlineComments(text), own = parsed.text || parsed.comments.map(c => c.comment).find(Boolean) || parsed.comments[0]?.passage || '';
+  const lines = own.split('\n').filter(line => line.trim() && !/^\s*(?:`{3,}|~{3,})/.test(line)), line = lines.find(l => !/^\s*>/.test(l)) ?? lines[0]?.replace(/^\s*(?:>\s?)+/, '') ?? '';
+  return line.replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/, '').replace(/(\*\*|__|~~|`)(.+?)\1/g, '$2').replace(/(^|[^*\w])[*_]([^*_\n]+)[*_](?=[^*\w]|$)/g, '$1$2').trim();
 }
 // Pool replies and quote replies are Markdown with '> ' quote lines; show those as quote bars, the rest as plain text.
 export function quoteSegments(text: string) {

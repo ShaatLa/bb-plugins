@@ -115,6 +115,16 @@ it('shows one reply that answers an older question and a new one once, echoing t
   const home = document.querySelector('[data-history-ids="ans_new ans_old:answer"]')!;
   expect(home.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question');
 });
+it('echoes a quoted reply with a mention as the owner\'s words, the mention drawn like in the full bubble', async () => {
+  const older = { ...base, id:'ans_old', question:'> **Tasks / Work Board** | No\n\nCan we ask @thread:thr_fpf to do it?', questionSeq:1, answer:'Shared reply', answerSeq:50, createdAt:asked, answeredAt:asked + 40 * minute };
+  const newer = { ...base, id:'ans_new', question:'New question', questionSeq:5, answer:'Shared reply', answerSeq:50, createdAt:asked + 39 * minute, answeredAt:asked + 40 * minute };
+  const { slot, recipients } = setup({ list: () => ({ items:[newer, older, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('New question');
+  const echo = document.querySelector('button[title="Go to the question"]')!;
+  expect(echo.textContent).not.toContain('**'); expect(echo.textContent).not.toContain('>');
+  // The mention goes through bb's Markdown (a pill in the app), not as bare text.
+  expect(echo.querySelector('[data-testid="bb-markdown"]')?.textContent).toBe('@thread:thr_fpf'); expect(echo.textContent).toBe('Can we ask @thread:thr_fpf to do it?');
+});
 it('notes the files of an echoed question on its bubble', async () => {
   const older = { ...base, id:'ans_old', question:'Older question', questionSeq:1, attachments:[{ type:'localFile' as const, path:'a.log', name:'a.log' }, { type:'localFile' as const, path:'b.log', name:'b.log' }], answer:'Shared reply', answerSeq:50, createdAt:asked, answeredAt:asked + 40 * minute };
   const newer = { ...base, id:'ans_new', question:'New question', questionSeq:5, answer:'Shared reply', answerSeq:50, createdAt:asked + 39 * minute, answeredAt:asked + 40 * minute };

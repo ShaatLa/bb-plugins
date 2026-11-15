@@ -567,11 +567,23 @@ it('splits quote lines from plain text in user messages', async () => {
   expect(quoteSegments('> 1. **Bold**\n\nMy note\n\n> 2. Next\n> line')).toEqual([{ quote:true, text:'1. **Bold**' }, { quote:false, text:'My note' }, { quote:true, text:'2. Next\nline' }]);
   expect(quoteSegments('plain only')).toEqual([{ quote:false, text:'plain only' }]);
 });
-it('echoes a question as one plain line: the owner\'s words first, Markdown marks dropped', async () => {
+it.each([
+  ['the owner\'s words after a quote they replied to', '> **Tasks / Work Board** | No\n\nCan we ask @thread:thr_a?\n\n> more', 'Can we ask @thread:thr_a?'],
+  ['a quote alone, without its marks', '> **Tasks / Work Board** | No', 'Tasks / Work Board | No'],
+  ['a nested quote', '> > deep *quote*', 'deep quote'],
+  ['emphasis, code and strike-through', '**bold**, __strong__, *em*, _it_, `code` and ~~old~~ but snake_case_name', 'bold, strong, em, it, code and old but snake_case_name'],
+  ['links, mentions, thread links and task keys kept for UserText', 'see [docs](https://x.y), @thread:thr_b#msg=4, https://bb.local/threads/thr_c and ANS-12', 'see [docs](https://x.y), @thread:thr_b#msg=4, https://bb.local/threads/thr_c and ANS-12'],
+  ['a heading', '## Title here', 'Title here'],
+  ['a bullet', '- first point\n- second', 'first point'],
+  ['a numbered item', '3) third', 'third'],
+  ['a code fence', '```ts\nconst a = 1;\n```', 'const a = 1;'],
+  ['the first non-empty line', '\n\n  first line  \nsecond', 'first line'],
+  ['an inline comment', 'Context for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> Quoted passage\n\nTheir comment on it: My **comment**', 'My comment'],
+  ['own words next to an inline comment', 'Look here @short\nContext for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> Quoted passage\n\nTheir comment on it: My comment', 'Look here'],
+  ['nothing but attachments', '', ''],
+])('echoes %s', async (_, text, expected) => {
   const { echoLine } = await import('./app');
-  expect(echoLine('> **Tasks / Work Board** | No\n\nCan we ask @thread:thr_a?\n\n> more')).toBe('Can we ask @thread:thr_a?');
-  expect(echoLine('> **Tasks / Work Board** | No')).toBe('Tasks / Work Board | No');
-  expect(echoLine('- see [docs](https://x.y) and `code`, *em* or snake_case_name')).toBe('see docs and code, em or snake_case_name');
+  expect(echoLine(text)).toBe(expected);
 });
 
 it('debounces history search queries', async () => {
