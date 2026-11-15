@@ -4,7 +4,7 @@ Shows token usage and API-equivalent cost across BB threads for Claude Code, Cod
 
 - `server.ts`: factory. Five settings, database migrations, the daily prune (04:17), source wiring, scheduler, RPC and CLI registration.
 - `contract.ts`: public `costs.threads` and `costs.sum` schemas, UI RPC schemas, internal row types and prompt-size band edges.
-- `rpc.ts`: RPC handlers. Usage limits are cached for 60 s.
+- `rpc.ts`: RPC handlers. 
 - `cli.ts`: `bb tokenomos status` and `bb tokenomos summary`.
 - `store/`: append-only migrations, delta upserts, read aggregates, prune.
 - `ingest/`: Claude and Codex transcript sources with cursors, BB-events fallback, local-models and Antigravity `usage.list`, Idle Compact `compactions.list`, and the scheduler (5 s flush, 60 s external poll, 5 min outside-BB scan).

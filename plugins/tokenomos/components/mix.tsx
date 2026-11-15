@@ -6,7 +6,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import type { SummaryOutput } from "./types";
 
 type Component = SummaryOutput["mix"]["rows"][number]["component"];
-const num = "text-right tabular-nums";
+// Six columns share a half-width card, so numeric cells use tighter padding.
+const num = "px-1 text-right tabular-nums";
 const share = (v: number, total: number) => (total > 0 ? v / total : null);
 
 /** One thin segmented bar: widths follow the shares, a 2px gap separates parts, zero parts draw nothing. */

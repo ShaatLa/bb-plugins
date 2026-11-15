@@ -20,6 +20,13 @@ function describe(c: Cell, t: T, estimated: boolean) {
   return `${money} · ${t("tokShort", { value: fmtTokens(c.tokens, t) })} · ${t("calls.count", { n: c.calls })}`;
 }
 
+function dayRows(cells: { weekday: number }[]): number[] {
+  const present = [...new Set(cells.map((c) => c.weekday))].sort((a, b) => a - b);
+  if (present.length === 0) return [(new Date().getDay() + 6) % 7];
+  // Sunday (6) followed by Monday (0) wraps the week.
+  return present.length === 2 && present[0] === 0 && present[1] === 6 ? [6, 0] : present;
+}
+
 /** Weekday × hour grid in one hue: tint = the chosen metric relative to the busiest cell. */
 export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOutput; metric: Metric; range: Range }) {
   const t = useT();
@@ -31,8 +38,8 @@ export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOu
   const byKey = new Map(cells.map((c) => [c.weekday * 24 + c.hour, c]));
   const max = Math.max(0, ...cells.map((c) => valueOf(c, shown)));
   const busiest = cells.reduce<Cell | null>((best, c) => (valueOf(c, shown) > (best ? valueOf(best, shown) : 0) ? c : best), null);
-  // A single day only has one weekday, so only that row is drawn.
-  const days = range === "day" ? [cells[0]?.weekday ?? (new Date().getDay() + 6) % 7] : [0, 1, 2, 3, 4, 5, 6];
+  // The day range is the last 24 hours, so it spans up to two weekdays: draw only those rows, oldest first.
+  const days = range === "day" ? dayRows(cells) : [0, 1, 2, 3, 4, 5, 6];
   const show = (weekday: number, hour: number, el: HTMLElement) => setHover({ cell: byKey.get(weekday * 24 + hour) ?? null, weekday, hour, left: el.offsetLeft + el.offsetWidth / 2, top: el.offsetTop });
   const money = (v: number) => (shown === "usd" ? `${estimated ? "~" : ""}${fmtMetric(shown, v, t)}` : shown === "calls" ? t("calls.count", { n: v }) : fmtMetric(shown, v, t));
   return (

@@ -5,12 +5,11 @@ import { registerCli } from './cli.js';
 import { MIGRATIONS } from './store/schema.js';
 
 function setup() {
-  const usageLimits=vi.fn(async () => ({}));
-  const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ system:{ usageLimits }, projects:{ list: async () => [] } } });
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] } } });
   const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
   const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' }, rollupRetentionDays:{ type:'number',default:200,label:'Rollups' }, referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' }, includeOutsideBb:{ type:'boolean',default:false,label:'Outside' }, priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
   const handlers=registerRpc(bb,db,settings); registerCli(bb,handlers);
-  return { bb,harness,db,settings,usageLimits };
+  return { bb,harness,db,settings };
 }
 describe('RPC and CLI', () => {
   it('registers all contract methods, validates writes and rereads settings', async () => {
@@ -33,7 +32,7 @@ describe('RPC and CLI', () => {
     try {
       for (const priceOverrides of ['not json','{"claude-sonnet-5-5":{"input":-1}}']) {
         await settings.experimental_set({ priceOverrides });
-        for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'day',by:'provider' },topThreads:{ range:'day',offset:0,limit:50 },compactions:{ range:'day' },limits:{},prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
+        for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'day',by:'provider' },topThreads:{ range:'day',offset:0,limit:50 },compactions:{ range:'day' },prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
         const status=await harness.behavior.callRpc('status',{}) as { sources:{ id:string;lastError:string|null;state:string }[] };
         expect(status.sources.find(s => s.id==='priceOverrides')).toMatchObject({ state:'error',lastError:expect.stringContaining('Invalid priceOverrides:') });
         const prices=await harness.behavior.callRpc('prices',{}) as { entries:{ model:string;rates:{input:number};overridden:boolean }[] };
@@ -43,15 +42,6 @@ describe('RPC and CLI', () => {
       const status=await harness.behavior.callRpc('status',{}) as { sources:{ id:string }[] };
       expect(status.sources.some(s => s.id==='priceOverrides')).toBe(false);
     } finally { await harness.lifecycle.dispose(); }
-  });
-  it('coalesces and caches limits requests for 60 seconds', async () => {
-    vi.useFakeTimers(); const { harness,usageLimits }=setup();
-    try {
-      await Promise.all([harness.behavior.callRpc('limits',{}),harness.behavior.callRpc('limits',{})]);
-      expect(usageLimits).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(59_999); await harness.behavior.callRpc('limits',{}); expect(usageLimits).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(1); await harness.behavior.callRpc('limits',{}); expect(usageLimits).toHaveBeenCalledTimes(2);
-    } finally { vi.useRealTimers(); await harness.lifecycle.dispose(); }
   });
   it('runs status and summary with JSON and bounded text output', async () => {
     const { harness }=setup();

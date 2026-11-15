@@ -74,7 +74,7 @@ const L = {
     spend: "Spend (API equivalent)", money: "~$12.40", cacheHit: "Cache hit rate", pct87: "87%", delta: "+24% vs previous period",
     median: "Median thread", medianValue: "$0.42", perCall: "$0.01 per call", footnote: "~ includes list-price estimates", tokensDelta: "+18% vs previous period", callsDelta: "+23% vs previous period",
     allProjects: "All projects", projectLabel: "Project", metrics: ["Cost", "Tokens", "Calls"], calls: "Calls", callsUnit: "Interval (calls)",
-    mixTitle: "Token mix", mixSub: "where tokens go vs where money goes", mixHead: ["Component", "Tokens", "%", "Cost", "%", "$ per 1M"], mixRows: ["Input", "Cache write", "Cache read", "Output"], reasoning: "↳ reasoning tokens",
+    mixTitle: "Token mix", mixSub: "where tokens go vs where money goes", mixHead: ["Component", "Tokens", "%", "Cost", "%", "$/1M"], mixRows: ["Input", "Cache write", "Cache read", "Output"], reasoning: "↳ reasoning tokens",
     activity: "Activity by hour", busiestCost: "busiest: Sun 09:00, ~$277.00", busiestCalls: "busiest: Wed 14:00, 900 calls", tip: "~$277.00 · 5M tok. · 40 calls", wk: "Mon", children: "3 child threads",
     threadHead: ["Thread", "Calls", "Tokens", "Last 7 days", "Total"], threadSub: "Atlas · gpt-5 · Codex · 3 child threads", threadNums: ["321", "4.5M", "$1.75", "$2.50"],
     compaction: "Compaction ~", saving: "~$1.50", ownCost: "excludes the cost of the compaction itself", noPrevious: "no data for the previous period",
@@ -86,7 +86,7 @@ const L = {
     spend: "Расход (API-эквивалент)", money: "~$12,40", cacheHit: "Попадание в кэш", pct87: "87 %", delta: "+24 % к прошлому периоду",
     median: "Медианный тред", medianValue: "$0,42", perCall: "$0,01 за вызов", footnote: "~ включает оценки по прайс-листу", tokensDelta: "+18 % к прошлому периоду", callsDelta: "+23 % к прошлому периоду",
     allProjects: "Все проекты", projectLabel: "Проект", metrics: ["Расход", "Токены", "Вызовы"], calls: "Вызовы", callsUnit: "Интервал (вызовы)",
-    mixTitle: "Структура токенов", mixSub: "куда уходят токены и куда — деньги", mixHead: ["Компонент", "Токены", "%", "Стоимость", "%", "$ за 1 млн"], mixRows: ["Вход", "Запись кэша", "Чтение кэша", "Выход"], reasoning: "↳ токены рассуждений",
+    mixTitle: "Структура токенов", mixSub: "куда уходят токены и куда — деньги", mixHead: ["Компонент", "Токены", "%", "Стоимость", "%", "$/1 млн"], mixRows: ["Вход", "Запись кэша", "Чтение кэша", "Выход"], reasoning: "↳ токены рассуждений",
     activity: "Активность по часам", busiestCost: "пик: вс 09:00, ~$277,00", busiestCalls: "пик: ср 14:00, 900 вызовов", tip: "~$277,00 · 5M ток. · 40 вызовов", wk: "пн", children: "3 дочерних треда",
     threadHead: ["Тред", "Вызовы", "Токены", "Последние 7 дней", "Всего"], threadSub: "Atlas · gpt-5 · Codex · 3 дочерних треда", threadNums: ["321", "4,5M", "$1,75", "$2,50"],
     compaction: "Компакция ~", saving: "~$1,50", ownCost: "без учёта стоимости самой компакции", noPrevious: "нет данных за прошлый период",
@@ -218,11 +218,20 @@ describe.each(LANGS)("page (%s)", (lang) => {
     expect(norm((await slot.findByText(x.activity)).parentElement)).toContain(x.busiestCalls);
   });
 
-  it("shows a single row for the day range", async () => {
+  it("shows a single row when the day range covers one weekday", async () => {
     const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { heatmap: { cells: [HEAT[2]], busiest: HEAT[2] } }) });
     await slot.findByText(x.activity);
     expect(within(slot.getByRole("grid")).getAllByRole("row")).toHaveLength(1);
     expect(within(slot.getByRole("grid")).getAllByRole("row")[0]!.textContent).toContain(x.wk === "Mon" ? "Wed" : "ср");
+  });
+
+  it("draws both weekdays the last 24 hours span, Sunday before Monday", async () => {
+    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { heatmap: { cells: [HEAT[0], HEAT[1]], busiest: HEAT[1] } }) });
+    await slot.findByText(x.activity);
+    const rows = within(slot.getByRole("grid")).getAllByRole("row").map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain(x.wk === "Mon" ? "Sun" : "вс");
+    expect(rows[1]).toContain(x.wk === "Mon" ? "Mon" : "пн");
   });
 
   it("lays out the thread rows: name, then project · model · provider · children, then fixed numeric columns", async () => {

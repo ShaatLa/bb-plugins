@@ -111,7 +111,7 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
                 );
               }} />
             } />
-            {model.slots.map((s, i) => <Bar key={s.id} dataKey={s.id} stackId="usage" fill={`var(--color-${s.id})`} maxBarSize={24} shape={segment(model.slots, i)} isAnimationActive={false} />)}
+            {model.slots.map((s, i) => <Bar key={s.id} dataKey={s.id} stackId="usage" fill={`var(--color-${s.id})`} maxBarSize={56} shape={segment(model.slots, i)} isAnimationActive={false} />)}
           </BarChart>
         </ChartContainer>
       )}

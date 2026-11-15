@@ -1,5 +1,4 @@
 import type { Database } from 'better-sqlite3';
-import type { PluginBbSdk } from '@get-bb/plugin-sdk';
 import { ESTIMATED, RECOVERED, type Cost, type Range, type Saving } from '../contract.js';
 import { costUsd, ratesFor, listPrices, resolveModel, PRICE_TABLE_VERSION, type Overrides } from '../pricing/price.js';
 import { diskStats } from './prune.js';
@@ -232,27 +231,4 @@ export function status(db: Database) {
   const backfill = saved ? JSON.parse(saved.value) as {processedThreads:number;totalThreads:number;done:boolean;startedAt:number|null} : {processedThreads:0,totalThreads:0,done:false,startedAt:null};
   return { backfill, sources: sources.map(s => { const h = health.find(h => h.source === s.id); return { ...s, lastIngestAt: h?.last_ingest_at ?? s.lastIngestAt, lastError: h?.last_error ?? null, state: h?.state ?? states.find(t => t.source===s.id)?.state ?? (s.rows ? 'ok' : 'no-data') }; }),
     degradedThreads: (db.prepare("SELECT COUNT(*) AS n FROM thread_source WHERE state='degraded'").get() as { n: number }).n, disk: diskStats(db) };
-}
-type Usage = Awaited<ReturnType<PluginBbSdk['system']['usageLimits']>>;
-export function limits(db: Database, usage: Usage, now: number, overrides: Overrides = {}) {
-  const windows = [];
-  const providers: Record<string,string> = { 'claude-code': 'claude-code', codex: 'codex', 'local-models': 'local-models', antigravity: 'antigravity' };
-  for (const [provider,u] of Object.entries(usage)) {
-    if (u.status !== 'ok') continue;
-    for (const [i,w] of u.windows.entries()) {
-      const kind = typeof w.kind==='string' ? w.kind : 'custom', model = typeof w.model==='string' ? w.model : null;
-      const length = ({ 'five-hour': 5*HOUR, daily: 24*HOUR, weekly: 7*24*HOUR } as Record<string,number>)[kind];
-      const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
-      const since = length && Number.isFinite(reset) ? Math.floor((reset-length)/HOUR)*HOUR : null;
-      let byModel: { model: string; cost: Cost }[] | null = null;
-      if (since !== null && providers[provider]) {
-        const rows = db.prepare(`SELECT provider,model,tier,band,${sums} FROM usage_hourly WHERE provider=? AND hour>=? AND hour<=? GROUP BY model,tier,band`).all(providers[provider],since,now) as Group[];
-        const grouped = new Map<string,Group[]>();
-        for (const r of rows) if (!model || r.model.toLowerCase().includes(model.toLowerCase())) grouped.set(r.model,[...(grouped.get(r.model) ?? []),r]);
-        if (grouped.size || !model) byModel = [...grouped].map(([model,rs]) => ({ model,cost: combine(rs,overrides) }));
-      }
-      windows.push({ provider,id: typeof w.id==='string' ? w.id : `${provider}:${i}`,label: w.label,kind,usedPercent: w.usedPercent,resetsAt: w.resetsAt,model,since,byModel });
-    }
-  }
-  return { fetchedAt: now,windows };
 }

@@ -102,12 +102,6 @@ const heatmapCell = z.object({
   weekday: count.max(6), hour: count.max(23), usd: nullableNum, tokens: num, calls: count,
 });
 
-const limitWindow = z.object({
-  provider: z.string(), id: z.string(), label: z.string(), kind: z.string(), usedPercent: num,
-  resetsAt: z.string().nullable(), model: z.string().nullable(), since: nullableNum,
-  byModel: z.array(z.object({ model: z.string(), cost: costSchema })).nullable(),
-});
-
 export const watchlistItemSchema = z.object({
   threadId:z.string(), title:z.string(), provider:z.string(), model:z.string(), contextTokens:num,
   callsLastHour:count, readCostPerCallUsd:nullableNum, costLastHourUsd:nullableNum, lastCallAt:num,
@@ -177,11 +171,6 @@ export const rpcContract = defineRpcContract({
     tags,
     input: z.object({}),
     output: z.object({ items: z.array(z.object({ projectId: z.string(), name: z.string() })) }),
-  },
-  limits: {
-    tags,
-    input: z.object({}),
-    output: z.object({ fetchedAt: num, windows: z.array(limitWindow) }),
   },
   status: {
     tags,

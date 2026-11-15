@@ -16,8 +16,6 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     catch (error) { priceOverridesError = `Invalid priceOverrides: ${error instanceof Error ? error.message : String(error)}`; }
     return { ...s, overrides, priceOverridesError, now: Date.now() };
   };
-  let cached: { at: number; value: Awaited<ReturnType<typeof sdk.system.usageLimits>> } | undefined;
-  let pending: Promise<void> | undefined;
   let projectCache: { at: number; names: Map<string,string> } | undefined;
   let projectPending: Promise<void> | undefined;
   const projectNames = async () => {
@@ -48,14 +46,6 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
       const ids = db.prepare('SELECT DISTINCT project_id FROM usage_hourly WHERE hour>=? ORDER BY project_id')
         .all(o.now-o.rollupRetentionDays*86_400_000) as { project_id: string }[];
       return { items: ids.map(p => ({ projectId: p.project_id, name: names.get(p.project_id) ?? p.project_id })) };
-    },
-    limits: async () => {
-      const o = await options();
-      if (!cached || o.now-cached.at>=60_000) {
-        pending ??= sdk.system.usageLimits().then(value => { cached = { at: Date.now(),value }; }).finally(() => { pending = undefined; });
-        await pending;
-      }
-      return { ...read.limits(db,cached!.value,o.now,o.overrides), fetchedAt: cached!.at };
     },
     status: async () => {
       const o = await options(), result = read.status(db);

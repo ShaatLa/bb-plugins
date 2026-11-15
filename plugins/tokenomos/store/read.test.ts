@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MIGRATIONS } from './schema.js';
 import { fixture } from './fixture.js';
-import { rangeBounds, summary, threadCosts, costSum, compactionEstimate, compactionsInRange, limits, topThreads, type Effect } from './read.js';
+import { rangeBounds, summary, threadCosts, costSum, compactionEstimate, compactionsInRange, topThreads, type Effect } from './read.js';
 import { createStore } from './write.js';
 import { RECOVERED, ESTIMATED, type UsageRow } from '../contract.js';
 
@@ -110,16 +110,6 @@ it('compaction estimates survive raw expiry', () => {
   expect(compactionsInRange(db,'week',overrides,now)).toEqual(before);
   expect(summary(db,opts).compactionSavings).toEqual(before.items[0].saving);
 });
-it('joins a weekly sonnet window only to sonnet models; custom and unmatched windows have no breakdown', () => {
-  createStore(db).applyRows([row('s',{ model:'claude-sonnet-5-5' }),row('o',{ model:'claude-opus-5-5' }),row('old',{ model:'claude-sonnet-5-5',ts:now-8*24*HOUR })]);
-  const w={ id:'weekly',label:'Weekly Sonnet',kind:'weekly',model:'SoNnEt',usedPercent:20,resetsAt:new Date(now+HOUR).toISOString() };
-  const result=limits(db,{ 'claude-code': { status:'ok',accountEmail:null,planLabel:null,windows:[w,{ ...w,kind:'custom' },{ ...w,model:'missing' }] } },now);
-  expect(result.windows[0].byModel?.map(m => m.model)).toEqual(['claude-sonnet-5-5']);
-  expect(result.windows[0].byModel?.[0].cost.tokens.freshIn).toBe(100);
-  expect(result.windows[0].since).toBe(now+HOUR-7*24*HOUR);
-  expect(result.windows.slice(1).map(w => w.byModel)).toEqual([null,null]);
-});
-
 describe.skipIf(process.env.TOKENOMOS_SKIP_PERF==='1')('performance', () => {
   it('meets summary and 200-thread descendant budgets on a disk fixture', () => {
     const dir=mkdtempSync(join(tmpdir(),'tokenomos-perf-')), perfDb=new Database(join(dir,'fixture.db'));

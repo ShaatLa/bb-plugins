@@ -1,6 +1,6 @@
 ---
 name: tokenomos
-description: Read token usage and API-equivalent cost of BB threads (limits, spend by provider and model, savings estimates) with the tokenomos CLI, and call the costs.sum and costs.threads RPCs from other plugins.
+description: Read token usage and API-equivalent cost of BB threads (spend by provider and model, savings estimates) with the tokenomos CLI, and call the costs.sum and costs.threads RPCs from other plugins.
 ---
 
 # Tokenomos
@@ -62,7 +62,7 @@ const sum = await sdk.plugins.callRpc({
 
 Answers and Work Board do not call these RPCs in this version; the contract is ready for them.
 
-Other UI methods (`summary`, `topThreads`, `compactions`, `limits`, `status`, `prices`, `setPriceOverride`, `prune`) belong to the Tokenomos page and CLI. Do not build on them from another plugin.
+Other UI methods (`summary`, `topThreads`, `compactions`, `status`, `prices`, `setPriceOverride`, `prune`) belong to the Tokenomos page and CLI. Do not build on them from another plugin.
 
 ## What "partial" and "estimated" mean
 
