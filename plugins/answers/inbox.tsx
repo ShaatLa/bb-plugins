@@ -1,3 +1,4 @@
+import { setOpenChat } from './open-chat';
 import { mentionsForText } from './mentions';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -372,6 +373,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   useEffect(() => { if (!selected || !visible || !queue.length) return; const timer = setInterval(() => setQueueVersion(n => n + 1), scheduledQueue ? 5000 : 30000); return () => clearInterval(timer); }, [selected, visible, queue.length > 0, scheduledQueue]);
   const openThread = sidebarThreads.find(t => t.id === selected);
   const working = openThread ? statusOf(openThread).isWorking : false;
+  useEffect(() => setOpenChat(selected, working), [selected, working]);
   const cost = useThreadCost(selected, working);
   // What the agent does right now picks the robot's scene (thinking, typing, terminal, fixing, searching, reading, waiting).
   // Its turn over while sub-sessions still run, the agent is waiting on them, not resting.
