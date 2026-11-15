@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { CompactButton, compactAvailable } from './compact-button';
 afterEach(cleanup);
@@ -15,7 +15,7 @@ it('compacts an idle thread through Idle Compact and reports a refusal', async (
   const callRpc = vi.fn().mockRejectedValueOnce(new Error('An earlier compaction of this thread has not finished')).mockResolvedValue({ ok: true });
   const onError = vi.fn();
   const view = (status: string) => renderSlot({ component: () => <CompactButton threadId="thr_a" status={status} onError={onError} /> }, {}, { sdk: { plugins: { list: () => Promise.resolve({ plugins: [plugin()] }), callRpc } } } as any);
-  const busy = view('running'); expect((await busy.findByRole('button', { name: 'Compact' })).hasAttribute('disabled')).toBe(true); cleanup();
+  const busy = view('running'); await act(async () => {}); expect(busy.queryByRole('button')).toBeNull(); cleanup();
   const slot = view('idle'); fireEvent.click(await slot.findByRole('button', { name: 'Compact' }));
   await waitFor(() => expect(onError).toHaveBeenCalledWith('An earlier compaction of this thread has not finished'));
   expect(callRpc.mock.calls[0]![0]).toMatchObject({ pluginId: 'idle-compact', method: 'compact', input: { threadId: 'thr_a' } });
