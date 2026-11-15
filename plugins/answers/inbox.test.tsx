@@ -691,7 +691,7 @@ it('shows owed answers, collapses, jumps and confirms answered', async () => {
   const {slot,recipients} = setup({list:()=>({items:[base,old],nextCursor:null}),rpc:{owed:()=>({items:owed}),settleOwed}});
   fireEvent.click(await recipients.findByRole('option'));
   const card = within(await slot.findByRole('region',{name:'Answers owed'}));
-  expect(card.getByText('1 answers owed')).toBeTruthy(); expect(card.getByText('1h')).toBeTruthy(); expect(card.getByText('Older question')).toBeTruthy();
+  expect(card.getByText('1 answer owed')).toBeTruthy(); expect(card.getByText('1h')).toBeTruthy(); expect(card.getByText('Older question')).toBeTruthy();
   fireEvent.click(card.getByRole('button',{name:'Toggle answers owed'})); expect(card.queryByRole('button',{name:'Jump'})).toBeNull();
   fireEvent.click(card.getByRole('button',{name:'Toggle answers owed'}));
   fireEvent.click(card.getByRole('button',{name:'Jump'}));
@@ -707,7 +707,7 @@ it('dismisses owed rows and excludes the newest card already showing its robot',
   const {slot,recipients}=setup({list:()=>({items:[latest],nextCursor:null}),rpc:{owed:()=>({items:rows}),settleOwed}});
   fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Working');
   const card=within(await slot.findByRole('region',{name:'Answers owed'}));
-  await waitFor(()=>expect(card.getByText('1 answers owed')).toBeTruthy());
+  await waitFor(()=>expect(card.getByText('1 answer owed')).toBeTruthy());
   expect(card.queryByText(base.question)).toBeNull();
   fireEvent.click(card.getByRole('button',{name:'Dismiss'}));
   await waitFor(()=>expect(settleOwed).toHaveBeenCalledWith({id:'ans_old',action:'dismissed'}));
@@ -718,6 +718,6 @@ it('keeps the newest deferred question visible when it has no interim robot', as
   const {slot,recipients}=setup({list:()=>({items:[latest],nextCursor:null}),rpc:{owed:()=>({items:[{id:base.id,question:base.question,createdAt:base.createdAt,interim:false}]})}});
   fireEvent.click(await recipients.findByRole('option'));
   const card=within(await slot.findByRole('region',{name:'Answers owed'}));
-  expect(card.getByText('1 answers owed')).toBeTruthy();
+  expect(card.getByText('1 answer owed')).toBeTruthy();
   expect(card.getByRole('button',{name:'Jump'})).toBeTruthy();
 });
