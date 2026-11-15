@@ -170,6 +170,12 @@ it('edits a sent message as bb does: Edit opens "Editing message" in the compose
   await waitFor(() => expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', expectedRequestSequence:7, input:[expect.objectContaining({ type:'text', text:'Question one' })] })));
   await waitFor(() => expect(slot.queryByText('Editing message')).toBeNull());
 });
+it('puts an interim reply above the final answer in the same card, under "Answered below" instead of a clock', async () => {
+  const { slot, recipients } = setup({ list: () => ({ items:[late], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  const interim = await slot.findByText('Working on it'), answer = slot.getByText('Final answer'), mark = slot.getByText('Answered below');
+  expect(before(mark, interim) && before(interim, answer)).toBe(true);
+  expect(slot.queryByLabelText('Interim reply')).toBeNull(); expect(mark.closest('button')).toBeNull();
+});
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final answer');
