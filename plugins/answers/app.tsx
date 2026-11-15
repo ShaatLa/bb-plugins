@@ -1,6 +1,3 @@
-import { useOpenChat } from './open-chat';
-import { ThreadCostLabel, useThreadCost } from './cost';
-import { CompactButton } from './compact-button';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
@@ -522,7 +519,6 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   // Search and the project filter only help once there is more than one saved message to look through.
   const savedPeek = useQuery({ contract: rpcContract, method: 'list', input: { view: 'saved', limit: 2 }, enabled: view === 'saved' });
   const [chatSearch, setChatSearch] = useState(false), [chatOpen, setChatOpen] = useState(false);
-  const open = useOpenChat(), chatThread = threadId ? undefined : threads.find(t => t.id === open.threadId), openCost = useThreadCost(chatThread?.id, open.working);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
   return <section className="flex h-full flex-col bg-background">
     {threadId && <Pools threadId={threadId} />}
@@ -532,8 +528,6 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
           // Markup of bb's Preview/Source switch.
           : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', 'chats'], ['Questions', 'questions'], ['Saved', 'saved']] as const).map(([label, key]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={section === key} onClick={() => setSection(key)}>{label}{key === 'questions' && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
         <span className="flex-1" />
-        {/* The open chat's cost and Idle Compact's Compact button live here: the chat's own header shows only while searching. */}
-        {!questions && view === 'inbox' && chatOpen && !bbChat && chatThread && <><ThreadCostLabel cost={openCost} /><CompactButton threadId={chatThread.id} status={chatThread.status} onError={setError} /></>}
         {/* The open chat's search toggle (phones keep theirs in the chat's own header). */}
         {!questions && view === 'inbox' && chatOpen && !bbChat && <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground max-[639px]:hidden" aria-label="Search conversation" aria-pressed={chatSearch} onClick={() => setChatSearch(!chatSearch)}><Icon name="Search" aria-hidden /></Button>}
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}

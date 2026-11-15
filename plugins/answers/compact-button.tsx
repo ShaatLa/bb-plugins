@@ -20,7 +20,7 @@ export function CompactButton({ threadId, status, onError }: { threadId: string;
   useEffect(() => setState(null), [threadId]);
   if (!available) return null;
   // bb compacts only a thread that is idle or errored; the labels are Idle Compact's own.
-  return <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs max-[639px]:hidden" disabled={state === 'busy' || (status !== 'idle' && status !== 'error')} onClick={async () => {
+  return <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-1.5 text-xs text-muted-foreground max-[639px]:hidden" disabled={state === 'busy' || (status !== 'idle' && status !== 'error')} onClick={async () => {
     setState('busy');
     try { await sdk.plugins.callRpc({ pluginId: PLUGIN, method: 'compact', input: { threadId }, outputSchema: z.object({ ok: z.literal(true) }) }); setState(null); } catch (e) { setState('failed'); onError(e instanceof Error ? e.message : String(e)); }
   }}><Icon name="Minimize2" aria-hidden className="size-3.5" />{state === 'busy' ? 'Compacting…' : state === 'failed' ? 'Compact failed' : 'Compact'}</Button>;

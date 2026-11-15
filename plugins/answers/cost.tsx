@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRpc } from '@get-bb/plugin-sdk/app';
 import type { AnswersRpcContract, Cost } from './contract';
+import { openAppRoute } from './lib/app-route';
 
 type ThreadCost = { own: Cost; total: Cost; descendantCount: number };
 // Last known cost per thread, so switching chats paints at once while a fresh read runs.
@@ -30,11 +31,12 @@ export function useThreadCost(threadId: string | null | undefined, working: bool
   return threadId ? cost : null;
 }
 
-export function ThreadCostLabel({ cost }: { cost: ThreadCost | null }) {
+export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | null; className?: string }) {
   if (!cost) return null;
   const subs = cost.descendantCount, own = money(cost.own), total = money(cost.total);
-  const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos`;
-  return <span title={title} aria-label={title.replaceAll('\n', '. ')} className="mr-auto flex min-w-0 items-center gap-1.5 truncate text-xs tabular-nums text-muted-foreground">
+  const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos. Click to open Tokenomos`;
+  // A click opens the Tokenomos page; shift- or cmd-click is left alone.
+  return <button type="button" title={title} aria-label={title.replaceAll('\n', '. ')} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; openAppRoute('/plugins/tokenomos/tokenomos'); }} className={`flex min-w-0 cursor-pointer items-center gap-1.5 truncate rounded-md px-1 text-xs tabular-nums text-muted-foreground hover:text-foreground ${className}`}>
     <span>{own}</span>{subs > 0 && <span className="text-subtle-foreground">· {total} with {subs} sub{subs === 1 ? '' : 's'}</span>}
-  </span>;
+  </button>;
 }
