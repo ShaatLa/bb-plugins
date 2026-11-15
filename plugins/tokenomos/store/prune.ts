@@ -13,7 +13,7 @@ export function prune(db: Database, { rawRetentionDays, rollupRetentionDays, now
     run(`DELETE FROM usage_raw WHERE ts < ?`, now - rawRetentionDays * DAY_MS) +
     run(`DELETE FROM usage_hourly WHERE hour < ?`, now - rollupRetentionDays * DAY_MS) +
     run(`DELETE FROM requests WHERE at < ?`, shortCutoff) +
-    run(`DELETE FROM ext_pending WHERE at < ?`, shortCutoff) +
+    // ext_pending is not pruned here: ingest/ext.ts deletes an entry only after its row is durable.
     run(`DELETE FROM bb_candidate WHERE ts < ?`, shortCutoff),
   )();
   db.pragma("incremental_vacuum");
