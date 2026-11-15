@@ -1,9 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-    <rect x="0" y="0" width="24" height="24" fill="#fff" stroke="none"/>
-    <path d="M7.5 23.5 L16.5 15.5 L15 14 L22.5 2.5" stroke="#000" stroke-width="5"/>
-  </mask>
-  <circle cx="11" cy="12" r="9.2" mask="url(#cut)"/>
-  <path d="M6.3 8 H15.2 M10.75 8 V16.2"/>
-  <path d="M7.5 23.5 L16.5 15.5 L15 14 L22.5 2.5 M18.2 3 L22.5 2.5 L22.3 6.9"/>
+  <path d="M2.5 4 H15.5 M9 4 V18"/>
+  <path d="M7.5 23 L16.5 15.5 L15 14 L22 3 M17.8 3.6 L22 3 L22 7.3"/>
 </svg>
