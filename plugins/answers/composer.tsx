@@ -1,6 +1,6 @@
 import { RichEditor } from './rich-editor';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { experimental_Icon as Icon, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
+import { experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
 
@@ -32,7 +32,13 @@ type Props = {
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
-  const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({});
+  const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef<string[]>([]);
+  const urlOf = (path: string) => previews.get(path) ?? savedPreviews[path];
+  const images = attachments.filter(file => file.type === 'localImage'), viewed = images.findIndex(file => file.path === viewing);
+  // A chip without a local preview (a draft restored after a reload) reads its image when opened, like a sent one.
+  const view = (path: string) => { setViewing(path); const file = images.find(f => f.path === path); if (!file || urlOf(path) || !(file.sourceProjectId ?? projectId)) return;
+    void sdk.projects.attachments.read({ projectId: file.sourceProjectId ?? projectId!, path }).then(image => { const url = URL.createObjectURL(new Blob([new Uint8Array(image.bytes)], { type: image.mimeType })); opened.current.push(url); setSavedPreviews(old => ({ ...old, [path]: url })); }).catch(() => {}); };
+  useEffect(() => () => opened.current.forEach(URL.revokeObjectURL), []);
   // Free a preview's blob once its attachment leaves the box (removed, sent and cleared) or the box unmounts.
   const shown = useRef(attachments);
   useEffect(() => { const keep = new Set(attachments.map(file => file.path)); for (const file of shown.current) if (!keep.has(file.path)) dropPreview(file.path); shown.current = attachments; }, [attachments]);
@@ -81,12 +87,15 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3.5 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
-        {previews.has(file.path) || savedPreviews[file.path] ? <img src={previews.get(file.path) ?? savedPreviews[file.path]} alt="" className="size-6 shrink-0 rounded object-cover" /> : <Icon name={file.type === 'localImage' ? 'FileAttachment' : 'File'} aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
-        <span className="truncate" title={file.name}>{file.name}</span>
+        {(chip => file.type === 'localImage' ? <button type="button" aria-label={`Open ${file.name}`} className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => view(file.path)}>{chip}</button> : <span className="flex min-w-0 items-center gap-1.5">{chip}</span>)(<>
+          {urlOf(file.path) ? <img src={urlOf(file.path)} alt="" className="size-6 shrink-0 rounded object-cover" /> : <Icon name={file.type === 'localImage' ? 'FileAttachment' : 'File'} aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
+          <span className="truncate" title={file.name}>{file.name}</span>
+        </>)}
         <button type="button" aria-label={`Remove ${file.name}`} className="absolute right-1 rounded p-0.5 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => onAttachments(old => old.filter(f => f.path !== file.path))}><Icon name="X" aria-hidden className="size-3" /></button>
       </li>)}
       {uploading > 0 && <li role="status" className="flex items-center rounded-lg border border-dashed border-border-seam px-2 py-1 text-xs text-muted-foreground">Uploading {uploading}…</li>}
     </ul>}
+    {viewed >= 0 && <ImageLightbox isOpen imageSrc={urlOf(images[viewed]!.path) ?? null} imageAlt={images[viewed]!.name} title={images[viewed]!.name} hasMultipleImages={images.length > 1} previousDisabled={viewed === 0} nextDisabled={viewed === images.length - 1} onClose={() => setViewing(null)} onPrevious={() => view(images[viewed - 1]!.path)} onNext={() => view(images[viewed + 1]!.path)} />}
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
     {/* The host voice control sits beside Send in both grid layouts. */}
     <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>

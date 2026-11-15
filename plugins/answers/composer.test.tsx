@@ -194,3 +194,14 @@ it('attaches a paste of 5,000+ characters as Pasted text.txt, like bb', async ()
   expect(upload.mock.calls[0][0]).toMatchObject({ projectId:'p', mimeType:'text/plain' });
   expect(onChange).not.toHaveBeenCalled();
 });
+
+it('opens an attached image before sending, reading a restored draft\'s image on demand', async () => {
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:shot'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  const read = vi.fn(() => Promise.resolve({ bytes: [1], mimeType: 'image/png' }));
+  const files = [{ type:'localImage', path:'/a.png', name:'a.png' }, { type:'localFile', path:'/b.txt', name:'b.txt' }];
+  const slot = renderSlot({ component: () => <Composer label="Reply" value="" onChange={() => {}} attachments={files as any} onAttachments={() => {}} projectId="p" onSend={() => {}} /> }, {}, { sdk: { projects: { attachments: { read } } } } as any);
+  expect(slot.queryByRole('button', { name:'Open b.txt' })).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name:'Open a.png' }));
+  await waitFor(() => expect(read).toHaveBeenCalledWith({ projectId:'p', path:'/a.png' }));
+  expect((await slot.findByRole('img', { name:'a.png' })).getAttribute('src')).toBe('blob:shot');
+});
