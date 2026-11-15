@@ -485,3 +485,21 @@ it("keeps a cancel made while the queued compaction's call is pending", async ()
   await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
+
+it("runs a stored request after a restart even when an OWN marker is left over", async () => {
+  const h = await setup({ seed: [["queued:thr_a", true], ["own:thr_a", true]] });
+  await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("releases the thread when the queued key cannot be removed before the call", async () => {
+  const h = await setup({ status: "active" });
+  const q = queueing(h);
+  await q.call("compact", { queue: true });
+  const kv = h.host.bb.storage.kv, remove = kv.delete.bind(kv);
+  vi.spyOn(kv, "delete").mockImplementation(async key => { if (key === "queued:thr_a") { vi.mocked(kv.delete).mockRestore(); throw new Error("disk full"); } return remove(key); });
+  h.state.status = "idle"; await h.emit("thread.idle"); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect((await q.state()).running).toBe(false);
+  expect(await q.dispatch()).toEqual({ action: "proceed" });
+});

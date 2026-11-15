@@ -79,11 +79,17 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   async function dispatch(threadId: string) {
     running.add(threadId);
     const wasQueued = queued.delete(threadId);
-    if (wasQueued) { taken.add(threadId); await bb.storage.kv.delete(QUEUED + threadId); }
-    try { await bb.sdk.threads.compact({ threadId }); }
-    catch (error) {
-      if (taken.delete(threadId)) { queued.add(threadId); await bb.storage.kv.set(QUEUED + threadId, true); }
-      stopped(threadId); throw error;
+    if (wasQueued) taken.add(threadId);
+    try {
+      if (wasQueued) await bb.storage.kv.delete(QUEUED + threadId);
+      await bb.sdk.threads.compact({ threadId });
+    } catch (error) {
+      // State first, so a failing store cannot leave the hook holding the thread.
+      const restore = taken.delete(threadId);
+      if (restore) queued.add(threadId);
+      stopped(threadId);
+      if (restore) await bb.storage.kv.set(QUEUED + threadId, true).catch(cause => bb.log.warn(`Compact ${threadId}: queued request not saved again: ${message(cause)}`));
+      throw error;
     }
     taken.delete(threadId);
     // The accepted compaction also covers a request made while the call was pending. If its stop already came, the hook's
@@ -321,8 +327,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   for (const key of await bb.storage.kv.list(QUEUED)) queued.add(key.slice(QUEUED.length));
   for (const threadId of queued) {
     const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
-    // OWN left by the previous instance: the request was dispatched, and its compaction may still be running.
-    if (!thread || thread.archivedAt || await bb.storage.kv.get(OWN + threadId)) await unqueue(threadId);
+    // A key still stored was never dispatched (dispatch deletes it first) or was refused.
+    if (!thread || thread.archivedAt) await unqueue(threadId);
     else if (thread.status === "idle" || thread.status === "error") void runQueued(threadId);
   }
   await bb.experimental_hooks.recheck("message.dispatch");
