@@ -51,12 +51,13 @@ export const MIGRATIONS: string[] = [
 
   `CREATE TABLE thread_tokens (
   thread_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT 'unknown',
   tier TEXT NOT NULL DEFAULT 'standard',
   band INTEGER NOT NULL DEFAULT 0,${rollupTokens},
   first_ts INTEGER NOT NULL DEFAULT 0,
   last_ts INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (thread_id, model, tier, band)
+  PRIMARY KEY (thread_id, provider, model, tier, band)
 ) STRICT`,
   `CREATE TABLE thread_cov (
   thread_id TEXT NOT NULL PRIMARY KEY,
@@ -197,4 +198,16 @@ export const MIGRATIONS: string[] = [
 
   // WP3: Codex turn_id → model/tier, kept so a later read of a file can price records whose turn_context came earlier.
   `CREATE TABLE codex_turn_context (session_id TEXT NOT NULL, turn_id TEXT NOT NULL, model TEXT NOT NULL, tier TEXT NOT NULL, PRIMARY KEY (session_id, turn_id)) STRICT`,
+  // WP4: context snapshots, request/turn tier and compaction bookkeeping.
+  `CREATE TABLE context_snap(thread_id TEXT NOT NULL,seq INTEGER NOT NULL,used_tokens INTEGER NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(thread_id,seq)) STRICT`,
+  `ALTER TABLE requests ADD COLUMN compact INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE requests ADD COLUMN tier_raw TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE turns ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE turns ADD COLUMN tier_raw TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE turns ADD COLUMN reported_usage INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE compactions ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE compactions ADD COLUMN before_known INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE compactions ADD COLUMN after_known INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE compactions ADD COLUMN expired INTEGER NOT NULL DEFAULT 0`,
+  `CREATE TABLE compaction_seen(key TEXT NOT NULL PRIMARY KEY,at INTEGER NOT NULL) STRICT`,
 ];

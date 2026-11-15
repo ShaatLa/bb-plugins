@@ -55,9 +55,9 @@ export function createStore(db: Database): Store {
      DO UPDATE SET calls = calls + excluded.calls, ${ROLLUP_ADD}`,
   );
   const addThread = db.prepare(
-    `INSERT INTO thread_tokens (thread_id, model, tier, band, calls, ${COMPONENT_COLUMNS}, first_ts, last_ts)
-     VALUES (@threadId, @model, @tier, @band, @calls, ${COMPONENT_PARAMS}, @ts, @ts)
-     ON CONFLICT (thread_id, model, tier, band)
+    `INSERT INTO thread_tokens (thread_id, provider, model, tier, band, calls, ${COMPONENT_COLUMNS}, first_ts, last_ts)
+     VALUES (@threadId, @provider, @model, @tier, @band, @calls, ${COMPONENT_PARAMS}, @ts, @ts)
+     ON CONFLICT (thread_id, provider, model, tier, band)
      DO UPDATE SET calls = calls + excluded.calls, ${ROLLUP_ADD},
        first_ts = MIN(first_ts, excluded.first_ts), last_ts = MAX(last_ts, excluded.last_ts)`,
   );

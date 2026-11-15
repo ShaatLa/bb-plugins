@@ -69,7 +69,10 @@ Work Board, Idle Compact, Local models and Manager threads (2026-11-15).
   `token_usage_record { response_id, turn_id, thread_id, session_id, usage {
   input_tokens (incl. cache), cached_input_tokens, cache_write_input_tokens,
   output_tokens, reasoning_output_tokens } }`; `turn_context { turn_id, model,
-  service_tier }`.
+  service_tier }`. Archived sessions move to the flat
+  `~/.codex/archived_sessions/` (verified: root `01a1d157…` lives there while
+  its guardian child is still under `sessions/`); the index covers both and a
+  cursor follows a moved file.
 - **Local models** — RPC `usage.list` (§6.3), one entry per model request.
 
 ### 1.3 How the owner reads cost
@@ -246,8 +249,9 @@ dimensions are stored as `""`, never NULL, so composite primary keys hold.
   (184–400, default 200, so the 3-month delta has a full previous period).
 Serves all four ranges and the limit windows. KPI deltas show «нет данных за
 прошлый период» when the previous period is not fully covered.
-- `thread_tokens(thread_id, model, tier, band, … tokens, calls, first_ts,
-  last_ts)` PK `(thread_id, model, tier, band)`, all-time, plus
+- `thread_tokens(thread_id, provider, model, tier, band, … tokens, calls, first_ts,
+  last_ts)` PK `(thread_id, provider, model, tier, band)`, all-time (provider so local
+  calls inside a cloud thread price as 0), plus
   `thread_cov(thread_id PK, complete INTEGER, partial INTEGER)`: `complete`
   when a file source was read from the start.
 - `threads(id PK, project_id, provider_id, parent_id, lifecycle_owner_id,
