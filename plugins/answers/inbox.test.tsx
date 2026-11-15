@@ -662,5 +662,6 @@ it('quotes another thread\'s message under its caption while the turn works on i
   fireEvent.click(await recipients.findByRole('option'));
   const quote = await waitFor(() => { const node = document.querySelector('[data-history-ids="ans_tell"] [data-agent-message]'); expect(node).toBeTruthy(); return node as HTMLElement; });
   expect(quote.textContent).toBe('Task from the owner');
-  expect(slot.getByLabelText('Working on the message')).toBeTruthy();
+  // Dimmed like the other robots, never at full strength.
+  expect(slot.getByLabelText('Working on the message').closest('.opacity-60')).toBeTruthy();
 });
