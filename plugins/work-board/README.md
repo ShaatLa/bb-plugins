@@ -22,6 +22,10 @@ Performance: activity consumers share bounded SDK reads and immutable dispatch a
 
 Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
 
+## Public RPC for other plugins (0.36.0)
+
+`threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. The contract only grows with optional fields.
+
 ## Scheduled tasks CLI
 
 `bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
