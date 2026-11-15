@@ -757,3 +757,16 @@ it('keeps the usage cache fresh from the always-mounted nav badge', async () => 
   await waitFor(() => expect(JSON.parse(localStorage.getItem('bb-plugin-answers:page:usage-cache') ?? 'null')).toEqual(fresh));
   slot.unmount();
 });
+
+it('shows a finished work duration only on a chat answer with a turn', async () => {
+  const { ItemCard } = await import('./app');
+  const answered = { ...item, turnId: 'finished-log', createdAt: 1000, answeredAt: 812000 };
+  const options = { rpc: { pools: () => ({ pools: [] }) } };
+  const slot = renderSlot({ component: () => <ItemCard item={answered} chat /> }, {}, options);
+  expect(slot.getByRole('button', { name: /Worked for 13m 31s/ }).getAttribute('aria-expanded')).toBe('false');
+  slot.unmount();
+  const list = renderSlot({ component: () => <ItemCard item={answered} /> }, {}, options);
+  expect(list.queryByRole('button', { name: /Worked for/ })).toBeNull(); list.unmount();
+  const unknown = renderSlot({ component: () => <ItemCard item={{ ...answered, turnId: null }} chat /> }, {}, options);
+  expect(unknown.queryByRole('button', { name: /Worked for/ })).toBeNull();
+});
