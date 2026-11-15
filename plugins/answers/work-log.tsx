@@ -105,7 +105,7 @@ export function WorkLog(props: Props) {
   return <div className="flow-root text-sm leading-relaxed">
     {props.children && <div className="float-left mr-2 flex">{props.children}</div>}
     {/* The figure fills the lower part of the robot's 32 px box (head at 9 px, feet at its bottom), so the line centres on the figure, not the box. */}
-    <button type="button" title={label} className={`flex max-w-full items-center gap-1 text-left text-xs text-muted-foreground ${props.children ? 'h-8 pt-[9px]' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
+    <button type="button" title={label} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden text-left text-xs text-muted-foreground ${props.children ? 'h-8 pt-[9px]' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="min-w-0 truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
     {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} />}
   </div>;
 }

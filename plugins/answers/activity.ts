@@ -25,8 +25,28 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
   }
 }
 
+const WORDS: Record<string, string> = { python: 'Running a Python script', python3: 'Running a Python script', node: 'Running a Node script', tsx: 'Running a Node script', bash: 'Running a shell script', sh: 'Running a shell script', zsh: 'Running a shell script',
+  grep: 'Searching', rg: 'Searching', ag: 'Searching', find: 'Searching', fd: 'Searching', cat: 'Reading files', head: 'Reading files', tail: 'Reading files', sed: 'Editing files', less: 'Reading files', wc: 'Counting lines', ls: 'Listing files', tree: 'Listing files',
+  curl: 'Fetching a URL', wget: 'Fetching a URL', tsc: 'Type-checking', vitest: 'Running tests', jest: 'Running tests', pytest: 'Running tests', sleep: 'Waiting', rsync: 'Copying files', cp: 'Copying files', mv: 'Moving files', rm: 'Removing files', mkdir: 'Creating folders' };
+const WITH_SUBCOMMAND = new Set(['git', 'gh', 'bb', 'npm', 'pnpm', 'yarn', 'bun', 'go', 'cargo', 'make', 'docker', 'brew', 'uv', 'pip', 'pip3']);
+/** A shell command in a few words, as one would say it: the first step that does the work, past `cd`, env settings and wrappers. */
+export function commandLabel(command: string): string {
+  for (const step of command.split(/&&|\|\||;|\||\n/)) {
+    const words = step.trim().split(/\s+/).filter(Boolean);
+    while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!) || ['sudo', 'env', 'time', 'exec', 'command', 'nohup', 'npx', 'bunx'].includes(words[0]!))) words.shift();
+    const program = words[0]?.split('/').pop()?.replace(/^\(+/, '');
+    if (!program || ['cd', 'export', 'set', 'source', '.', 'echo', 'printf', 'for', 'do', 'done', 'then', 'fi', 'if', 'true', 'test', '[', 'local', 'unset'].includes(program) || program.startsWith('#')) continue;
+    if (program === 'sed' && words[1] === '-n') return 'Reading files';
+    if (WORDS[program]) return WORDS[program]!;
+    if (WITH_SUBCOMMAND.has(program)) { const sub = words.slice(1).filter((w, i, all) => !w.startsWith('-') && !['-C', '-c', '--git-dir', '--prefix', '--cwd'].includes(all[i - 1] ?? '')).slice(0, program === 'npm' && words[1] === 'run' ? 2 : 1); return `Running ${[program, ...sub].join(' ')}`; }
+    return `Running ${program}`;
+  }
+  return 'Running a command';
+}
+
 /** The words beside the robot for the same item, bb-style ("Running npm test", "Reading app.tsx"). */
 export function labelOf(item: Item): string {
+  if (item.type === 'commandExecution') return commandLabel(item.command ?? '');
   if (item.presentation) return `${item.presentation.label.pending}${item.presentation.title ? ` ${item.presentation.title}` : ''}`;
   switch (item.type) {
     case 'reasoning': return 'Thinking';
@@ -40,7 +60,6 @@ export function labelOf(item: Item): string {
     case 'search': case 'listFiles': return 'Searching';
     case 'delegation': return 'Waiting for a subagent';
     case 'backgroundTask': return 'Waiting for background work';
-    case 'commandExecution': return `Running ${(item.command ?? 'a command').split('\n')[0]}`;
     case 'toolCall': case 'mcpToolCall': return `Running ${item.tool ?? 'a tool'}`;
     default: return 'Thinking';
   }

@@ -17,7 +17,19 @@ it('reads the newest top-level event: an open item, thinking between items, wait
 
 it('words the same item the robot acts out', () => {
   expect(stateOf([started({ type: 'commandExecution', command: 'npm test\n--watch' })])).toEqual({ activity: 'terminal', label: 'Running npm test' });
+  expect(stateOf([started({ type: 'commandExecution', command: 'npm test', presentation: { label: { pending: 'Running command' }, title: 'npm test' } })]).label).toBe('Running npm test');
   expect(stateOf([started({ type: 'fileRead', path: 'src/app.tsx' })])).toEqual({ activity: 'read', label: 'Reading app.tsx' });
   expect(stateOf([{ type: 'item/completed', data: {} }, started({ type: 'fileRead', path: 'a' })])).toEqual({ activity: 'think', label: 'Thinking' });
   expect(stateOf([{ type: 'turn/completed', data: {} }]).activity).toBe('rest');
+});
+
+it('says a shell command in a few words', async () => {
+  const { commandLabel } = await import('./activity');
+  expect(commandLabel('cd /Applications/bb.app/Contents && python3 - <<EOF\nimport re\nEOF')).toBe('Running a Python script');
+  expect(commandLabel('cd plugins/answers; npx vitest run 2>&1 | grep Tests')).toBe('Running tests');
+  expect(commandLabel('FOO=1 npm run build >/dev/null && rsync -a ./ x/')).toBe('Running npm run build');
+  expect(commandLabel('git -C repo log --oneline -1')).toBe('Running git log');
+  expect(commandLabel("sed -n 1,20p app.tsx")).toBe('Reading files');
+  expect(commandLabel('/opt/homebrew/bin/jq . file')).toBe('Running jq');
+  expect(commandLabel('cd x')).toBe('Running a command');
 });
