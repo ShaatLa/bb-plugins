@@ -20,3 +20,10 @@ it('opens Tokenomos on click, leaving modified clicks alone', () => {
   fireEvent.click(label); expect(window.location.pathname).toBe('/plugins/tokenomos/tokenomos'); expect(moved).toHaveBeenCalledOnce();
   window.removeEventListener('popstate', moved);
 });
+it('shows the sub-sessions as a delta and hides it when it rounds to nothing', () => {
+  const tokens = (n: number) => ({ freshIn: n, cacheRead: 0, cacheWrite: 0, output: 0 });
+  const view = render(<ThreadCostLabel cost={{ own: cost(0.8), total: cost(1.24), descendantCount: 3 }} />);
+  expect(view.getByRole('button').textContent).toBe('$0.80· +$0.44 in 3 subs'); cleanup();
+  const same = render(<ThreadCostLabel cost={{ own: cost(14.2, { tokens: tokens(100) }), total: cost(14.3, { tokens: tokens(120) }), descendantCount: 1 }} />);
+  expect(same.getByRole('button').textContent).toBe('$14');
+});

@@ -34,9 +34,14 @@ export function useThreadCost(threadId: string | null | undefined, working: bool
 export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | null; className?: string }) {
   if (!cost) return null;
   const subs = cost.descendantCount, own = money(cost.own), total = money(cost.total);
+  // The sub-sessions' share as a delta; hidden when it rounds to nothing, so "$14 · $14 with 1 sub" never shows.
+  const t = cost.total.tokens, o = cost.own.tokens;
+  const delta = money({ ...cost.total, usd: cost.total.usd !== null && cost.own.usd !== null ? Math.max(0, cost.total.usd - cost.own.usd) : null,
+    tokens: { freshIn: t.freshIn - o.freshIn, cacheRead: t.cacheRead - o.cacheRead, cacheWrite: t.cacheWrite - o.cacheWrite, output: t.output - o.output } });
+  const tail = subs > 0 && total !== own && !/^~?(\$0\.00|0 tokens)$/.test(delta);
   const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos. Click to open Tokenomos`;
   // A click opens the Tokenomos page; shift- or cmd-click is left alone.
   return <button type="button" title={title} aria-label={title.replaceAll('\n', '. ')} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; openAppRoute('/plugins/tokenomos/tokenomos'); }} className={`flex min-w-0 cursor-pointer items-center gap-1.5 truncate rounded-md px-1 text-xs tabular-nums text-muted-foreground hover:text-foreground ${className}`}>
-    <span>{own}</span>{subs > 0 && <span className="text-subtle-foreground">· {total} with {subs} sub{subs === 1 ? '' : 's'}</span>}
+    <span>{own}</span>{tail && <span className="text-subtle-foreground">· +{delta} in {subs} sub{subs === 1 ? '' : 's'}</span>}
   </button>;
 }
