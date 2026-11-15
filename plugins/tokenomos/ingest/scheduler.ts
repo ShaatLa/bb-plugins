@@ -121,13 +121,20 @@ export function createScheduler(o: {
     freshIn:r.fresh_in,cacheRead:r.cache_read,cacheWriteShort:r.cache_write_short,cacheWriteLong:r.cache_write_long,output:r.output,reasoning:r.reasoning,turnId:r.turn_id||null,source:'bb-events',flags:r.flags,
   }));
   async function applyCandidates(id: string, signal: AbortSignal, recovered = false) {
+    const initialOwned = current(id)?.source === 'bb-events' && !store.getCursor<boolean>(`file-found:${id}`)
+      && !db.prepare('SELECT 1 FROM source_interval WHERE thread_id=? LIMIT 1').get(id);
+    if (initialOwned) {
+      // The initial total replaces its last-call candidate, rather than adding to it.
+      db.prepare("DELETE FROM bb_candidate WHERE thread_id=? AND key IN (SELECT 'bb:' || substr(key,5) FROM bb_candidate WHERE thread_id=? AND key GLOB 'bbi:*')").run(id,id);
+    }
     let after = '';
     for (;;) {
       signal.throwIfAborted();
       const rows = candidates(id, after);
       if (!rows.length) return;
       after = rows.at(-1)!.key;
-      await apply([{ rows: recovered ? rows.map(r => ({ ...r, flags:r.flags | RECOVERED })) : rows }], signal);
+      const owned = rows.filter(r => initialOwned || !r.key.startsWith('bbi:'));
+      await apply([{ rows: recovered ? owned.map(r => ({ ...r, flags:r.flags | RECOVERED })) : owned }], signal);
       await setImmediate(undefined, { signal });
     }
   }
@@ -171,7 +178,7 @@ export function createScheduler(o: {
       const old = current(id);
       let switchDeferred = false;
       const selected: SourceId = desiredFile ? (found || store.getCursor<boolean>(`file-found:${id}`) || first === null || Date.now() - first < 600_000 ? desiredFile : 'bb-events')
-        : dto.providerId === 'local-models' ? 'local-log' : dto.providerId === 'antigravity' && agyAvailable ? 'agy-log' : 'bb-events';
+        : dto.providerId === 'local-models' ? 'local-log' : dto.providerId === 'antigravity' && (agyAvailable || old?.source === 'agy-log') ? 'agy-log' : 'bb-events';
       switchDeferred = !!old && old.source !== selected && !retained(id);
       sourceId = switchDeferred ? old!.source : selected;
       // Persist candidates before any file read can fail.
@@ -185,6 +192,7 @@ export function createScheduler(o: {
       const coverage = desiredFile && sourceId === desiredFile ? await sources!.bbEvents.coverage(id) : null;
       const covered = state.state === 'degraded' && fileBatch?.rows.some(r => !r.conv && r.ts >= state.since_ts && !!db.prepare('SELECT 1 FROM turns WHERE thread_id=? AND reported_usage=1 AND started_at<=? AND completed_at+120000>=? AND completed_at>0').get(id,r.ts,r.ts));
       await apply([fileBatch ?? { rows:[] }], signal, () => {
+        if (found) db.prepare("DELETE FROM bb_candidate WHERE thread_id=? AND key GLOB 'bbi:*'").run(id);
         if (!old) setSource(id, sourceId);
         else if (old.source !== sourceId) {
           store.deleteContribution(id, old.source);
@@ -214,7 +222,7 @@ export function createScheduler(o: {
       const warning = switchDeferred ? 'Source switch deferred: raw rows have expired'
         : fileBatch?.parseErrors ? `Skipped ${fileBatch.parseErrors} invalid transcript lines` : null;
       if (warning) bb.log.warn(`Tokenomos ${sourceId}: ${warning}`);
-      status(sourceId, warning, warning ? 'partial' : current(id)!.state);
+      status(sourceId, warning, sourceId === 'agy-log' && !agyAvailable ? 'unavailable' : warning ? 'partial' : current(id)!.state);
       if (fileBatch?.more || eventBatch.more || (desiredFile && (!found || sourceId === 'bb-events'))) dirty.add(id);
       if (eventBatch.touched) invalidate();
       return true;

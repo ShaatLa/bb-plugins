@@ -36,7 +36,7 @@ it('pages at 100 with string arguments; invalid and unknown payloads advance cur
 it('shares Claude counters with nested results',async()=>{usage(100,100);usage(180,80,'child');usage(300,120);const {rows}=await source().flushThread('t',true);expect(rows).toHaveLength(3);expect(rows.reduce((s,r)=>s+r.freshIn,0)).toBe(300);expect(rows[1].conv).toBe('nested:child');});
 it('recovers missing events and bridge restarts',async()=>{usage(100,100);usage(300,120);usage(70,50);const {rows}=await source().flushThread('t',true);expect(rows.filter(r=>r.flags&RECOVERED).map(r=>[r.key,r.freshIn])).toEqual([['bbr:t:e2',80],['bbr:t:e3',20]]);expect(rows.reduce((s,r)=>s+r.freshIn,0)).toBe(370);});
 it('scopes Codex counters by parent tool call',async()=>{db.prepare("UPDATE threads SET provider_id='codex'").run();usage(100,100);usage(80,80,'child');usage(220,120);const {rows}=await source().flushThread('t',true);expect(rows).toHaveLength(3);expect(rows.reduce((s,r)=>s+r.freshIn,0)).toBe(300);});
-it('returns candidates while maintaining non-owned counters',async()=>{usage(100,100);const s=source(),a=await s.flushThread('t',false);expect(a.rows).toEqual([]);expect(a.candidates).toHaveLength(1);expect(db.prepare('SELECT key FROM bb_candidate').all()).toEqual([{key:a.candidates[0].key}]);usage(180,80);expect((await s.flushThread('t',true)).rows).toHaveLength(1);});
+it('returns candidates while maintaining non-owned counters',async()=>{usage(100,100);const s=source(),a=await s.flushThread('t',false);expect(a.rows).toEqual([]);expect(a.candidates).toHaveLength(1);expect(db.prepare('SELECT key FROM bb_candidate').all()).toEqual([{key:a.candidates[0].key},{key:'bbi:t:e1'}]);usage(180,80);expect((await s.flushThread('t',true)).rows).toHaveLength(1);});
 it('normalizes explicit OpenAI writes and Claude cached-minus-read writes',async()=>{
  for(const [i,last] of [{totalTokens:120,inputTokens:100,cachedInputTokens:40,cacheReadInputTokens:30,cacheWriteInputTokens:10,outputTokens:20},{totalTokens:120,inputTokens:10,cachedInputTokens:90,cacheReadInputTokens:70,outputTokens:20}].entries())event('thread/tokenUsage/updated',{providerThreadId:`s${i}`,tokenUsage:{total:last,last}});
  const {rows}=await source().flushThread('t',true);expect(rows[0]).toMatchObject({freshIn:60,cacheRead:30,cacheWriteShort:10,promptTokens:100});expect(rows[1]).toMatchObject({freshIn:10,cacheRead:70,cacheWriteShort:20,promptTokens:100});
@@ -121,4 +121,11 @@ it('does not mark exact file-backed threads partial while collecting initial or 
 });
 it('defaults an aggregate to band zero when no last call was observed',async()=>{
  usage(300000,0);expect((await source().flushThread('t',true)).rows[0]).toMatchObject({promptTokens:300000,band:0});
+});
+it('persists the initial total beside last-only candidates without advancing it on later snapshots',async()=>{
+ usage(10000,100);await source().flushThread('t',false);
+ expect(db.prepare("SELECT key,fresh_in,band,flags FROM bb_candidate WHERE key GLOB 'bbi:*'").all()).toEqual([{key:'bbi:t:e1',fresh_in:10000,band:0,flags:BACKFILLED|ESTIMATED}]);
+ usage(10100,100);await source().flushThread('t',false);
+ expect(db.prepare("SELECT fresh_in FROM bb_candidate WHERE key GLOB 'bbi:*'").all()).toEqual([{fresh_in:10000}]);
+ expect(db.prepare('SELECT partial FROM thread_cov').get()).toBeUndefined();
 });

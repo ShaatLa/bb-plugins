@@ -47,7 +47,7 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
         o.signal?.throwIfAborted();
         const page = await sdk.threads.events.list({threadId,afterSeq:String(cursor),limit:"100",order:"asc",types:[...TYPES],signal:o.signal});
         o.signal?.throwIfAborted();
-        const batch:UsageRow[]=[];
+        const batch:UsageRow[]=[], initial:UsageRow[]=[];
         db.transaction(()=>{
           let errors=0;
           const thread = db.prepare("SELECT provider_id,project_id FROM threads WHERE id=?").get(threadId) as {provider_id:string;project_id:string}|undefined;
@@ -107,6 +107,8 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
                 if (!previous && fallbackOwned) {
                   if (u.total.totalTokens>0) batch.push(make(components(u.total),`bb:${threadId}:${e.id}`,BACKFILLED|ESTIMATED));
                 } else if(u.last.totalTokens>0) batch.push(make(last,`bb:${threadId}:${e.id}`,estimated?ESTIMATED:0));
+                // Keep the total separate until the scheduler resolves initial file ownership.
+                if (!previous && !fallbackOwned && u.total.totalTokens>0) initial.push(make(components(u.total),`bbi:${threadId}:${e.id}`,BACKFILLED|ESTIMATED));
                 const gap=previous ? Math.max(0,u.total.totalTokens-(u.total.totalTokens>=previous.totalTokens?previous.totalTokens:0)-u.last.totalTokens) : 0;
                 if(gap>0) {
                   const total=components(u.total),base=previous&&u.total.totalTokens>=previous.totalTokens?components(previous):components({...u.total,totalTokens:0,inputTokens:0,cachedInputTokens:0,outputTokens:0,cacheReadInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});
@@ -127,7 +129,7 @@ export function createBbEvents(o: {store:Store;db:Database;sdk:PluginBbSdk;log:P
           const saveCandidate = db.prepare(`INSERT OR REPLACE INTO bb_candidate
             (key,ts,thread_id,project_id,provider,model,tier,tier_raw,prompt_tokens,band,conv,fresh_in,cache_read,cache_write_short,cache_write_long,output,reasoning,turn_id,source,flags)
             VALUES (@key,@ts,@threadId,@projectId,@provider,@model,@tier,@tierRaw,@promptTokens,@band,@conv,@freshIn,@cacheRead,@cacheWriteShort,@cacheWriteLong,@output,@reasoning,@turnId,@source,@flags)`);
-          for (const row of batch) saveCandidate.run({ ...row, turnId: row.turnId ?? '' });
+          for (const row of [...batch,...initial]) saveCandidate.run({ ...row, turnId: row.turnId ?? '' });
           db.prepare("INSERT OR REPLACE INTO bb_cursor VALUES (?,?)").run(threadId,cursor);
         })();
         rows.push(...batch);

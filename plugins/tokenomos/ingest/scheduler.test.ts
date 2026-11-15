@@ -2,6 +2,7 @@ import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/tes
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MIGRATIONS } from '../store/schema';
 import { createStore } from '../store/write';
+import { createExtSource } from './ext';
 import { createBbEvents } from './bb-events';
 import { createScheduler } from './scheduler';
 import type { UsageRow } from '../contract';
@@ -14,7 +15,7 @@ let dispose: (()=>Promise<void>) | undefined;
 beforeEach(()=> {vi.useFakeTimers();vi.setSystemTime(1_000_000);});
 afterEach(async()=> {await dispose?.();dispose=undefined;vi.useRealTimers();});
 type TestEvent = {id:string;seq:number;createdAt:number;type:string;data:unknown;scope:{kind:'thread'}|{kind:'turn';turnId:string}};
-function setup(provider='claude-code', found=true, available=true, realEvents?:TestEvent[]) {
+function setup(provider='claude-code', found=true, available=true, realEvents?:TestEvent[], externalRpc?: (id:string, method:string, input:unknown)=>Promise<unknown>) {
   const thread = makeThreadResponse({id:'t',projectId:'p',providerId:provider,environmentId:null,createdAt:1});
   const {bb,harness} = createFakePluginHost({pluginId:'tokenomos',sdk:{threads:{list:async()=>[],get:async()=>thread,events:{list:async a=>(realEvents??[]).filter(e=>e.seq>Number(a.afterSeq)).slice(0,100)}}}});
   dispose=()=>harness.lifecycle.dispose();
@@ -23,7 +24,7 @@ function setup(provider='claude-code', found=true, available=true, realEvents?:T
   const file={locate:vi.fn(async()=>found),flushThread:vi.fn(async(_info?: unknown, _signal?: AbortSignal)=>({rows:[] as UsageRow[],parseErrors:0,commit:vi.fn(),more:undefined as boolean | undefined})),scanOutside:vi.fn(async()=>({rows:[],commit:vi.fn()}))};
   const events={flushThread:vi.fn(async()=>({rows:[] as UsageRow[],candidates:[] as UsageRow[],touched:false,...({} as {more?:boolean})})),coverage:vi.fn(async()=>({uncoveredStreak:0,firstUncoveredStart:null as number|null,lastCoveredTurnStart:null as number|null})),onRowsApplied:vi.fn()};
   const ext={pollUsage:vi.fn(async()=>({rows:[] as UsageRow[],available})),pollCompactions:vi.fn(async()=>({matched:0,available:true}))};
-  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?createBbEvents({db,store,sdk,log:bb.log}):events,ext})});
+  createScheduler({bb,db,store,settings,files:{'claude-file':file,'codex-file':file},sources:sdk=>({bbEvents:realEvents?createBbEvents({db,store,sdk,log:bb.log}):events,ext:externalRpc?createExtSource({db,store,callRpc:externalRpc}):ext})});
   const service = harness.behavior.runService('ingest');
   const emit=()=>harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:1});
   const step=()=>vi.advanceTimersByTimeAsync(5000);
@@ -197,4 +198,50 @@ it('marks backfill partial only when the scheduler applies its rows',async()=>{
  const events:TestEvent[]=[{id:'e',seq:1,createdAt:1,type:'thread/tokenUsage/updated',data:{providerThreadId:'s',tokenUsage:{total:count,last:{...count,totalTokens:10000,inputTokens:10000}}},scope:{kind:'thread'}}];
  const s=setup('other',false,false,events);await s.emit();await s.step();
  expect(s.total()).toBe(300000);expect(s.db.prepare('SELECT partial FROM thread_cov').get()).toEqual({partial:1});
+});
+function initialSnapshot(at=1):TestEvent[] {
+ const count=(n:number)=>({totalTokens:n,inputTokens:n,cachedInputTokens:0,outputTokens:0});
+ return [{id:'initial',seq:1,createdAt:at,type:'thread/tokenUsage/updated',data:{providerThreadId:'s',tokenUsage:{total:count(10000),last:count(100)}},scope:{kind:'thread'}}];
+}
+it.each(['claude-code','codex','other'])('recovers the initial 10000-token total for %s with no transcript',async(provider)=>{
+ const s=setup(provider,false,false,initialSnapshot());await s.emit();await s.step();
+ expect(s.total()).toBe(10000);expect(s.source()).toMatchObject({source:'bb-events'});
+ await s.emit();await s.step();expect(s.total()).toBe(10000);
+});
+it.each(['claude-code','codex'])('keeps %s initial history pending until the ten-minute file deadline',async(provider)=>{
+ const s=setup(provider,false,false,initialSnapshot(Date.now()));await s.emit();await s.step();expect(s.total()).toBeNull();
+ expect(s.db.prepare("SELECT fresh_in FROM bb_candidate WHERE key GLOB 'bbi:*'").get()).toEqual({fresh_in:10000});
+ expect(s.db.prepare('SELECT last_seq FROM bb_cursor').get()).toEqual({last_seq:1});
+ await vi.advanceTimersByTimeAsync(600000);expect(s.total()).toBe(10000);
+ // A late transcript replaces all fallback history once, including the promoted initial total.
+ s.file.locate.mockResolvedValue(true);s.file.flushThread.mockResolvedValue({rows:[row({freshIn:10000,promptTokens:10000,source:provider==='codex'?'codex-file':'claude-file'})],parseErrors:0,commit:vi.fn(),more:false});
+ await s.step();expect(s.total()).toBe(10000);
+ expect(s.db.prepare("SELECT key FROM bb_candidate WHERE key GLOB 'bbi:*'").all()).toEqual([]);
+});
+it.each(['claude-code','codex'])('drops the %s initial snapshot when a transcript owns its history',async(provider)=>{
+ const s=setup(provider,true,true,initialSnapshot());
+ s.file.flushThread.mockResolvedValue({rows:[row({source:provider==='codex'?'codex-file':'claude-file'})],parseErrors:0,commit:vi.fn(),more:false});
+ await s.emit();await s.step();expect(s.total()).toBe(100);
+ expect(s.db.prepare("SELECT key FROM bb_candidate WHERE key GLOB 'bbi:*'").all()).toEqual([]);
+ expect(s.db.prepare("SELECT key FROM usage_raw WHERE source='bb-events'").all()).toEqual([]);
+});
+it('keeps Antigravity contributions and its durable cursor through an RPC outage',async()=>{
+ let available=true;
+ const rpc=vi.fn(async(id:string,method:string,input:unknown)=>{
+   if(method==='compactions.list')return {items:[]};
+   if(id!=='antigravity')return {entries:[],nextCursor:null};
+   if(!available)throw Object.assign(new Error('unavailable'),{code:'unknown_method'});
+   if((input as {after?:string}).after)return {entries:[],nextCursor:null};
+   return {entries:[{id:'one',ts:1,source:'thread',threadId:'t',providerThreadId:'s',model:'m',promptTokens:100,cachedTokens:0,completionTokens:0,reasoningTokens:null}],nextCursor:'one'};
+ });
+ const s=setup('antigravity',false,true,[],rpc);await s.emit();await s.step();expect(s.total()).toBe(100);
+ const removed=vi.spyOn(s.store,'deleteContribution');
+ const cursor=()=>s.db.prepare("SELECT cursor FROM ext_cursor WHERE source='antigravity'").get();
+ expect(cursor()).toEqual({cursor:'one'});
+ available=false;await vi.advanceTimersByTimeAsync(60000);await s.emit();await s.step();
+ expect(s.source()).toMatchObject({source:'agy-log'});expect(s.total()).toBe(100);expect(removed).not.toHaveBeenCalled();expect(cursor()).toEqual({cursor:'one'});
+ expect(s.db.prepare("SELECT state FROM source_status WHERE source='agy-log'").get()).toEqual({state:'unavailable'});
+ available=true;await vi.advanceTimersByTimeAsync(60000);await s.emit();await s.step();
+ expect(s.total()).toBe(100);expect(s.source()).toMatchObject({source:'agy-log'});expect(removed).not.toHaveBeenCalled();expect(cursor()).toEqual({cursor:'one'});
+ expect(s.db.prepare("SELECT state FROM source_status WHERE source='agy-log'").get()).toEqual({state:'ok'});
 });
