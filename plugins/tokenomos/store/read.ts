@@ -180,9 +180,10 @@ function threadData(db: Database, ids: string[], overrides: Overrides) {
 }
 export function threadCosts(db: Database, threadIds: string[], includeDescendants: boolean, overrides: Overrides = {}) {
   const edges = tree(db,threadIds,includeDescendants), data = threadData(db,[...new Set(edges.map(e => e.id))],overrides);
-  const roots = [...new Set(edges.map(e => e.root))], unknown = threadIds.some(id => !roots.includes(id));
-  const threads = roots.map(threadId => {
-    const ids = edges.filter(e => e.root===threadId).map(e => e.id);
+  const byRoot = new Map<string, string[]>();
+  for (const e of edges) { const ids = byRoot.get(e.root); if (ids) ids.push(e.id); else byRoot.set(e.root, [e.id]); }
+  const unknown = threadIds.some(id => !byRoot.has(id));
+  const threads = [...byRoot].map(([threadId, ids]) => {
     const costs = ids.map(id => data.get(id)?.cost).filter((c): c is Cost => !!c);
     const total = costs.length ? costs.map(c => structuredClone(c)).reduce(add) : empty(); total.partial ||= unknown;
     const own = structuredClone(data.get(threadId)?.cost ?? empty()); own.partial ||= unknown;
@@ -193,7 +194,8 @@ export function threadCosts(db: Database, threadIds: string[], includeDescendant
 export function costSum(db: Database, threadIds: string[], includeDescendants: boolean, overrides: Overrides = {}) {
   const edges = tree(db,threadIds,includeDescendants), ids = [...new Set(edges.map(e => e.id))], data = threadData(db,ids,overrides);
   const costs = [...data.values()].map(d => d.cost), cost = costs.length ? costs.reduce(add) : empty();
-  cost.partial ||= threadIds.some(id => !edges.some(e => e.root===id));
+  const roots = new Set(edges.map(e => e.root));
+  cost.partial ||= threadIds.some(id => !roots.has(id));
   return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: ids.length, updatedAt: Math.max(0,...[...data.values()].map(d => d.updatedAt)) };
 }
 export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now(), projectId?: string, projectNames = new Map<string,string>()) {

@@ -40,7 +40,7 @@ Cost shape everywhere: `{ usd: number | null, tokens: { freshIn, cacheRead, cach
 
 ## Public RPCs (plugin id `tokenomos`)
 
-Other plugins should use only these two. Both are tagged `usage` and accept 1 to 200 thread IDs.
+Other plugins should use only these two. Both are tagged `usage` and accept 1 to 2000 thread IDs; one call dedupes shared threads and descendants, so send a whole set (an epic) in one call rather than summing per-item results.
 
 - `costs.sum` input `{ threadIds: string[], includeDescendants: boolean }` → `{ priceVersion, cost: Cost, threadCount, updatedAt }`. `cost` is the deduplicated sum.
 - `costs.threads` same input → `{ priceVersion, threads: [{ threadId, own: Cost, total: Cost, descendantCount, updatedAt }] }`. `total` includes descendants when `includeDescendants` is true.

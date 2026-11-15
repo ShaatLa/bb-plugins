@@ -68,13 +68,13 @@ Cost = {
 }
 
 // costs.threads
-input:  { threadIds: string[] /* 1–200 */, includeDescendants: boolean }
+input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
 output: { priceVersion: string,
           threads: { threadId: string, own: Cost, total: Cost,
                      descendantCount: int >= 0, updatedAt: number }[] }
 
 // costs.sum
-input:  { threadIds: string[] /* 1–200 */, includeDescendants: boolean }
+input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
 output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number }
 ```
 

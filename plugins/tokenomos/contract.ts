@@ -81,7 +81,7 @@ export type Rates = z.infer<typeof ratesSchema>;
 export const rangeSchema = z.enum(["day", "week", "month", "3m"]);
 export type Range = z.infer<typeof rangeSchema>;
 
-const threadIds = z.array(z.string().min(1)).min(1).max(200);
+const threadIds = z.array(z.string().min(1)).min(1).max(2000);
 
 // ---- Public RPC (PLAN §6.1) ----
 
