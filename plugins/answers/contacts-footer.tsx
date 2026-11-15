@@ -64,6 +64,55 @@ function useUsage(enabled: boolean) {
   return { usage, reloading, reload: () => { setReloading(true); setTick(t => t + 1); } };
 }
 
+type Sdk = ReturnType<typeof useSdk>;
+type AppUpdate = Awaited<ReturnType<Sdk['system']['appUpdate']>>;
+type Version = Awaited<ReturnType<Sdk['system']['version']>>;
+type Plugin = Awaited<ReturnType<Sdk['plugins']['list']>>['plugins'][number];
+// bb's sidebar rules for its "bb" update badge: an npm or desktop install with an unblocked update; a source checkout
+// once it is 30+ commits behind or 6 h after falling behind; otherwise the npm version check outside the desktop app.
+export function bbUpdateAvailable(app: AppUpdate | null, version: Version | null, now = Date.now()) {
+  if (app && app.available !== null && app.blocked === null) {
+    if ((app.support.kind === 'supported' && app.support.mode === 'npm') || app.desktopUpdateSupported === true) return true;
+    if (app.support.kind === 'supported' && app.support.mode === 'source' && app.available.behindSince) return (app.available.commitCount ?? 0) > 30 || now >= Date.parse(app.available.behindSince) + 6 * 3600000;
+  }
+  return !!version && version.installKind !== 'desktop' && !version.isDevelopment && version.updateAvailable;
+}
+// bb counts updates only for plugins it tracks (installed directly or from the catalog, not pinned) and only with its pluginUpdates experiment on.
+export const pluginUpdateCount = (plugins: Plugin[]) => plugins.filter(p => !p.source.startsWith('builtin:') && !p.source.startsWith('path:') && (p.provenance === 'direct' || p.provenance === 'catalog') && p.updateState.outcome !== 'pinned' && !!p.updateState.availableLabel).length;
+function useUpdates(enabled: boolean) {
+  const sdk = useSdk(), [state, setState] = useState({ bb: false, plugins: 0 });
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    const load = () => { if (document.visibilityState !== 'visible') return; void Promise.allSettled([sdk.system.appUpdate(), sdk.system.version(), sdk.system.config(), sdk.plugins.list()]).then(([app, version, config, plugins]) => {
+      if (!live) return;
+      const value = <T,>(r: PromiseSettledResult<T>) => r.status === 'fulfilled' ? r.value : null;
+      setState({ bb: bbUpdateAvailable(value(app), value(version)), plugins: value(config)?.experiments.pluginUpdates === true ? pluginUpdateCount(value(plugins)?.plugins ?? []) : 0 });
+    }); };
+    load(); const timer = setInterval(load, 600000);
+    return () => { live = false; clearInterval(timer); };
+  }, [sdk, enabled]);
+  return state;
+}
+// shortcut: the SDK cannot open bb's settings, so this moves bb's router the way its own links do (a history entry plus popstate);
+// if bb changes its routing this opens nothing, and a navigate.toSettings in the SDK should replace it.
+function openUpdates(event: React.MouseEvent) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+  event.preventDefault();
+  history.pushState({ usr: null, key: Math.random().toString(36).slice(2, 10), idx: ((history.state as { idx?: number } | null)?.idx ?? 0) + 1 }, '', '/settings/updates');
+  dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+}
+// bb's sidebar update badges, same markup: "bb" when bb can update, a plug with the count of plugin updates; both open Settings › Updates.
+function UpdateBadges({ bb, plugins }: { bb: boolean; plugins: number }) {
+  const badge = 'flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-sidebar-border px-2 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent';
+  const pluginsLabel = plugins === 1 ? '1 plugin update available' : `${plugins} plugin updates available`;
+  if (!bb && !plugins) return null;
+  return <div className="flex min-w-0 items-center gap-1">
+    {bb && <a href="/settings/updates" onClick={openUpdates} aria-label="bb update available" title="bb update available" className={badge}><Icon name="Download" aria-hidden className="size-3 text-muted-foreground" />bb</a>}
+    {plugins > 0 && <a href="/settings/updates" onClick={openUpdates} aria-label={pluginsLabel} title={pluginsLabel} className={badge}><Icon name="Plug02" aria-hidden className="size-3 text-muted-foreground" />{plugins}</a>}
+  </div>;
+}
+
 // Provider marks in one colour, without the brand tint, like the other usage panels.
 const mono = (id: string, info?: { logoUrl?: string | null; icon?: { glyph: string } | string | null }) => ({ id, logoUrl: info?.logoUrl ?? null, icon: info?.icon ?? null });
 // Mirrors bb's sidebar usage panel (same tokens and layout): provider tabs, refresh, collapse, one section per account.
@@ -106,12 +155,14 @@ export function ContactsFooter() {
     document.addEventListener('pointerdown', close); return () => document.removeEventListener('pointerdown', close);
   }, [open]);
   const groupByProject = values?.groupByProject === true, usage = (values?.usage ?? 'auto') as Usage, showUsage = usage === 'always' || (usage === 'auto' && collapsed), usageData = useUsage(showUsage);
+  // Like usage on 'auto', update badges stand in for bb's own only while bb's sidebar is hidden.
+  const updates = useUpdates(collapsed);
   const set = (prefs: { groupByProject?: boolean; usage?: Usage }) => { setError(''); void rpc.call('setPreferences', prefs).catch(e => setError(e instanceof Error ? e.message : String(e))); };
   const item = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div>
     {showUsage && <UsageSummary {...usageData} />}
-    <div ref={menu} className="relative flex items-center justify-end px-2 py-1">
-      {error && <p role="alert" className="mr-auto truncate text-xs text-destructive">{error}</p>}
+    <div ref={menu} className="relative flex items-center justify-end gap-2 px-2 py-1">
+      <div className="mr-auto flex min-w-0 items-center gap-2">{collapsed && <UpdateBadges {...updates} />}{error && <p role="alert" className="truncate text-xs text-destructive">{error}</p>}</div>
       <Button size="sm" variant="ghost" className="size-7 p-0 text-muted-foreground" aria-label="Contact list settings" aria-expanded={open} onClick={() => setOpen(!open)}><Icon name="Settings" aria-hidden /></Button>
       {open && <div role="menu" aria-label="Contact list settings" className="absolute bottom-full left-2 z-20 mb-1 w-64 rounded-md border border-border-seam bg-background p-1 shadow-lg" onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}>
         <button type="button" role="menuitemcheckbox" aria-checked={groupByProject} className={item} onClick={() => set({ groupByProject: !groupByProject })}><Icon name={groupByProject ? 'Check' : 'Layers'} aria-hidden className="size-4 text-muted-foreground" />Group by project</button>
