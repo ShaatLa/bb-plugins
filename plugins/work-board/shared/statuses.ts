@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { COLOR_PALETTE } from "./colors.js";
+import { COLOR_PALETTE, paletteColor } from "./colors.js";
 
 export const statusColorSchema = z.enum(COLOR_PALETTE.map((color) => color.value));
 export type StatusColor = z.infer<typeof statusColorSchema>;
@@ -90,4 +90,23 @@ export function statusLabel(
   return (
     statuses.find((status) => status.id === id)?.name ?? id.replaceAll("_", " ")
   );
+}
+
+/** Shared app icon names (`experimental_Icon`) for status glyphs: `work-board/status-<glyph>`. */
+export const STATUS_ICON_NAME_PREFIX = "work-board/status-";
+const STATUS_CSS_COLOR: Record<string, string> = {
+  backlog: "var(--subtle-foreground)",
+  todo: "var(--subtle-foreground)",
+  in_progress: "var(--attention)",
+  in_review: "var(--timeline-accent)",
+  done: "var(--success)",
+  canceled: "var(--subtle-foreground)",
+};
+/** The glyph a status draws: its workflow icon, else the system status's own glyph, else a ring. */
+export function statusGlyph(status: string, icon?: StatusIconName): StatusIconName {
+  return icon ?? ((TASK_STATUSES as readonly string[]).includes(status) ? (status as StatusIconName) : "todo");
+}
+/** Theme-aware CSS color of a status, matching StatusIcon. */
+export function statusCssColor(status: string, color?: StatusColor): string {
+  return paletteColor(color) ?? STATUS_CSS_COLOR[status] ?? "var(--timeline-accent)";
 }

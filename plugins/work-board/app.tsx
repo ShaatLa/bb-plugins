@@ -6,8 +6,13 @@ import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
 import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
+import { StatusGlyph } from "./components/status-icon.js";
+import { STATUS_ICONS, STATUS_ICON_NAME_PREFIX } from "./shared/statuses.js";
 
 export default definePluginApp((app) => {
+  // Other plugins draw status glyphs by name; threadTasks returns the name and color.
+  for (const { id } of STATUS_ICONS)
+    app.experimental_icons.register({ name: STATUS_ICON_NAME_PREFIX + id, component: ({ className }) => <StatusGlyph glyph={id} className={className} /> });
   app.slots.settingsSection({
     id: "settings",
     title: "Work Board",

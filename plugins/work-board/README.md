@@ -24,7 +24,7 @@ Performance: activity consumers share bounded SDK reads and immutable dispatch a
 
 ## Public RPC for other plugins (0.36.0)
 
-`threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. The contract only grows with optional fields.
+`threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?, iconName, cssColor}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. `status.iconName` is a shared app icon (`work-board/status-<glyph>`, registered with `app.experimental_icons`, drawn in currentColor), so another plugin renders `<Icon name={status.iconName} />` inside `style={{ color: status.cssColor }}` and gets the same glyph and theme color as Work Board (0.37.0). The contract only grows with fields.
 
 ## Scheduled tasks CLI
 

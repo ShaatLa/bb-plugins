@@ -13,7 +13,16 @@ export const publicRpcContract = defineRpcContract({
         z.object({
           key: z.string(),
           title: z.string(),
-          status: z.object({ id: z.string(), name: z.string(), icon: z.string().optional(), color: z.string().optional() }),
+          status: z.object({
+            id: z.string(),
+            name: z.string(),
+            icon: z.string().optional(),
+            color: z.string().optional(),
+            /** Shared app icon (`experimental_Icon`) of the effective glyph, drawn in currentColor. */
+            iconName: z.string(),
+            /** Theme-aware CSS color matching Work Board, e.g. `var(--attention)`. */
+            cssColor: z.string(),
+          }),
           projectName: z.string(),
           archived: z.boolean(),
           /** How the thread is linked, e.g. "Attached", "Parent thread". */

@@ -1,6 +1,7 @@
+import type { CSSProperties } from "react";
 import type { TaskStatus } from "../shared/contract.js";
 import { paletteColor } from "../shared/colors.js";
-import { TASK_STATUSES, type StatusIconName, type StatusColor } from "../shared/statuses.js";
+import { statusGlyph, type StatusIconName, type StatusColor } from "../shared/statuses.js";
 import { useTaskStatuses } from "../shell/task-statuses.js";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -63,11 +64,26 @@ export function StatusIcon({
   color?: StatusColor;
 }) {
   const workflow = useTaskStatuses(projectId);
-  const selected = icon ?? workflow.icon(status) ?? ((TASK_STATUSES as readonly string[]).includes(status) ? status : "todo");
+  const selected = statusGlyph(status, icon ?? workflow.icon(status));
   const selectedColor = paletteColor(color ?? workflow.color(status));
   const colorClass = STATUS_COLOR_CLASS[status] ?? "text-timeline-accent";
+  return <StatusGlyph glyph={selected} status={status} style={{ color: selectedColor }} className={cn(colorClass, className)} />;
+}
+
+/** One status glyph in currentColor; also registered as a shared app icon (see app.tsx). */
+export function StatusGlyph({
+  glyph: selected,
+  status,
+  className,
+  style,
+}: {
+  glyph: StatusIconName;
+  status?: TaskStatus;
+  className?: string;
+  style?: CSSProperties;
+}) {
   if (Object.hasOwn(CUSTOM_ICONS, selected)) {
-    return <HugeiconsIcon icon={CUSTOM_ICONS[selected as keyof typeof CUSTOM_ICONS]} aria-hidden style={{ color: selectedColor }} data-status-icon={status} data-status-glyph={selected} className={cn("size-3.5 shrink-0", colorClass, className)} />;
+    return <HugeiconsIcon icon={CUSTOM_ICONS[selected as keyof typeof CUSTOM_ICONS]} aria-hidden style={style} data-status-icon={status} data-status-glyph={selected} className={cn("size-3.5 shrink-0", className)} />;
   }
   const ring = (dashed: boolean) => (
     <circle
@@ -85,10 +101,10 @@ export function StatusIcon({
     <svg
       viewBox="0 0 14 14"
       aria-hidden
-      style={{ color: selectedColor }}
+      style={style}
       data-status-icon={status}
       data-status-glyph={selected}
-      className={cn("size-3.5 shrink-0", colorClass, className)}
+      className={cn("size-3.5 shrink-0", className)}
     >
       {!["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(selected) ? <circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.6" /> : null}
       {selected === "backlog" ? ring(true) : null}

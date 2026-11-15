@@ -1,7 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import { publicRpcContract } from "../shared/public";
-import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
+import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition, STATUS_ICON_NAME_PREFIX, statusCssColor, statusGlyph } from "../shared/statuses";
 
 /** Tasks currently linked to a thread, newest link first. */
 export function threadTasks(store: TasksStore, threadId: string) {
@@ -12,7 +12,12 @@ export function threadTasks(store: TasksStore, threadId: string) {
       const task = store.getTask(link.taskId);
       const project = task && store.getProject(task.projectId);
       if (!task || !project) return [];
-      const status = (project.statuses ?? DEFAULT_TASK_STATUSES).find((s) => s.id === task.status) ?? { id: task.status, name: task.status };
+      const def: TaskStatusDefinition = (project.statuses ?? DEFAULT_TASK_STATUSES).find((s) => s.id === task.status) ?? { id: task.status, name: task.status };
+      const status = {
+        ...def,
+        iconName: STATUS_ICON_NAME_PREFIX + statusGlyph(task.status, def.icon),
+        cssColor: statusCssColor(task.status, def.color),
+      };
       return [{
         key: task.key,
         title: task.title,
