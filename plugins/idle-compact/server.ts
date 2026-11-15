@@ -85,10 +85,10 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
       await bb.sdk.threads.compact({ threadId });
     } catch (error) {
       // State first, so a failing store cannot leave the hook holding the thread.
-      const restore = taken.delete(threadId);
-      if (restore) queued.add(threadId);
+      if (taken.delete(threadId)) queued.add(threadId);
       stopped(threadId);
-      if (restore) await bb.storage.kv.set(QUEUED + threadId, true).catch(cause => bb.log.warn(`Compact ${threadId}: queued request not saved again: ${message(cause)}`));
+      // Also stores a request made while the call was pending, which queue() kept in memory only.
+      if (queued.has(threadId)) await bb.storage.kv.set(QUEUED + threadId, true).catch(cause => bb.log.warn(`Compact ${threadId}: queued request not saved again: ${message(cause)}`));
       throw error;
     }
     taken.delete(threadId);
@@ -225,7 +225,9 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // queued message bypasses the hook by design; the compaction then waits for the stop after that turn.
   async function queue(threadId: string) {
     queued.add(threadId);
-    await bb.storage.kv.set(QUEUED + threadId, true);
+    // A request made while a compact call is pending stays in memory: if that call is accepted it covers the request, and
+    // a restart before then must not find a key and compact again. dispatch() stores it if the call is refused.
+    if (!running.has(threadId)) await bb.storage.kv.set(QUEUED + threadId, true);
     bb.log.info(`Compact ${threadId}: queued until the thread stops`);
     // The thread may have stopped between the status read and the request; its stop event has then already passed.
     const thread = await bb.sdk.threads.get({ threadId });

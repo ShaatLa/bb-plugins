@@ -503,3 +503,12 @@ it("releases the thread when the queued key cannot be removed before the call", 
   expect((await q.state()).running).toBe(false);
   expect(await q.dispatch()).toEqual({ action: "proceed" });
 });
+
+it("does not compact again after a restart when a request was made while an accepted call was pending", async () => {
+  const h = await setup({ used: 900_000 });
+  h.compact.mockImplementationOnce(() => new Promise(() => {})); // the automatic call is accepted but never returns here
+  await h.emit("thread.idle"); await h.advance(0);
+  await queueing(h).call("compact", { queue: true });
+  await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
