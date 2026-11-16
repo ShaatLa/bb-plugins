@@ -88,3 +88,15 @@ it('lets host shortcuts act only on the focused form when several share a page',
   await waitFor(() => expect(second!.querySelector('button[aria-pressed="true"]')).toBeTruthy());
   expect(first!.querySelector('button[aria-pressed="true"]')).toBeNull();
 });
+
+it('retains a question draft across collapse and reopen', async () => {
+  const { slot, resolve } = setup([question()]);
+  fireEvent.click(await slot.findByRole('button', { name: /Other/ }));
+  fireEvent.change(slot.getByRole('textbox', { name: 'Choice answer' }), { target: { value: 'Keep this draft' } });
+  fireEvent.click(slot.getByRole('button', { name: 'Hide details' }));
+  expect(slot.queryByRole('textbox')).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name: 'Show details' }));
+  expect((slot.getByRole('textbox', { name: 'Choice answer' }) as HTMLTextAreaElement).value).toBe('Keep this draft');
+  fireEvent.click(slot.getByRole('button', { name: 'Submit answer' }));
+  await waitFor(() => expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ resolution: { kind: 'user_answer', answers: { q1: { selected: [], freeText: 'Keep this draft' } } } })));
+});
