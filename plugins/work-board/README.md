@@ -649,3 +649,7 @@ Agent tasks in `in_progress` with complete activity diagnostics and no live atta
 ### Children's state notes (0.41.0)
 
 `bb work-board children [--thread <id>] [--all] [--json]` lists the open (non-archived) child threads of the invoking thread, or of `--thread`. For each child it shows the unarchived cards it is linked to, excluding Parent thread fallback links, with each card's status and Current state note (`progressNote`, `progressUpdatedAt`). Done and Canceled cards are hidden unless `--all` is given; each child reports how many it hid in `hiddenFinishedCards` (0.41.1). The text output shortens each note to one 200-character line; `--json` returns full notes. It reads one page of 200 children (`truncated: true` when there may be more) and wakes nobody.
+
+### Held cards are not stale (0.41.2)
+
+An in-progress card that has an unfinished blocked-by predecessor (one in any status except Done, including Canceled) is held by rule. It no longer gets the `no_active_thread` stale flag or the `no-live-session` advisory. An in-progress card with no live thread and no unfinished predecessor is still flagged.

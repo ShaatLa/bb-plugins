@@ -67,6 +67,12 @@ it("reports In Progress without live sessions with last attachment and activity,
   f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: thread.id, title: "Previous worker", presetName: "Attached", liveStatus: "idle" });
   f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: string[] }) => threadIds ? [thread] as never : []);
   expect(await f.read(task.id)).toMatchObject([{ kind: "no-live-session", lastAttachment: { threadId: "thr_old", title: "Previous worker" }, lastActivityAt: expect.any(String) }]);
+  // Held behind an unfinished predecessor: waiting by rule, not abandoned.
+  const holder = f.store.tasks.createTask({ projectId: f.project.id, title: "Lands first", status: "in_review" });
+  f.dependencies.add(task.id, holder.id);
+  expect(await f.read(task.id)).toEqual([]);
+  f.store.tasks.updateTask(holder.id, { status: "done" });
+  expect(await f.read(task.id)).toMatchObject([{ kind: "no-live-session" }]);
   f.store.tasks.updateTask(task.id, { status: "todo" }); expect(await f.read(task.id)).toEqual([]);
   f.store.tasks.updateTask(task.id, { status: "in_progress" });
   // A different uncached thread fails its read: incomplete diagnostics must not establish abandonment advice.
