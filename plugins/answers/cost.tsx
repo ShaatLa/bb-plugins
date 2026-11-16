@@ -16,19 +16,19 @@ export function money(c: Cost) {
 
 /** Tokenomos' cost of the open chat's session and its sub-sessions: read on open and when a turn ends, at most once per 10 s. */
 export function useThreadCost(threadId: string | null | undefined, working: boolean) {
-  const rpc = useRpc<AnswersRpcContract>(), [cost, setCost] = useState(() => threadId ? known.get(threadId) ?? null : null);
+  const rpc = useRpc<AnswersRpcContract>(), [cost, setCost] = useState(() => ({ threadId, value: threadId ? known.get(threadId) ?? null : null }));
   useEffect(() => {
     if (!threadId) return;
-    setCost(known.get(threadId) ?? null);
+    setCost({ threadId, value: known.get(threadId) ?? null });
     if (working) return;
     let live = true;
     const read = () => { readAt.set(threadId, Date.now()); void rpc.call('threadCost', { threadId }).then(r => {
     // No tokens yet usually means Tokenomos has not matched this thread (e.g. still backfilling), so show nothing rather than $0.00.
-    const next = r.available && r.own && r.total && tokens(r.total) > 0 ? { own: r.own, total: r.total, descendantCount: r.descendantCount } : null; known.set(threadId, next); if (live) setCost(next); }).catch(() => {}); };
+    const next = r.available && r.own && r.total && tokens(r.total) > 0 ? { own: r.own, total: r.total, descendantCount: r.descendantCount } : null; known.set(threadId, next); if (live) setCost({ threadId, value: next }); }).catch(() => {}); };
     const timer = setTimeout(read, Math.max(0, 10000 - (Date.now() - (readAt.get(threadId) ?? 0))));
     return () => { live = false; clearTimeout(timer); };
   }, [rpc, threadId, working]);
-  return threadId ? cost : null;
+  return threadId ? cost.threadId === threadId ? cost.value : known.get(threadId) ?? null : null;
 }
 
 export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | null; className?: string }) {
