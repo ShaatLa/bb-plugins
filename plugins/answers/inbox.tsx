@@ -617,8 +617,10 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {
     const node = popup.current, box = scroll.current; if (!draft || draft.above === undefined || !node || !box) return;
-    const height = node.offsetHeight, top = draft.above - height;
-    if (draft.top + height > box.scrollTop + box.clientHeight && top >= box.scrollTop) setDraft({ ...draft, top, above: undefined });
+    const flip = () => { const height = node.offsetHeight, top = draft.above! - height; if (draft.top + height > box.scrollTop + box.clientHeight && top >= box.scrollTop) setDraft(old => old === draft ? { ...old, top, above: undefined } : old); };
+    flip();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(flip); observer?.observe(node);
+    return () => observer?.disconnect();
   }, [draft]);
   useEffect(() => {
     if (!draft) return;
@@ -633,14 +635,15 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       const box = scroll.current, range = anchor.current; if (!box) return;
       setDraft(old => {
         if (!old) return old;
+        const width = Math.max(0, Math.min(560, box.clientWidth - 16));
         let pos: { top: number; above: number; left: number } | null = null;
-        if (range && range.startContainer.isConnected && range.endContainer.isConnected && range.getClientRects().length) pos = selectionPosition(range, box, old.width);
+        if (range && range.startContainer.isConnected && range.endContainer.isConnected && range.getClientRects().length) pos = selectionPosition(range, box, width);
         else { const body = box.parentElement?.querySelector<HTMLElement>(`[data-agent-body][data-item="${old.itemId}"]`); if (body) { const r = body.getBoundingClientRect(), b = box.getBoundingClientRect(); pos = { top: r.bottom - b.top + box.scrollTop + 6, above: r.top - b.top + box.scrollTop - 6, left: old.left }; } }
-        const left = Math.max(8, Math.min(pos?.left ?? old.left, box.clientWidth - (old.width + 8)));
+        const left = Math.max(8, Math.min(pos?.left ?? old.left, box.clientWidth - (width + 8)));
         // Unchanged since the last placing (which the flip below the selection may have adjusted): keep the popup as is.
-        if (pos && placed.current && placed.current.top === pos.top && placed.current.above === pos.above && left === old.left) return old;
-        if (!pos) return left === old.left ? old : { ...old, left };
-        placed.current = pos; return { ...old, top: pos.top, above: pos.above, left };
+        if (pos && placed.current && placed.current.top === pos.top && placed.current.above === pos.above && left === old.left && width === old.width) return old;
+        if (!pos) return left === old.left && width === old.width ? old : { ...old, left, width };
+        placed.current = pos; return { ...old, top: pos.top, above: pos.above, left, width };
       });
     }); };
     const box = scroll.current, area = box?.parentElement;

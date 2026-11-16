@@ -1008,3 +1008,29 @@ it('measures every history card before freezing any on width resize', async () =
     expect(rows.every(row => row.style.contentVisibility === 'auto')).toBe(true);
   } finally { vi.unstubAllGlobals(); }
 });
+
+it('flips a growing quote popup and fits it to a narrowed chat', async () => {
+  const observers: { callback: () => void; nodes: Element[] }[] = [];
+  vi.stubGlobal('ResizeObserver', class { entry; constructor(callback: () => void) { this.entry = { callback, nodes: [] as Element[] }; observers.push(this.entry); } observe(node: Element) { this.entry.nodes.push(node); } disconnect() {} });
+  let width = 600, popupHeight = 50;
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function(this: HTMLElement) { return this.getAttribute('role') === 'dialog' ? popupHeight : 0; });
+  const rect = { top: 300, bottom: 320, left: 20, right: 100, width: 80, height: 20 } as DOMRect;
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [rect] });
+  Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => rect });
+  try {
+    const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
+    const body = slot.container.querySelector('[data-agent-body]')!;
+    const range = document.createRange(); range.selectNodeContents(body); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    fireEvent.mouseUp(body);
+    const popup = await slot.findByRole('dialog', { name: 'Quote reply' });
+    const top = parseFloat(popup.style.top);
+    popupHeight = 200;
+    act(() => observers.filter(o => o.nodes.includes(popup)).forEach(o => o.callback()));
+    expect(parseFloat(popup.style.top)).toBeLessThan(top);
+    width = 300;
+    act(() => observers.filter(o => !o.nodes.includes(popup)).forEach(o => o.callback()));
+    await waitFor(() => expect(popup.style.width).toBe('284px'));
+  } finally { window.getSelection()?.removeAllRanges(); vi.unstubAllGlobals(); }
+});
