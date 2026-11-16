@@ -573,7 +573,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     let anchor: { el: HTMLElement; id: string; offset: number } | null = null;
     const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, id: el.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view } : null; };
     const anchored = () => anchor && (anchor.el.isConnected ? anchor.el : node.querySelector<HTMLElement>(`[aria-label=History] [data-history-ids~="${CSS.escape(anchor.id)}"]`));
-    const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; remember(); };
+    let anchorFrame = 0;
+    const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; if (!anchorFrame) anchorFrame = requestAnimationFrame(() => { anchorFrame = 0; remember(); }); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
     // a reader who was at the bottom stays there.
     // Every frame of a resize (a sidebar opening, the window dragged) rewraps the whole conversation, which made the UI lag.
@@ -611,7 +612,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
     observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true }); remember();
-    return () => { observer.disconnect(); node.removeEventListener('scroll', track); if (settle) { clearTimeout(settle); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = ''; } };
+    return () => { cancelAnimationFrame(anchorFrame); observer.disconnect(); node.removeEventListener('scroll', track); if (settle) { clearTimeout(settle); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = ''; } };
   }, [selected]);
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {

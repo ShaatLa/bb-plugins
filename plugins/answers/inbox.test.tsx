@@ -160,7 +160,7 @@ it('keeps the card a scrolled-up reader is on in place when something above it c
     await slot.findByText('Second');
     const view = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
     fireEvent.wheel(view); tops.set(view, 0); fireEvent.scroll(view); // the reader takes over, scrolled up (1500px from the end)
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => setTimeout(resolve, 30));
     cardTop = 160; act(() => observers.forEach(run => run())); // a card above grew by 60px
     expect(tops.get(view)).toBe(60);
   } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
@@ -975,4 +975,19 @@ it('ignores identical page deliveries without dropping other pages', () => {
   expect(receivePage(old, 'thr_one', 0, page)).toBe(old);
   expect(receivePage(old, 'thr_two', 0, page)).not.toBe(old);
   expect(receivePage(old, 'thr_one', 0, { ...page }).pages).toEqual([page, older]);
+});
+
+it('coalesces scroll anchor scans within an animation frame', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  try {
+    const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Answer one');
+    const view = slot.getByRole('list', { name: 'History' }).closest('.overflow-auto') as HTMLElement;
+    vi.spyOn(view, 'clientHeight', 'get').mockReturnValue(500);
+    const scan = vi.spyOn(view, 'querySelectorAll');
+    fireEvent.scroll(view); fireEvent.scroll(view); fireEvent.scroll(view);
+    expect(scan.mock.calls.filter(([selector]) => selector.includes('[data-history-ids]'))).toHaveLength(0);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    expect(scan.mock.calls.filter(([selector]) => selector.includes('[data-history-ids]'))).toHaveLength(1);
+  } finally { vi.unstubAllGlobals(); }
 });
