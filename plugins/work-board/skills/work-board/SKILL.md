@@ -443,7 +443,10 @@ Blocks until every **required** check of the PR head settles and exits with a ve
 By default every child turn wakes its parent, so status pings burn the parent's provider quota.
 
 - Spawn children with `bb thread spawn --parent-self --parent-notifications stuck` when you read their result from the task (evidence, comments) instead of waiting on each turn. `stuck` still wakes you when a child fails, is interrupted, or is blocked on an approval or question.
-- With `stuck`, the child reports only what the parent must act on: READY for review/merge, a blocker, a question for the parent. Send it with `bb thread tell <parent-thread>`: one message, no acknowledgements. Never send progress pings such as "still waiting on CI".
+- With `stuck`, the child reports only what the parent must act on, and always through the card:
+  - progress → `bb work-board update KEY --progress "..."` (replaces the card's Current state; wakes nobody);
+  - ready for review/merge, a question for the parent, or a blocker → `bb work-board report KEY --kind ready|question|blocker --body "..."` (or `--body-file <path>`). It saves a comment on the card led by the kind and wakes your own parent thread (`queue-if-active`; reports to a busy parent merge into one queued message). It fails when your thread has no parent; if it says the parent could not be woken, the report is saved and you tell the parent yourself.
+  - Never `bb thread tell` your parent for these, and never send progress pings such as "still waiting on CI".
 - Reviewers and QA record verdicts as task evidence, not as chat messages.
 - Parents read state from the board (`bb work-board show KEY --json`, evidence) instead of polling children.
 - Link every working thread to its task with `bb work-board attach KEY`.

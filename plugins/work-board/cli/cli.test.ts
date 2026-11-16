@@ -226,6 +226,46 @@ describe("bb work-board CLI", () => {
     } finally { await harness.dispose(); await rm(dir, { recursive: true, force: true }); }
   });
 
+  it("reports ready, question or blocker on the card and wakes only the caller's parent", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Report", "--prefix", "REP"]);
+    await harness.runCli(["create", "--project", "REP", "--title", "Report"]);
+    const parents: Record<string, string | null> = { thr_child: "thr_parent", thr_orphan: null, thr_parent: null };
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
+    harness.sdk.stub("threads.queuedMessages.list", async () => []);
+    harness.sdk.stub("threads.send", async () => ({}) as never);
+    const report = (thread: string | undefined, ...args: string[]) => harness.runCli(["report", "REP-1", ...args], thread ? { threadId: thread } : {});
+    vi.stubEnv("BB_THREAD_ID", "");
+    try {
+      expect(stdout(await report("thr_child", "--kind", "ready", "--body", "Merged as abc"))).toContain("Reported ready on REP-1 to @thread:thr_parent");
+      expect(harness.sdk.callsTo("threads.send")).toEqual([[expect.objectContaining({
+        threadId: "thr_parent",
+        mode: "queue-if-active",
+        input: [expect.objectContaining({ text: expect.stringMatching(/^\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
+      })]]);
+      const comments = async () => JSON.parse(stdout(await harness.runCli(["comment", "list", "REP-1", "--json"]))).comments;
+      expect((await comments()).at(-1)).toMatchObject({ kind: "agent", threadId: "thr_child", body: "**READY**\n\nMerged as abc", notifiedCount: 1 });
+
+      for (const [thread, args, error] of [
+        ["thr_orphan", ["--kind", "blocker", "--body", "x"], "no parent thread"],
+        [undefined, ["--kind", "question", "--body", "x"], "inside a bb thread"],
+        ["thr_child", ["--kind", "progress", "--body", "x"], ""],
+      ] as const) {
+        const failed = await report(thread, ...args);
+        expect(failed.exitCode).toBe(1);
+        expect(failed.stderr).toContain(error);
+      }
+      expect(await comments()).toHaveLength(1);
+
+      harness.sdk.stub("threads.send", async () => { throw new Error("offline"); });
+      const unsent = await report("thr_child", "--kind", "blocker", "--body", "CI is red");
+      expect(unsent.exitCode).toBe(1);
+      expect(unsent.stderr).toContain("could not wake parent thr_parent");
+      expect((await comments()).at(-1)).toMatchObject({ body: "**BLOCKER**\n\nCI is red", notifiedCount: 0 });
+    } finally { vi.unstubAllEnvs(); await harness.dispose(); }
+  });
+
   it("shows a brief task and pages its comments newest first", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

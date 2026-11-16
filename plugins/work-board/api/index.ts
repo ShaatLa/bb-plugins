@@ -22,7 +22,7 @@ import {
   deleteAttachmentById,
   removeAttachmentBlobs,
 } from "../attachments";
-import { deliverCommentToLatestAgent } from "../steer";
+import { deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { getTaskCost } from "../costs";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
@@ -506,6 +506,55 @@ export async function createComment(
     );
   });
   return comment;
+}
+
+export const REPORT_KINDS = ["ready", "question", "blocker"] as const;
+export type ReportKind = (typeof REPORT_KINDS)[number];
+
+/**
+ * A child thread's report on its card: saved as an agent comment, then the
+ * child's own parent thread is woken. Progress goes to the state note instead.
+ */
+export async function reportToParent(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  input: { taskId: string; threadId: string; kind: ReportKind; body: string; authorName: string },
+): Promise<{ comment: StoredComment; parentThreadId: string; notified: boolean }> {
+  const child = await bb.sdk.threads.get({ threadId: input.threadId });
+  const parentThreadId = child.parentThreadId;
+  if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);
+  const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
+  if (parent.archivedAt != null || parent.deletedAt != null)
+    throw new Error(`Parent thread ${parentThreadId} is archived or deleted`);
+  const label = input.kind.toUpperCase();
+  const comment = await createComment(bb, store, {
+    taskId: input.taskId,
+    kind: "agent",
+    authorName: input.authorName,
+    presetName: null,
+    threadId: input.threadId,
+    recordedByThread: input.threadId,
+    body: `**${label}**\n\n${input.body}`,
+    notify: false,
+    awaitDelivery: false,
+  });
+  const key = store.tasks.getTask(input.taskId)!.key;
+  let notified = false;
+  try {
+    await notifyThread(
+      bb,
+      parentThreadId,
+      `**${key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${key}](/plugins/work-board/work-board/task/${key})`,
+    );
+    notified = true;
+  } catch (error) {
+    bb.log.warn(`failed to deliver ${label} report on ${key} to ${parentThreadId}: ${errorMessage(error)}`);
+  }
+  const updated = store.transaction(() =>
+    store.tasks.updateComment(comment.id, { notifiedCount: notified ? 1 : 0 }),
+  );
+  publishCommentsChanged(bb, input.taskId);
+  return { comment: updated, parentThreadId, notified };
 }
 
 interface TaskPullRequestsResult {

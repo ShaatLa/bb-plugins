@@ -19,6 +19,8 @@ import { z } from "zod";
 
 import {
   createComment,
+  REPORT_KINDS,
+  reportToParent,
   publishProjectsChanged,
   registerHandlers,
   type TasksApiStore,
@@ -3341,6 +3343,65 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               return input.options.json
                 ? JSON.stringify({ comment })
                 : `Commented on ${task.key}  ${comment.id}`;
+            });
+          },
+        }),
+
+        report: cliCommand({
+          summary: "Report ready, a question or a blocker on a card and wake your parent thread",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            kind: {
+              type: "enum",
+              values: REPORT_KINDS,
+              required: true,
+              description: "ready, question or blocker; progress goes to `update --progress` and wakes nobody",
+            },
+            body: {
+              type: "string",
+              placeholder: "markdown",
+              aliases: ["message", "text", "content"],
+              description: "Report markdown; use --body-file for long text (exactly one of the two)",
+            },
+            "body-file": {
+              type: "string",
+              placeholder: "path",
+              description: "Read the report from this UTF-8 file on the invoking machine",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          constraints: [
+            { kind: "exactly-one", options: ["body", "body-file"] },
+            { kind: "requires", option: "machine", needs: ["body-file"] },
+          ],
+          run(input, ctx) {
+            return guard(async () => {
+              const threadId = ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId)
+                throw new CliError("report must run inside a bb thread; its parent thread is the recipient", { code: "missing_thread" });
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const bodyFile = input.options["body-file"];
+              const clientHostId = bodyFile !== undefined
+                ? await resolveClientHostId(bb, domain, input.options.machine, ctx)
+                : undefined;
+              const body = await readTextOption(bb, ctx, clientHostId, input.options.body, bodyFile);
+              if (!body?.trim()) throw new CliError("report body must not be blank");
+              const result = await reportToParent(bb, store, {
+                taskId: task.id,
+                threadId,
+                kind: input.options.kind,
+                body,
+                authorName: taskAuthor({ ...ctx, threadId }),
+              });
+              if (!result.notified)
+                throw new CliError(
+                  `Saved ${input.options.kind} report on ${task.key} (${result.comment.id}), but could not wake parent ${result.parentThreadId}`,
+                  { hint: `Tell it yourself: bb thread tell ${result.parentThreadId}` },
+                );
+              return input.options.json
+                ? JSON.stringify(result)
+                : `Reported ${input.options.kind} on ${task.key} to @thread:${result.parentThreadId}  ${result.comment.id}`;
             });
           },
         }),

@@ -65,6 +65,21 @@ async function appendToQueuedNotice(
   }
 }
 
+/** Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. */
+export async function notifyThread(
+  bb: BbPluginApi,
+  threadId: string,
+  text: string,
+): Promise<void> {
+  if (await appendToQueuedNotice(bb, threadId, text)) return;
+  await bb.sdk.threads.send({
+    threadId,
+    originPluginId: bb.pluginId,
+    input: [{ type: "text", text, mentions: [] }],
+    mode: "queue-if-active",
+  });
+}
+
 export async function deliverCommentToLatestAgent(
   bb: BbPluginApi,
   store: TasksStore,
