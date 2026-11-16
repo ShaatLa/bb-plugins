@@ -149,6 +149,16 @@ it('keeps its own undo history: Cmd+Z and Shift+Cmd+Z step through edits, typing
   fireEvent.keyDown(box, { key: 'z', code: 'KeyZ', metaKey: true }); expect(box.textContent).toBe('one two');
 });
 
+it('leaves the quote on Shift+Enter in an empty quote line', () => {
+  const { box, onChange } = editor('> one\n> ');
+  const range = document.createRange(), selection = window.getSelection()!;
+  range.selectNodeContents(box); range.collapse(false); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+  expect(onChange).toHaveBeenLastCalledWith('> one\n');
+  cleanup(); const after = editor('> one\n');
+  expect(after.box.querySelector('[data-quote] + span + br')).toBeTruthy(); expect(after.box.textContent).toBe('one');
+});
+
 function nativeEditor(options: any = {}) {
   const onSend = vi.fn();
   const slot = renderSlot({ component: () => {

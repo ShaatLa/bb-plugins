@@ -121,6 +121,8 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       upTo(token.at); boundary(token.at); put(token.node()); last = token.at + token.length;
     }
     upTo(value.length); boundary(value.length);
+    // An empty line right after a quote (left with Shift+Enter) needs a <br> to show the caret under the quote.
+    if (quotes.at(-1)?.[1] === value.length - 1) fragment.append(document.createElement('br'));
     fragment.append(document.createTextNode(''));
     root.replaceChildren(fragment); drawn.current = signature; setPillContents(contents);
     if (at !== null) {
@@ -193,7 +195,11 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.code === 'KeyZ' || (event.code === 'KeyY' && event.ctrlKey && !event.shiftKey))) { event.preventDefault(); travel(event.code === 'KeyZ' && !event.shiftKey); return; }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') { event.preventDefault(); toggleQuote(); return; }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
-    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) { const [a] = selection(); replace(/^>(?: |\n|$)/.test(value.slice(a ? value.lastIndexOf('\n', a - 1) + 1 : 0)) ? '\n> ' : '\n'); } else onSend(); return; }
+    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) {
+      // Shift+Enter continues a quote; on an empty quote line it leaves the quote instead, so plain text can follow.
+      const [a] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', a), end = stop < 0 ? value.length : stop;
+      if (/^> ?$/.test(value.slice(start, end))) replace('', start, end); else replace(/^>(?: |\n|$)/.test(value.slice(start)) ? '\n> ' : '\n');
+    } else onSend(); return; }
     if (event.key === 'Backspace' || event.key === 'Delete') {
       const [a,b] = selection(); if (a !== b) { event.preventDefault(); removeSelection(); return; }
       const matches = Array.from(value.matchAll(matcher));
