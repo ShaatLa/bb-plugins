@@ -1,3 +1,4 @@
+import { RollingText } from './rolling-text';
 import { useEffect, useState } from 'react';
 import { useRpc } from '@get-bb/plugin-sdk/app';
 import type { AnswersRpcContract, Cost } from './contract';
@@ -42,6 +43,6 @@ export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | n
   const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos. Click to open Tokenomos`;
   // A click opens the Tokenomos page; shift- or cmd-click is left alone.
   return <button type="button" title={title} aria-label={title.replaceAll('\n', '. ')} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; openAppRoute('/plugins/tokenomos/tokenomos'); }} className={`flex min-w-0 cursor-pointer items-center gap-1.5 truncate rounded-md px-1 text-xs tabular-nums text-muted-foreground hover:text-foreground ${className}`}>
-    <span>{own}</span>{tail && <span className="text-subtle-foreground">· +{delta} in {subs} sub{subs === 1 ? '' : 's'}</span>}
+    <RollingText text={own} />{tail && <span className="text-subtle-foreground">· +<RollingText text={delta} /> in <RollingText text={String(subs)} /> sub{subs === 1 ? '' : 's'}</span>}
   </button>;
 }

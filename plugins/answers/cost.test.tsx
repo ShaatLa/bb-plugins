@@ -38,3 +38,22 @@ it('never renders the previous thread cost after switching', async () => {
   slot.rerender(<Probe threadId="cost_second" />);
   expect(seen[0]).toBeNull();
 });
+
+it('rolls only the changed characters of the cost: the new one in from above, the old one out below', async () => {
+  const { RollingText } = await import('./rolling-text');
+  const runs: { frames: Keyframe[]; animation: { onfinish: (() => void) | null } }[] = [];
+  const animate = vi.fn(function (frames: Keyframe[]) { const animation = { onfinish: null as (() => void) | null }; runs.push({ frames, animation }); return animation; });
+  Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: animate });
+  try {
+    const view = render(<RollingText text="$472" />);
+    expect(view.container.textContent).toBe('$472'); expect(animate).not.toHaveBeenCalled();
+    view.rerender(<RollingText text="$480" />);
+    // Two changed digits, two animations each (in and out); '$' and '4' stay.
+    expect(animate).toHaveBeenCalledTimes(4);
+    expect(runs.map(r => (r.frames[0] as { transform: string }).transform)).toEqual(['translateY(-100%)', 'translateY(0)', 'translateY(-100%)', 'translateY(0)']);
+    expect(view.container.querySelectorAll('[data-rolling]')).toHaveLength(2);
+    runs.forEach(r => r.animation.onfinish?.());
+    await waitFor(() => expect(view.container.querySelectorAll('[data-rolling]')).toHaveLength(0));
+    expect(view.container.textContent).toBe('$480');
+  } finally { delete (HTMLElement.prototype as { animate?: unknown }).animate; }
+});
