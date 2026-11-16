@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { access, constants, mkdir, realpath, stat } from "node:fs/promises";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
@@ -31,6 +31,22 @@ export const startOutput = z.discriminatedUnion("dryRun", [
   z.object({ dryRun: z.literal(false), ...resultFields, threadId: text }).strict(),
 ]);
 type Request = z.infer<typeof startInput>;
+
+async function executable(name: string, env: NodeJS.ProcessEnv, candidates: (string | undefined)[] = []) {
+  for (const candidate of [...candidates, ...(env.PATH ?? "").split(delimiter).filter(isAbsolute).map(dir => join(dir, name))]) {
+    if (!candidate || !isAbsolute(candidate)) continue;
+    try {
+      await access(candidate, constants.X_OK);
+      if ((await stat(candidate)).isFile()) return candidate;
+    } catch { /* Try the next installed executable. */ }
+  }
+  throw new Error(`Cannot resolve ${name} in the bb server environment`);
+}
+
+export async function builderEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  const cli = await executable("bb", env, [env.BB_CLI, env.BB_CLI_LAUNCHER, env.BB_CLI_DIR ? join(env.BB_CLI_DIR, "bb") : undefined]);
+  return { ...env, BB_CLI: cli, PATH: [dirname(cli), env.PATH].filter(Boolean).join(delimiter) };
+}
 
 // All paths here belong to this plugin's server-local checkout, never the caller's cwd.
 function run(command: string, args: string[], cwd: string, signal: AbortSignal, input = "", env = process.env): Promise<string> {
@@ -96,9 +112,11 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const script = await realpath(candidate);
       const inside = relative(await realpath(root), script);
       if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Launch script must stay inside the checkout");
-      const stdout = await run(script.endsWith(".py") ? "python3" : script, [...(script.endsWith(".py") ? [script] : []), ...request.args], root, signal,
-        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n",
-        { ...process.env, BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId });
+      const env = { ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId };
+      const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
+      bb.log.info(`Builder runtime: BB_CLI=${env.BB_CLI}; python3=${python ?? "not used"}`);
+      const stdout = await run(python ?? script, [...(python ? [script] : []), ...request.args], root, signal,
+        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n", env);
       let parsed: unknown;
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
       const build = buildSchema.parse(parsed);

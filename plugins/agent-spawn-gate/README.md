@@ -1,4 +1,4 @@
-# Agent Spawn Gate 0.6.0
+# Agent Spawn Gate 0.6.1
 
 Persistent per-project launch workflows for new agent sessions. The core
 `message.dispatch` hook enforces a one-use admission before any provider runs.
@@ -70,7 +70,9 @@ RPC `start` input: `{projectId,parentThreadId,args:string[],dryRun?:boolean}`.
 The CLI and RPC return the same JSON. Dry-run runs the builder without minting
 or spawning. See [START-CONTRACT.md](START-CONTRACT.md) for builder stdin/stdout,
 allowed spawn fields and result shapes. Builders run on the bb server machine;
-absolute path arguments must be accessible there. Child environment paths
+absolute path arguments must be accessible there. The plugin puts the server's
+bb CLI on builder PATH and sets its absolute BB_CLI. Python builders use the
+server PATH's python3; both resolved paths are recorded in plugin logs. Child environment paths
 refer to the selected execution host. Each subprocess has a 60-second timeout
 and a combined 1 MiB stdout/stderr limit. Starts serialize per project.
 

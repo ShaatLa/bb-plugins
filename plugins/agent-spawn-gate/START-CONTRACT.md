@@ -13,7 +13,7 @@ The same start implementation serves CLI and RPC. The plugin validates the paren
 Builder execution:
 - Fetch the project's configured Git remote on EVERY start. Resolve its remote default branch. Use a clean plugin-owned checkout at that fetched commit; never use the caller's worktree or local branch. Fetch/authentication/checkout failure aborts, with no stale checkout fallback.
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
-- stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
+- stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
 - stdout: exactly one JSON object, UTF-8, maximum 1 MiB. All logs go to stderr. Exit nonzero, invalid JSON, unsupported version, unknown fields or invalid spawn values abort before mint/spawn.
 - No mint or bb thread spawn inside the builder.
 

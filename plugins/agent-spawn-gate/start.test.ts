@@ -4,13 +4,17 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { createStart, registerStartCli } from "./start";
+import { builderEnvironment, createStart, registerStartCli } from "./start";
 
 const cleanups: (() => Promise<unknown>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "spawn-start-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const cli = join(root, "bin", "bb");
+  await mkdir(join(root, "bin"));
+  await writeFile(cli, '#!/bin/sh\nprintf "test-bb"\n', { mode: 0o755 });
+  vi.stubEnv("BB_CLI", cli);
   const repo = join(root, "repo");
   await mkdir(repo);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -64,4 +68,23 @@ it("fails closed on malformed JSON, changed parent, checkout escape, instruction
   await rm(f.repo, { recursive: true });
   await expect(f.start(f.request)).rejects.toThrow("git exited");
   expect(f.mint).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("makes bare bb and absolute BB_CLI work in a builder with a restricted server PATH", async () => {
+  const f = await fixture();
+  vi.stubEnv("PATH", "/usr/bin:/bin");
+  await writeFile(join(f.repo, "builder.py"), `import json, os, shutil, subprocess, sys
+c = json.load(sys.stdin)
+assert os.path.isabs(os.environ["BB_CLI"])
+assert shutil.which("bb") == os.environ["BB_CLI"]
+assert subprocess.check_output(["bb", "--version"], text=True) == "test-bb"
+assert subprocess.check_output([os.environ["BB_CLI"], "--version"], text=True) == "test-bb"
+print(json.dumps({"version":1,"brief":"runtime works","spawn":{"parentThreadId":c["parentThreadId"]}}))
+`);
+  f.git("add", "."); f.git("commit", "-m", "builder reads bb");
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({ dryRun: true, build: { brief: "runtime works" } });
+  expect(f.mint).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
+  const env = await builderEnvironment({ BB_CLI: "/missing/bb", BB_CLI_LAUNCHER: process.env.BB_CLI, PATH: "/usr/bin:/bin" });
+  expect(env.BB_CLI).toBe(process.env.BB_CLI);
+  await expect(builderEnvironment({ PATH: "/missing" })).rejects.toThrow("Cannot resolve bb");
 });
