@@ -103,6 +103,23 @@ it('keeps a send tied to its original thread after switching', async () => {
   await act(async () => { resolve({}); }); expect(send.mock.calls[0]![0].threadId).toBe('thr_one');
   expect(slot.getByRole('textbox', { name:'Send message' }).textContent).toBe('For two');
 });
+it.each([
+  ['at the newest message', { top:5, depth:1, bottom:true }, 1000],
+  ['scrolled up', { top:5, depth:1 }, 5],
+] as const)('reopens a chat the reader left %s there', async (_, saved, expected) => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: saved }));
+  const tops = new WeakMap<Element, number>();
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, readAt:1 }], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(expected));
+  } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
 it('groups consecutive questions with a shared answer', async () => {
   const other = { ...base, id:'ans_two', question:'Question two', questionSeq:3, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
   const first = { ...base, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
