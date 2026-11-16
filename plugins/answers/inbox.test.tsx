@@ -721,6 +721,17 @@ it('shows owed answers, collapses, jumps and confirms answered', async () => {
   await waitFor(()=>expect(settleOwed).toHaveBeenCalledWith({id:'ans_old',action:'answered'}));
   await waitFor(()=>expect(slot.queryByRole('region',{name:'Answers owed'})).toBeNull());
 });
+it('holds the owed card back while the chat or its background work still runs', async () => {
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'background-command', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:1, planMode:0 } };
+  const owed = { owed:()=>({items:[{id:'ans_old',question:'Older',createdAt:Date.now()-3600000,interim:true}]}) };
+  const first = setup({list:()=>({items:[base],nextCursor:null}),rpc:owed,sidebarThreads:{threads:[thread],projects:[]}});
+  fireEvent.click(await first.recipients.findByRole('option')); await first.slot.findByRole('button',{name:'Send message'});
+  expect(first.slot.queryByRole('region',{name:'Answers owed'})).toBeNull();
+  first.slot.unmount();
+  const second = setup({list:()=>({items:[base],nextCursor:null}),rpc:owed,sidebarThreads:{threads:[{...thread,indicator:'none',activity:{...thread.activity,backgroundCommands:0}}],projects:[]}});
+  fireEvent.click(await second.recipients.findByRole('option'));
+  expect(await second.slot.findByRole('region',{name:'Answers owed'})).toBeTruthy();
+});
 it('dismisses owed rows and excludes the newest card already showing its robot', async () => {
   const latest = {...base,status:'deferred' as const,answer:null,interim:'Working'};
   const rows=[{id:'ans_old',question:'Older',createdAt:Date.now(),interim:false},{id:base.id,question:base.question,createdAt:base.createdAt,interim:true}];
