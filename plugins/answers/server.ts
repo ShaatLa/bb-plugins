@@ -40,10 +40,10 @@ export default function plugin(bb: BbPluginApi) {
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const queueStamps = new Map<string,number>(); // per thread, bumped by bb's queue events below
   // Per thread, bumped when bb reports its context window usage changed, so the open chat rereads its ring then, not on a timer.
-  const contextStamps = new Map<string,number>();
+  const contextStamps = new Map<string,{stamp:number;compactedAt:number|null}>();
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
-  const driver = createDriver(bb,db,() => {invalidate(); onAttention();},threadId => {contextStamps.set(threadId,(contextStamps.get(threadId) ?? 0)+1); bb.rpc.experimental_invalidate([CONTEXT_TAG]);});
+  const driver = createDriver(bb,db,() => {invalidate(); onAttention();},(threadId,compactedAt) => {const last=contextStamps.get(threadId); contextStamps.set(threadId,{stamp:(last?.stamp ?? 0)+1,compactedAt:compactedAt ?? last?.compactedAt ?? null}); bb.rpc.experimental_invalidate([CONTEXT_TAG]);});
   let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
   type DisplayThread = {id:string; title:string|null; projectId:string};
   const threadCache=new Map<string,{expires:number; thread:DisplayThread|undefined}>();
@@ -316,7 +316,7 @@ export default function plugin(bb: BbPluginApi) {
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs answers`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Answers UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
     queueStamp(raw:z.infer<typeof inputs.queueStamp>) {return {stamp:queueStamps.get(inputs.queueStamp.parse(raw).threadId) ?? 0};},
-    contextStamp(raw:z.infer<typeof inputs.contextStamp>) {return {stamp:contextStamps.get(inputs.contextStamp.parse(raw).threadId) ?? 0};},
+    contextStamp(raw:z.infer<typeof inputs.contextStamp>) {return contextStamps.get(inputs.contextStamp.parse(raw).threadId) ?? {stamp:0,compactedAt:null};},
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
     async pools(raw:z.infer<typeof inputs.pools>) {
       inputs.pools.parse(raw);

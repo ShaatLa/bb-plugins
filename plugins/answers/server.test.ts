@@ -523,7 +523,9 @@ describe('ingestion driver',()=>{
   host.harness.sdk.stub('threads.events.list',async(args:any)=>{ if (args.order!=='asc') return []; const page=next; next=[]; return page; });
   await driver.schedule('t'); expect(onContext).not.toHaveBeenCalled();
   next=[{seq:7,type:'thread/contextWindowUsage/updated',createdAt:2,data:{},scope:{kind:'thread'}}];
-  await driver.schedule('t'); expect(onContext).toHaveBeenCalledWith('t');
+  await driver.schedule('t'); expect(onContext).toHaveBeenLastCalledWith('t',undefined);
+  next=[{seq:8,type:'thread/compacted',createdAt:42,data:{},scope:{kind:'thread'}}];
+  await driver.schedule('t'); expect(onContext).toHaveBeenLastCalledWith('t',42);
  });
  it('backfills descending pages then drains ascending, halving 413 pages at the same cursor',async()=>{
   const {harness,db,driver,invalidate}=driverSetup();

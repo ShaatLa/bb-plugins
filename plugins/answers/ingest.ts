@@ -50,7 +50,7 @@ export const SCRIPT_TAG = /^\[([A-Za-z][^\]\n]{2,59})\]\s/;
 export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed','system/operation'] as const;
 // Read only while catching up (not on first sight, whose 1,500-event window it would crowd): it tells the open chat to
 // reread its context ring, and ingest ignores it.
-export const CONTEXT_EVENT = 'thread/contextWindowUsage/updated' as const;
+export const CONTEXT_EVENT = 'thread/contextWindowUsage/updated' as const, COMPACTED_EVENT = 'thread/compacted' as const;
 export const cap = (text: string, max: number) => text.length <= max ? text : text.slice(0, max - '… (truncated, open in chat)'.length) + '… (truncated, open in chat)';
 export type Event = { seq: number; type: string; scope?: { kind?: string; turnId?: string }; data: any; createdAt?: number };
 

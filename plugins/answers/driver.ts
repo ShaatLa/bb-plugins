@@ -1,6 +1,6 @@
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
-import { applyEvents, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
+import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
 
 const notFound = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
@@ -12,8 +12,8 @@ const oversized = (e: unknown) => {
 };
 type State = { last_seq: number; last_error: string | null; ingested_thread_updated_at: number | null };
 type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'projectId' | 'parentThreadId' | 'updatedAt'>;
-const CATCH_UP = [...RELEVANT, CONTEXT_EVENT] as const;
-export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string) => void = () => {}) {
+const CATCH_UP = [...RELEVANT, CONTEXT_EVENT, COMPACTED_EVENT] as const;
+export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string, compactedAt?: number) => void = () => {}) {
   const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
   const scheduled = new Map<string, { dirty: boolean; listed?: Thread; promise: Promise<void> }>();
@@ -93,7 +93,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     for (;;) {
       const result = await page(id,cursor,'asc',100,CATCH_UP);
       if (signal.aborted) return;
-      if (result.events.some(e => e.type === CONTEXT_EVENT)) onContext(id);
+      const compacted = result.events.filter(e => e.type === COMPACTED_EVENT).at(-1);
+      if (compacted || result.events.some(e => e.type === CONTEXT_EVENT)) onContext(id, compacted ? compacted.createdAt ?? Date.now() : undefined);
       if (result.events.length) {
         changed = db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions,live.has(id)))() || changed;
         cursor = Math.max(...result.events.map(e=>e.seq));

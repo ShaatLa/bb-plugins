@@ -748,6 +748,17 @@ it('keeps the context ring through a failed read or one without usage', async ()
   expect(context.mock.calls.length).toBe(calls + 2);
   expect(slot.getByRole('button', { name:'Context window 38% used' })).toBeTruthy();
 });
+it('winds the context ring down to 0 after a compaction instead of dropping it', async () => {
+  let compactedAt: number | null = null;
+  const context = vi.fn(async () => ({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) as any);
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ context, rpc: { contextStamp: () => ({ stamp: compactedAt ? 1 : 0, compactedAt }) }, sidebarThreads:{ threads:[thread], projects:[] } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByRole('button', { name:'Context window 38% used' })).toBeTruthy();
+  context.mockImplementation(async () => ({ usage:null }));
+  compactedAt = Date.now() + 1000;
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:context']); });
+  expect(await slot.findByRole('button', { name:'Context window 0% used' })).toBeTruthy();
+});
 it('pauses queue and context polling while hidden and refetches when visible', async () => {
   let visible = true;
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');

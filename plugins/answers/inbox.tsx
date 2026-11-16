@@ -335,7 +335,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   const [depth, setDepth] = useState(() => restore.current && restore.current.threadId === selected ? restore.current.depth : 1), [loaded, setLoaded] = useState<{ threadId?: string; pages: ListResult[] }>({ pages: [] });
   // The previous conversation stays on screen until the new one's first page arrives, then both swap in one frame.
   const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = loaded.threadId === selected ? loadedPages : NO_PAGES;
-  const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[] }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, ContextUsage>());
+  const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[] }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, { usage: ContextUsage; at: number }>());
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId || row.waitingOn?.kind === 'plugin'));
   // Why a queued message is held, worded and iconed as bb's own queue does (a plain wait behind the running turn, or a
   // schedule already shown as such, says nothing).
@@ -444,8 +444,19 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // A read that fails, or comes back without a usage (mid-turn, while compacting), keeps the thread's last ring instead of
   // dropping it; each thread shows only its own ring, the last one known at once on return.
   // bb's context-usage events (through the server's stamp) and turn changes trigger the reread; no timer.
-  const contextStamp = useQuery({ contract: rpcContract, method: 'contextStamp', input: { threadId: selected ?? 'thr_none' }, enabled: !!selected }).data?.stamp;
-  useEffect(() => { if (!selected) { setContext(null); return; } const known = contexts.current.get(selected); setContext(known ? { threadId: selected, usage: known } : null); if (!visible) return; let active = true; const read = () => { void sdk.threads.context({ threadId: selected }).then(value => { if (!active || !value?.usage || value.usage.modelContextWindow <= 0) return; contexts.current.set(selected, value.usage); setContext({ threadId: selected, usage: value.usage }); }).catch(() => {}); }; read();  return () => { active = false; }; }, [sdk, selected, visible, working, contextStamp]);
+  const contextStamps = useQuery({ contract: rpcContract, method: 'contextStamp', input: { threadId: selected ?? 'thr_none' }, enabled: !!selected }).data, contextStamp = contextStamps?.stamp, compactedAt = contextStamps?.compactedAt ?? null;
+  useEffect(() => { if (!selected) { setContext(null); return; } const known = contexts.current.get(selected); setContext(known ? { threadId: selected, usage: known.usage } : null); if (!visible) return; let active = true;
+    const keep = (usage: ContextUsage, at: number) => { contexts.current.set(selected, { usage, at }); setContext({ threadId: selected, usage }); };
+    // After a compaction bb may report no usage (or only a breakdown) until the next turn, or the last one from before it;
+    // the ring then winds down to 0 on the window it had, and the next real reading takes over.
+    const read = () => { void sdk.threads.context({ threadId: selected }).then(value => {
+      if (!active) return;
+      const usage = value?.usage, valid = !!usage && usage.modelContextWindow > 0 && Number.isFinite(usage.usedTokens), last = contexts.current.get(selected);
+      const compacted = compactedAt !== null && !!last && compactedAt > last.at && (!valid || usage!.usedTokens === last.usage.usedTokens);
+      if (compacted) keep({ ...last!.usage, usedTokens: 0, snapshot: undefined }, compactedAt!);
+      else if (valid) keep(usage!, Date.now());
+    }).catch(() => {}); };
+    read(); return () => { active = false; }; }, [sdk, selected, visible, working, contextStamp, compactedAt]);
   // Every action rereads the queue, failed ones too: a row bb already sent or deleted answers 404 and must leave the card.
   // Deleting such a row already got what the owner wanted, so that 404 is not an error.
   async function queueAction(action: () => Promise<unknown>, goneIsDone = false) { try { await action(); } catch (e) { if (!(goneIsDone && (e as { status?: number }).status === 404)) setQueueError(errorText(e)); } finally { setQueueVersion(n => n + 1); refresh(); } }
