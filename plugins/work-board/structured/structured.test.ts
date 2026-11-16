@@ -68,7 +68,7 @@ describe("task questions", () => {
     expect(result.attachmentIds).toEqual([attachment.id]);
     expect(store.tasks.getAttachment(attachment.id)).toMatchObject({ taskId: null, commentId: result.commentId });
     expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
-    expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).toContain(`Attachment: log.txt (12 bytes) — bb work-board attachment get ${attachment.id} --out <path>`);
+    expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).toContain(`Attachment: log.txt (12 bytes) — \`bb work-board attachment get ${attachment.id} --out <path>\``);
     const listed = await cli("question", "list", task.key, "--json");
     expect(listed.questions[0].answerAttachments).toEqual([{ id: attachment.id, fileName: "log.txt", mime: "text/plain", sizeBytes: 12 }]);
     const payload = structured.listQuestions(task.id)[0]!;
@@ -567,7 +567,7 @@ describe("task questions", () => {
             mode: "queue-if-active",
             input: [
               expect.objectContaining({
-                text: expect.stringContaining("Answer: Yes"),
+                text: expect.stringContaining("**Answer:** Yes"),
               }),
             ],
           }),

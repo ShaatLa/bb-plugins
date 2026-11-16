@@ -186,6 +186,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     },
     async answerQuestion(input) {
       let withdrawn = false;
+      let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
@@ -238,6 +239,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           authorName: input.authorName,
           body: `Question: ${next.prompt}\n${answer ? `Answer: ${answer}` : withdrawn ? `Answer withdrawn (was: ${previous})` : "Answer: (cleared)"}\nQuestion ID: ${next.id}; revision: ${next.revision}`,
         });
+        // Delivered as Markdown, so each part is its own paragraph instead of one run-on line.
+        notice = [
+          `**Question:** ${next.prompt}`,
+          answer ? `**Answer:** ${answer}` : withdrawn ? `**Answer withdrawn** (was: ${previous})` : "**Answer:** (cleared)",
+          `Question ID: ${next.id}; revision: ${next.revision}`,
+        ].join("\n\n");
         for (const id of attachmentIds) db.prepare<[string, string]>(
           "UPDATE attachments SET task_id = NULL, comment_id = ? WHERE id = ?",
         ).run(comment.id, id);
@@ -257,7 +264,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
-        body: `${comment.body}${withdrawn ? "\nThe owner withdrew this answer. Treat the question as open again, do not act on the earlier answer, and undo or report anything you already did because of it (for example, move the task back if you changed its status)." : ""}${attachments.map(a => `\nAttachment: ${a.fileName} (${a.sizeBytes} bytes) — bb work-board attachment get ${a.id} --out <path>`).join("")}\nRead the current saved decision with bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json before continuing.`,
+        body: [
+          notice,
+          ...(withdrawn ? ["The owner withdrew this answer. Treat the question as open again, do not act on the earlier answer, and undo or report anything you already did because of it (for example, move the task back if you changed its status)."] : []),
+          ...attachments.map(a => `Attachment: ${a.fileName} (${a.sizeBytes} bytes) — \`bb work-board attachment get ${a.id} --out <path>\``),
+          `Read the current saved decision with \`bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json\` before continuing.`,
+        ].join("\n\n"),
         authorName: input.authorName,
         threadId,
         mode: "queue-if-active",
