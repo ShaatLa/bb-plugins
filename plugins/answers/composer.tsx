@@ -32,25 +32,29 @@ type Props = {
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
-  const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef<string[]>([]);
+  const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
   const urlOf = (path: string) => previews.get(path) ?? savedPreviews[path];
   const images = attachments.filter(file => file.type === 'localImage'), viewed = images.findIndex(file => file.path === viewing);
   // A chip without a local preview (a draft restored after a reload) reads its image when opened, like a sent one.
-  const view = (path: string) => { setViewing(path); const file = images.find(f => f.path === path); if (!file || urlOf(path) || !(file.sourceProjectId ?? projectId)) return;
-    void sdk.projects.attachments.read({ projectId: file.sourceProjectId ?? projectId!, path }).then(image => { const url = URL.createObjectURL(new Blob([new Uint8Array(image.bytes)], { type: image.mimeType })); opened.current.push(url); setSavedPreviews(old => ({ ...old, [path]: url })); }).catch(() => {}); };
-  useEffect(() => () => opened.current.forEach(URL.revokeObjectURL), []);
-  // Free a preview's blob once its attachment leaves the box (removed, sent and cleared) or the box unmounts.
   const shown = useRef(attachments);
-  useEffect(() => { const keep = new Set(attachments.map(file => file.path)); for (const file of shown.current) if (!keep.has(file.path)) dropPreview(file.path); shown.current = attachments; }, [attachments]);
-  useEffect(() => () => shown.current.forEach(file => dropPreview(file.path)), []);
+  const readPreview = (file: Attachment) => {
+    if (urlOf(file.path) || loading.current.has(file.path) || !(file.sourceProjectId ?? projectId)) return;
+    loading.current.add(file.path);
+    void sdk.projects.attachments.read({ projectId: file.sourceProjectId ?? projectId!, path: file.path }).then(image => {
+      if (!alive.current || !shown.current.some(f => f.path === file.path)) return;
+      const url = URL.createObjectURL(new Blob([new Uint8Array(image.bytes)], { type: image.mimeType })); opened.current.set(file.path, url); setSavedPreviews(old => ({ ...old, [file.path]: url }));
+    }).catch(() => {}).finally(() => loading.current.delete(file.path));
+  };
+  const view = (path: string) => { setViewing(path); const file = images.find(f => f.path === path); if (file) readPreview(file); };
+  // Free only removed paths so unchanged attachments keep their previews through edits.
   useEffect(() => {
-    if (!editMode) return;
-    let active = true; const urls: string[] = [];
-    void Promise.all(attachments.filter(file => file.type === 'localImage' && !previews.has(file.path)).map(async file => {
-      try { const image = await sdk.projects.attachments.read({ projectId: file.sourceProjectId ?? projectId!, path: file.path }); if (!active) return; const url = URL.createObjectURL(new Blob([new Uint8Array(image.bytes)], { type: image.mimeType })); urls.push(url); setSavedPreviews(old => ({ ...old, [file.path]: url })); } catch { /* the file name remains visible */ }
-    }));
-    return () => { active = false; urls.forEach(URL.revokeObjectURL); };
+    const keep = new Set(attachments.map(file => file.path));
+    for (const file of shown.current) if (!keep.has(file.path)) dropPreview(file.path);
+    shown.current = attachments;
+    for (const [path, url] of opened.current) if (!keep.has(path)) { URL.revokeObjectURL(url); opened.current.delete(path); setSavedPreviews(old => { const next = { ...old }; delete next[path]; return next; }); }
+    if (editMode) attachments.filter(file => file.type === 'localImage').forEach(readPreview);
   }, [editMode, attachments, projectId, sdk]);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; opened.current.forEach(url => URL.revokeObjectURL(url)); opened.current.clear(); shown.current.forEach(file => dropPreview(file.path)); }; }, []);
   // Like bb: one row (attach, text, send) until the text wraps or there is more to show; it stays open until cleared,
   // so a line that wraps only in the narrow one-row layout does not flip the layout back and forth.
   const tall = !!editMode || grown || !!header || attachments.length > 0 || uploading > 0 || value.includes('\n');

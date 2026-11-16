@@ -267,3 +267,17 @@ it('opens an attached image before sending, reading a restored draft\'s image on
   await waitFor(() => expect(read).toHaveBeenCalledWith({ projectId:'p', path:'/a.png' }));
   expect((await slot.findByRole('img', { name:'a.png' })).getAttribute('src')).toBe('blob:shot');
 });
+
+it('keeps edit previews by path and revokes only removed images', async () => {
+  const create = vi.fn().mockReturnValueOnce('blob:first').mockReturnValueOnce('blob:second'), revoke = vi.fn();
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+  const read = vi.fn(async () => ({ bytes: [1], mimeType: 'image/png' }));
+  const files = ['first', 'second'].map(path => ({ type: 'localImage' as const, path, name: path }));
+  function Box() { const [attachments, onAttachments] = useState<import('./contract').Attachment[]>(files); return <Composer editMode label="Edit" value="" onChange={() => {}} attachments={attachments} onAttachments={onAttachments} projectId="p" onSend={() => {}} />; }
+  const slot = renderSlot({ component: Box }, {}, { sdk: { projects: { attachments: { read } } } } as any);
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+  fireEvent.click(slot.getByRole('button', { name: 'Remove first' }));
+  await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:first'));
+  expect(read).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalledWith('blob:second');
+  slot.unmount(); expect(revoke).toHaveBeenCalledWith('blob:second');
+});
