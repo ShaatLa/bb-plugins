@@ -9,7 +9,7 @@ const cards = vi.hoisted(() => ({ renders: 0 }));
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
-import { Inbox, groupItems, followTo, atEnd } from './inbox';
+import { History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -956,4 +956,15 @@ it('keeps the newest deferred question visible when it has no interim robot', as
   const card=within(await slot.findByRole('region',{name:'Answers owed'}));
   expect(card.getByText('1 answer owed')).toBeTruthy();
   expect(card.getByRole('button',{name:'Jump'})).toBeTruthy();
+});
+
+it('keeps a newly revealed history row mounted on subsequent renders', () => {
+  const onJump = () => {}, first = { group: [base] };
+  const slot = renderSlot({ component: History }, { groups: [first], flash: null, markId: null, settled: true, onJump });
+  const added = { group: [{ ...base, id: 'ans_reveal', kind: 'for_me' as const, question: 'New agent question' }] };
+  slot.rerender(<History groups={[first, added]} flash={null} markId={null} settled onJump={onJump} />);
+  const row = slot.container.querySelector('[data-history-ids="ans_reveal"]');
+  expect(row).toBeTruthy();
+  slot.rerender(<History groups={[first, added]} flash="ans_reveal" markId={null} settled onJump={onJump} />);
+  expect(slot.container.querySelector('[data-history-ids="ans_reveal"]')).toBe(row);
 });
