@@ -417,7 +417,10 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   const items = result.data ? (chronological ? [...result.data.items].reverse().filter(item => item.kind !== 'for_me' || item.status !== 'open') : result.data.items) : [];
   if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
   // Pages render apart, so a split question older than this page goes on to the earlier one.
-  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans, !cursor && !busy) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
+  // As in the Inbox chat: an update shown in full at the end stays so when a turn starts (see conversation's keep).
+  const fullTail = useRef<string | null>(null);
+  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans, !cursor && !busy, fullTail.current) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
+  { const last = entries.at(-1); fullTail.current = !cursor && last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; }
   const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
   const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : chronological ? <EarlierLoader loading={false} onLoad={() => setNext(true)} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>Load more</Button>);
   return <>

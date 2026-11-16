@@ -44,7 +44,8 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // time and the answer becomes its own message at answer time. groups run oldest first; more: earlier pages exist, so a
 // split question older than the oldest loaded item waits there (orphans, carried to the earlier page; carried: from a newer one).
 // showLast: the chat is the newest page and has gone quiet (it and its sub-sessions idle), so its last message is final.
-export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true) {
+// keep: an update already shown in full that way stays so while it is the last (a turn starting must not fold it back).
+export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null) {
   const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
@@ -66,7 +67,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   // Once the chat has gone quiet its latest message does not hide in a collapsed group: a final report after a run of updates
   // stays in full view. While work goes on, the updates still flying in stay collapsed.
   const tail = entries.at(-1);
-  if (showLast && tail?.updates) entries.splice(-1, 1, tail.group.length > 2 ? { group: tail.group.slice(0, -1), updates: true } : { group: tail.group.slice(0, -1) }, { group: tail.group.slice(-1) });
+  if ((showLast || (keep !== null && tail?.group.at(-1)?.id === keep)) && tail?.updates) entries.splice(-1, 1, tail.group.length > 2 ? { group: tail.group.slice(0, -1), updates: true } : { group: tail.group.slice(0, -1) }, { group: tail.group.slice(-1) });
   return { entries, orphans };
 }
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
@@ -660,7 +661,10 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // reads, its event missed); reread the queue once for it rather than wait for the 30 s check.
   const recheckedRows = useRef(new Set<string>());
   useEffect(() => { const list = pages.flatMap(page => page.items); const stale = queue.filter(row => !recheckedRows.current.has(row.id) && list.some(item => item.kind === 'mine' && item.threadId === row.threadId && item.questionSeq !== null && item.createdAt >= row.createdAt && item.question.trim() === queueText(row).trim())); if (!stale.length) return; stale.forEach(row => recheckedRows.current.add(row.id)); setQueueVersion(n => n + 1); }, [pages, queue]);
-  const historyGroups = useMemo(() => conversation(groupItems(items), !!shown.at(-1)?.nextCursor, [], !working).entries, [items, pages, loadedPages, depth, working]);
+  // Folding a long last update back when a turn starts (a queued message sent) would cut the chat's end under a reader
+  // near it and drop them to the bottom, so the one shown in full stays so until a newer message takes its place.
+  const fullTail = useRef<string | null>(null);
+  const historyGroups = useMemo(() => { const entries = conversation(groupItems(items), !!shown.at(-1)?.nextCursor, [], !working, fullTail.current).entries, last = entries.at(-1); fullTail.current = last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; return entries; }, [items, pages, loadedPages, depth, working]);
   // The robot walks at the end of the chat unless the last card is itself a pending owner message (its robot is the one);
   // cards further up carry none (ItemCard's live).
   const lastPending = (() => { const entry = historyGroups.at(-1); return !!entry && entry.part !== 'answer' && entry.group.some(item => item.dismissedAt === null && ((item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred')) || (item.kind === 'update' && item.status === 'waiting'))); })();
