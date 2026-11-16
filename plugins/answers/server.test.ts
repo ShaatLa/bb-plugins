@@ -807,6 +807,11 @@ describe('owed answers', () => {
   await harness.behavior.callRpc('settleOwed',{id:'ans_drop',action:'dismissed'});
   expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_drop'").get()).toEqual({dismissed_at:now});
   await expect(harness.behavior.callRpc('settleOwed',{id:'ans_wrong',action:'answered'})).rejects.toThrow('not owed');
+  // The agent's later report still resolves the question the owner settled by hand; deferring it again is refused.
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,active_turn_id) VALUES ('t',0,0,'late') ON CONFLICT(thread_id) DO UPDATE SET active_turn_id='late'").run();
+  await harness.behavior.callAgentTool('answers_resolve',{id:'ans_answer'},{threadId:'t',projectId:'p'});
+  expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_answer'").get()).toEqual({resolve_turn_id:'late'});
+  await expect(harness.behavior.callAgentTool('answers_defer',{id:'ans_answer'},{threadId:'t',projectId:'p'})).rejects.toThrow('not found');
   expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[]});
   await vi.advanceTimersByTimeAsync(150);
   expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(ITEMS_TAG);
