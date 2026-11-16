@@ -144,7 +144,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};

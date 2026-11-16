@@ -7,6 +7,29 @@ export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)"
 // Archived threads leave the Inbox, counts and pushes; their items come back if the thread is unarchived.
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
 export const ATTENTION_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
+// A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
+// quoted phrases, that does not name the channel it was asked through (a card, Answers). A short one ("Хотите?") keeps the
+// sentence before it for context; table rows only list. On a day's 398 replies of all threads it fired on the 3 real misses.
+const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers/i;
+export function chatQuestion(text: string): string | null {
+ const blank = (m: string) => m.replace(/[^\n]/g, ' ');
+ const mask = text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, blank).replace(/`[^`\n]*`/g, blank).replace(/^[ \t]*>.*$/gm, blank).replace(/^[ \t]*\|.*\|[ \t]*$/gm, blank)
+  .replace(/«[^»\n]*»|"[^"\n]*"|“[^”\n]*”/g, blank).replace(/\]\([^)\s]*\)/g, m => ']' + blank(m.slice(1))).replace(/\b(?:https?|ftp):\/\/\S+|\bwww\.\S+/gi, blank);
+ const sentences: [number, number][] = [];
+ for (const m of mask.matchAll(/[?？](?=[\s)\]*_]|$)/g)) {
+  const end = m.index! + 1, start = Math.max(...['.', '!', '?', '？', '…', '\n'].map(c => mask.lastIndexOf(c, m.index! - 1))) + 1;
+  sentences.push([start, end]);
+ }
+ const clean = (s: string) => s.replace(/^[\s>*_#-]+|[*_]+$/g, '').trim();
+ for (let i = sentences.length - 1; i >= 0; i--) {
+  const [start, end] = sentences[i]!, sentence = clean(text.slice(start, end));
+  if (sentence.length < 3 || CHANNEL_RE.test(sentence)) continue;
+  if (sentence.length >= 40) return sentence.slice(0, 2000);
+  const before = mask.slice(0, start).replace(/\s+$/, ''), from = Math.max(...['.', '!', '?', '？', '…', '\n'].map(c => before.lastIndexOf(c, before.length - 2))) + 1;
+  return clean(text.slice(from, end)).slice(0, 2000) || sentence;
+ }
+ return null;
+}
 // An update seemingly asks the owner something when a '?' ends a phrase outside code, links, URLs and quotes ('?query=' does not).
 export function asksOwner(text: string) {
  const prose = text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g,' ').replace(/`[^`\n]*`/g,' ').replace(/^[ \t]*>.*$/gm,' ').replace(/\]\([^)\s]*\)/g,'] ').replace(/\b(?:https?|ftp):\/\/\S+|\bwww\.\S+/gi,' ');
@@ -106,6 +129,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   } else if (e.type === 'item/completed' && turn && d.item && !d.item.parentToolCallId && d.item.type !== 'agentMessage') {
    // Any other top-level item: the turn is busy, and a tool result after a steer means the agent's next step sees it.
    hidden += db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=? AND busy=0').run(threadId,turn).changes;
+   // Asked through a channel this turn: answers_ask, or a Work Board card question (bb work-board question add).
+   if (/answers_ask|work-board question add/.test(`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`)) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
    if (d.item.type !== 'reasoning') hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
    hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
@@ -113,7 +138,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   } else if (e.type === 'turn/completed' && turn) {
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
-    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number}|undefined;
+    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
+    // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
+    // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
+    const asked = update?.answer && !update.asked ? chatQuestion(update.answer) : null;
+    if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
     const asks = !!update?.answer && (!!update.report || asksOwner(update.answer));
     const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);

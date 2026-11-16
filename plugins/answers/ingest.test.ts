@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, asksOwner, cap, failRequest, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, chatQuestion, failRequest, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -14,10 +14,10 @@ const done = (seq = 5, status = 'completed', turn = 'x') => ev(seq,'turn/complet
 const rows = (db: Database.Database) => db.prepare('SELECT * FROM items ORDER BY question_seq').all() as any[];
 const row = (db: Database.Database) => rows(db)[0];
 it('the auto-defer removal migration gives questions the removed auto-defer held back their reply as the answer', () => {
- const db = new Database(':memory:'); databases.push(db); migrations.slice(0,-2).forEach(m => db.exec(m));
+ const db = new Database(':memory:'); databases.push(db); const at = migrations.findIndex(m => m.includes("wait_children IS NOT NULL AND interim IS NOT NULL")); migrations.slice(0,at).forEach(m => db.exec(m));
  const add = (id:string, extra:string) => db.prepare(`INSERT INTO items(id,kind,thread_id,status,question,interim,interim_seq,created_at,updated_at${extra ? ','+extra.split('=')[0] : ''}) VALUES (?,'mine','t','deferred','Q','Reply',4,1,5${extra ? ','+extra.split('=')[1] : ''})`).run(id);
  add('auto',"wait_children='[\"k\"]'"); add('agent','');
- db.exec(migrations.at(-2)!);
+ db.exec(migrations[at]!);
  expect(db.prepare("SELECT id,status,answer,answer_seq,answer_source,interim,wait_children,read_at FROM items ORDER BY id").all()).toEqual([
   {id:'agent',status:'deferred',answer:null,answer_seq:null,answer_source:null,interim:'Reply',wait_children:null,read_at:null},
   {id:'auto',status:'answered',answer:'Reply',answer_seq:4,answer_source:'turn',interim:null,wait_children:null,read_at:5},
@@ -185,4 +185,32 @@ describe('asksOwner',()=>{
   ['Чтобы смержить #2000, нужна ваша команда «мержи #2000».',true],['Оба ревьюера смотрят. Когда оба одобрят, нужна ваша команда «мержи #2000».',false],['**После одобрения нужна ваша команда «мержи #2000».**',false],['Ready for your review once CI passes.',false],['ANV-1 is back to you: CI is green.',true],['We need your go-ahead to merge #2000.',true],['Awaiting your approval on ANV-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
   ['Потом ANV-673 придёт к вам с вопросом о приёмке. Пока действий нет.',false],['Вашу приёмку ANV-662 я сверил по карточке.',false],
  ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
+});
+
+describe('questions asked in chat', () => {
+ it.each([
+  ['Готово, PR открыт. Хотите?', 'Готово, PR открыт. Хотите?'],
+  ['Причина в обходе. Поэтому вопрос: требовать пропуск для любого запуска из терминала в проекте anvil? Рекомендую «да».', 'Поэтому вопрос: требовать пропуск для любого запуска из терминала в проекте anvil?'],
+  ['В навык добавлен вопрос «можно ли сделать это проверкой?» для каждого урока.', null],
+  ['**Вопрос на карточке:** какой уровень дать моделям Gemini?', null],
+  ['Вопрос к вам в Answers: удалить ветку?', null],
+  ['Смотри `curl x?y` и https://example.com/a?b=1 — всё работает.', null],
+  ['```\nwhy?\n```\nDone.', null],
+  ['> Брать ли ANV-725 сейчас?\n\nВзял в работу.', null],
+  ['| 17:24 | 17:25 | Брать ли ANV-725 сейчас? |\n\nВсе дошли.', null],
+  ['Всё готово.', null],
+ ])('%j → %j', (text, expected) => expect(chatQuestion(text)).toBe(expected));
+ const tool = (seq: number, item: object) => ev(seq,'item/completed','x',{item:{id:'i'+seq,...item}});
+ const filed = (db: Database.Database) => db.prepare("SELECT kind,status,question,question_seq,chat_asked,notify_state FROM items WHERE kind='for_me'").all();
+ it('files a question the reply asks as text in Questions, pushed like any other', () => {
+  const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Сделал. Мержить сейчас?'),done(5)],'p',100,true,true);
+  expect(filed(db)).toEqual([{kind:'for_me',status:'open',question:'Сделал. Мержить сейчас?',question_seq:4,chat_asked:1,notify_state:1}]);
+ });
+ it.each([
+  ['answers_ask', {type:'mcpToolCall',server:'bb',tool:'answers_ask'}],
+  ['a Work Board card question', {type:'commandExecution',command:'bb work-board question add ANV-1 --kind decision "Мержить?"'}],
+ ])('files nothing when the turn asked through %s', (_, item) => {
+  const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),tool(4,item),message(5,'Спросил. Мержить сейчас?'),done(6)],'p',100,true,true);
+  expect(filed(db)).toEqual([]);
+ });
 });

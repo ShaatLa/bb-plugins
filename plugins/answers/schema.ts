@@ -109,4 +109,8 @@ WHERE kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND interi
 UPDATE items SET wait_children=NULL,wait_windows=NULL WHERE wait_children IS NOT NULL;`,
   // turn_updates.report: the agent called answers_report, so the turn's reply is a report for the owner, not a quiet update.
   `ALTER TABLE turn_updates ADD COLUMN report INTEGER NOT NULL DEFAULT 0;`,
+  // turn_updates.asked: the turn asked the owner through a channel (answers_ask, a Work Board card question), so a '?' in
+  // its reply is not filed again. items.chat_asked: a 'for_me' question filed from an agent's plain-text reply.
+  `ALTER TABLE turn_updates ADD COLUMN asked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN chat_asked INTEGER NOT NULL DEFAULT 0;`,
 ];

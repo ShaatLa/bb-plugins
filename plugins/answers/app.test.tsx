@@ -469,6 +469,14 @@ it('offers quick replies on agent questions in the Questions section', async () 
   fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
 });
+it('marks a question filed from the agent\'s reply text as asked in chat, dismissable as not a question', async () => {
+  const setDismissed = vi.fn(() => ({ ok: true }));
+  const slot = await questionsSetup({ setDismissed }, { chatAsked: true });
+  expect(slot.getByText('Asked in chat')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: 'More' }));
+  fireEvent.click(await slot.findByRole('menuitem', { name: 'Not a question' }));
+  await waitFor(() => expect(setDismissed).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', dismissed: true })));
+});
 it('shows undo after bulk read and calls undoRead', async () => {
   const undoRead = vi.fn(() => ({ ok: true, count: 2 }));
   const { slot } = await setup({ markRead: () => ({ ok: true, batch: 'batch-one', count: 2 }), undoRead });

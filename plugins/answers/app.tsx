@@ -295,7 +295,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
-    : item.kind === 'for_me' && item.status === 'open' ? ['Won’t reply', 'X']
+    // A question filed from the agent's plain text may be rhetorical: the owner dismisses it as not a question.
+    : item.kind === 'for_me' && item.status === 'open' ? [item.chatAsked ? 'Not a question' : 'Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
   // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
   // Only the chat's last card carries a robot (live = false further up); a pending card above keeps Stop waiting in More.
@@ -317,7 +318,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
+      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.chatAsked && <span title="The agent asked this in its reply text, not through Answers" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
