@@ -13,6 +13,16 @@ const message = (seq = 4, text = 'answer', turn = 'x', extra: object = {}) => ev
 const done = (seq = 5, status = 'completed', turn = 'x') => ev(seq,'turn/completed',turn,{status});
 const rows = (db: Database.Database) => db.prepare('SELECT * FROM items ORDER BY question_seq').all() as any[];
 const row = (db: Database.Database) => rows(db)[0];
+it('the last migration gives questions the removed auto-defer held back their reply as the answer', () => {
+ const db = new Database(':memory:'); databases.push(db); migrations.slice(0,-1).forEach(m => db.exec(m));
+ const add = (id:string, extra:string) => db.prepare(`INSERT INTO items(id,kind,thread_id,status,question,interim,interim_seq,created_at,updated_at${extra ? ','+extra.split('=')[0] : ''}) VALUES (?,'mine','t','deferred','Q','Reply',4,1,5${extra ? ','+extra.split('=')[1] : ''})`).run(id);
+ add('auto',"wait_children='[\"k\"]'"); add('agent','');
+ db.exec(migrations.at(-1)!);
+ expect(db.prepare("SELECT id,status,answer,answer_seq,answer_source,interim,wait_children,read_at FROM items ORDER BY id").all()).toEqual([
+  {id:'agent',status:'deferred',answer:null,answer_seq:null,answer_source:null,interim:'Reply',wait_children:null,read_at:null},
+  {id:'auto',status:'answered',answer:'Reply',answer_seq:4,answer_source:'turn',interim:null,wait_children:null,read_at:5},
+ ]);
+});
 describe('applyEvents', () => {
  it('keeps a user message that has only attachments', () => { const db=setup(); applyEvents(db,'t',[req(1,'r',{input:[{type:'localImage',path:'/photo.png'}]})],'project'); expect(row(db).question).toBe(''); expect(JSON.parse(row(db).attachments)).toEqual([{type:'localImage',path:'/photo.png'}]); });
  it('stores image and file input parts without changing question text', () => { const db=setup(); applyEvents(db,'t',[req(1,'r',{input:[{type:'text',text:'question'},{type:'localImage',path:'/photo.png',hostId:'h'},{type:'localFile',path:'/notes.pdf',name:'notes.pdf',mimeType:'application/pdf',sizeBytes:42}]})],'project'); expect(row(db).question).toBe('question'); expect(JSON.parse(row(db).attachments)).toEqual([{type:'localImage',path:'/photo.png',hostId:'h'},{type:'localFile',path:'/notes.pdf',name:'notes.pdf',mimeType:'application/pdf',sizeBytes:42}]); });
@@ -157,26 +167,6 @@ describe('updates',()=>{
   expect(applyEvents(db,'t',page)).toBe(true); expect(applyEvents(db,'t',page)).toBe(false);
   db.prepare('UPDATE threads_state SET last_seq=0').run(); applyEvents(db,'t',page);
   expect(updates(db)).toHaveLength(1);
- });
-});
-
-describe('auto-defer wait list',()=>{
- const wake = (seq:number, child:string, turn:string, text='report') => [req(seq,'c'+seq,{initiator:'system',input:[{type:'text',text:`[bb system] @thread:${child} completed: ok`}]}),start(seq+1,turn),accept(seq+2,'c'+seq,turn),message(seq+3,text,turn),done(seq+4,'completed',turn)];
- const waiting = (kids:string[]) => { const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(),done()]); db.prepare("UPDATE items SET status='deferred',interim=answer,answer=NULL,answer_source=NULL,answered_at=NULL,wait_children=?").run(JSON.stringify(kids)); return db; };
- const long = 'final report '.repeat(20), mine = (db:Database.Database) => db.prepare("SELECT * FROM items WHERE kind='mine'").get() as any;
- const updates = (db:Database.Database) => db.prepare("SELECT trigger_source FROM items WHERE kind='update'").all();
- it('each finished child leaves the list and a quiet update; the last leaves an empty list for the driver to settle',()=>{
-  const db=waiting(['thr_a','thr_b']);
-  applyEvents(db,'t',wake(10,'thr_a','y','first report'),'p',5,true,true);
-  expect(mine(db)).toMatchObject({status:'deferred',wait_children:'["thr_b"]'}); expect(updates(db)).toEqual([{trigger_source:'thr_a'}]);
-  applyEvents(db,'t',wake(20,'thr_b','z',long),'p',9,true,true);
-  expect(mine(db)).toMatchObject({status:'deferred',wait_children:'[]'}); expect(updates(db)).toEqual([{trigger_source:'thr_a'},{trigger_source:'thr_b'}]);
- });
- it('a child nobody waits for behaves as before', () => { const db=waiting(['thr_a']); applyEvents(db,'t',wake(10,'thr_other','y')); expect(mine(db)).toMatchObject({status:'deferred',wait_children:'["thr_a"]'}); expect(updates(db)).toEqual([{trigger_source:'thr_other'}]); });
- it('an explicit answers_resolve in the waking turn wins and clears the list', () => {
-  const db=waiting(['thr_a']); db.prepare("UPDATE items SET resolve_turn_id='y'").run();
-  applyEvents(db,'t',wake(10,'thr_a','y','explicit'));
-  expect(mine(db)).toMatchObject({status:'answered',answer:'explicit',answer_source:'agent',wait_children:null}); expect(updates(db)).toEqual([]);
  });
 });
 

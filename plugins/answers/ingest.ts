@@ -30,13 +30,6 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 
 /** Drops a finished child from every deferred item waiting for it; an emptied list ('[]') is settled by the driver, which
  * either waits for children started since (a later wave) or answers the question with the latest report. */
-/** The waking turn joins the question's work, so children it starts count as a later wave (see wait_windows). */
-function releaseChild(db: Database.Database, threadId: string, child: string, window: [number, number]) {
- for (const r of db.prepare("SELECT id,wait_children,wait_windows FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND wait_children<>'[]'").all(threadId) as {id:string;wait_children:string;wait_windows:string|null}[]) {
-  const all = JSON.parse(r.wait_children) as string[], ids = all.filter(id => id !== child);
-  if (ids.length !== all.length) db.prepare('UPDATE items SET wait_children=?,wait_windows=? WHERE id=?').run(JSON.stringify(ids),JSON.stringify([...JSON.parse(r.wait_windows ?? '[]'),window]),r.id);
- }
-}
 /** Apply an ascending page inside the caller's transaction; returns whether anything the UI shows changed. */
 /** `trackQuestions` is false for agent-spawned threads, whose "user" turns come from agents and scripts. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
@@ -120,8 +113,6 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null}|undefined;
     // Only an update that asks the owner something is pushed; the rest collapse into a quiet group.
     const asks = !!update?.answer && asksOwner(update.answer);
-    // Safety net: a child's completion wakes a parent whose question was auto-deferred; see releaseChild.
-    if (update?.kind === 'system' && update.source_id) releaseChild(db,threadId,update.source_id,[update.started_at ?? e.createdAt ?? now,e.createdAt ?? now]);
     const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);
     // The message shown at acceptance takes the turn's reply; with nothing to report it stays a read caption.
     if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);

@@ -537,19 +537,9 @@ describe('ingestion driver',()=>{
   expect(invalidate).toHaveBeenCalledTimes(1);
   expect(harness.inspection.sdk.callsTo('threads.events.list')).toHaveLength(2);
  });
- it('Stop waiting clears the auto-defer wait list',async()=>{
-  const {harness,db}=setup(); seed(db,'ans_w','mine'); db.prepare("UPDATE items SET status='deferred',wait_children='[\"k\"]'").run();
-  await harness.behavior.callRpc('setDismissed',{id:'ans_w',dismissed:true});
-  expect(db.prepare('SELECT wait_children FROM items').get()).toEqual({wait_children:null});
- });
- it.each([
-  ['running child created after the question',[{id:'k',createdAt:2000,status:'active'}],true],
-  ['no children',[],false],
-  ['child created before the question',[{id:'k',createdAt:500,status:'active'}],false],
-  ['child already finished',[{id:'k',createdAt:2000,status:'idle'}],false],
-  ['archived child',[{id:'k',createdAt:2000,status:'active',archivedAt:3000}],false],
-  ['backfill of old history',[{id:'k',createdAt:2000,status:'active'}],false,true],
- ])('auto-defers a turn answer only on live ingestion: %s',async(_name,kids,deferredExpected,backfill=false)=>{
+ // Only answers_defer defers: a reply stays the answer even while sub-sessions its turn started still run.
+ it('keeps a turn answer while the children it started still run',async()=>{
+  const kids=[{id:'k',createdAt:2000,status:'active'}], backfill=false;
   const {harness,db,driver}=driverSetup();
   const events=[
    {seq:1,type:'client/turn/requested',createdAt:1000,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'Research?'}]}},
@@ -563,37 +553,7 @@ describe('ingestion driver',()=>{
   harness.sdk.stub('threads.list',async(args:any)=>args.parentThreadId==='t' ? kids.map(k=>makeThreadResponse({parentThreadId:'t',...k} as any)) : []);
   await driver.schedule('t'); shown=events; await driver.schedule('t');
   const item=db.prepare("SELECT status,interim,answer,read_at,wait_children FROM items").get();
-  expect(item).toEqual(deferredExpected ? {status:'deferred',interim:'Research started, I will report',answer:null,read_at:null,wait_children:'["k"]'} : expect.objectContaining({status:'answered',answer:'Research started, I will report',wait_children:null}));
- });
- it('waits for a later wave started by the turns working on the question, not for unrelated children, then answers the question with the final report',async()=>{
-  const {harness,db,driver}=driverSetup();
-  const wake=(seq:number,child:string,turn:string,text:string)=>[
-   {seq,type:'client/turn/requested',createdAt:seq*1000,data:{initiator:'system',requestId:'w'+seq,input:[{type:'text',text:`[bb system] @thread:${child} completed: ok`}]}},
-   {seq:seq+1,type:'turn/started',createdAt:seq*1000+10,scope:{turnId:turn},data:{}},
-   {seq:seq+2,type:'turn/input/accepted',scope:{turnId:turn},data:{clientRequestId:'w'+seq}},
-   {seq:seq+3,type:'item/completed',scope:{turnId:turn},data:{item:{type:'agentMessage',text}}},
-   {seq:seq+4,type:'turn/completed',createdAt:seq*1000+50,scope:{turnId:turn},data:{status:'completed'}},
-  ];
-  let shown:any[]=[], kids:any[]=[];
-  harness.sdk.stub('threads.events.list',async(args:any)=>args.order==='desc' ? [...shown].reverse() : shown.filter(e=>e.seq>Number(args.afterSeq ?? 0)));
-  harness.sdk.stub('threads.list',async(args:any)=>args.parentThreadId==='t' ? kids.map(k=>makeThreadResponse({parentThreadId:'t',...k} as any)) : []);
-  await driver.schedule('t');
-  shown=[
-   {seq:1,type:'client/turn/requested',createdAt:1000,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'Optimize the plugin'}]}},
-   {seq:2,type:'turn/started',createdAt:1001,scope:{turnId:'u'},data:{}},
-   {seq:3,type:'turn/input/accepted',scope:{turnId:'u'},data:{clientRequestId:'r'}},
-   {seq:4,type:'item/completed',scope:{turnId:'u'},data:{item:{type:'agentMessage',text:'Research started, I will report'}}},
-   {seq:5,type:'turn/completed',createdAt:1500,scope:{turnId:'u'},data:{status:'completed'}},
-  ];
-  kids=[{id:'thr_kida',createdAt:1200,status:'active'}]; await driver.schedule('t');
-  const mine=()=>db.prepare("SELECT status,answer,wait_children FROM items WHERE kind='mine'").get();
-  expect(mine()).toMatchObject({status:'deferred',wait_children:'["thr_kida"]'});
-  shown=[...shown,...wake(10,'thr_kida','v','Research done, fixes started')]; // A manager starts unrelated sessions between these turns (thr_other); only the waking turn's own child is awaited.
-  kids=[{id:'thr_kida',createdAt:1200,status:'idle'},{id:'thr_other',createdAt:5000,status:'active'},{id:'thr_kidb',createdAt:10020,status:'active'}]; await driver.schedule('t');
-  expect(mine()).toMatchObject({status:'deferred',wait_children:'["thr_kidb"]'});
-  shown=[...shown,...wake(20,'thr_kidb','x','Optimization shipped')]; kids=[{id:'thr_other',createdAt:5000,status:'active'},{id:'thr_kidb',createdAt:10020,status:'idle'}]; await driver.schedule('t');
-  expect(mine()).toMatchObject({status:'answered',answer:'Optimization shipped',wait_children:null});
-  expect(db.prepare("SELECT answer FROM items WHERE kind='update'").all()).toEqual([{answer:'Research done, fixes started'}]);
+  expect(item).toEqual(expect.objectContaining({status:'answered',answer:'Research started, I will report',wait_children:null}));
  });
  it('skips archived and unchanged tracked threads using reconcile metadata',async()=>{
   const {harness,db,driver}=driverSetup();

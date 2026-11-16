@@ -103,4 +103,8 @@ WHEN NEW.status IS NOT OLD.status OR NEW.interim IS NOT OLD.interim OR NEW.inter
 BEGIN
   UPDATE items SET moved_at=NEW.updated_at WHERE id=NEW.id;
 END;`,
+  // The auto-defer safety net is gone (only answers_defer defers): questions it deferred get their turn's reply back as the answer.
+  `UPDATE items SET status='answered',answer=interim,answer_seq=interim_seq,answer_source='turn',answered_at=coalesce(moved_at,updated_at),read_at=coalesce(moved_at,updated_at),interim=NULL,interim_seq=NULL,wait_children=NULL,wait_windows=NULL
+WHERE kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND interim IS NOT NULL AND dismissed_at IS NULL;
+UPDATE items SET wait_children=NULL,wait_windows=NULL WHERE wait_children IS NOT NULL;`,
 ];
