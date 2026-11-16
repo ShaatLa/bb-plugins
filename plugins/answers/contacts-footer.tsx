@@ -7,7 +7,14 @@ import type { AnswersRpcContract } from './contract';
 
 type Usage = 'auto' | 'always' | 'never';
 type Window = { label: string; usedPercent: number; resetsAt: string | null; kind?: string };
-type Provider = { status: string; accountEmail?: string | null; planLabel?: string | null; windows?: Window[] };
+// stale: bb's last refresh of this provider failed (its message); the windows shown are the last ones it reported.
+type Provider = { status: string; accountEmail?: string | null; planLabel?: string | null; windows?: Window[]; message?: string; stale?: string };
+// A provider whose refresh fails (bb answers status 'error' without windows) keeps its last numbers, marked stale, as bb's
+// own panel keeps them, instead of vanishing from the panel; the next good refresh clears the mark.
+export const mergeUsage = (prev: Record<string, Provider> | null, next: Record<string, Provider>) => Object.fromEntries(Object.entries(next).map(([id, p]) => {
+  const last = prev?.[id];
+  return [id, p.status === 'error' && last?.status === 'ok' && last.windows?.length ? { ...last, stale: p.message || 'Usage refresh failed' } : p];
+}));
 
 // shortcut: bb's SDK does not say whether its sidebar is collapsed, so this reads the shell's data-state attribute;
 // when bb changes that markup, 'auto' simply stops showing usage, and 'always' still works.
@@ -47,7 +54,7 @@ export function useUsageKeeper() {
   const sdk = useSdk(), enabled = (useSettings().values?.usage ?? 'auto') !== 'never';
   useEffect(() => {
     if (!enabled) return;
-    const keep = () => { if (document.visibilityState === 'visible') void Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { try { localStorage.setItem(USAGE_CACHE, JSON.stringify(data)); } catch { /* storage unavailable */ } }).catch(() => {}); };
+    const keep = () => { if (document.visibilityState === 'visible') void Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { try { let prev: Record<string, Provider> | null = null; try { prev = JSON.parse(localStorage.getItem(USAGE_CACHE) ?? 'null'); } catch { /* unreadable cache */ } localStorage.setItem(USAGE_CACHE, JSON.stringify(mergeUsage(prev, data as Record<string, Provider>))); } catch { /* storage unavailable */ } }).catch(() => {}); };
     keep(); const timer = setInterval(keep, 120000); return () => clearInterval(timer);
   }, [sdk, enabled]);
 }
@@ -57,7 +64,7 @@ function useUsage(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    const load = () => Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { if (live) setUsage(data as Record<string, Provider>); }).catch(() => {});
+    const load = () => Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { if (live) setUsage(prev => mergeUsage(prev, data as Record<string, Provider>)); }).catch(() => {});
     // Like bb, only a manual refresh spins the icon; the 5-minute poll stays quiet.
     void load().finally(() => setReloading(false)); const timer = setInterval(() => void load(), 300000);
     return () => { live = false; clearInterval(timer); };
@@ -132,7 +139,7 @@ function UsageSummary({ usage, reload, reloading = false }: { usage: Record<stri
     </div>
     {!folded && <div className="min-h-0 overflow-y-auto p-2.5"><div className="grid grid-cols-[max-content_minmax(0,1fr)_max-content_max-content] gap-x-3 gap-y-2.5">
       {shown.map(({ id, p, windows }) => { const info = providers.find(x => x.id === id); return <div key={id} className="col-span-full grid grid-cols-subgrid gap-y-2 border-t border-sidebar-border pt-2.5 first:border-t-0 first:pt-0"><section className="col-span-full grid grid-cols-subgrid">
-        <div className="col-span-full flex h-5 min-w-0 items-center gap-1.5"><ProviderIcon providerKind="agent" provider={mono(id, info)} className="size-3 shrink-0" aria-hidden /><h3 className="min-w-0 flex-1 truncate text-2xs font-medium text-sidebar-foreground">{p.accountEmail ?? info?.displayName ?? id}</h3>{p.planLabel && <span className="shrink-0 rounded-sm bg-sidebar-border/60 px-1 py-0.5 text-2xs leading-none text-subtle-foreground">{p.planLabel}</span>}</div>
+        <div className="col-span-full flex h-5 min-w-0 items-center gap-1.5"><ProviderIcon providerKind="agent" provider={mono(id, info)} className="size-3 shrink-0" aria-hidden /><h3 className="min-w-0 truncate text-2xs font-medium text-sidebar-foreground">{p.accountEmail ?? info?.displayName ?? id}</h3>{p.stale && <span role="img" aria-label="Usage may be out of date" title={`Last refresh failed: ${p.stale}. These numbers may be out of date.`} className="flex shrink-0 items-center text-destructive"><Icon name="AlertTriangle" aria-hidden className="size-3" /></span>}<span className="flex-1" />{p.planLabel && <span className="shrink-0 rounded-sm bg-sidebar-border/60 px-1 py-0.5 text-2xs leading-none text-subtle-foreground">{p.planLabel}</span>}</div>
         {windows.map(w => { const hot = w.usedPercent >= 80, critical = w.usedPercent >= 95; return <div key={w.label} className="col-span-full grid h-5 grid-cols-subgrid items-center text-2xs">
           <span className="max-w-20 truncate text-subtle-foreground" title={w.label}>{windowLabel(w)}</span>
           <span className="h-1 min-w-0 overflow-hidden rounded-full bg-sidebar-border"><span className={`block h-full rounded-full ${critical ? 'bg-destructive' : hot ? 'bg-warning' : 'bg-sidebar-foreground'}`} style={{ width: `${Math.min(100, Math.max(1, w.usedPercent))}%` }} /></span>

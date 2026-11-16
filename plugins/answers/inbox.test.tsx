@@ -188,6 +188,19 @@ it('notes the files of an echoed question on its bubble', async () => {
   await slot.findByText('New question');
   expect(document.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question· 2 files');
 });
+it('keeps a provider\'s last usage, marked out of date, when its refresh fails, as bb does', async () => {
+  const ok = { codex:{ status:'ok', accountEmail:'me@example.com', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:42, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } };
+  const usageLimits = vi.fn(async () => ok as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
+  expect(await slot.findByText('42%')).toBeTruthy(); expect(slot.queryByRole('img', { name:'Usage may be out of date' })).toBeNull();
+  usageLimits.mockImplementationOnce(async () => ({ codex:{ status:'error', message:'Provider unavailable', accountEmail:'me@example.com', planLabel:'Pro' } }));
+  fireEvent.click(slot.getByRole('button', { name:'Refresh usage' }));
+  const mark = await slot.findByRole('img', { name:'Usage may be out of date' });
+  expect(mark.getAttribute('title')).toContain('Provider unavailable'); expect(slot.getByText('42%')).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name:'Refresh usage' }));
+  await waitFor(() => expect(slot.queryByRole('img', { name:'Usage may be out of date' })).toBeNull()); expect(slot.getByText('42%')).toBeTruthy();
+  localStorage.removeItem('bb-plugin-answers:page:usage-cache');
+});
 it('spins the usage refresh icon until a manual refresh lands', async () => {
   let land: (value: unknown) => void = () => {};
   const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:10, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } }));
