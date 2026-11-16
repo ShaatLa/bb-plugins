@@ -427,6 +427,23 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
+it('drops a queued row bb already sent: deleting it answers 404 quietly and rereads the queue', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
+  let rows = [row];
+  const remove = vi.fn(() => { rows = []; return Promise.reject(Object.assign(new Error('HTTP 404: Queued message not found'), { status:404 })); });
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows), delete:remove } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Delete queued message 1' }));
+  await waitFor(() => expect(slot.queryByText('Already sent')).toBeNull());
+  expect(slot.queryByText(/Queued message not found/)).toBeNull();
+});
+it('rereads the queue when the chat already recorded a queued row\'s message after it was queued', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Sent meanwhile', mentions:[] }], createdAt:1, updatedAt:1 };
+  let reads = 0;
+  const list = vi.fn(() => Promise.resolve(++reads === 1 ? [row] : []));
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'Sent meanwhile', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(slot.queryByRole('region', { name:'Queued messages' })).toBeNull());
+});
 it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
