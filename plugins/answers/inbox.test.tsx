@@ -29,17 +29,20 @@ it('shows a renamed thread at once from bb\'s live sidebar title', async () => {
 it('previews a contact with sub-sessions as their tally: direct and nested, working and idle', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const busy = { ...idle, status:'active', runtimeStatus:'active', indicator:'runtime' };
-  const { recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'One' }, { ...busy, id:'thr_a', title:'Lead A', parentThreadId:'thr_one' }, { ...idle, id:'thr_b', title:'Idle B', parentThreadId:'thr_one' }, { ...busy, id:'thr_c', title:'Nested C', parentThreadId:'thr_a' }], projects:[] } });
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'One' }, { ...busy, id:'thr_a', title:'Lead A', parentThreadId:'thr_one' }, { ...idle, id:'thr_b', title:'Idle B', parentThreadId:'thr_one' }, { ...busy, id:'thr_c', title:'Nested C', parentThreadId:'thr_a' }], projects:[] } });
   expect(await recipients.findByText('2 sub + 1 nested · 2 working · 1 idle')).toBeTruthy();
-  // Expanding lists the sub-sessions in tree order with their state; they do not open, only their ids copy.
-  const writeText = vi.fn(() => Promise.resolve()); Object.assign(navigator, { clipboard: { writeText } });
-  fireEvent.click(recipients.getByRole('button', { name:'Show sub-sessions of One' }));
+  // A second click on the open contact lists the sub-sessions in tree order, as bb's sidebar nests them; a third hides them.
+  const contact = recipients.getByRole('option', { name:/One/ });
+  fireEvent.click(contact); expect(recipients.queryByRole('list', { name:'Sub-sessions of One' })).toBeNull();
+  fireEvent.click(contact);
   const subs = within(recipients.getByRole('list', { name:'Sub-sessions of One' }));
-  expect(subs.getAllByRole('listitem').map(li => [li.textContent, li.querySelector('[role=img]')?.getAttribute('aria-label')])).toEqual([['Lead A', 'Working'], ['Nested C', 'Working'], ['Idle B', 'Idle']]);
-  expect(subs.queryAllByRole('option')).toHaveLength(0);
-  fireEvent.click(subs.getByRole('button', { name:'Copy id thr_c' }));
-  expect(writeText).toHaveBeenCalledWith('thr_c'); expect(await subs.findByRole('button', { name:'Copied' })).toBeTruthy();
-  fireEvent.click(recipients.getByRole('button', { name:'Hide sub-sessions of One' }));
+  expect(subs.getAllByRole('listitem').map(li => [li.textContent, !!within(li).queryByRole('img', { name:'Working' }), li.style.paddingLeft])).toEqual([['Lead A', true, '32px'], ['Nested C', true, '56px'], ['Idle B', false, '32px']]);
+  expect(subs.queryAllByRole('option')).toHaveLength(0); expect(subs.queryAllByRole('button')).toHaveLength(0);
+  // They do not open; bb's thread menu on right-click gains Copy ID.
+  fireEvent.contextMenu(subs.getByText('Nested C'));
+  fireEvent.click(await slot.findByRole('menuitem', { name:'Copy ID' }));
+  await waitFor(() => expect(slot.experimental_clipboardWrites).toEqual([{ text:'thr_c' }]));
+  fireEvent.click(contact);
   expect(recipients.queryByRole('list', { name:'Sub-sessions of One' })).toBeNull();
 });
 it('badges a contact avatar with its thread\'s agent provider', async () => {
