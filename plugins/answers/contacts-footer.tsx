@@ -51,28 +51,41 @@ export const windowLabel = (w: Window) => { const label = w.label.replace(/\u206
 
 // Limit windows that reset (local models have none). The cached value paints immediately when revealed.
 const USAGE_CACHE = 'bb-plugin-answers:page:usage-cache';
-// The page mounts with the cached usage so the panel shows at once; the always-mounted nav badge keeps that cache fresh
-// while the page is away, so returning to it no longer flashes numbers from the last visit.
-export function useUsageKeeper() {
-  const sdk = useSdk(), enabled = (useSettings().values?.usage ?? 'auto') !== 'never';
+const USAGE_CHANGED = 'answers:usage-changed';
+const usagePollers = new WeakMap<ReturnType<typeof useSdk>, { users: number; timer: ReturnType<typeof setInterval>; load: () => Promise<void> }>();
+const cachedUsage = (): Record<string, Provider> | null => { try { return JSON.parse(localStorage.getItem(USAGE_CACHE) ?? 'null'); } catch { return null; } };
+async function readUsage(sdk: ReturnType<typeof useSdk>) {
+  try {
+    const data = await sdk.system.usageLimits();
+    localStorage.setItem(USAGE_CACHE, JSON.stringify(mergeUsage(cachedUsage(), data as Record<string, Provider>)));
+    window.dispatchEvent(new CustomEvent(USAGE_CHANGED, { detail: sdk }));
+  } catch { /* keep the last usage on failure */ }
+}
+// The badge and footer share one poller, including when both are mounted.
+export function useUsageKeeper(active = true) {
+  const sdk = useSdk(), preference = useSettings().values?.usage ?? 'auto', enabled = active && preference !== 'never';
   useEffect(() => {
     if (!enabled) return;
-    const keep = () => { if (document.visibilityState === 'visible') void Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { try { let prev: Record<string, Provider> | null = null; try { prev = JSON.parse(localStorage.getItem(USAGE_CACHE) ?? 'null'); } catch { /* unreadable cache */ } localStorage.setItem(USAGE_CACHE, JSON.stringify(mergeUsage(prev, data as Record<string, Provider>))); } catch { /* storage unavailable */ } }).catch(() => {}); };
-    keep(); const timer = setInterval(keep, 120000); return () => clearInterval(timer);
+    let poller = usagePollers.get(sdk);
+    if (!poller) {
+      const load = async () => { if (document.visibilityState === 'visible') await readUsage(sdk); };
+      poller = { users: 0, timer: setInterval(() => void load(), 120000), load }; usagePollers.set(sdk, poller);
+      void load(); document.addEventListener('visibilitychange', load);
+    }
+    poller.users++;
+    return () => { if (--poller.users) return; clearInterval(poller.timer); document.removeEventListener('visibilitychange', poller.load); usagePollers.delete(sdk); };
   }, [sdk, enabled]);
 }
 function useUsage(enabled: boolean) {
-  // bb unmounts the page when switching plugins; the last numbers show at once while a fresh load runs.
-  const sdk = useSdk(), [usage, setUsage] = useStoredState<Record<string, Provider> | null>(USAGE_CACHE, null), [tick, setTick] = useState(0), [reloading, setReloading] = useState(false);
+  const sdk = useSdk(), [usage, setUsage] = useState(cachedUsage), [reloading, setReloading] = useState(false);
+  useUsageKeeper(enabled);
   useEffect(() => {
-    if (!enabled) return;
-    let live = true;
-    const load = () => Promise.resolve().then(() => sdk.system.usageLimits()).then(data => { if (live) setUsage(prev => mergeUsage(prev, data as Record<string, Provider>)); }).catch(() => {});
-    // Like bb, only a manual refresh spins the icon; the 5-minute poll stays quiet.
-    void load().finally(() => setReloading(false)); const timer = setInterval(() => void load(), 300000);
-    return () => { live = false; clearInterval(timer); };
-  }, [sdk, enabled, tick]);
-  return { usage, reloading, reload: () => { setReloading(true); setTick(t => t + 1); } };
+    const changed = (event: Event) => { if ((event as CustomEvent).detail === sdk) setUsage(cachedUsage()); };
+    window.addEventListener(USAGE_CHANGED, changed);
+    setUsage(cachedUsage());
+    return () => window.removeEventListener(USAGE_CHANGED, changed);
+  }, [sdk]);
+  return { usage, reloading, reload: () => { setReloading(true); void readUsage(sdk).finally(() => setReloading(false)); } };
 }
 
 type Sdk = ReturnType<typeof useSdk>;

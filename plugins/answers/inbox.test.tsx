@@ -1057,3 +1057,24 @@ it('rereads the queue after deletion without refreshing history', async () => {
   await waitFor(() => expect(queueList.mock.calls.length).toBeGreaterThan(queueCalls));
   expect(list.mock.calls.length).toBe(calls);
 });
+
+it('shares usage polling between keeper and footer and pauses while hidden', async () => {
+  const { useUsageKeeper } = await import('./contacts-footer');
+  const usageLimits = vi.fn(async () => ({}));
+  function Page() { useUsageKeeper(); return <Inbox />; }
+  vi.useFakeTimers();
+  let visibility = 'visible';
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility as DocumentVisibilityState);
+  try {
+    renderSlot({ component: Page }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }) }, sdk: { system: { usageLimits } }, settings: { usage: 'always' } } as any);
+    await act(async () => {});
+    expect(usageLimits).toHaveBeenCalledTimes(1);
+    await act(async () => { vi.advanceTimersByTime(120000); });
+    expect(usageLimits).toHaveBeenCalledTimes(2);
+    visibility = 'hidden'; fireEvent(document, new Event('visibilitychange'));
+    await act(async () => { vi.advanceTimersByTime(600000); });
+    expect(usageLimits).toHaveBeenCalledTimes(2);
+    visibility = 'visible'; await act(async () => { fireEvent(document, new Event('visibilitychange')); });
+    expect(usageLimits).toHaveBeenCalledTimes(3);
+  } finally { cleanup(); vi.useRealTimers(); }
+});
