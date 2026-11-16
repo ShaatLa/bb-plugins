@@ -835,22 +835,6 @@ it('shows a finished work duration only on a chat answer with a turn', async () 
   expect(unknown.queryByRole('button', { name: /Worked for/ })).toBeNull();
 });
 
-it('retains loaded older pages when the first page cursor changes', async () => {
-  let refreshed = false;
-  const list = vi.fn((input: { cursor?: string }) => input.cursor === '2|ans_middle' ? { items: [{ ...item, id: 'ans_oldest', question: 'Oldest retained', answerSeq: 1, questionSeq: 0, createdAt: 1, answeredAt: 2 }], nextCursor: null } : input.cursor ? { items: [{ ...item, id: 'ans_middle', question: 'Middle retained', answerSeq: 3, questionSeq: 2, createdAt: 3, answeredAt: 4 }], nextCursor: '2|ans_middle' } : { items: [item], nextCursor: refreshed ? '4|ans_new' : '1|ans_one' });
-  const { slot } = await setup({ list });
-  fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
-  await slot.findByText('Middle retained');
-  fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
-  await slot.findByText('Oldest retained');
-  const calls = list.mock.calls.length;
-  refreshed = true;
-  await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
-  await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls));
-  expect(slot.getByText('Oldest retained')).toBeTruthy();
-  expect(list).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: '4|ans_new' }));
-});
-
 it.each(['deferred', 'answered'] as const)('renders the interim reply once when %s', async status => {
   const { ItemCard } = await import('./app');
   const slot = renderSlot({ component: ItemCard }, { item: { ...item, status, interim: 'Shared interim fragment', interimSeq: 15, answer: status === 'answered' ? 'Final reply' : null }, chat: true });

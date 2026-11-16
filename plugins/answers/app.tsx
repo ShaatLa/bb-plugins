@@ -406,7 +406,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   const [settled, setSettled] = useState(false);
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view, ...(threadId ? { threadId, order: 'activity' as const } : {}), ...(projectId ? { projectId } : {}), query, ...(cursor ? { cursor } : {}), limit: 50 }, enabled: !threadId || !cursor || !settled });
   useEffect(() => { if (threadId && cursor && result.data) setSettled(true); }, [threadId, cursor, result.data]);
-  const [next, setNext] = useState<string | null>(null);
+  const [next, setNext] = useState(false);
   const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
   const chronological = !!threadId, nextCursor = result.data?.nextCursor;
@@ -423,7 +423,7 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans, !cursor && !busy, fullTail.current) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
   { const last = entries.at(-1); fullTail.current = !cursor && last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; }
   const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
-  const more = next ? <Page key={next} {...{ threadId, view, projectId, query }} cursor={next} orphans={carry} /> : nextCursor && (chronological ? <EarlierLoader loading={false} onLoad={() => setNext(nextCursor)} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(nextCursor)}>Load more</Button>);
+  const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : chronological ? <EarlierLoader loading={false} onLoad={() => setNext(true)} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>Load more</Button>);
   return <>
     {result.isLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading answers…</p>}
     {result.error && <div role="alert">{result.error.message} <Button variant="outline" onClick={() => void result.refetch()}><Icon name="ArrowReloadHorizontal" aria-hidden />Retry</Button></div>}
