@@ -850,3 +850,10 @@ it('retains loaded older pages when the first page cursor changes', async () => 
   expect(slot.getByText('Oldest retained')).toBeTruthy();
   expect(list).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: '4|ans_new' }));
 });
+
+it.each(['deferred', 'answered'] as const)('renders the interim reply once when %s', async status => {
+  const { ItemCard } = await import('./app');
+  const slot = renderSlot({ component: ItemCard }, { item: { ...item, status, interim: 'Shared interim fragment', interimSeq: 15, answer: status === 'answered' ? 'Final reply' : null }, chat: true });
+  expect(slot.getAllByText('Shared interim fragment')).toHaveLength(1);
+  if (status === 'answered') expect(slot.getByText('Final reply')).toBeTruthy();
+});
