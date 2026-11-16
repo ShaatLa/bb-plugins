@@ -9,7 +9,7 @@ const cards = vi.hoisted(() => ({ renders: 0 }));
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
-import { Inbox, groupItems } from './inbox';
+import { Inbox, groupItems, followTo } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -582,6 +582,12 @@ it('pauses queue and context polling while hidden and refetches when visible', a
   } finally { vi.useRealTimers(); slot.unmount(); }
 });
 
+it('follows new content at the bottom but stops a long arrival at its start', () => {
+  // View 600 tall, 150 covered by the header, composer and margin; the content was 2000 tall with the reader at the bottom.
+  expect(followTo(1400, 2100, 600, 2000, 150)).toBe(1500); // a short arrival: back to the bottom
+  expect(followTo(1400, 4000, 600, 2000, 150)).toBe(1850); // a long reply: its start stays in view
+  expect(followTo(1400, 2000, 500, 2000, 150)).toBe(1500); // the view shrank (keyboard): the bottom edge is kept
+});
 it('offers Stop only while the chat’s own turn runs, not for its background work', async () => {
   const idle = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'background-command', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:1, planMode:0 } };
   const first = setup({ sidebarThreads:{ threads:[idle], projects:[] } });

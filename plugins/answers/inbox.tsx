@@ -98,6 +98,9 @@ function interactionTitle(row: Interaction) {
 // Within this many pixels of the end the chat counts as scrolled to the bottom (sub-pixel rounding only): there it follows
 // new messages; scrolled up even a little, nothing moves.
 const AT_BOTTOM = 2;
+// Following new content stops before it carries away what the reader saw at the bottom: a big arrival (a long reply) halts
+// with its start under the header (covered: the header, the composer and a margin), and the chat stops following there.
+export const followTo = (top: number, height: number, client: number, before: number, covered: number) => Math.max(top, Math.min(height - client, before - covered));
 // Cards already shown, by id: coming back to a chat whose card did not change draws it in place instead of replaying the slide.
 // An id is forgotten once its card has slid away (or was hidden when it left), so a card that comes back later slides in again.
 const revealed = new Set<string>();
@@ -471,7 +474,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       pin.current = divider || !keep ? { target: divider, until: Date.now() + 3000 } : anchor ? { target: anchor, offset: keep!.offset ?? 0, until: Date.now() + 3000 } : null;
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
-    else if (old.bottom) node.scrollTop = node.scrollHeight;
+    else if (old.bottom) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false };
   }, [pages]);
   useEffect(() => {
@@ -490,6 +493,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // As in bb's chat the conversation scrolls under the composer to the bottom of the window: the composer stack floats over
   // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
+  const covered = (node: HTMLElement) => (node.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0) + (stack.current?.offsetHeight ?? 0) + 24;
   // Scrolled up past the last message (its top below the composer stack): offer bb's "Scroll to latest" button.
   // Scroll events come every frame while the window or a sidebar resizes the chat, and any geometry read in one forces a
   // layout of the whole conversation at a size about to change. So the chat's scroll handler reads once a frame, the saved
@@ -521,12 +525,12 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     const node = scroll.current; if (!node || typeof ResizeObserver === 'undefined') return;
     // The distance from the bottom is kept from the last scroll; by the time the observer runs the browser may already
     // have clamped scrollTop, so it cannot be derived then.
-    let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height;
+    let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height, content = node.scrollHeight;
     // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
     // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
     let anchor: { el: HTMLElement; offset: number } | null = null;
     const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, offset: el.getBoundingClientRect().top - view } : null; };
-    const track = () => { if (Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; remember(); };
+    const track = () => { if (Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; remember(); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
     // a reader who was at the bottom stays there.
     // Every frame of a resize (a sidebar opening, the window dragged) rewraps the whole conversation, which made the UI lag.
@@ -550,9 +554,9 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       }
       if (!pin.current) {
         if (gap > AT_BOTTOM && Date.now() - resizedAt.current < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
-        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next;
+        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next, content, covered(node));
       }
-      height = next; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
+      height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
     observer.observe(node); if (node.firstElementChild) observer.observe(node.firstElementChild); node.addEventListener('scroll', track, { passive: true }); remember();
     return () => { observer.disconnect(); node.removeEventListener('scroll', track); if (settle) { clearTimeout(settle); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = ''; } };
