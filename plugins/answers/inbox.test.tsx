@@ -9,7 +9,7 @@ const cards = vi.hoisted(() => ({ renders: 0 }));
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
-import { Inbox, groupItems, followTo } from './inbox';
+import { Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -119,6 +119,11 @@ it.each([
     await slot.findByRole('list', { name:'History' });
     await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(expected));
   } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
+it('counts a reader a few lines short of the bottom as left at the end (13px off reopened an hour back)', () => {
+  const view = (top: number) => ({ scrollHeight: 2000, clientHeight: 800, scrollTop: top }) as HTMLElement;
+  expect(atEnd(view(1200))).toBe(true); expect(atEnd(view(1187))).toBe(true); expect(atEnd(view(1000))).toBe(true);
+  expect(atEnd(view(900))).toBe(false);
 });
 it('reopens a chat the reader left scrolled up at their place, not at a New divider below it', async () => {
   localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_old', offset:0 } }));
