@@ -34,6 +34,20 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
   const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string } | null>(null), [active, setActive] = useState(0);
   const caret = useRef<number | null>(null);
+  // Own undo history: the editor redraws its DOM on pastes, pills and quotes, which breaks the browser's native undo stack.
+  const history = useRef({ past: [] as { value: string; at: number }[], future: [] as { value: string; at: number }[], typedAt: 0, emitted: value });
+  if (value !== history.current.emitted) Object.assign(history.current, { past: [], future: [], typedAt: 0, emitted: value });
+  // Every edit goes through here; a run of typing without a one-second pause is one undo step.
+  const emit = (next: string, at: number, typing = false) => {
+    const h = history.current, now = Date.now();
+    if (!typing || now - h.typedAt > 1000) h.past.push({ value, at: selection()[0] });
+    if (h.past.length > 200) h.past.shift();
+    h.future = []; h.typedAt = typing ? now : 0; h.emitted = next; caret.current = at; onChange(next);
+  };
+  const travel = (back: boolean) => {
+    const h = history.current, step = (back ? h.past : h.future).pop(); if (!step) return;
+    (back ? h.future : h.past).push({ value, at: selection()[0] }); h.typedAt = 0; h.emitted = step.value; caret.current = step.at; onChange(step.value); setMenu(null);
+  };
   // Own right-click menu over a selection, since bb's native one cannot take a Quote item; without a selection the native menu stays.
   const [context, setContext] = useState<{ left: number; top?: number; bottom?: number } | null>(null), contextBox = useRef<HTMLDivElement>(null), selectedOnPress = useRef<boolean | null>(null);
   useEffect(() => {
@@ -125,7 +139,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const replace = (insert: string, start?: number, end?: number) => {
     const [a,b] = start === undefined ? selection() : [start, end ?? start];
     const next = value.slice(0,a) + insert + value.slice(b); if (next.length > 8000) return;
-    caret.current = a + insert.length; onChange(next);
+    emit(next, a + insert.length);
     updateMenu(next, a + insert.length);
   };
   const updateMenu = (text: string, at: number) => {
@@ -135,21 +149,32 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   insertRef.current = text => { replace(text); editorRef.current?.focus(); };
   const choices = menu ? threads.filter(t => t.displayTitle.toLowerCase().includes(menu.query.toLowerCase())).slice(0,8) : [];
   const pick = (id: string) => { if (menu) replace(`@thread:${id} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
-  const paste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); onPasteFiles(files); return; }
+  const paste = (event: ClipboardEvent<HTMLDivElement>) => { event.preventDefault(); insertClipboard(Array.from(event.clipboardData.files), event.clipboardData.getData('text/plain'), event.clipboardData.getData('text/html')); };
+  // The menu's Paste reads the clipboard itself (bb's window allows it) and inserts it the way ⌘V does.
+  const pasteFromMenu = async () => {
+    try {
+      const files: File[] = []; let text = '', html = '';
+      for (const item of await navigator.clipboard.read()) for (const type of item.types) {
+        const blob = await item.getType(type);
+        if (type === 'text/plain') text = await blob.text(); else if (type === 'text/html') html = await blob.text(); else if (type.startsWith('image/')) files.push(new File([blob], `Pasted image.${type.slice(6).replace('jpeg', 'jpg')}`, { type }));
+      }
+      insertClipboard(files, text, html);
+    } catch { try { insertClipboard([], await navigator.clipboard.readText(), ''); } catch { /* clipboard access refused: nothing to paste */ } }
+  };
+  function insertClipboard(files: File[], long: string, html: string) {
+    if (files.length) { onPasteFiles(files); return; }
     // Like bb's composer: a paste of 5,000+ characters goes in as a "Pasted text.txt" attachment.
-    const long = event.clipboardData.getData('text/plain'); if (long.length >= 5000) { event.preventDefault(); onPasteFiles([new File([long], 'Pasted text.txt', { type: 'text/plain' })]); return; }
-    const html = event.clipboardData.getData('text/html');
+    if (long.length >= 5000) { onPasteFiles([new File([long], 'Pasted text.txt', { type: 'text/plain' })]); return; }
     if (html) {
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const pills = Array.from(doc.body.querySelectorAll('[data-prompt-mention]')).map(el => experimental_readPromptMentionClipboard(el)).filter(p => p !== null);
       for (const pill of pills) rememberMention(pill.text, pill.mention);
       if (pills.length) {
-        event.preventDefault(); replace((function read(node: Node): string { if (node instanceof Element) { const pill = experimental_readPromptMentionClipboard(node); if (pill) return pill.text; } if (node instanceof Element && node.tagName === 'BR') return '\n'; const content = node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : Array.from(node.childNodes).map(read).join(''); return node instanceof Element && /^(DIV|P)$/.test(node.tagName) && node.nextSibling ? content + '\n' : content; })(doc.body)); return;
+        replace((function read(node: Node): string { if (node instanceof Element) { const pill = experimental_readPromptMentionClipboard(node); if (pill) return pill.text; } if (node instanceof Element && node.tagName === 'BR') return '\n'; const content = node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : Array.from(node.childNodes).map(read).join(''); return node instanceof Element && /^(DIV|P)$/.test(node.tagName) && node.nextSibling ? content + '\n' : content; })(doc.body)); return;
       }
     }
-    const text = event.clipboardData.getData('text/plain'); event.preventDefault(); replace(threadUrl.exec(text.trim()) ? `@thread:${threadUrl.exec(text.trim())![1]}` : text);
-  };
+    replace(threadUrl.exec(long.trim()) ? `@thread:${threadUrl.exec(long.trim())![1]}` : long);
+  }
   // Quotes the selected lines (or the caret's line), or unquotes them when all already are.
   const toggleQuote = () => {
     const [a,b] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', b > a && value[b - 1] === '\n' ? b - 1 : b), end = stop < 0 ? value.length : stop;
@@ -165,6 +190,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(choices[active].id); return; }
     }
     // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail; event.code keeps it working on any keyboard layout.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.code === 'KeyZ' || (event.code === 'KeyY' && event.ctrlKey && !event.shiftKey))) { event.preventDefault(); travel(event.code === 'KeyZ' && !event.shiftKey); return; }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') { event.preventDefault(); toggleQuote(); return; }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
     if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) { const [a] = selection(); replace(/^>(?: |\n|$)/.test(value.slice(a ? value.lastIndexOf('\n', a - 1) + 1 : 0)) ? '\n> ' : '\n'); } else onSend(); return; }
@@ -185,12 +211,12 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         event.preventDefault();
         const left = Math.min(event.clientX, window.innerWidth - 200), y = event.clientY;
         setContext(y > window.innerHeight - 220 ? { left, bottom: window.innerHeight - y } : { left, top: y });
-      }} onBeforeInput={event => { const input = event.nativeEvent as InputEvent; if (input.inputType === 'insertText' && raw(event.currentTarget).length >= 8000) event.preventDefault(); }} onInput={event => { const testValue = event.currentTarget.dataset.testValue; if (testValue !== undefined) { delete event.currentTarget.dataset.testValue; replace(testValue, 0, value.length); return; } const next = raw(event.currentTarget); if (next !== value) { const at = selection()[1]; caret.current = at; onChange(next.slice(0,8000)); updateMenu(next, at); } }} />
+      }} onBeforeInput={event => { const input = event.nativeEvent as InputEvent; if (input.inputType === 'historyUndo' || input.inputType === 'historyRedo') { event.preventDefault(); travel(input.inputType === 'historyUndo'); return; } if (input.inputType === 'insertText' && raw(event.currentTarget).length >= 8000) event.preventDefault(); }} onInput={event => { const testValue = event.currentTarget.dataset.testValue; if (testValue !== undefined) { delete event.currentTarget.dataset.testValue; replace(testValue, 0, value.length); return; } const next = raw(event.currentTarget); if (next !== value) { const at = selection()[1]; emit(next.slice(0,8000), at, true); updateMenu(next, at); } }} />
     {pillContents}
     {context && createPortal(<div ref={contextBox} role="menu" aria-label="Text actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={context}>
-      {([['Quote', `${mod}⇧9`, toggleQuote], null, ['Cut', `${mod}X`, () => document.execCommand('cut')], ['Copy', `${mod}C`, () => document.execCommand('copy')], ['Delete', '', removeSelection], null, ['Select All', `${mod}A`, () => { const root = editorRef.current, sel = window.getSelection(); if (!root || !sel) return; const range = document.createRange(); range.selectNodeContents(root); sel.removeAllRanges(); sel.addRange(range); }]] as const).map((entry, i) => entry
+      {([['Undo', `${mod}Z`, () => travel(true), !history.current.past.length], ['Redo', `⇧${mod}Z`, () => travel(false), !history.current.future.length], null, ['Quote', `${mod}⇧9`, toggleQuote], null, ['Cut', `${mod}X`, () => { history.current.typedAt = 0; document.execCommand('cut'); }], ['Copy', `${mod}C`, () => document.execCommand('copy')], ['Paste', `${mod}V`, () => void pasteFromMenu()], ['Delete', '', removeSelection], null, ['Select All', `${mod}A`, () => { const root = editorRef.current, sel = window.getSelection(); if (!root || !sel) return; const range = document.createRange(); range.selectNodeContents(root); sel.removeAllRanges(); sel.addRange(range); }]] as const).map((entry, i) => entry
         // mousedown keeps the focus and the selection in the editor; cut and copy run through the browser so pills copy as they do with ⌘C.
-        ? <button key={entry[0]} type="button" role="menuitem" className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onMouseDown={event => event.preventDefault()} onClick={() => { setContext(null); entry[2](); }}>{entry[0]}<span className="text-xs text-muted-foreground">{entry[1]}</span></button>
+        ? <button key={entry[0]} type="button" role="menuitem" disabled={entry[3] === true} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover disabled:pointer-events-none disabled:opacity-50" onMouseDown={event => event.preventDefault()} onClick={() => { setContext(null); entry[2](); }}>{entry[0]}<span className="text-xs text-muted-foreground">{entry[1]}</span></button>
         : <div key={`sep${i}`} role="separator" className="my-1 h-px bg-border" />)}
     </div>, document.body)}
     {menu && choices.length > 0 && <div role="listbox" aria-label="Threads" className="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>}

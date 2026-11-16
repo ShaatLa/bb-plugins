@@ -109,7 +109,7 @@ it('quotes the selected lines on Cmd+Shift+9 and unquotes them on a second press
   expect(quoted.onChange).toHaveBeenLastCalledWith('intro\nfirst line\n\nsecond line');
 });
 
-it('opens its own Quote, Cut, Copy, Delete and Select All menu on a right-click over a selection, and keeps the native one otherwise', () => {
+it('opens its own Undo, Redo, Quote, Cut, Copy, Paste, Delete and Select All menu on a right-click over a selection, and keeps the native one otherwise', () => {
   const { box, onChange } = editor('intro\nfirst line');
   const text = box.firstChild!, range = document.createRange(), selection = window.getSelection()!;
   range.setStart(text, 3); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
@@ -117,7 +117,8 @@ it('opens its own Quote, Cut, Copy, Delete and Select All menu on a right-click 
   range.setStart(text, 8); range.setEnd(text, 12); selection.removeAllRanges(); selection.addRange(range);
   fireEvent.mouseDown(box, { button: 2 }); expect(fireEvent.contextMenu(box, { clientX: 10, clientY: 10 })).toBe(false);
   const menu = document.querySelector('[role=menu]') as HTMLElement;
-  expect(Array.from(menu.querySelectorAll('[role=menuitem]'), item => item.firstChild!.textContent)).toEqual(['Quote', 'Cut', 'Copy', 'Delete', 'Select All']);
+  expect(Array.from(menu.querySelectorAll('[role=menuitem]'), item => item.firstChild!.textContent)).toEqual(['Undo', 'Redo', 'Quote', 'Cut', 'Copy', 'Paste', 'Delete', 'Select All']);
+  expect(within(menu).getByRole('menuitem', { name: /Undo/ })).toHaveProperty('disabled', true);
   fireEvent.click(within(menu).getByRole('menuitem', { name: /Quote/ }));
   expect(onChange).toHaveBeenLastCalledWith('intro\n> first line'); expect(document.querySelector('[role=menu]')).toBeNull();
   const exec = vi.fn(() => true); Object.assign(document, { execCommand: exec });
@@ -127,6 +128,25 @@ it('opens its own Quote, Cut, Copy, Delete and Select All menu on a right-click 
   fireEvent.mouseDown(box, { button: 2 }); fireEvent.contextMenu(box);
   fireEvent.click(within(document.querySelector('[role=menu]') as HTMLElement).getByRole('menuitem', { name: /Delete/ }));
   expect(onChange).toHaveBeenLastCalledWith('intro\nfiline');
+});
+
+it('keeps its own undo history: Cmd+Z and Shift+Cmd+Z step through edits, typing runs merge, and the menu pastes the clipboard', async () => {
+  const slot = renderSlot({ component: () => { const [value, setValue] = useState('one'); return <Composer label="History" value={value} onChange={setValue} attachments={[]} onAttachments={() => {}} projectId="proj_one" onSend={() => {}} />; } }, {}, { sidebarThreads: { threads: [thread], projects: [] } } as any);
+  const box = slot.getByRole('textbox', { name: 'History' }) as HTMLElement, selection = window.getSelection()!;
+  const select = (from: number, to = from) => { const range = document.createRange(), text = box.querySelector('[data-quote]')?.firstChild ?? box.firstChild!; range.setStart(text, from); range.setEnd(text, to); selection.removeAllRanges(); selection.addRange(range); };
+  const type = (text: string) => { box.firstChild!.textContent = text; select(text.length); fireEvent.input(box); };
+  box.focus(); type('one t'); type('one tw'); type('one two');
+  select(0, 3); fireEvent.keyDown(box, { key: '(', code: 'Digit9', metaKey: true, shiftKey: true });
+  expect(box.querySelector('[data-quote]')?.textContent).toBe('one two');
+  fireEvent.keyDown(box, { key: 'z', code: 'KeyZ', metaKey: true }); expect(box.textContent).toBe('one two');
+  expect(box.querySelector('[data-quote]')).toBeNull();
+  fireEvent.keyDown(box, { key: 'z', code: 'KeyZ', metaKey: true }); expect(box.textContent).toBe('one');
+  fireEvent.keyDown(box, { key: 'z', code: 'KeyZ', metaKey: true, shiftKey: true }); expect(box.textContent).toBe('one two');
+  Object.assign(navigator, { clipboard: { read: async () => [{ types: ['text/plain'], getType: async () => new Blob(['pasted']) }] } });
+  select(4, 7); fireEvent.mouseDown(box, { button: 2 }); fireEvent.contextMenu(box);
+  fireEvent.click(within(document.querySelector('[role=menu]') as HTMLElement).getByRole('menuitem', { name: /Paste/ }));
+  await waitFor(() => expect(box.textContent).toBe('one pasted'));
+  fireEvent.keyDown(box, { key: 'z', code: 'KeyZ', metaKey: true }); expect(box.textContent).toBe('one two');
 });
 
 function nativeEditor(options: any = {}) {
