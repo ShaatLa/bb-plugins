@@ -1034,3 +1034,15 @@ it('flips a growing quote popup and fits it to a narrowed chat', async () => {
     await waitFor(() => expect(popup.style.width).toBe('284px'));
   } finally { window.getSelection()?.removeAllRanges(); vi.unstubAllGlobals(); }
 });
+
+it('does not redraw the queue preview while typing', async () => {
+  let reads = 0;
+  const row = { id: 'q_memo', threadId: 'thr_one', updatedAt: 1, get content() { reads++; return [{ type: 'text', text: 'Stable preview', mentions: [] }]; } };
+  const { slot, recipients } = setup({ queuedMessages: { list: async () => [row] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Stable preview');
+  await act(async () => {});
+  const before = reads;
+  change(slot.getByRole('textbox', { name: 'Send message' }), { target: { value: 'Typing' } });
+  expect(reads).toBe(before);
+});
