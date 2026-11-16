@@ -291,6 +291,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
       );
     }
   } else {
+    const keyChars = Math.max(0, ...groups.flatMap((group) => group.tasks.map((task) => task.key.length)));
     body = groups.map((group, groupIndex) => {
       const [start, end] = ranges[groupIndex] ?? [0, group.tasks.length];
       const hiddenAbove = start * viewport.rowHeight;
@@ -327,6 +328,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               onEdit={edits.edit}
               onOpen={openTask}
               pending={edits.pending.has(task.id)}
+              keyChars={keyChars}
             />
           ))}
           {hiddenBelow > 0 ? (
