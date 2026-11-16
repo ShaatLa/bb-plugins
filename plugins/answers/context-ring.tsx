@@ -83,8 +83,14 @@ export function ContextRing({ usage }: { usage: ContextUsage }) {
     if (!open) return;
     const away = (e: PointerEvent) => { if (!trigger.current?.contains(e.target as Node) && !card.current?.contains(e.target as Node)) setOpen(false); };
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); trigger.current?.focus(); } };
-    document.addEventListener('pointerdown', away); document.addEventListener('keydown', esc);
-    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc); };
+    const close = () => { clearTimeout(timer.current); setOpen(false); };
+    const scrolled = (event: Event) => { if (event.target === document || event.target === window || (event.target instanceof Element && event.target.contains(trigger.current))) close(); };
+    const containers: { node: HTMLElement; width: number; height: number }[] = [];
+    for (let node = trigger.current?.parentElement; node; node = node.parentElement) { const rect = node.getBoundingClientRect(); containers.push({ node, width: rect.width, height: rect.height }); }
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => { if (containers.some(({ node, width, height }) => { const rect = node.getBoundingClientRect(); return rect.width !== width || rect.height !== height; })) close(); });
+    containers.forEach(({ node }) => observer?.observe(node));
+    document.addEventListener('pointerdown', away); document.addEventListener('keydown', esc); window.addEventListener('scroll', scrolled, true); window.addEventListener('resize', close);
+    return () => { observer?.disconnect(); document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc); window.removeEventListener('scroll', scrolled, true); window.removeEventListener('resize', close); };
   }, [open]);
   useEffect(() => () => clearTimeout(timer.current), []);
   return <>

@@ -27,3 +27,14 @@ describe('ContextRing', () => {
     fireEvent.click(view.getByRole('button', { name: /Tools/ })); expect(view.getByText('Bash')).toBeTruthy();
   });
 });
+
+it('closes on anchor-container scroll and window resize but permits card scrolling', () => {
+  const view = render(<div data-container><ContextRing usage={{ usedTokens: 800, modelContextWindow: 1000, estimated: false }} /></div>);
+  const button = view.getByRole('button');
+  fireEvent.click(button); fireEvent.scroll(view.getByRole('dialog'));
+  expect(view.getByRole('dialog')).toBeTruthy();
+  fireEvent.scroll(view.container.querySelector('[data-container]')!);
+  expect(view.queryByRole('dialog')).toBeNull();
+  fireEvent.click(button); fireEvent.resize(window);
+  expect(view.queryByRole('dialog')).toBeNull();
+});
