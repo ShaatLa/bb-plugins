@@ -438,6 +438,21 @@ describe("kanban side panel", () => {
     expect(panelCalls(switched)).toEqual([]);
   });
 
+  it("the toolbar Scheduled clock toggles back to the view it was opened from", async () => {
+    const slot = openMain(`${PROJECT_ID}?view=list`, nativePanel("tab-navigation"));
+    const header = (await slot.findAllByRole("button", { name: "Scheduled" }))[0]!;
+    fireEvent.click(header);
+    expect(slot.navigateCalls.at(-1)).toMatchObject({ options: { subPath: "scheduled" } });
+    rerenderMain(slot, "scheduled");
+    const pressed = await waitFor(() => {
+      const button = slot.getAllByRole("button", { name: "Scheduled" }).find((b) => b.getAttribute("aria-pressed") === "true");
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    fireEvent.click(pressed);
+    expect(slot.navigateCalls.at(-1)).toMatchObject({ options: { subPath: `${PROJECT_ID}?view=list` } });
+  });
+
   it("a task route keeps a usable toggle for its project and does not navigate", async () => {
     const slot = openMain("task/TSK-4", nativePanel("tab-navigation"));
     fireEvent.click(await slot.findByRole("button", { name: "Board" }));
