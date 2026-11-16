@@ -93,3 +93,16 @@ it('shows the skeleton only before the first response and reports errors', async
   fireEvent.click(failed.slot.getByRole('button', { name: /Worked for/ }));
   expect((await failed.slot.findByRole('alert')).textContent).toBe('Offline');
 });
+
+it('ticks an expanded log without traversing its work rows', async () => {
+  let reads = 0;
+  const row = work('measured');
+  Object.defineProperty(row, 'kind', { get: () => { reads++; return 'work'; } });
+  const { slot } = setup('isolated-clock', { live: true }, vi.fn(async () => ({ rows: [row], olderCursor: null })));
+  fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
+  await slot.findByText('Ran 1 command');
+  vi.useFakeTimers();
+  const before = reads;
+  await act(async () => { vi.advanceTimersByTime(1000); });
+  expect(reads).toBe(before);
+});

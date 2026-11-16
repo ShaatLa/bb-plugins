@@ -96,18 +96,22 @@ function WorkGroup({ rows }: { rows: Work[] }) {
 type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; live?: boolean; children?: ReactNode };
 // shortcut: an autonomous turn is timed from mount until expanded; use a shared turn clock when the SDK exposes one without fetching.
 export function WorkLog(props: Props) {
-  const [open, setOpen] = useState(false), [now, setNow] = useState(Date.now), [mountedAt] = useState(Date.now);
-  // The words come from the same events as the robot's scene (useAgentActivity), so they change together and cost no request.
-  const doing = useContext(ActivityLabelContext), log = useTurnLog(props, open);
-  useEffect(() => { if (!props.live) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [props.live]);
-  const took = duration((props.live ? now : props.completedAt ?? props.startedAt ?? mountedAt) - (props.startedAt ?? log.startedAt ?? mountedAt));
-  const label = !props.live ? `Worked for ${took}` : doing ? `${doing} · ${took}` : `Working for ${took}`;
+  const [open, setOpen] = useState(false), [mountedAt] = useState(Date.now);
+  const log = useTurnLog(props, open);
   return <div className="flow-root text-sm leading-relaxed">
     {props.children && <div className="float-left mr-2 flex">{props.children}</div>}
     {/* The figure fills the lower part of the robot's 32 px box (head at 9 px, feet at its bottom), so the line centres on the figure, not the box. */}
-    <button type="button" title={label} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden text-left text-xs text-muted-foreground ${props.children ? 'h-8 pt-[9px]' : 'py-1'}`} aria-expanded={open} onClick={() => setOpen(!open)}><span className="min-w-0 truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
+    <ElapsedToggle props={props} startedAt={log.startedAt} mountedAt={mountedAt} open={open} onToggle={() => setOpen(!open)} />
     {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} />}
   </div>;
+}
+function ElapsedToggle({ props, startedAt, mountedAt, open, onToggle }: { props: Props; startedAt?: number; mountedAt: number; open: boolean; onToggle: () => void }) {
+  // The words come from the same events as the robot's scene (useAgentActivity), so they change together and cost no request.
+  const doing = useContext(ActivityLabelContext), [now, setNow] = useState(Date.now);
+  useEffect(() => { if (!props.live) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [props.live]);
+  const took = duration((props.live ? now : props.completedAt ?? props.startedAt ?? mountedAt) - (props.startedAt ?? startedAt ?? mountedAt));
+  const label = !props.live ? `Worked for ${took}` : doing ? `${doing} · ${took}` : `Working for ${took}`;
+  return <button type="button" title={label} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden text-left text-xs text-muted-foreground ${props.children ? 'h-8 pt-[9px]' : 'py-1'}`} aria-expanded={open} onClick={onToggle}><span className="min-w-0 truncate">{label}</span><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /></button>
 }
 function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Props, enabled: boolean) {
   const sdk = useSdk(), key = `${threadId}:${turnId ?? 'active'}`;
