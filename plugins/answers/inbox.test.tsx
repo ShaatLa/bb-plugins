@@ -120,6 +120,23 @@ it.each([
     await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(expected));
   } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
 });
+it('reopens a chat the reader left scrolled up at their place, not at a New divider below it', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_old', offset:0 } }));
+  const tops = new WeakMap<Element, number>();
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? 700 : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) { return { top: this.dataset.historyIds === 'ans_old' ? 300 : 0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect; }),
+  ];
+  try {
+    const old = { ...base, id:'ans_old', question:'Old one', readAt:1, createdAt:1, answeredAt:1 }, fresh = { ...base, id:'ans_new', question:'New one', questionSeq:5, answer:'Unread reply', readAt:null, createdAt:2, answeredAt:2 };
+    const { slot, recipients } = setup({ list: () => ({ items:[fresh, old], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Unread reply');
+    expect(document.querySelector('[data-new]')).not.toBeNull();
+    await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(300));
+  } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
 it('groups consecutive questions with a shared answer', async () => {
   const other = { ...base, id:'ans_two', question:'Question two', questionSeq:3, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
   const first = { ...base, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
@@ -490,6 +507,7 @@ it('offers bb\'s Scroll to latest button once the last message is out of sight b
   await slot.findByRole('list', { name:'History' }); const button = document.querySelector('[aria-label="Scroll to latest"]') as HTMLElement;
   expect(button.className).toContain('invisible');
   const view = slot.getByRole('list', { name:'History' }).closest('.overflow-auto') as HTMLElement, last = slot.getByRole('list', { name:'History' }).lastElementChild as HTMLElement;
+  Object.defineProperty(view, 'clientHeight', { configurable:true, value:500 }); // a shown chat (a hidden one, 0 high, is left alone)
   view.getBoundingClientRect = () => ({ top:0, bottom:500 }) as DOMRect; last.getBoundingClientRect = () => ({ top:900, bottom:1000 }) as DOMRect;
   const scrollTo = vi.fn(); view.scrollTo = scrollTo as any;
   fireEvent.scroll(view);
