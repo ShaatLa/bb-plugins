@@ -1,7 +1,7 @@
 import { useState } from 'react';
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_readPromptMentionClipboard: (element: Element) => element.getAttribute('data-test-kind') === 'project' ? { text: '@project:proj_one', mention: { kind: 'project', projectId: 'proj_one', label: 'Project One' } } : null, experimental_promptMentionClipboardAttributes: (_mention: any, text: string) => ({ 'data-prompt-mention': 'true', 'data-test-serialized': text }), experimental_VoiceInputTextarea: ({ onValueChange, onVoiceInputActiveChange, ...props }: any) => <><textarea {...props} onChange={event => onValueChange(event.target.value)} /><button onClick={() => onVoiceInputActiveChange(true)}>Start voice</button><button onClick={() => onVoiceInputActiveChange(false)}>Stop voice</button></> }));
 import { Composer } from './composer';
@@ -107,6 +107,26 @@ it('quotes the selected lines on Cmd+Shift+9 and unquotes them on a second press
   range.selectNodeContents(quote); selection.removeAllRanges(); selection.addRange(range);
   fireEvent.keyDown(quoted.box, { key: '(', code: 'Digit9', ctrlKey: true, shiftKey: true });
   expect(quoted.onChange).toHaveBeenLastCalledWith('intro\nfirst line\n\nsecond line');
+});
+
+it('opens its own Quote, Cut, Copy, Delete and Select All menu on a right-click over a selection, and keeps the native one otherwise', () => {
+  const { box, onChange } = editor('intro\nfirst line');
+  const text = box.firstChild!, range = document.createRange(), selection = window.getSelection()!;
+  range.setStart(text, 3); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.mouseDown(box, { button: 2 }); expect(fireEvent.contextMenu(box)).toBe(true); expect(document.querySelector('[role=menu]')).toBeNull();
+  range.setStart(text, 8); range.setEnd(text, 12); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.mouseDown(box, { button: 2 }); expect(fireEvent.contextMenu(box, { clientX: 10, clientY: 10 })).toBe(false);
+  const menu = document.querySelector('[role=menu]') as HTMLElement;
+  expect(Array.from(menu.querySelectorAll('[role=menuitem]'), item => item.firstChild!.textContent)).toEqual(['Quote', 'Cut', 'Copy', 'Delete', 'Select All']);
+  fireEvent.click(within(menu).getByRole('menuitem', { name: /Quote/ }));
+  expect(onChange).toHaveBeenLastCalledWith('intro\n> first line'); expect(document.querySelector('[role=menu]')).toBeNull();
+  const exec = vi.fn(() => true); Object.assign(document, { execCommand: exec });
+  fireEvent.mouseDown(box, { button: 2 }); fireEvent.contextMenu(box);
+  fireEvent.click(within(document.querySelector('[role=menu]') as HTMLElement).getByRole('menuitem', { name: /Copy/ }));
+  expect(exec).toHaveBeenCalledWith('copy');
+  fireEvent.mouseDown(box, { button: 2 }); fireEvent.contextMenu(box);
+  fireEvent.click(within(document.querySelector('[role=menu]') as HTMLElement).getByRole('menuitem', { name: /Delete/ }));
+  expect(onChange).toHaveBeenLastCalledWith('intro\nfiline');
 });
 
 function nativeEditor(options: any = {}) {

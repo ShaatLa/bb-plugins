@@ -7,6 +7,7 @@ import { threadToken, rememberMention, pastedMentions, type ThreadLabel } from '
 
 const parts = /@thread:(thr_[a-zA-Z0-9_-]+)(?:#msg=(\d+))?|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
 const threadUrl = /^https?:\/\/[^/\s]+(?:\/projects\/[^/\s]+)?\/threads\/(thr_[a-zA-Z0-9_-]+)(?:[?#][^\s]*)?$/;
+const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 const raw = (node: Node): string => node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : node instanceof HTMLElement && node.dataset.raw ? node.dataset.raw : Array.from(node.childNodes).map(raw).join('');
 function offset(root: HTMLElement, node: Node, at: number) { const range = document.createRange(); range.selectNodeContents(root); range.setEnd(node, at); return raw(range.cloneContents()); }
 function position(root: HTMLElement, at: number): [Node, number] {
@@ -33,6 +34,14 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
   const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string } | null>(null), [active, setActive] = useState(0);
   const caret = useRef<number | null>(null);
+  // Own right-click menu over a selection, since bb's native one cannot take a Quote item; without a selection the native menu stays.
+  const [context, setContext] = useState<{ left: number; top?: number; bottom?: number } | null>(null), contextBox = useRef<HTMLDivElement>(null), selectedOnPress = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!context) return;
+    const close = (event: Event) => { if (!contextBox.current?.contains(event.target as Node)) setContext(null); };
+    document.addEventListener('pointerdown', close, true); window.addEventListener('scroll', close, true); window.addEventListener('resize', close);
+    return () => { document.removeEventListener('pointerdown', close, true); window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [context]);
   const drawn = useRef('');
   const [pillContents, setPillContents] = useState<React.ReactPortal[]>([]);
   const spans = Array.from(value.matchAll(matcher), match => {
@@ -141,32 +150,49 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     }
     const text = event.clipboardData.getData('text/plain'); event.preventDefault(); replace(threadUrl.exec(text.trim()) ? `@thread:${threadUrl.exec(text.trim())![1]}` : text);
   };
+  // Quotes the selected lines (or the caret's line), or unquotes them when all already are.
+  const toggleQuote = () => {
+    const [a,b] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', b > a && value[b - 1] === '\n' ? b - 1 : b), end = stop < 0 ? value.length : stop;
+    const lines = value.slice(start, end).split('\n'), isQuote = (line: string) => /^>(?: |$)/.test(line), unquote = lines.every(isQuote);
+    replace(lines.map(line => unquote ? line.replace(/^> ?/, '') : isQuote(line) ? line : line ? `> ${line}` : '>').join('\n'), start, end);
+  };
+  // Select-all leaves out a leading hidden quote marker; take it too so the box really empties.
+  const removeSelection = () => { const [a,b] = selection(); replace('', /^> ?$/.test(value.slice(0,a)) ? 0 : a, b); };
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (context && event.key === 'Escape') { event.preventDefault(); setContext(null); return; }
     if (menu && choices.length) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : choices.length - 1)) % choices.length); return; }
       if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(choices[active].id); return; }
     }
-    // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail: quotes the selected lines (or the caret's line), or unquotes them
-    // when all already are; bb's context menu cannot take a plugin item. event.code keeps it working on any keyboard layout.
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') {
-      event.preventDefault();
-      const [a,b] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', b > a && value[b - 1] === '\n' ? b - 1 : b), end = stop < 0 ? value.length : stop;
-      const lines = value.slice(start, end).split('\n'), isQuote = (line: string) => /^>(?: |$)/.test(line), unquote = lines.every(isQuote);
-      replace(lines.map(line => unquote ? line.replace(/^> ?/, '') : isQuote(line) ? line : line ? `> ${line}` : '>').join('\n'), start, end); return;
-    }
+    // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail; event.code keeps it working on any keyboard layout.
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') { event.preventDefault(); toggleQuote(); return; }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
     if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) { const [a] = selection(); replace(/^>(?: |\n|$)/.test(value.slice(a ? value.lastIndexOf('\n', a - 1) + 1 : 0)) ? '\n> ' : '\n'); } else onSend(); return; }
     if (event.key === 'Backspace' || event.key === 'Delete') {
-      // Select-all leaves out a leading hidden quote marker; take it too so the box really empties.
-      const [a,b] = selection(); if (a !== b) { event.preventDefault(); replace('',/^> ?$/.test(value.slice(0,a)) ? 0 : a,b); return; }
+      const [a,b] = selection(); if (a !== b) { event.preventDefault(); removeSelection(); return; }
       const matches = Array.from(value.matchAll(matcher));
       const pill = matches.find(m => event.key === 'Backspace' ? m.index + m[0].length === a : m.index === a);
       if (pill) { event.preventDefault(); replace('', pill.index, pill.index + pill[0].length); }
     }
   };
   return <div className="relative min-w-0 flex-1">
-    <div ref={editorRef} role="textbox" aria-label={label} aria-multiline="true" contentEditable={!disabled} tabIndex={0} suppressContentEditableWarning autoFocus={autoFocus} data-placeholder={placeholder} className={`${className} min-h-[32px] max-h-[40vh] whitespace-pre-wrap break-words empty:before:content-[attr(data-placeholder)] empty:before:text-subtle-foreground`} onBlur={onBlur} onPaste={paste} onKeyDown={keyDown} onBeforeInput={event => { const input = event.nativeEvent as InputEvent; if (input.inputType === 'insertText' && raw(event.currentTarget).length >= 8000) event.preventDefault(); }} onInput={event => { const testValue = event.currentTarget.dataset.testValue; if (testValue !== undefined) { delete event.currentTarget.dataset.testValue; replace(testValue, 0, value.length); return; } const next = raw(event.currentTarget); if (next !== value) { const at = selection()[1]; caret.current = at; onChange(next.slice(0,8000)); updateMenu(next, at); } }} />
+    <div ref={editorRef} role="textbox" aria-label={label} aria-multiline="true" contentEditable={!disabled} tabIndex={0} suppressContentEditableWarning autoFocus={autoFocus} data-placeholder={placeholder} className={`${className} min-h-[32px] max-h-[40vh] whitespace-pre-wrap break-words empty:before:content-[attr(data-placeholder)] empty:before:text-subtle-foreground`} onBlur={() => { setContext(null); onBlur?.(); }} onPaste={paste} onKeyDown={keyDown}
+      onMouseDown={event => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) { const [a,b] = selection(); selectedOnPress.current = a !== b; } }}
+      onContextMenu={event => {
+        // macOS selects the word under a right-click, so only a selection made before the press opens the own menu.
+        const [a,b] = selection(), had = selectedOnPress.current ?? true; selectedOnPress.current = null;
+        if (disabled || a === b || !had) return;
+        event.preventDefault();
+        const left = Math.min(event.clientX, window.innerWidth - 200), y = event.clientY;
+        setContext(y > window.innerHeight - 220 ? { left, bottom: window.innerHeight - y } : { left, top: y });
+      }} onBeforeInput={event => { const input = event.nativeEvent as InputEvent; if (input.inputType === 'insertText' && raw(event.currentTarget).length >= 8000) event.preventDefault(); }} onInput={event => { const testValue = event.currentTarget.dataset.testValue; if (testValue !== undefined) { delete event.currentTarget.dataset.testValue; replace(testValue, 0, value.length); return; } const next = raw(event.currentTarget); if (next !== value) { const at = selection()[1]; caret.current = at; onChange(next.slice(0,8000)); updateMenu(next, at); } }} />
     {pillContents}
+    {context && createPortal(<div ref={contextBox} role="menu" aria-label="Text actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={context}>
+      {([['Quote', `${mod}⇧9`, toggleQuote], null, ['Cut', `${mod}X`, () => document.execCommand('cut')], ['Copy', `${mod}C`, () => document.execCommand('copy')], ['Delete', '', removeSelection], null, ['Select All', `${mod}A`, () => { const root = editorRef.current, sel = window.getSelection(); if (!root || !sel) return; const range = document.createRange(); range.selectNodeContents(root); sel.removeAllRanges(); sel.addRange(range); }]] as const).map((entry, i) => entry
+        // mousedown keeps the focus and the selection in the editor; cut and copy run through the browser so pills copy as they do with ⌘C.
+        ? <button key={entry[0]} type="button" role="menuitem" className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onMouseDown={event => event.preventDefault()} onClick={() => { setContext(null); entry[2](); }}>{entry[0]}<span className="text-xs text-muted-foreground">{entry[1]}</span></button>
+        : <div key={`sep${i}`} role="separator" className="my-1 h-px bg-border" />)}
+    </div>, document.body)}
     {menu && choices.length > 0 && <div role="listbox" aria-label="Threads" className="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>}
   </div>;
 }
