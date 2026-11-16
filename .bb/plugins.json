@@ -38,6 +38,10 @@
     {
       "name": "tokenomos",
       "source": "./plugins/tokenomos"
+    },
+    {
+      "name": "agent-spawn-gate",
+      "source": "./plugins/agent-spawn-gate"
     }
   ]
 }
