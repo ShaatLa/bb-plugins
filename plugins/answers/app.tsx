@@ -2,7 +2,7 @@ import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { definePluginApp, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
@@ -409,11 +409,15 @@ function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?
   const firstUnread = useRef<string | null | undefined>(undefined);
   // A thread tab reads like the chat beside it: oldest first, earlier pages load above.
   const chronological = !!threadId, nextCursor = result.data?.nextCursor;
+  // The thread or one of its sub-sessions still works: updates keep flying in, so the last one stays in its group.
+  const { threads: sidebar } = experimental_useSidebarThreads(), thread = sidebar.find(t => t.id === threadId);
+  const below = (id: string): typeof sidebar => sidebar.filter(t => t.parentThreadId === id).flatMap(t => [t, ...below(t.id)]);
+  const busy = !!thread && experimental_resolveThreadStatus({ thread, hiddenThreads: below(thread.id), hasUnsubmittedDraft: false, rowStatus: null }).isWorking;
   // Open agent questions live in the Questions section; the thread feed shows them once replied.
   const items = result.data ? (chronological ? [...result.data.items].reverse().filter(item => item.kind !== 'for_me' || item.status !== 'open') : result.data.items) : [];
   if (chronological && !cursor && result.data && firstUnread.current === undefined) firstUnread.current = items.find(isUnread)?.id ?? null;
   // Pages render apart, so a split question older than this page goes on to the earlier one.
-  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans, !cursor) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
+  const { entries, orphans: carry } = chronological ? conversation(items.map(item => [item]), !!nextCursor, orphans, !cursor && !busy) : { entries: items.map((item): Entry => ({ group: [item] })), orphans: [] };
   const jump = (id: string) => document.querySelector(`[data-history-ids~="${id}"]`)?.scrollIntoView?.({ block: 'center' });
   const more = nextCursor && (next ? <Page key={nextCursor} {...{ threadId, view, projectId, query }} cursor={nextCursor} orphans={carry} /> : chronological ? <EarlierLoader loading={false} onLoad={() => setNext(true)} /> : <Button variant="ghost" size="sm" className="mx-auto flex text-xs text-muted-foreground" onClick={() => setNext(true)}>Load more</Button>);
   return <>

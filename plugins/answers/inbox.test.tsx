@@ -274,6 +274,13 @@ it('shows only the quoted answer while its question is beyond the loaded window,
 const quiet = (n: number, answer: string, asks = false) => ({ ...between, id:`ans_u${n}`, answer, asks, createdAt:asked + n * minute, answeredAt:asked + n * minute });
 // The owner's later message, so the quiet run is not the chat's latest message (that one always shows in full).
 const after = { ...base, id:'ans_after', question:'Thanks', createdAt:asked + 9 * minute, answeredAt:asked + 9 * minute };
+it('keeps the latest quiet update in its group while the chat still works', async () => {
+  const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'One' }, { ...idle, id:'thr_kid', parentThreadId:'thr_one', status:'active', runtimeStatus:'active', indicator:'runtime' }], projects:[] }, list: () => ({ items:[quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null }) });
+  fireEvent.click(await recipients.findByRole('option', { name:/One/ }));
+  await slot.findByRole('button', { name:/3 background updates/ });
+  expect(document.querySelector('[data-history-ids="ans_u3"]')).toBeNull();
+});
 it('keeps the chat\'s latest message, a quiet update after a run of them, in full outside the group', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[quiet(3, 'Final report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final report');
