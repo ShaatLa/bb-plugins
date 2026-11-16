@@ -337,8 +337,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       </span></div>}
     </div>}
     {(() => {
-      // A message another agent sent, still being worked on: the robot under it shares a row with its Show more, dimmed like the other robots.
-      const working = chat && live && item.status === 'waiting' && item.kind === 'update' && !(item.trigger?.kind === 'plugin' && item.question);
+      // A message another agent or a plugin (a Work Board report, a CI notice) sent, still being worked on: the robot under it
+      // shares a row with its Show more, dimmed like the other robots. The chat's own end robot stands back for it.
+      const working = chat && live && item.status === 'waiting' && item.kind === 'update';
       const more = (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
       return working ? <div className="flex items-start gap-2"><div className="min-w-0 flex-1 px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>{more}</div> : more;
     })()}
