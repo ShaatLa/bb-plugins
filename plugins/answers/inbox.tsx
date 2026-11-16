@@ -599,7 +599,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
       if (node.clientWidth !== width) {
         width = node.clientWidth; resizedAt.current = Date.now();
-        if (!settle) { for (const card of cards()) { const style = getComputedStyle(card); card.style.containIntrinsicSize = `auto ${card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)}px`; card.style.contentVisibility = 'auto'; } }
+        if (!settle) { const measured = cards().map(card => { const style = getComputedStyle(card); return { card, height: card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) }; }); for (const { card, height } of measured) { card.style.containIntrinsicSize = `auto ${height}px`; card.style.contentVisibility = 'auto'; } }
         clearTimeout(settle); settle = setTimeout(settled, 500);
       }
       // A reader scrolled up keeps the card at the top of the view where it was, whatever changed height above it (a robot

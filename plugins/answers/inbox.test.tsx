@@ -991,3 +991,20 @@ it('coalesces scroll anchor scans within an animation frame', async () => {
     expect(scan.mock.calls.filter(([selector]) => selector.includes('[data-history-ids]'))).toHaveLength(1);
   } finally { vi.unstubAllGlobals(); }
 });
+
+it('measures every history card before freezing any on width resize', async () => {
+  const callbacks: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { callbacks.push(callback); } observe() {} disconnect() {} });
+  let width = 400;
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
+  try {
+    const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
+    const rows = Array.from(slot.getByRole('list', { name: 'History' }).children) as HTMLElement[];
+    let measured = 0;
+    rows.forEach(row => Object.defineProperty(row, 'offsetHeight', { get: () => { if (measured < rows.length) expect(rows.every(card => !card.style.contentVisibility)).toBe(true); measured++; return 100; } }));
+    width = 300;
+    act(() => callbacks.forEach(run => run()));
+    expect(measured).toBeGreaterThanOrEqual(rows.length);
+    expect(rows.every(row => row.style.contentVisibility === 'auto')).toBe(true);
+  } finally { vi.unstubAllGlobals(); }
+});
