@@ -582,6 +582,18 @@ it('pauses queue and context polling while hidden and refetches when visible', a
   } finally { vi.useRealTimers(); slot.unmount(); }
 });
 
+it('offers Stop only while the chat’s own turn runs, not for its background work', async () => {
+  const idle = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'background-command', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:1, planMode:0 } };
+  const first = setup({ sidebarThreads:{ threads:[idle], projects:[] } });
+  fireEvent.click(await first.recipients.findByRole('option'));
+  await first.slot.findByRole('button', { name:'Send message' });
+  expect(first.slot.queryByRole('button', { name:'Stop' })).toBeNull();
+  first.slot.unmount();
+  const second = setup({ sidebarThreads:{ threads:[{ ...idle, status:'active', runtimeStatus:'active', indicator:'runtime' }], projects:[] } });
+  fireEvent.click(await second.recipients.findByRole('option'));
+  expect(await second.slot.findByRole('button', { name:'Stop' })).toBeTruthy();
+});
+
 it('keeps settled older pages without refetching them on item invalidation', async () => {
   const { slot, recipients, list } = setup({ list: input => input.cursor ? { items:[{ ...base, id:'ans_old', question:'Old question' }], nextCursor:null } : { items:[base], nextCursor:'1|ans_one' } });
   fireEvent.click(await recipients.findByRole('option'));
