@@ -1046,3 +1046,14 @@ it('does not redraw the queue preview while typing', async () => {
   change(slot.getByRole('textbox', { name: 'Send message' }), { target: { value: 'Typing' } });
   expect(reads).toBe(before);
 });
+
+it('rereads the queue after deletion without refreshing history', async () => {
+  let rows = [{ id: 'q_no_refresh', threadId: 'thr_one', content: [{ type: 'text', text: 'Delete without refresh', mentions: [] }], updatedAt: 1 }];
+  const queueList = vi.fn(async () => rows);
+  const { slot, recipients, list } = setup({ queuedMessages: { list: queueList, delete: async () => { rows = []; } } });
+  fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Delete without refresh'); await slot.findAllByText('Answer one');
+  const calls = list.mock.calls.length, queueCalls = queueList.mock.calls.length;
+  fireEvent.click(slot.getByRole('button', { name: 'Delete queued message 1' }));
+  await waitFor(() => expect(queueList.mock.calls.length).toBeGreaterThan(queueCalls));
+  expect(list.mock.calls.length).toBe(calls);
+});

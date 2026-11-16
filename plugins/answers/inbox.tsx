@@ -461,8 +461,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     read(); return () => { active = false; }; }, [sdk, selected, visible, working, contextStamp, compactedAt]);
   // Every action rereads the queue, failed ones too: a row bb already sent or deleted answers 404 and must leave the card.
   // Deleting such a row already got what the owner wanted, so that 404 is not an error.
-  const queueRefresh = useRef(refresh); queueRefresh.current = refresh;
-  async function queueAction(action: () => Promise<unknown>, goneIsDone = false) { try { await action(); } catch (e) { if (!(goneIsDone && (e as { status?: number }).status === 404)) setQueueError(errorText(e)); } finally { setQueueVersion(n => n + 1); queueRefresh.current(); } }
+  async function queueAction(action: () => Promise<unknown>, goneIsDone = false) { try { await action(); } catch (e) { if (!(goneIsDone && (e as { status?: number }).status === 404)) setQueueError(errorText(e)); } finally { setQueueVersion(n => n + 1); } }
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
   const editHold = useRef<{ threadId: string; queuedMessageId: string } | null>(null), editLease = useRef(120000);
   const releaseEditHold = async () => { const target = editHold.current; editHold.current = null; if (target) await sdk.threads.queuedMessages.experimental_releaseEditHold(target); };
