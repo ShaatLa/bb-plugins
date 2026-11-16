@@ -235,6 +235,20 @@ it('shows a double check on a read answer and a dot on an unread one', async () 
   expect(slot.getByRole('img', { name: /^Read / })).toBeTruthy();
   expect(slot.getAllByLabelText('Unread')).toHaveLength(1);
 });
+it('keeps the quote popup under its selection when the chat moves it (new messages, a selection in the composer stack)', async () => {
+  const { slot } = await inboxSetup({});
+  const body = slot.getByText('The answer').closest('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  let bottom = 30;
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, top: bottom - 10, bottom, width: 50, height: 10 }] });
+  vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+  fireEvent.mouseUp(body);
+  const dialog = slot.getByRole('dialog', { name: 'Quote reply' });
+  // jsdom has no height, so the popup flips above the selection (its top edge 6px over it).
+  expect(dialog.style.top).toBe('14px');
+  bottom = 130; fireEvent.scroll(dialog.closest('.overflow-auto')!);
+  await waitFor(() => expect(dialog.style.top).toBe('114px'));
+});
 it('snapshots a quote draft through focus and refresh; Add to reply pool opens the pool tab', async () => {
   const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
   const { slot } = await inboxSetup({ poolAdd });

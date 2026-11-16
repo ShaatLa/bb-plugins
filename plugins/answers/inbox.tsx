@@ -319,6 +319,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // While a quote reply is open over a message, the chat holds still: new messages and a growing composer do not scroll
   // the message (and the popup on it) away from the reader's eyes.
   const quoting = useRef(false); quoting.current = !!draft;
+  // The quote popup's live selection and the spot it was last placed from it; the popup follows it as the chat changes.
+  const anchor = useRef<Range | null>(null), placed = useRef<{ top: number; above: number; left: number } | null>(null);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
   const restore = useRef(useState(() => { const saved = selected ? readScrolls()[selected] : undefined; return saved && selected ? { threadId: selected, ...saved } : null; })[0]);
@@ -582,15 +584,36 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setDraft(null); };
     const outside = (e: PointerEvent) => { if ((e.target as Element).closest?.('[role=option]')) return; if (popup.current && !popup.current.contains(e.target as Node)) setDraft(null); };
     document.addEventListener('keydown', escape); document.addEventListener('pointerdown', outside);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => setDraft(old => old && ({ ...old, left: Math.max(8, Math.min(old.left, (scroll.current?.clientWidth ?? 396) - (old.width + 8))) })));
-    if (scroll.current) observer?.observe(scroll.current);
-    return () => { document.removeEventListener('keydown', escape); document.removeEventListener('pointerdown', outside); observer?.disconnect(); };
+    // The popup follows its selection: new messages, questions or queue rows move the text (a selection in the composer
+    // stack does not scroll with the chat), so every scroll, resize or change of the chat re-places it. A selection whose
+    // text was re-rendered falls back to the bottom of its message; one whose message is gone leaves the popup where it is.
+    let frame = 0;
+    const place = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
+      const box = scroll.current, range = anchor.current; if (!box) return;
+      setDraft(old => {
+        if (!old) return old;
+        let pos: { top: number; above: number; left: number } | null = null;
+        if (range && range.startContainer.isConnected && range.endContainer.isConnected && range.getClientRects().length) pos = selectionPosition(range, box, old.width);
+        else { const body = box.parentElement?.querySelector<HTMLElement>(`[data-agent-body][data-item="${old.itemId}"]`); if (body) { const r = body.getBoundingClientRect(), b = box.getBoundingClientRect(); pos = { top: r.bottom - b.top + box.scrollTop + 6, above: r.top - b.top + box.scrollTop - 6, left: old.left }; } }
+        const left = Math.max(8, Math.min(pos?.left ?? old.left, box.clientWidth - (old.width + 8)));
+        // Unchanged since the last placing (which the flip below the selection may have adjusted): keep the popup as is.
+        if (pos && placed.current && placed.current.top === pos.top && placed.current.above === pos.above && left === old.left) return old;
+        if (!pos) return left === old.left ? old : { ...old, left };
+        placed.current = pos; return { ...old, top: pos.top, above: pos.above, left };
+      });
+    }); };
+    const box = scroll.current, area = box?.parentElement;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place), mutations = typeof MutationObserver === 'undefined' ? null : new MutationObserver(place);
+    if (box) { observer?.observe(box); box.addEventListener('scroll', place); }
+    if (area) mutations?.observe(area, { childList: true, subtree: true, characterData: true });
+    return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape); document.removeEventListener('pointerdown', outside); observer?.disconnect(); mutations?.disconnect(); box?.removeEventListener('scroll', place); };
   }, [!!draft]);
   function capture(event: React.SyntheticEvent) {
     const body = (event.target as Element).closest<HTMLElement>('[data-agent-body]'), selection = window.getSelection();
     if (!body || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) return;
     const range = clipSelection(selection.getRangeAt(0), body); if (!range) return;
     const quote = selectionMarkdown(range, body); if (!quote.trim()) return;
+    anchor.current = range; placed.current = null;
     setDraft({ threadId: selected, projectId: recipients?.recipients.find(r => r.threadId === selected)?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(560, scroll.current.clientWidth - 16)), width: Math.min(560, scroll.current.clientWidth - 16) });
     setText(''); setFiles([]); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
   }
