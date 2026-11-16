@@ -223,6 +223,18 @@ export async function deploymentEvents({ request, repository, state, since, now,
   const list = z.array(deploymentRow).parse((await request(`/repos/${repository}/deployments?per_page=30`)).body);
   for (const [id, seen] of Object.entries(state.deploys)) if (seen < since) delete state.deploys[id];
   const events: ObserverEvent[] = [];
+  /** Whether a newer deployment of another commit to the same environment is running or succeeded: true, false (all newer ones failed) or null (none yet). */
+  const newerShipping = async (d: z.infer<typeof deploymentRow>, environment: string) => {
+    const newer = list.filter((x) => (x.environment || "unknown") === environment && x.sha !== d.sha && Date.parse(x.created_at) > Date.parse(d.created_at)).slice(0, 3);
+    for (const x of newer) {
+      try {
+        const latest = z.array(statusRow).parse((await request(`/repos/${repository}/deployments/${x.id}/statuses?per_page=1`)).body)[0];
+        // No status yet: just created, its workflow has not reported. Inactive: an even newer deployment succeeded.
+        if (!latest || !["failure", "error"].includes(latest.state)) return true;
+      } catch { return null; }
+    }
+    return newer.length ? false : null;
+  };
   // A deployment without a final status is asked every loop for its first hour, then every 10 minutes (`wait:<id>` holds the last ask), and dropped after a day.
   const open = list.filter((d) => Date.parse(d.created_at) >= since && state.deploys[String(d.id)] === undefined && now - (state.deploys[`wait:${d.id}`] ?? -Infinity) >= DEPLOY_WAIT_MS).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, maxStatuses);
   for (const d of open) {
@@ -244,7 +256,14 @@ export async function deploymentEvents({ request, repository, state, since, now,
       const runId = Number(url?.match(/\/actions\/runs\/(\d+)/)?.[1]);
       const outcome = Number.isFinite(runId) ? runOutcome(runId) : "failed";
       if (outcome === null && now - Date.parse(status.created_at) < DEPLOY_WAIT_MS) continue; // the run's jobs are not stored yet: look again next loop
-      if (outcome && outcome !== "failed") label = `refused (${outcome.refused})`;
+      if (outcome && outcome !== "failed") {
+        label = `refused (${outcome.refused})`;
+        // A gate refusing a candidate because the default branch already moved on is superseded, not a failure: sent to nobody.
+        // The newer deployment record often appears a minute or two after the refusal, so an unanswered refusal waits like an unstored run.
+        const shipping = await newerShipping(d, environment);
+        if (shipping) { state.deploys[String(d.id)] = Date.parse(status.created_at); continue; }
+        if (shipping === null && now - Date.parse(status.created_at) < DEPLOY_WAIT_MS) continue;
+      }
     }
     let pullRequest = landedPullRequest(repository, d.sha ?? "");
     if (pullRequest === null && d.sha) {

@@ -344,12 +344,34 @@ describe("deployments", () => {
     const state = emptyRepoState();
     const events = await deploymentEvents({ request: github.request, repository: REPO, state, since, now, runOutcome: deployRunOutcome(classified) });
     expect(events.map((event) => text(event)).sort()).toEqual([
-      "Deploy production failure · \`abcdef0\` · deployment 2 · [job 1](https://github.com/acme/widgets/actions/runs/42/job/1)",
-      "Deploy production refused (Admit gate) · \`abcdef0\` · deployment 1 · [job 1](https://github.com/acme/widgets/actions/runs/41/job/1)"]);
-    // Run 43 has no stored jobs yet: not sent and not remembered, so it is looked at again; after the wait it goes out as a failure.
+      "Deploy production failure · \`abcdef0\` · deployment 2 · [job 1](https://github.com/acme/widgets/actions/runs/42/job/1)"]);
+    // Run 43 has no stored jobs yet and the refusal has no newer deployment yet: neither is sent or remembered, so both are looked at again.
+    expect(state.deploys["1"]).toBeUndefined();
     expect(state.deploys["3"]).toBeUndefined();
     const later = await deploymentEvents({ request: github.request, repository: REPO, state, since, now: now + 11 * 60_000, runOutcome: deployRunOutcome(classified) });
-    expect(later.map((event) => text(event))).toEqual(["Deploy production failure · \`abcdef0\` · deployment 3 · [job 1](https://github.com/acme/widgets/actions/runs/43/job/1)"]);
+    expect(later.map((event) => text(event)).sort()).toEqual([
+      "Deploy production failure · \`abcdef0\` · deployment 3 · [job 1](https://github.com/acme/widgets/actions/runs/43/job/1)",
+      "Deploy production refused (Admit gate) · \`abcdef0\` · deployment 1 · [job 1](https://github.com/acme/widgets/actions/runs/41/job/1)"]);
+  });
+  it("treats a refusal as superseded when a newer commit is deploying or deployed to the same environment", async () => {
+    const refused = [{ ...classify(job({ runId: 41, jobId: 7, conclusion: "failure", failedSteps: ["Admit gate"] }), "refused"), evidence: "Admit gate" }];
+    const refusal = { state: "failure", created_at: "2026-11-06T11:55:00Z", log_url: "https://github.com/acme/widgets/actions/runs/41/job/1" };
+    const newer = { ...row(2, "2026-11-06T11:56:00Z"), sha: "1234567890abcdef" };
+    const run = (statuses: Record<number, object[]>, deployments: object[] = [newer, row(1)]) => {
+      const state = emptyRepoState();
+      return deploymentEvents({ request: api(deployments, { 1: [refusal], ...statuses }).request, repository: REPO, state, since, now, runOutcome: deployRunOutcome(refused) }).then((events) => ({ events, state }));
+    };
+    // Newer deployment just created (no status) or running: sent to nobody and remembered.
+    for (const statuses of [{}, { 2: [{ state: "in_progress", created_at: "2026-11-06T11:57:00Z" }] }] as Record<number, object[]>[]) {
+      const { events, state } = await run(statuses);
+      expect(events.filter((event) => event.key.startsWith("deploy:1:"))).toEqual([]);
+      expect(state.deploys["1"]).toBe(Date.parse(refusal.created_at));
+    }
+    // The newer one failed: the refusal is real.
+    expect((await run({ 2: [{ state: "failure", created_at: "2026-11-06T11:57:00Z" }] })).events.map((event) => event.key)).toContain("deploy:1:failure");
+    // A newer deployment of the same commit or to another environment does not supersede it.
+    expect((await run({}, [{ ...newer, sha: row(1).sha }, row(1)])).state.deploys["1"]).toBeUndefined();
+    expect((await run({}, [{ ...newer, environment: "staging" }, row(1)])).state.deploys["1"]).toBeUndefined();
   });
   it("reports a deployment once, when its newest status is final", async () => {
     const state = emptyRepoState();
