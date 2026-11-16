@@ -176,6 +176,15 @@ it('puts an interim reply above the final answer in the same card, under "Answer
   expect(before(mark, interim) && before(interim, answer)).toBe(true);
   expect(slot.queryByLabelText('Interim reply')).toBeNull(); expect(mark.closest('button')).toBeNull();
 });
+it('drops the interim clock once the owner marks the owed answer as answered', async () => {
+  const owed = { ...base, id:'ans_q', status:'deferred' as const, interim:'Working on it', answer:null };
+  for (const [item, clock] of [[owed, true], [{ ...owed, status:'answered' as const, answerSource:'user' as const }, false]] as const) {
+    const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_next', question:'Next one', createdAt:base.createdAt + 1000 }, item], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Working on it');
+    expect(!!slot.queryByLabelText('Interim reply')).toBe(clock);
+    cleanup();
+  }
+});
 it('splits a late answer from its question when an update arrived in between', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late, between], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Final answer');
