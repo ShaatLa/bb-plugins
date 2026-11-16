@@ -201,6 +201,22 @@ it('keeps a provider\'s last usage, marked out of date, when its refresh fails, 
   await waitFor(() => expect(slot.queryByRole('img', { name:'Usage may be out of date' })).toBeNull()); expect(slot.getByText('42%')).toBeTruthy();
   localStorage.removeItem('bb-plugin-answers:page:usage-cache');
 });
+it('shows each provider\'s key limit on its tab when the usage panel is folded: weekly for Claude and Codex, Argon for Antigravity', async () => {
+  const at = new Date(Date.now() + 3600000).toISOString();
+  const usageLimits = vi.fn(async () => ({
+    claude:{ status:'ok', windows:[{ label:'5h', kind:'five-hour', usedPercent:70, resetsAt:at }, { label:'Weekly limit', kind:'weekly', usedPercent:59, resetsAt:at }, { label:'Opus', kind:'weekly', usedPercent:90, resetsAt:at }] },
+    antigravity:{ status:'ok', windows:[{ label:'Weekly', kind:'weekly', usedPercent:3, resetsAt:at }, { label:'Argon', kind:'weekly', usedPercent:96, resetsAt:at }] },
+  }) as any);
+  localStorage.setItem('bb-plugin-answers:page:usage-folded', 'true');
+  try {
+    const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
+    await slot.findByRole('button', { name:'Expand usage' });
+    await waitFor(() => expect(Array.from(document.querySelectorAll<HTMLElement>('[data-key-limit]'), node => [node.textContent, node.className.includes('text-destructive')])).toEqual([['59%', false], ['96%', true]]));
+    expect(slot.queryByRole('button', { name:'All' })).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name:'Expand usage' }));
+    expect(document.querySelectorAll('[data-key-limit]')).toHaveLength(0);
+  } finally { localStorage.removeItem('bb-plugin-answers:page:usage-folded'); localStorage.removeItem('bb-plugin-answers:page:usage-cache'); }
+});
 it('spins the usage refresh icon until a manual refresh lands', async () => {
   let land: (value: unknown) => void = () => {};
   const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:10, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } }));

@@ -44,6 +44,9 @@ export function useBbSidebarCollapsed() {
 export const left = (at: string, now = Date.now()) => { const m = Math.max(0, Math.floor((Date.parse(at) - now) / 60000)), d = Math.floor(m / 1440), h = Math.floor(m % 1440 / 60); return d ? (h ? `${d}d ${h}h` : `${d}d`) : h ? (m % 60 ? `${h}h ${m % 60}m` : `${h}h`) : `${m}m`; };
 // bb names limit windows by period: 'Weekly limit' reads 7d, a model's weekly window reads '7d · Fable'.
 const PERIOD: Record<string, string> = { weekly: '7d', 'five-hour': '5h', daily: '1d' };
+// The one limit a folded panel shows per provider: Antigravity's Argon window, else the plain weekly one (Claude, Codex).
+export const keyWindow = (windows: Window[]) => windows.find(w => /argon/i.test(w.label)) ?? windows.find(w => w.kind === 'weekly' && windowLabel(w) === '7d') ?? windows.find(w => w.kind === 'weekly');
+const heat = (percent: number) => percent >= 95 ? 'text-destructive' : percent >= 80 ? 'text-warning' : '';
 export const windowLabel = (w: Window) => { const label = w.label.replace(/\u2063/g, '').trim(), period = w.kind ? PERIOD[w.kind] : undefined; return !period || label.startsWith(period) ? label : /limit/i.test(label) ? period : `${period} · ${label}`; };
 
 // Limit windows that reset (local models have none). The cached value paints immediately when revealed.
@@ -131,8 +134,11 @@ function UsageSummary({ usage, reload, reloading = false }: { usage: Record<stri
   return <div className="px-2 pt-2"><div aria-label="Usage" className="overflow-hidden rounded-lg border border-sidebar-border bg-sidebar-accent/50"><div className="flex max-h-80 flex-col">
     <div className="flex h-9 min-w-0 shrink-0 items-center gap-1 border-b border-sidebar-border px-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-        <button type="button" aria-pressed={tab === 'all'} className={`${tabClass} px-2 ${tab === 'all' ? 'bg-sidebar-accent text-sidebar-foreground' : 'text-muted-foreground'}`} onClick={() => setTab('all')}><span className="text-2xs font-medium">All</span></button>
-        {all.map(({ id }) => { const info = providers.find(p => p.id === id); return <button key={id} type="button" aria-pressed={tab === id} aria-label={info?.displayName ?? id} title={info?.displayName ?? id} className={`${tabClass} group/tab w-7 ${tab === id ? 'bg-sidebar-accent text-sidebar-foreground' : ''}`} onClick={() => setTab(id)}><ProviderIcon providerKind="agent" provider={mono(id, info)} className={`size-3.5 ${tab === id ? '' : 'opacity-60 group-hover/tab:opacity-100'}`} aria-hidden /></button>; })}
+        {/* Folded, the room goes to the providers' limits; All only picks what the open panel lists. */}
+        {!folded && <button type="button" aria-pressed={tab === 'all'} className={`${tabClass} px-2 ${tab === 'all' ? 'bg-sidebar-accent text-sidebar-foreground' : 'text-muted-foreground'}`} onClick={() => setTab('all')}><span className="text-2xs font-medium">All</span></button>}
+        {/* Folded, each provider's tab carries its key limit (see keyWindow), so the panel still tells how much is left. */}
+        {all.map(({ id, p, windows }) => { const info = providers.find(x => x.id === id), name = info?.displayName ?? id, key = folded ? keyWindow(windows) : undefined, percent = key ? Math.round(key.usedPercent) : 0;
+          return <button key={id} type="button" aria-pressed={tab === id} aria-label={name} title={key ? `${name} · ${windowLabel(key)}: ${percent}%, resets in ${left(key.resetsAt!)}${p.stale ? ' · may be out of date' : ''}` : name} className={`${tabClass} group/tab ${key ? 'gap-1 px-1.5' : 'w-7'} ${tab === id ? 'bg-sidebar-accent text-sidebar-foreground' : ''}`} onClick={() => setTab(id)}><ProviderIcon providerKind="agent" provider={mono(id, info)} className={`size-3.5 ${tab === id ? '' : 'opacity-60 group-hover/tab:opacity-100'}`} aria-hidden />{key && <span data-key-limit className={`text-2xs tabular-nums ${heat(percent) || (tab === id ? 'text-sidebar-foreground' : 'text-muted-foreground')} ${p.stale ? 'opacity-60' : ''}`}>{percent}%</span>}</button>; })}
       </div>
       <button type="button" aria-label="Refresh usage" aria-busy={reloading} disabled={reloading} className={iconButton} onClick={reload}><Icon name="RotateCcw" aria-hidden className={`size-3.5 ${reloading ? 'animate-spin' : ''}`} /></button>
       <button type="button" aria-label={folded ? 'Expand usage' : 'Collapse usage'} aria-expanded={!folded} className={iconButton} onClick={() => setFolded(!folded)}><Icon name="ChevronDown" aria-hidden className={`size-4 transition-transform ${folded ? 'rotate-180' : ''}`} /></button>
