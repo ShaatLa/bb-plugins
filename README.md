@@ -4,15 +4,15 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
-| **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
-| **Local models provider** | Local llama.cpp (OpenAI-compatible) models through the installed Codex CLI, with BB tools, a context indicator and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
-| **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
-| **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
-| **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Agent Spawn Gate** | Project-specific one-use admissions for agent and CLI starts; enforcement off by default. | `agent-spawn-gate` | [README](plugins/agent-spawn-gate/README.md) |
 | **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
+| **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
+| **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
+| **Local models provider** | Local llama.cpp (OpenAI-compatible) models through the installed Codex CLI, with BB tools, a context indicator and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
+| **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Tokenomos** | Token usage and API-equivalent cost across Claude Code, Codex, local-model and Antigravity threads: four ranges, project filter, token mix, hourly heatmap, compaction and local-model savings estimates, top threads, and a watchlist of large live contexts. | `tokenomos` | [README](plugins/tokenomos/README.md) |
+| **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
 
 The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
@@ -36,11 +36,11 @@ BB supplies its own npm/Node tooling for Git installations. You do **not** need 
 Install the plugins you need:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
 ```
 
@@ -77,6 +77,24 @@ If a plugin is already installed, check its source before changing installation 
 
 ## Plugins
 
+### Answers
+
+Open **Answers** in BB's navigation sidebar; its badge counts unread answers and open questions for you. The plugin pairs each message you send in a thread with the final answer of that turn, so answers do not get lost among agent output.
+
+- **Inbox**: conversations on the left, grouped by project (drag to reorder) with a resizable column, running-thread indicators and BB's thread context menu; the selected thread's history on the right opens at the first unread message.
+- A composer like BB's: voice input, attachments, scheduled sends, drafts, steering an active turn, and BB's queue card for queued messages (edit, reschedule, reorder, send now, delete). Project, branch and context usage sit under the composer.
+- **Awaiting answer**, **Asked of you**, **Saved** and **History** views with search, a project filter and **Mark all read** with undo.
+- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Answers**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
+- Agent tools: `answers_defer` and `answers_list`/`answers_resolve` link a delayed answer to its question; `answers_ask` asks you a question, optionally with choices and a recommendation.
+- An optional provider usage summary under the conversation list, and notifications for questions asked of you (needs the Push Notifications plugin) with quiet hours.
+
+```sh
+bb answers list --view waiting
+bb answers digest --since 24h
+```
+
+[Interface, limits and settings →](plugins/answers/README.md)
+
 ### Antigravity provider
 
 Select **Antigravity provider** in BB's provider picker. The plugin uses the `agy` executable and login on the selected machine; it does not install another CLI or copy credentials.
@@ -96,6 +114,22 @@ bb antigravity diagnostics --host <machine-id>
 ```
 
 [Setup, permissions and limitations →](plugins/provider-antigravity/README.md)
+
+### CI Dashboard
+
+Open **CI Dashboard** in BB's navigation sidebar. Agents can use `ci_dashboard_metrics` for read-only CI summaries, timings and health signals; see the plugin documentation for cached/fresh query examples. Repositories are discovered from BB projects' GitHub remotes; add more in plugin settings or disable automatic discovery.
+
+- Deployment frequency, created/open PRs, PRs with no submitted reviews, CI pass rates/outcomes, default-branch commits and added/deleted lines.
+- Deployment and CI charts with clickable interval statistics, rolling presets and custom inclusive UTC date ranges.
+- Latest production deployment, with status and links to GitHub.
+- Automatic refresh every five minutes by default, a manual Refresh action, persisted snapshots and cached histories for responsive range switching.
+- Large CI histories split into smaller time windows; incomplete or unavailable data is identified rather than shown as a complete result.
+
+CI pass rates exclude cancelled and skipped runs; outcome counts still show them. Exact metric definitions, authentication fallbacks, cache coverage and pagination limits are documented in the plugin README.
+
+An optional **Deploy to production** action appears on the production card when Settings → Plugins → CI Dashboard names a production repository and workflow file (blank by default). After confirmation it dispatches that workflow on the configured ref; this needs GitHub Actions write access for that repository. Job-level CI signals (runner pool stalls, runner losses, reruns, flaky jobs, network/tool failures) appear in the CI health card and through `ci_dashboard_metrics` views.
+
+[Configuration, metric definitions and deployment behavior →](plugins/ci-dashboard/README.md)
 
 ### Local models provider
 
@@ -132,40 +166,6 @@ Exports do not commit or push Git changes; scheduled synchronization is a separa
 
 [Setup, CLI reference, archive behavior and migration →](plugins/work-board/README.md)
 
-### CI Dashboard
-
-Open **CI Dashboard** in BB's navigation sidebar. Agents can use `ci_dashboard_metrics` for read-only CI summaries, timings and health signals; see the plugin documentation for cached/fresh query examples. Repositories are discovered from BB projects' GitHub remotes; add more in plugin settings or disable automatic discovery.
-
-- Deployment frequency, created/open PRs, PRs with no submitted reviews, CI pass rates/outcomes, default-branch commits and added/deleted lines.
-- Deployment and CI charts with clickable interval statistics, rolling presets and custom inclusive UTC date ranges.
-- Latest production deployment, with status and links to GitHub.
-- Automatic refresh every five minutes by default, a manual Refresh action, persisted snapshots and cached histories for responsive range switching.
-- Large CI histories split into smaller time windows; incomplete or unavailable data is identified rather than shown as a complete result.
-
-CI pass rates exclude cancelled and skipped runs; outcome counts still show them. Exact metric definitions, authentication fallbacks, cache coverage and pagination limits are documented in the plugin README.
-
-An optional **Deploy to production** action appears on the production card when Settings → Plugins → CI Dashboard names a production repository and workflow file (blank by default). After confirmation it dispatches that workflow on the configured ref; this needs GitHub Actions write access for that repository. Job-level CI signals (runner pool stalls, runner losses, reruns, flaky jobs, network/tool failures) appear in the CI health card and through `ci_dashboard_metrics` views.
-
-[Configuration, metric definitions and deployment behavior →](plugins/ci-dashboard/README.md)
-
-### Answers
-
-Open **Answers** in BB's navigation sidebar; its badge counts unread answers and open questions for you. The plugin pairs each message you send in a thread with the final answer of that turn, so answers do not get lost among agent output.
-
-- **Inbox**: conversations on the left, grouped by project (drag to reorder) with a resizable column, running-thread indicators and BB's thread context menu; the selected thread's history on the right opens at the first unread message.
-- A composer like BB's: voice input, attachments, scheduled sends, drafts, steering an active turn, and BB's queue card for queued messages (edit, reschedule, reorder, send now, delete). Project, branch and context usage sit under the composer.
-- **Awaiting answer**, **Asked of you**, **Saved** and **History** views with search, a project filter and **Mark all read** with undo.
-- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Answers**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
-- Agent tools: `answers_defer` and `answers_list`/`answers_resolve` link a delayed answer to its question; `answers_ask` asks you a question, optionally with choices and a recommendation.
-- An optional provider usage summary under the conversation list, and notifications for questions asked of you (needs the Push Notifications plugin) with quiet hours.
-
-```sh
-bb answers list --view waiting
-bb answers digest --since 24h
-```
-
-[Interface, limits and settings →](plugins/answers/README.md)
-
 ## Migrate built-in Tasks data
 
 For built-in Tasks only, do this **before installing Work Board for the first time**. Existing Agent Board or Tasks Plus users must use `--source-plugin agent-board` or `--source-plugin tasks-plus` and the identity migration guide above. Both `tasks` and `work-board` must be disabled, and the destination data directory must not already exist. An existing Work Board installation should keep its current data; this migration is not an update command.
@@ -190,12 +190,12 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 
 | Directory | Install development dependencies | Additional requirements/checks |
 | --- | --- | --- |
+| `plugins/answers` | `npm ci` | None; tests use an in-memory SQLite database. |
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
+| `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
+| `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |
 | `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; `codex` and a running local model server for live checks. |
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
-| `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
-| `plugins/answers` | `npm ci` | None; tests use an in-memory SQLite database. |
-| `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |
 
 From the chosen plugin directory, after installing its dependencies:
 
