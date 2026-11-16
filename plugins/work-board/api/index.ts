@@ -561,16 +561,13 @@ export async function reportToParent(
 const MAX_CHILDREN = 200;
 
 /** A parent's open child threads with the cards each one is linked to and their state notes. */
-export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, parentThreadId: string) {
+export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, parentThreadId: string, includeFinished = false) {
   const threads = await bb.sdk.threads.list({ parentThreadId, limit: MAX_CHILDREN });
   const children = threads
     .filter((thread) => thread.archivedAt == null)
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((thread) => ({
-      threadId: thread.id,
-      title: thread.title ?? thread.titleFallback ?? null,
-      status: thread.status,
-      cards: store.tasks
+    .map((thread) => {
+      const cards = store.tasks
         .listTaskThreadsByThreadId(thread.id)
         .filter((link) => link.presetName !== "Parent thread")
         .flatMap((link) => {
@@ -578,8 +575,16 @@ export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, paren
           return task && !task.archivedAt
             ? [{ key: task.key, title: task.title, status: task.status, progressNote: task.progressNote, progressUpdatedAt: task.progressUpdatedAt }]
             : [];
-        }),
-    }));
+        });
+      const shown = includeFinished ? cards : cards.filter((card) => !["done", "canceled"].includes(card.status));
+      return {
+        threadId: thread.id,
+        title: thread.title ?? thread.titleFallback ?? null,
+        status: thread.status,
+        cards: shown,
+        hiddenFinishedCards: cards.length - shown.length,
+      };
+    });
   return { parentThreadId, children, truncated: threads.length >= MAX_CHILDREN };
 }
 

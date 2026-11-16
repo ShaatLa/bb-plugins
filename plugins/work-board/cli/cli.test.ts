@@ -280,16 +280,22 @@ describe("bb work-board CLI", () => {
     try {
       expect((await harness.runCli(["attach", "KID-1", "--thread", "thr_a"])).stderr).toBe("");
       await harness.runCli(["update", "KID-1", "--progress", "Tests green; next: PR"], { threadId: "thr_a" });
+      expect((await harness.runCli(["attach", "KID-2", "--thread", "thr_a"])).stderr).toBe("");
+      await harness.runCli(["update", "KID-2", "--status", "done"]);
       const shown = JSON.parse(stdout(await harness.runCli(["children", "--json"], { threadId: "thr_parent" })));
       expect(shown).toMatchObject({ parentThreadId: "thr_parent", truncated: false, children: [
         { threadId: "thr_a", cards: [{ key: "KID-1", progressNote: "Tests green; next: PR", progressUpdatedAt: expect.any(String) }] },
         { threadId: "thr_b", cards: [] },
       ] });
       expect(shown.children).toHaveLength(2);
+      expect(shown.children[0]).toMatchObject({ cards: [{ key: "KID-1" }], hiddenFinishedCards: 1 });
+      const all = JSON.parse(stdout(await harness.runCli(["children", "--all", "--json"], { threadId: "thr_parent" })));
+      expect(all.children[0]).toMatchObject({ cards: [{ key: "KID-1" }, { key: "KID-2", status: "done" }], hiddenFinishedCards: 0 });
       const text = stdout(await harness.runCli(["children", "--thread", "thr_parent"]));
       expect(text).toContain("KID-1");
       expect(text).toContain("Tests green; next: PR");
       expect(text).toContain("(no linked cards)");
+      expect(text).toContain("+1 Done/Canceled (--all)");
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
   });
 

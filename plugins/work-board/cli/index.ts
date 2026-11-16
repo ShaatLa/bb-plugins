@@ -3415,6 +3415,10 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               placeholder: "thr_...",
               description: "Parent thread to inspect; defaults to the invoking thread",
             },
+            all: {
+              type: "boolean",
+              description: "Include Done and Canceled cards, hidden by default",
+            },
             json: JSON_OPTION,
           },
           run(input, ctx) {
@@ -3422,14 +3426,15 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               const parent = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
               if (!parent)
                 throw new CliError("children needs --thread outside a bb thread", { code: "missing_thread" });
-              const result = await childrenCards(bb, store, parent);
+              const result = await childrenCards(bb, store, parent, input.options.all ?? false);
               if (input.options.json) return JSON.stringify(result);
               if (!result.children.length) return `No open child threads under ${parent}`;
               return result.children.map((child) => [
                 `${child.threadId}  ${child.status}  ${child.title ?? ""}`,
                 ...(child.cards.length ? child.cards.map((card) =>
                   `  ${card.key}  ${card.status}  ${card.progressNote ? `state ${card.progressUpdatedAt}: ${oneLine(card.progressNote).slice(0, 200)}` : "no state note"}`)
-                  : ["  (no linked cards)"]),
+                  : [child.hiddenFinishedCards ? "  (no open cards)" : "  (no linked cards)"]),
+                ...(child.hiddenFinishedCards ? [`  +${child.hiddenFinishedCards} Done/Canceled (--all)`] : []),
               ].join("\n")).join("\n") + (result.truncated ? "\nOnly the first 200 children are shown." : "") + "\nFull notes: add --json";
             });
           },
