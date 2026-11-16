@@ -42,7 +42,7 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // Messenger-style reply: when other messages arrived between a question and its late answer, the question stays at its
 // time and the answer becomes its own message at answer time. groups run oldest first; more: earlier pages exist, so a
 // split question older than the oldest loaded item waits there (orphans, carried to the earlier page; carried: from a newer one).
-export function conversation(groups: Item[][], more: boolean, carried: Item[][] = []) {
+export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], newest = true) {
   const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
@@ -61,6 +61,9 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   }
   const entries: Entry[] = [];
   for (const [, entry] of placed.sort((a, b) => a[0] - b[0])) { const prev = entries.at(-1); if (prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
+  // The chat's latest message never hides in a collapsed group: a final report after a run of updates stays in full view.
+  const tail = entries.at(-1);
+  if (newest && tail?.updates) entries.splice(-1, 1, tail.group.length > 2 ? { group: tail.group.slice(0, -1), updates: true } : { group: tail.group.slice(0, -1) }, { group: tail.group.slice(-1) });
   return { entries, orphans };
 }
 const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };

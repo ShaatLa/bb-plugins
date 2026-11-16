@@ -110,9 +110,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   } else if (e.type === 'turn/completed' && turn) {
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
-    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null}|undefined;
-    // Only an update that asks the owner something is pushed; the rest collapse into a quiet group.
-    const asks = !!update?.answer && asksOwner(update.answer);
+    const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number}|undefined;
+    // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
+    const asks = !!update?.answer && (!!update.report || asksOwner(update.answer));
     const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);
     // The message shown at acceptance takes the turn's reply; with nothing to report it stays a read caption.
     if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);

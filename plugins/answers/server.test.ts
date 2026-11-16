@@ -119,6 +119,8 @@ describe('server',()=>{
   db.prepare("UPDATE threads_state SET active_turn_id='turn' WHERE thread_id='t'").run();
   await call('answers_resolve',{id:'ans_mine'});
   expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_mine'").get()).toEqual({resolve_turn_id:'turn'});
+  await call('answers_report',{}); await call('answers_report',{});
+  expect(db.prepare("SELECT turn_id,report FROM turn_updates WHERE thread_id='t'").all()).toEqual([{turn_id:'turn',report:1}]);
   const list=await call('answers_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
   const id=await call('answers_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});

@@ -107,4 +107,6 @@ END;`,
   `UPDATE items SET status='answered',answer=interim,answer_seq=interim_seq,answer_source='turn',answered_at=coalesce(moved_at,updated_at),read_at=coalesce(moved_at,updated_at),interim=NULL,interim_seq=NULL,wait_children=NULL,wait_windows=NULL
 WHERE kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND interim IS NOT NULL AND dismissed_at IS NULL;
 UPDATE items SET wait_children=NULL,wait_windows=NULL WHERE wait_children IS NOT NULL;`,
+  // turn_updates.report: the agent called answers_report, so the turn's reply is a report for the owner, not a quiet update.
+  `ALTER TABLE turn_updates ADD COLUMN report INTEGER NOT NULL DEFAULT 0;`,
 ];

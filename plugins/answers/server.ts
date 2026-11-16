@@ -13,11 +13,12 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn; the reply arrives as a user message quoting it. Options: 1–6 unique, ≤200 chars, optional recommended + reason. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
+  report: z.object({}).strict(),
   ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional()}).strict()
     .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
@@ -414,7 +415,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -430,6 +431,12 @@ export default function plugin(bb: BbPluginApi) {
             commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,recommended,recommend_reason,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,ask.question,JSON.stringify(ask.options ?? null),ask.recommended ?? null,ask.reason ?? null,now,now);
             onAttention();
             return id;
+          }
+          if (method==='report') {
+            const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null} | undefined;
+            if (!state?.active_turn_id) throw new Error('no active turn');
+            commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,report) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET report=1',ctx.threadId,state.active_turn_id,now);
+            return 'This turn’s final message will reach the user as a report.';
           }
           const params=p as {id?:string;note?:string};
           const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;

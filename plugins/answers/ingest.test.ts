@@ -13,11 +13,11 @@ const message = (seq = 4, text = 'answer', turn = 'x', extra: object = {}) => ev
 const done = (seq = 5, status = 'completed', turn = 'x') => ev(seq,'turn/completed',turn,{status});
 const rows = (db: Database.Database) => db.prepare('SELECT * FROM items ORDER BY question_seq').all() as any[];
 const row = (db: Database.Database) => rows(db)[0];
-it('the last migration gives questions the removed auto-defer held back their reply as the answer', () => {
- const db = new Database(':memory:'); databases.push(db); migrations.slice(0,-1).forEach(m => db.exec(m));
+it('the auto-defer removal migration gives questions the removed auto-defer held back their reply as the answer', () => {
+ const db = new Database(':memory:'); databases.push(db); migrations.slice(0,-2).forEach(m => db.exec(m));
  const add = (id:string, extra:string) => db.prepare(`INSERT INTO items(id,kind,thread_id,status,question,interim,interim_seq,created_at,updated_at${extra ? ','+extra.split('=')[0] : ''}) VALUES (?,'mine','t','deferred','Q','Reply',4,1,5${extra ? ','+extra.split('=')[1] : ''})`).run(id);
  add('auto',"wait_children='[\"k\"]'"); add('agent','');
- db.exec(migrations.at(-1)!);
+ db.exec(migrations.at(-2)!);
  expect(db.prepare("SELECT id,status,answer,answer_seq,answer_source,interim,wait_children,read_at FROM items ORDER BY id").all()).toEqual([
   {id:'agent',status:'deferred',answer:null,answer_seq:null,answer_source:null,interim:'Reply',wait_children:null,read_at:null},
   {id:'auto',status:'answered',answer:'Reply',answer_seq:4,answer_source:'turn',interim:null,wait_children:null,read_at:5},
@@ -130,6 +130,12 @@ describe('updates',()=>{
   expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',question:'[bb message from thread:thr_s] hi',answer:null,trigger_kind:'agent',trigger_source:'thr_s',created_at:100,read_at:100})]);
   applyEvents(db,'t',[message(4,'half'),done(5,'interrupted')],'p',200,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:null,read_at:100})]);
+ });
+ it('turns the final message of a turn the agent marked with answers_report into an unread, pushed report',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept(),message(4,'Task done.')],'p',100,true,true);
+  db.prepare('UPDATE turn_updates SET report=1').run();
+  applyEvents(db,'t',[done(5)],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({answer:'Task done.',asks:1,read_at:null,notify_state:1})]);
  });
  it('marks an update that asks the owner, and pushes only that one when live',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'a',system),start(2,'x'),accept(3,'a','x'),message(4,'Merge it now?','x'),done(5,'completed','x'),req(6,'b',system),start(7,'y'),accept(8,'b','y'),message(9,'Merged.','y'),done(10,'completed','y')],'p',100,true,true);
