@@ -513,6 +513,18 @@ describe('ingestion driver',()=>{
   phase=1; await driver.schedule('t');
   expect(db.prepare('SELECT notify_state FROM items ORDER BY question_seq').all()).toEqual([{notify_state:0},{notify_state:1}]);
  });
+ it('tells the open chat to reread its context ring when bb reports context usage, and only then',async()=>{
+  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
+  const db=host.bb.storage.database(); db.exec(migrations.join("\n")); const onContext=vi.fn();
+  const driver=createDriver(host.bb,db,()=>{},onContext);
+  cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',5,0)").run();
+  let next:any[]=[{seq:6,type:'item/completed',createdAt:1,data:{},scope:{kind:'thread'}}];
+  host.harness.sdk.stub('threads.events.list',async(args:any)=>{ if (args.order!=='asc') return []; const page=next; next=[]; return page; });
+  await driver.schedule('t'); expect(onContext).not.toHaveBeenCalled();
+  next=[{seq:7,type:'thread/contextWindowUsage/updated',createdAt:2,data:{},scope:{kind:'thread'}}];
+  await driver.schedule('t'); expect(onContext).toHaveBeenCalledWith('t');
+ });
  it('backfills descending pages then drains ascending, halving 413 pages at the same cursor',async()=>{
   const {harness,db,driver,invalidate}=driverSetup();
   const calls:any[]=[];
@@ -524,7 +536,8 @@ describe('ingestion driver',()=>{
   });
   await driver.schedule('t');
   expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','100',undefined],['desc','50',undefined],['asc','100','100']]);
-  expect(calls.every(c=>c.types.length===7)).toBe(true);
+  // First sight reads only what ingest needs; catching up also reads context-usage events (they bump the ring's stamp).
+  expect(calls.map(c=>c.types.includes('thread/contextWindowUsage/updated'))).toEqual([false,false,true]);
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
   expect(invalidate).toHaveBeenCalled();

@@ -1,6 +1,6 @@
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
-import { applyEvents, QUIET_SQL, RELEVANT, type Event } from './ingest';
+import { applyEvents, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
 
 const notFound = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
@@ -12,7 +12,8 @@ const oversized = (e: unknown) => {
 };
 type State = { last_seq: number; last_error: string | null; ingested_thread_updated_at: number | null };
 type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'projectId' | 'parentThreadId' | 'updatedAt'>;
-export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void) {
+const CATCH_UP = [...RELEVANT, CONTEXT_EVENT] as const;
+export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string) => void = () => {}) {
   const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
   const scheduled = new Map<string, { dirty: boolean; listed?: Thread; promise: Promise<void> }>();
@@ -49,11 +50,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     const retry = retries.get(id); if (retry?.timer) clearTimeout(retry.timer); retries.delete(id);
     if (hadItems) invalidate();
   }
-  async function page(id: string, cursor: number | undefined, order: 'asc' | 'desc', initial: number) {
+  async function page(id: string, cursor: number | undefined, order: 'asc' | 'desc', initial: number, types: typeof RELEVANT | typeof CATCH_UP = RELEVANT) {
     let size = initial;
     for (;;) {
       try {
-        const events = await bb.sdk.threads.events.list({threadId:id,types:RELEVANT,order,limit:String(size),signal,
+        const events = await bb.sdk.threads.events.list({threadId:id,types,order,limit:String(size),signal,
           ...(cursor === undefined ? {} : order === 'asc' ? {afterSeq:String(cursor)} : {beforeSeq:String(cursor)})});
         return {events, size};
       } catch (e) {
@@ -90,8 +91,9 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
-      const result = await page(id,cursor,'asc',100);
+      const result = await page(id,cursor,'asc',100,CATCH_UP);
       if (signal.aborted) return;
+      if (result.events.some(e => e.type === CONTEXT_EVENT)) onContext(id);
       if (result.events.length) {
         changed = db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions,live.has(id)))() || changed;
         cursor = Math.max(...result.events.map(e=>e.seq));
