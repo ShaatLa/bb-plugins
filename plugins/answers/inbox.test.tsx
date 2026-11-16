@@ -137,6 +137,29 @@ it('reopens a chat the reader left scrolled up at their place, not at a New divi
     await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(300));
   } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
 });
+it('keeps the card a scrolled-up reader is on in place when something above it changes height', async () => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); let cardTop = 100;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) { const top = this.dataset.historyIds === 'ans_two' ? cardTop : 0; return { top, bottom: this.dataset.historyIds === 'ans_two' ? top + 50 : 0, left:0, right:0, width:0, height:0 } as DOMRect; }),
+  ];
+  try {
+    const items = [{ ...base, id:'ans_two', question:'Second', readAt:1, createdAt:2, answeredAt:2 }, { ...base, readAt:1 }];
+    const { slot, recipients } = setup({ list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Second');
+    const view = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    fireEvent.wheel(view); tops.set(view, 0); fireEvent.scroll(view); // the reader takes over, scrolled up (1500px from the end)
+    await new Promise(resolve => setTimeout(resolve, 0));
+    cardTop = 160; act(() => observers.forEach(run => run())); // a card above grew by 60px
+    expect(tops.get(view)).toBe(60);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
 it('groups consecutive questions with a shared answer', async () => {
   const other = { ...base, id:'ans_two', question:'Question two', questionSeq:3, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };
   const first = { ...base, answer:'Shared answer', turnId:'turn_one', answerSeq:4 };

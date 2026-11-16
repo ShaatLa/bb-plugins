@@ -547,8 +547,10 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     let height = node.clientHeight, width = node.clientWidth, gap = node.scrollHeight - node.scrollTop - height, content = node.scrollHeight;
     // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
     // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
-    let anchor: { el: HTMLElement; offset: number } | null = null;
-    const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, offset: el.getBoundingClientRect().top - view } : null; };
+    // Kept by its first id too: a card re-rendered under the same id (an answer split from its question) is found again.
+    let anchor: { el: HTMLElement; id: string; offset: number } | null = null;
+    const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, id: el.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view } : null; };
+    const anchored = () => anchor && (anchor.el.isConnected ? anchor.el : node.querySelector<HTMLElement>(`[aria-label=History] [data-history-ids~="${CSS.escape(anchor.id)}"]`));
     const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; remember(); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
     // a reader who was at the bottom stays there.
@@ -561,7 +563,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       settle = undefined; remember(); for (const card of cards()) card.style.contentVisibility = card.style.containIntrinsicSize = '';
       resizedAt.current = Date.now(); // cards laid out again settle a moment later (embeds report their height); keep the anchor that long
       if (pin.current) return;
-      if (gap > AT_BOTTOM && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+      const el = gap > AT_BOTTOM ? anchored() : null;
+      if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
       else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight;
     };
     // Hidden (display: none while bb shows another page) every size reads 0 and the browser may drop the scroll offset, so
@@ -570,14 +573,17 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     const observer = new ResizeObserver(() => {
       const next = node.clientHeight;
       if (!next && !node.clientWidth) { hidden = true; return; }
-      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { if (gap > AT_BOTTOM && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset; else if (gap <= AT_BOTTOM) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
+      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
       if (node.clientWidth !== width) {
         width = node.clientWidth; resizedAt.current = Date.now();
         if (!settle) { for (const card of cards()) { const style = getComputedStyle(card); card.style.containIntrinsicSize = `auto ${card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)}px`; card.style.contentVisibility = 'auto'; } }
         clearTimeout(settle); settle = setTimeout(settled, 500);
       }
+      // A reader scrolled up keeps the card at the top of the view where it was, whatever changed height above it (a robot
+      // gone, a work log folded, an update joining its group, a rewrap); growth below it moves nothing.
       if (!pin.current) {
-        if (gap > AT_BOTTOM && Date.now() - resizedAt.current < 500 && anchor?.el.isConnected) node.scrollTop += anchor.el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+        const el = gap > AT_BOTTOM ? anchored() : null;
+        if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
         else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next, content, covered(node));
       }
       height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
