@@ -14,7 +14,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **Tokenomos** | Token usage and API-equivalent cost across Claude Code, Codex, local-model and Antigravity threads: four ranges, project filter, token mix, hourly heatmap, compaction and local-model savings estimates, top threads, and a watchlist of large live contexts. | `tokenomos` | [README](plugins/tokenomos/README.md) |
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
 
-The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
+The collection index is [`.bb/plugins.json`](.bb/plugins.json). Each entry points to a separate package under [`plugins/`](plugins/); installing one does not install the others. Each package has its own plugin ID and data directory. Work Board 0.11.0 replaces the former Agent Board and Tasks Plus identities; existing users must complete its [migration](plugins/work-board/README.md#migrating-from-agent-board--tasks-plus-to-work-board-0110) before switching. CI Dashboard uses the `ci-dashboard` collection entry and retains the internal `delivery-dashboard` plugin ID to preserve settings, secrets, cached history and existing links. The old collection entry remains an update/install alias.
 
 ## Requirements
 
@@ -148,7 +148,7 @@ bb plugin config local-models set defaultModel '<model-id>'
 
 ### Work Board
 
-Existing Agent Board and Tasks Plus users: follow the plugin’s [identity migration guide](plugins/work-board/README.md#переход-с-agent-board--tasks-plus-на-work-board-0110). Disable the installed predecessor (`agent-board` or `tasks-plus`), copy its database/blobs and restore settings; changing the install command alone does not migrate data. Update automations and agent roles from `bb agent-board` / `bb tasks` to `bb work-board` before removing the old command.
+Existing Agent Board and Tasks Plus users: follow the plugin’s [identity migration guide](plugins/work-board/README.md#migrating-from-agent-board--tasks-plus-to-work-board-0110). Disable the installed predecessor (`agent-board` or `tasks-plus`), copy its database/blobs and restore settings; changing the install command alone does not migrate data. Update automations and agent roles from `bb agent-board` / `bb tasks` to `bb work-board` before removing the old command.
 
 A replacement for BB's built-in Tasks, using the **`bb work-board` CLI** and adding:
 
@@ -182,7 +182,7 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin wo
 
 The helper copies the SQLite database through its backup API, preserves record IDs and attachment files, and rewrites attachment URLs in copied descriptions/comments for `work-board`. The original built-in data remains in place. For another BB data location, pass `--data-dir /path/to/bb-data`.
 
-Old built-in chat mentions and UI view preferences are not migrated. Old chat attachment links may stop opening while built-in Tasks is disabled. Switching back to built-in Tasks does not copy new Work Board changes back automatically. See the [full migration guide](plugins/work-board/README.md#переключение-со-встроенного-плагина).
+Old built-in chat mentions and UI view preferences are not migrated. Old chat attachment links may stop opening while built-in Tasks is disabled. Switching back to built-in Tasks does not copy new Work Board changes back automatically. See the [full migration guide](plugins/work-board/README.md#switching-from-the-built-in-plugin).
 
 ## Local development
 

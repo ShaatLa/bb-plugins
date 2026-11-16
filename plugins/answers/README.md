@@ -1,84 +1,99 @@
 # Answers
 
-Answers решает простую проблему: ответы на ваши вопросы теряются среди сообщений агентов в активных тредах.
+English | [Русский](README.ru.md)
 
-Плагин отслеживает ваши сообщения во всех тредах, кроме запущенных агентами (у них есть родительский тред), и связывает их с финальным ответом успешно завершившегося хода; небольшие вопросы агентов к вам; сообщения, которые вы сохранили вручную.
+Answers solves a simple problem: answers to your questions get lost among agent messages in active threads.
 
-Ход, который не отвечал на ваше сообщение (завершился дочерний тред, написал другой тред или плагин), тоже попадает в разговор как **обновление**: финальное сообщение агента без вашего пузыря, с подписью об источнике («After … finished», «Message from …» или id плагина). Идущие подряд обновления сворачиваются в одну группу «N background updates» с превью последнего (раскрывается по клику), не имеют статуса прочитанности (не попадают в счётчики) и не уходят в push; обновление, где агент, похоже, о чём-то спрашивает (`?` в конце фразы вне кода, ссылок и цитат), остаётся отдельным сообщением, считается непрочитанным и уходит в push при `notify: questions` и `all`; так же ведёт себя отчёт, который агент пометил через `answers_report`. Когда тред и его подсессии затихли, самое свежее сообщение чата в группу не сворачивается: итог после серии обновлений виден целиком; пока работа идёт, свежие обновления сворачиваются, как остальные.
+The plugin tracks your messages in all threads except those initiated by agents (which have a parent thread), linking them to the final response of a successfully completed run, agent queries directed at you, and messages you manually saved.
 
-bb записывает `bb thread tell`, которым скрипт будит собственный тред, как сообщение пользователя. Поэтому такие сообщения должны начинаться с метки в квадратных скобках, например `[merge-queue watcher] …`: Answers не считает их вопросами пользователя, а ход, который они запустили, показывает как обновление с этой меткой. Ссылка `[ANV-12](…)` и `[x]` в начале сообщения меткой не считаются.
+A run that did not respond to your message (a child thread finished, another thread received a message, or a plugin triggered an action) also appears in the conversation as an **update**: the agent's final message without your bubble, annotated with a source label ("After … finished", "Message from …", or plugin ID). Consecutive updates are collapsed into a single "N background updates" group showing a preview of the last one (expandable by clicking). They do not have a read status (are excluded from notification counters) and are not sent via push. If an update contains what appears to be a question (`?` at the end of a phrase outside code blocks, links, or quotes), it remains a separate message, is marked as unread, and triggers a push when `notify: questions` or `all` is configured. Reports marked by the agent via `answers_report` behave identically. Once a thread and its sub-sessions go quiet, the most recent message in the group is not collapsed: the full result after a series of updates remains visible. While work is in progress, new updates are collapsed like the rest.
 
-## Интерфейс
+BB logs `bb thread tell` (used by a script to wake its own thread) as a user message. Therefore, such messages must begin with a square-bracket label, e.g., `[merge-queue watcher] …`: Answers does not treat them as user questions, and the run they trigger is displayed as an update bearing that label. Links like `[ANV-12](…)` and `[x]` at the start of a message do not count as labels.
 
-В панели навигации **Answers** показывает счётчик непрочитанных ответов и открытых вопросов к вам. Доступны представления, поиск, фильтр проекта и **Mark all read**. Карточки позволяют открыть сообщение в чате, отметить прочитанным, закрепить, закрыть через **Done** или ответить. В треде есть вкладка **My questions**, а в меню сообщения — **Save to Answers**.
+## Interface
 
-## Инструменты агента
+The **Answers** navigation panel shows a count of unread replies and open questions addressed to you. Views, search, project filter, and **Mark all read** are available. Cards let you open a message in chat, mark it as read, pin it, close it via **Done**, or reply. Each thread includes a **My questions** tab, and the message menu features **Save to Answers**.
 
-- `answers_defer` — сообщить, что ответ будет в последующем ходе, например после делегирования.
-- `answers_list` и `answers_resolve` — найти отложенный вопрос и связать его с ответом текущего хода. Финальный ответ нужно включить в финальное сообщение этого хода.
-- `answers_report` — показать финальное сообщение хода в истории владельца как отчёт, а не фоновое обновление. Для итога работы, когда ход начат не владельцем (другим агентом, подсессией, скриптом) и его вопросов не ждёт ни один.
-- `answers_ask` — задать пользователю вопрос, в том числе блокирующее решение. Ответ приходит в тред новым сообщением с цитатой вопроса. `options` принимает 1–6 разных вариантов до 200 символов, `recommended` выделяет один из них, `reason` объясняет выбор. Решения по конкретной задаче Work Board ведутся на её карточке.
-- Вопрос, который агент задал пользователю просто текстом в финальном ответе, тоже попадает в Questions — с пометкой **Asked in chat**, в счётчике и push, как вопрос из `answers_ask`. Это последнее предложение со знаком «?» вне кода, ссылок, цитат и таблиц, если в нём не назван канал («на карточке», «в Answers») и если за этот ход агент не вызвал ни `answers_ask`, ни `bb work-board question add`. Короткий вопрос («Хотите?») берётся вместе с предыдущим предложением. Ответ уходит в тред с цитатой вопроса; риторический вопрос закрывается кнопкой **Not a question**.
+## Agent tools
 
-## CLI и установка
+- `answers_defer` — indicate that a response will be provided in a subsequent turn, for example after delegation.
+- `answers_list` and `answers_resolve` — find a deferred question and associate it with the current turn's response. The final answer must be included in the turn's final message.
+- `answers_report` — display the turn's final message in the owner's history as a report rather than a background update. Use this for wrap-up messages when the turn was initiated by someone other than the owner (another agent, sub-session, or script) and no one is expecting further questions.
+- `answers_ask` — prompt the user with a question, including blocking decisions. The response arrives in the thread as a new message quoting the question. `options` accepts 1–6 distinct choices of up to 200 characters each, `recommended` highlights one, and `reason` explains the choice. Decisions regarding a specific Work Board task are tracked on its card.
+- A question the agent asks the user as plain text in its final reply also lands in Questions, marked **Asked in chat**, counted in the badge and push like an `answers_ask` question. It is the last sentence ending in "?" outside code, links, quotes and tables, unless it names a channel ("on the card", "in Answers") or the agent called `answers_ask` or `bb work-board question add` in that turn. A short question ("Want it?") is taken together with the previous sentence. The reply goes to the thread quoting the question; a rhetorical question is closed with **Not a question**.
+
+## CLI and Installation
 
 ```sh
 bb answers list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
 bb answers read <ids...> | --all [--thread ID]
 bb answers status
-bb answers digest [--since 24h|7d|ISO-дата] [--json]
+bb answers digest [--since 24h|7d|ISO-date] [--json]
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
 ```
 
-## Ограничения
+## Limitations
 
-- Сообщения плагинов (CI Dashboard, Slots и т. п.) и всё, что приходит в треды, запущенные агентами, вопросами не считается: там «пользовательские» сообщения пишут агенты и скрипты. Вопросы агентов из таких тредов через `answers_ask` попадают в «For me».
+- Plugin messages (CI Dashboard, Slots, etc.) and anything sent to threads initiated by agents are not treated as questions, since the "user" messages in those threads are generated by agents and scripts. Questions from agents in these threads via `answers_ask` are routed to "For me".
+- Multiple questions asked in a single turn share the same response for that turn.
+- If an agent forgets to call `answers_defer`, a message like "Delegated, I’ll report back later" is treated as a final answer. The **Looks like an interim reply** chip offers **Keep waiting** or **It's the answer**.
+- Currently running threads will receive tools after the next provider session starts.
+- The initial history load covers threads active within the last 48 hours, up to approximately 1,500 relevant events per thread, and a maximum of 1,000 threads.
+- Responses with undetermined delivery status are not automatically resent.
+- Failed question-resolution turns cannot be retried using the **Retry** action.
+- Push events that occur during the initial history load after startup are ignored.
 
-- Несколько вопросов в одном ходе получают общий ответ этого хода.
-- Если агент забыл вызвать `answers_defer`, сообщение вроде «делегировал, доложу позже» считается ответом: чип **Looks like an interim reply** предлагает **Keep waiting** или **It's the answer**.
-- Уже работающие треды получат инструменты после запуска следующей сессии провайдера.
-- Первичная загрузка истории охватывает активные за последние 48 часов треды, до примерно 1500 последних подходящих событий на тред и не более 1000 тредов.
-- Ответ с неопределённой доставкой автоматически не отправляется повторно.
-- Неудавшиеся ходы разрешения вопроса нельзя повторить через **Retry**.
-- Push-события первой загрузки истории после запуска пропускаются.
+## Inbox, quotes and reply pools (0.2)
 
-## Inbox, цитаты и пулы ответов (0.2)
+By default, **Inbox** opens: threads with unread replies and questions directed at you appear on the left, while the history of the selected thread (from oldest to newest) is on the right. If you navigate away from a thread by scrolling up, it reopens in the same spot (newer messages below remain separated by the **New** divider, and there is a **Scroll to latest** option). Otherwise, a thread opens at the first unread message below the **New** divider, or at the very latest message if everything has been read. Like in Telegram, a message is marked as read automatically without a timer: as soon as its end appears on screen or scrolls out of view. Short messages are marked immediately; long ones are marked once you scroll to the bottom. Clicking the selected thread again marks the entire thread as read. The selected thread remains in the list. **Load earlier** fetches older history while preserving your reading position. On narrow screens, **Back** returns you to the thread list. The legacy views **Waiting**, **For me**, **Pinned**, **Saved**, and **All** retain search and project filtering.
 
-По умолчанию открывается **Inbox**: слева треды с непрочитанными ответами и вопросами к вам, справа история выбранного треда от старых сообщений к новым. Тред, из которого вы ушли, прокрутив вверх, открывается там же (новое ниже по-прежнему отмечено разделителем **New**, и есть **Scroll to latest**). Иначе тред открывается на первом непрочитанном сообщении под разделителем **New**, а если всё прочитано — на самом новом. Как в Telegram, сообщение отмечается прочитанным без таймера, как только его конец показался на экране или уехал выше: короткое — сразу, длинное — когда долистаешь до конца. Повторный клик по выбранному треду отмечает прочитанным весь тред. Выбранный тред остаётся в списке. **Load earlier** подгружает историю, сохраняя позицию чтения. На узком экране **Back** возвращает к списку. Старые представления **Waiting**, **For me**, **Pinned**, **Saved**, **All** сохраняют поиск и фильтр проекта.
+In the thread's **My questions** tab, view options are selected via the top-left menu: **Unread** shows new replies in this thread, **Awaiting answer** lists your unanswered questions, **Saved** displays starred and saved replies, and **History** shows all messages with search capability. **Mark all read** is available in Inbox and Unread.
 
-Во вкладке треда **My questions** виды выбираются в меню слева вверху: **Unread** — новые ответы в этом треде, **Awaiting answer** — ваши вопросы без ответа, **Saved** — сохранённые и отмеченные звёздочкой ответы, **History** — всё подряд с поиском. **Mark all read** доступна в Inbox и Unread.
+Card actions only appear where they change the status: **Mark read** for unread items; **Stop waiting** for your unanswered questions (removes them from Awaiting answer); **Won’t reply** for agent questions (removes them from the Questions section and Inbox); **Remove from Saved** for saved messages. All cleared items remain in History.
 
-Действия на карточке показываются только там, где они что-то меняют: **Mark read** — у непрочитанного; **Stop waiting** — у вашего вопроса без ответа (убирает его из Awaiting answer); **Won’t reply** — у вопроса агента (убирает его из раздела Questions и Inbox); **Remove from Saved** — у сохранённого сообщения. Всё убранное остаётся в History.
+Short messages without a question mark (up to 60 characters) that receive a short agent reply (up to 160 characters) are automatically marked as read and don’t appear in the Inbox. Messages containing a “?” are tagged as “Question”.
 
-Короткое сообщение без «?» (до 60 символов), на которое агент ответил коротко (до 160 символов), сразу считается прочитанным и во «Входящие» не попадает. Сообщения с «?» помечены «Question».
+On the Answers page, the top toggle **Chats | Questions | Saved** switches between conversations and a dedicated questions section. (Questions shows a count of pending items; Saved contains messages saved via the Save action, with project search and filtering.) It presents a single stack of all pending questions from every thread, ordered oldest to newest, including blocking **bb** forms (questions and approvals, including child threads) and non-blocking agent questions directed at you.
 
-На странице Answers переключатель **Chats | Questions | Saved** вверху (у Questions — число ждущих вопросов; Saved — сообщения, сохранённые через Save, с поиском и фильтром по проекту) выбирает между разговорами и отдельным разделом вопросов: одна стопка всех ждущих вопросов из всех тредов, от старых к новым, — и блокирующие формы bb (вопросы и одобрения, включая дочерние треды), и неблокирующие вопросы агентов к вам. В каждой карточке — тред, проект, возраст и ссылка **Open thread**; после ответа карточка исчезает. Ответить можно и прямо в открытом чате: над композером треда в bb и в беседе Chats карточка **Questions for you** показывает открытые вопросы агента этого треда (в Chats рядом — и блокирующие формы bb), композер при этом не прячется, а ответ в любом месте закрывает вопрос везде; открытые вопросы агента появляются в истории только после ответа, но входят в число у контакта (сумма по контактам совпадает со значком) и остаются в нём до ответа, даже после «прочитано»; тред с ждущим вопросом помечен значком на аватаре. Горячие клавиши формы (цифры, действия) работают только в форме с фокусом.
+Each card displays the thread, project, age, and an **Open thread** link. The card disappears after you reply.
 
-У контакта с подсессиями вместо превью — их сводка (прямые и вложенные, сколько работают и сколько стоят), а повторный клик по открытому контакту раскрывает и сворачивает их список деревом, как вложенные треды в сайдбаре bb: иконка агента, название и значок у работающих. Чаты подсессий здесь пока не открываются; в их меню bb по правому клику есть **Copy ID**.
+You can also reply directly in the open chat: above the thread composer in **bb** and in the Chats conversation, a **Questions for you** card shows the agent’s open questions for that thread (in Chats, blocking **bb** forms are also shown alongside). The composer stays visible, and replying anywhere closes the question across all views;
 
-Выделите текст ответа, промежуточного ответа или вопроса агента: под последней строкой появится форма с Markdown-цитатой. **Send** отправляет цитату с вашим текстом сразу; **Add to reply pool** в меню стрелки у кнопки отправки сохраняет её и открывает боковую вкладку **Reply pools** (то же есть в попапе **Comment** в чате bb). Черновик сохраняется при обновлении данных и переключении получателя; закрывается через **Close**, Esc, уход фокуса/клик снаружи или успешную отправку. Enter отправляет ответ, Shift+Enter переносит строку.
+open agent questions only appear in the history after a reply, but they count toward the contact’s total (the sum across contacts matches the badge icon) and remain there until answered, even after being marked as “read”; a thread with a pending question displays a badge on the avatar. Form hotkeys (numbers, actions) only work when the form has focus.
 
-В поле ввода строки, начинающиеся с `> `, показываются цитатой. Shift+Enter в цитате продолжает её, а на пустой строке цитаты выходит из неё к обычному тексту. **Quote** в меню правой кнопки над выделенным текстом или ⌘⇧9 (Ctrl+Shift+9) превращает выделенные строки (или строку с курсором) в цитату, повторно — снимает её. Это меню Answers (Undo, Redo, Quote, Cut, Copy, Paste, Delete, Select All): пункт в меню bb плагин добавить не может. Без выделения открывается обычное меню bb с подсказками орфографии. Отмена у поля своя (⌘Z, ⇧⌘Z и Edit → Undo/Redo): она охватывает и вставку, и цитаты, и ссылки на треды; набор текста без паузы в секунду отменяется одним шагом.
+For contacts with subsessions, a summary replaces the preview (showing direct and nested sessions, how many are active, and how many are pending). Clicking an open contact again expands or collapses their list in a tree view, similar to nested threads in the **bb** sidebar: active sessions show an agent icon, name, and badge.
 
-В **Reply pools** показаны все пулы по тредам. Заметки сохраняются при уходе из поля и через 800 мс без ввода. **Send all** сначала ждёт сохранения всех заметок и отправляет цитаты одним сообщением; ошибка сохранения отменяет отправку. При конфликте версии локальный текст остаётся для повторного применения. Изменённые во время отправки записи сохраняются; интерфейс показывает их количество. При неопределённой доставке проверьте чат перед повторной отправкой.
+Subsession chats cannot be opened here yet; their **bb** right-click menu includes **Copy ID**.
 
-Пока в пуле треда есть хотя бы одна запись, форма цитаты продолжает собирать в него: Enter и основная кнопка добавляют в пул, а прямая отправка переезжает в меню кнопки как **Send now**. После отправки пула всё возвращается как было.
+Select text from an agent’s reply, intermediate response, or question: a form with a Markdown quote appears below the last line.
 
-В меню сообщения чата **Add to reply pool** добавляет выделенный текст или всё сообщение и открывает **My questions**, где пул треда расположен над вопросами. Цитата ограничена 20 000 символами, заметка — 8 000, сообщение пула — 32 000; превышение не обрезается молча. Форматирование таблиц и формул при преобразовании HTML в Markdown может отличаться от исходного.
+**Send** immediately submits the quote along with your text; **Add to reply pool** (accessible via the arrow menu next to the send button) saves it and opens the **Reply pools** side tab (the same option is available in the **Comment** popup in the **bb** chat).
 
-## Новое в 0.3
+Drafts are preserved during data refreshes and recipient switches. Close it using **Close**, Esc, losing focus/clicking outside, or after a successful send.
 
-**Inbox** показывает все разговоры, включая прочитанные. После массового чтения доступен **Undo** в течение 8 секунд. **Save to Answers** показывает подтверждение и ссылку на **Saved**. Своё отправленное сообщение можно исправить кнопкой **Edit message**, как в bb: тред откатывается к этому сообщению и запускается заново с новым текстом, а всё, что было после, пропадает и из чата Answers. Сообщение, ход которого вы остановили, остаётся в чате без ответа, но уходит из Inbox.
+Enter sends the reply; Shift+Enter adds a line break.
 
-В разговоре есть поиск по вопросам и ответам с переходом к найденному сообщению. Вопросы одного хода с общим ответом объединяются в карточку. Снизу можно написать сообщение, приложить файлы, запланировать отправку, сохранить черновик или направить сообщение в активный ход. Вопросы `answers_ask` с `options` показывают кнопки быстрого ответа.
+Lines starting with `> ` in the input field are rendered as blockquotes. Pressing Shift+Enter inside a quote continues it, while an empty quote line exits back to regular text. Right-clicking selected text and choosing **Quote**, or pressing ⌘⇧9 (Ctrl+Shift+9), converts selected lines (or the line containing the cursor) into a quote; pressing it again removes the quote formatting. This is the Answers menu (Undo, Redo, Quote, Cut, Copy, Paste, Delete, Select All): the bb plugin cannot add items to this menu. If no text is selected, the standard bb menu with spell-check suggestions appears. The input field has its own undo functionality (⌘Z, ⇧⌘Z, and Edit → Undo/Redo): it covers text insertion, quotes, and thread links; typing without a one-second pause is undone in a single step.
 
-Если установлен плагин **Tokenomos**, в шапке разговора видна стоимость сессии в долларах по ценам API и, при наличии саб-сессий, стоимость вместе с ними (`$0.80 · $1.24 with 3 subs`); `~` значит оценку или неполные данные. Без Tokenomos шапка не меняется.
+**Reply pools** displays all thread pools. Notes are saved when you leave the field and after 800 ms of inactivity. **Send all** waits for all notes to save first, then sends the quotes as a single message; a save error cancels the send operation. If a version conflict occurs, the local text is kept for reapplication. Records modified during sending are saved, and the interface shows how many were updated. If delivery status is uncertain, check the chat before resending.
 
-Меню **More** содержит **Save** / **Remove from Saved**, **Remind later** и, при доступном Work Board, **Create task** с выбором проекта. Напоминание скрывает запись до выбранного времени; **Unsnooze** возвращает её. Неудавшийся ход помечается **Turn failed** с кнопкой **Retry**.
+As long as the thread pool contains at least one record, the quote form keeps adding to it: pressing Enter or the main button appends to the pool, while direct send moves to the button’s menu as **Send now**. Once the pool is sent, everything reverts to its default state.
 
-Настройка `notify`: `off` — выкл., `asked` — вопросы агента к вам, `questions` — также ответы на ваши сообщения с вопросительным знаком, `all` — все подходящие события. По умолчанию `asked`: bb уже уведомляет о завершённых ходах, поэтому ответы отдельно не отправляются. `quietHours` задаёт местный интервал `HH:MM-HH:MM`; события за него сводятся в одно уведомление после окончания интервала. Для доставки нужен плагин Push Notifications.
+The chat message menu’s **Add to reply pool** option adds selected text or the entire message, then opens **My questions**, where the thread pool appears above the questions. Quotes are limited to 20,000 characters, notes to 8,000, and pool messages to 32,000; exceeding these limits is not silently truncated. Table and formula formatting may differ from the original when converting HTML to Markdown.
 
-`bb answers digest` выводит новые ответы за последние 24 часа, ожидающие вопросы и вопросы агента к вам. `--since 7d` или ISO-дата меняют период новых ответов, `--json` даёт JSON. Например, в плагине Automations можно создать ежедневное задание агента с командой `bb answers digest --since 24h`.
+## New in 0.3
+
+**Inbox** shows all conversations, including read ones. After mass marking, an **Undo** option is available for 8 seconds. **Save to Answers** displays a confirmation and a link to **Saved**. Use the **Edit message** button to correct your sent message, similar to BB: the thread rolls back to that point, restarts with the new text, and discards everything that came after, removing it from both the chat and Answers. If you interrupt a turn, the message stays in the chat unanswered but is removed from Inbox.
+
+Each conversation includes a search feature for questions and answers that jumps directly to the matching message. Questions from a single turn that share an answer are grouped into a card. The bottom bar lets you type a message, attach files, schedule delivery, save a draft, or route the message into the active turn. Questions using `answers_ask` with `options` render as quick reply buttons.
+
+With the **Tokenomos** plugin enabled, the conversation header displays the session cost in USD based on API rates, along with the total if sub-sessions are present (`$0.80 · $1.24 with 3 subs`). A tilde (`~`) indicates an estimate or partial data. Without Tokenomos, the header is unaffected.
+
+The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
+
+The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Delivery requires the Push Notifications plugin.
+
+`bb answers digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb answers digest --since 24h`.
 
 The Answers side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board lists linked tasks and opens them in-app. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
 

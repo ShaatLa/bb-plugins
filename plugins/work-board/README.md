@@ -1,5 +1,7 @@
 # Work Board
 
+English | [Русский](README.ru.md)
+
 ## Storage management (0.22.2)
 
 Settings → Work Board → **Storage** shows database/WAL usage, free database pages, logical blob contents versus allocated filesystem blocks, old unreferenced files, and missing attachment files. Statistics load only when the section opens. Storage is shared across projects.
@@ -19,8 +21,7 @@ Agents can use `bb work-board dependency add ABC-2 --blocked-by ABC-1`, `depende
 
 Performance: activity consumers share bounded SDK reads and immutable dispatch attribution; Git sync batches attached sessions and shares post-merge pages within each run; archive capture batches SQL and limits JSON I/O while keeping blobs sequential; downloads revalidate privately with ETags and avoid an extra full-size buffer copy. Browser snapshot writes are coalesced and bounded, and PR overlap preparation is reused. Small English comments describe the resource invariants beside these paths.
 
-
-Создание проекта доступно прямо в **Settings → Work Board → New project**, а также в **Manage → Projects → New project** и боковой навигации Work Board. Во вкладке **Projects** можно открыть существующий проект; форма создания использует те же имя, уникальный префикс, цвет, папку и связь с BB-проектом. В Settings новый проект сразу выбирается для настройки.
+Project creation is available directly in **Settings → Work Board → New project**, as well as in **Manage → Projects → New project** and the Work Board sidebar. Existing projects can be opened from the **Projects** tab; the creation form uses the same name, unique prefix, color, folder, and connection to a BB project. In Settings, the new project is automatically selected for configuration.
 
 ## Agent cost (0.39.0)
 
@@ -56,38 +57,38 @@ bb work-board project update EXA --auto-archive off --stale-idle off
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 
-Трекер проектов для совместной работы людей и AI-агентов внутри BB. Основан на встроенном BB Tasks из BB 0.46.1 и сохраняет его проекты, комментарии, вложения, пресеты и связи с тредами.
+Project tracker for collaborative work between humans and AI agents inside BB. Based on the built-in BB Tasks from BB 0.46.1, it retains its projects, comments, attachments, presets, and thread links.
 
-- Списки и канбан в основной и правой панели, эпики и сабтаски, поиск, фильтры и настраиваемые статусы каждого проекта.
+- Lists and Kanban boards in the main and right panels, epics and subtasks, search, filters, and custom statuses for each project.
 - Delegate tasks to existing threads; collect owner decisions and validation through typed questions.
-- Вопросы с одиночным или множественным выбором, рекомендуемыми вариантами и сохранением ответов прямо в задаче.
-- Связи с GitHub PR, наблюдение за CI и push-workflows после merge, структурированные свидетельства ревью и QA, шаблоны описаний.
-- Поисковый архив завершённых задач, ручная и массовая архивация, опциональная автоматическая архивация.
-- Детерминированный экспорт и импорт проекта с комментариями, вложениями, вопросами и связями — для хранения истории в Git. Работа через UI и `bb work-board` CLI.
+- Questions with single or multiple selection, suggested options, and answer saving directly within the task.
+- GitHub PR linking, CI and push-workflow monitoring after merge, structured review and QA evidence, and description templates.
+- Searchable archive of completed tasks, manual and bulk archiving, and optional automatic archiving.
+- Deterministic project export and import including comments, attachments, questions, and links — for storing history in Git. Works via the UI and `bb work-board` CLI.
 
-В карточке задачи появилась кнопка **Existing thread…**. Выбери существующий тред или вставь его ID. Занятый тред получит контекст задачи в очередь; свободный начнёт работу. Модель, права и окружение треда сохраняются. Пресет и привязка проекта для этого действия не нужны.
+The task card now features an **Existing thread…** button. Select an existing thread or paste its ID. A busy thread will queue the task context; an available thread will start working. The thread's model, permissions, and environment are preserved. No preset or project binding is required for this action.
 
-Кнопка выбора треда расположена над пресетом, обе занимают одинаковую ширину. В окне выбора **Use this thread by default** запоминает успешно выбранный тред для проекта на этом устройстве. Затем основная кнопка показывает его название и отправляет задачу напрямую; стрелка сразу открывает список тредов. Сброс **Clear default thread** находится в этом же окне. При неудачной отправке сохранённый выбор не меняется. Если к задаче уже привязан тред, основная кнопка меняется на **Go to thread** и открывает его без повторной отправки задачи.
+The thread selection button sits above the preset, and both share the same width. In the selection dialog, **Use this thread by default** saves the chosen thread for the project on this device. The main button then displays its name and sends the task directly; an arrow immediately opens the thread list. **Clear default thread** reset is located in the same dialog. If dispatch fails, the saved selection is not changed. If a thread is already attached to a task, the main button changes to **Go to thread** and opens it without resubmitting the task.
 
-Команда: `bb work-board dispatch ABC-12 --thread thr_existing --instructions "Дополнительные указания"`.
-Для создания нового треда по-прежнему используется `--preset`; передавать оба флага нельзя.
+Command: `bb work-board dispatch ABC-12 --thread thr_existing --instructions "Extra instructions"`.
+To create a new thread, continue using `--preset`; both flags cannot be passed together.
 
-В настройках **Work Board → Open by default** выбирается стартовый экран: канбан последнего проекта (по умолчанию), список последнего проекта, все задачи или активные задачи. Последний выбранный проект запоминается на этом устройстве. Если он удалён, открывается первый доступный проект. Прямые ссылки продолжают открывать указанный в них экран.
+In the **Work Board → Open by default** settings, you can choose the startup screen: the last project's Kanban (default), the last project's task list, all tasks, or active tasks. The last selected project is remembered on this device. If the project is deleted, the first available project opens. Direct links continue to navigate to the screen specified in them.
 
-Переключатель **List / Board** в заголовке проекта (и задачи) управляет вкладкой **Kanban** справа: **Board** открывает её, **List** возвращает вкладку Navigation, не закрывая Browser, Terminal и саму панель. Состояние переключателя берётся из панели, поэтому смена вкладки или скрытие панели сразу обновляют его. Основная область всегда показывает список или задачу, так что задачу можно читать рядом с доской. В заголовке доски есть кнопка **Scheduled**, она открывает расписание в основной области. Доска следует за выбранным проектом, сохраняет перетаскивание карточек и обновляется вместе со списком задач.
+The **List / Board** toggle in the project (or task) header controls the right-side **Kanban** tab: **Board** opens it, while **List** switches to the Navigation tab without closing the Browser, Terminal, or the panel itself. The toggle's state is synced with the panel, so switching tabs or hiding the panel immediately updates it. The main area always displays the task list or an individual task, allowing you to review task details alongside the board. The board header includes a **Scheduled** button that opens the schedule in the main area. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
 
-Вкладка **Work Board** в правой панели треда по умолчанию показывает доску проекта Work Board, связанного с BB-проектом этого треда. Карточки на доске и новые задачи открываются в той же вкладке; **Back to project board** возвращает к доске. Ключ и кнопка назад находятся в заголовке самой карточки, над названием; кнопка копирования стоит рядом с ключом и копирует только ключ; отдельная верхняя полоса задачи в боковой панели не занимает место. Открытие конкретной задачи из сообщения сохраняется. Стрелка в заголовке открывает доску или задачу в основном разделе Work Board. Если связь проектов отсутствует, панель предлагает **Manage projects**, не подменяя её последним просмотренным проектом.
+The **Work Board** tab in the thread's right panel defaults to the Work Board project linked to the thread's BB project. Board cards and new tasks open in the same tab; **Back to project board** returns you to the board. The task key and back button are located in the card header above the title. A copy button sits next to the key and copies only the key. The dedicated task bar at the top of the side panel is streamlined and doesn't take up extra space. Opening a specific task from a message persists across navigation. The header arrow opens the board or task in the main Work Board section. If the projects aren't linked, the panel displays **Manage projects** instead of automatically switching to the last viewed project.
 
-Доска в основном экране и правой панели использует общие фильтры **Type**, **Status**, **Priority**, **Label** и кнопку **Clear**. Выбор сохраняется для проекта вместе с фильтрами списка задач; ручной порядок карточек и перетаскивание сохраняются.
+Both the main screen and right panel board share the **Type**, **Status**, **Priority**, and **Label** filters, plus a **Clear** button. Filter selections are saved per project alongside the task list filters. Manual card ordering and dragging actions are preserved.
 
-Поле **Search tasks** в списке и на доске сразу принимает текст и показывает результаты под полем после ввода. Оно ищет по ключу, названию и описанию, включая эпики, подзадачи и завершённые задачи. Поиск не ограничивается фильтрами текущего вида. В проекте он ограничен этим проектом; в All tasks и Active ищет во всех проектах. Точный ключ также распознаёт прежние ключи перемещённых задач. Результат открывается прямо в текущей панели; выбор поддерживает клавиатуру. В выбранном проекте можно вводить только номер задачи: он проверяется напрямую по ключу. При открытии вида заранее загружается индекс активных задач, включая эпики, сабтаски и описания. Ввод фильтрует его локально, без задержки перед запросом и без RPC на каждую букву; обновления точечно подгружаются в фоне. Текстовый поиск показывает первые 25 совпадений и сообщает, когда запрос нужно уточнить. Прежние ключи перемещённых задач и точные ключи архивных задач по-прежнему разрешаются сервером, если их нет в локальном индексе.
+The **Search tasks** field in both the list and board accepts input immediately and displays results directly below. It searches across keys, titles, and descriptions, including epics, subtasks, and completed tasks. The search isn't constrained by the current view's filters: within a project, it's scoped to that project, while in All tasks and Active, it spans all projects. Exact keys also match previously assigned keys for moved tasks. Search results open directly in the current panel, and selection supports keyboard navigation. When in a project view, entering a task number resolves directly to its key. Upon opening the view, an index of active tasks is preloaded, including epics, subtasks, and descriptions. Input filters it locally without request latency or per-character RPC calls; incremental updates are loaded in the background. Text search returns the first 25 matches and indicates when the query should be refined. If a previously assigned key for a moved task or an exact key for an archived task isn't in the local index, the server resolves it.
 
 
-## Переход с Agent Board / Tasks Plus на Work Board (0.11.0)
+## Migrating from Agent Board / Tasks Plus to Work Board (0.11.0)
 
-Это смена ID плагина, а не установка второй независимой доски. Новый ID и папка коллекции — `work-board`, команда — **`bb work-board …`**. Старых CLI-алиасов нет. Сначала обновите потребителей команды: автоматизации, роли агентов и строгие проверки экспорта. Маркер `project.json.format` теперь `bb-work-board`; экспорт использует версию **v13**. Импорт принимает также `bb-agent-board` и `bb-tasks-plus` (v1–v13).
+This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports use version **v13**. Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
 
-Сохраните настройки (`bb plugin config agent-board --json`) и сделайте резервную копию БД через SQLite backup API и копию `blobs`. Остановите старый плагин перед переносом; каталог назначения не должен существовать:
+Save your settings (`bb plugin config agent-board --json`) and back up the database using the SQLite backup API along with a copy of the `blobs` folder. Stop the old plugin before migration; the destination directory must not exist:
 
 ```sh
 bb plugin disable agent-board
@@ -96,127 +97,124 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin wo
 bb work-board status --json
 ```
 
-Если установлен Tasks Plus, используйте `tasks-plus` вместо `agent-board` в командах сохранения настроек, отключения и `--source-plugin`. Помощник находится в новой папке `plugins/work-board/scripts`.
+If Tasks Plus is installed, use `tasks-plus` instead of `agent-board` in the settings export, disable, and `--source-plugin` commands. The migration helper is located in the new `plugins/work-board/scripts` folder.
 
-Помощник копирует БД в `~/.bb/plugins/work-board`, сохраняет ID и все таблицы, переносит вложения и меняет только старые URL вложений на новый ID, включая ссылки в вопросах и JSON-истории. Исходник остаётся нетронутым; повторный перенос поверх существующих данных запрещён. При первом запуске прежние `autoArchiveAfterDays`, `staleIdleMinutes` и `defaultScreen` переносятся автоматически. Дальше архивация и порог простоя меняются в настройках выбранного проекта; страница по умолчанию — в General. PR-настройки и связи находятся в самой БД: переносите их актуальные значения на момент переключения. Старый плагин оставьте выключенным до проверки переноса и экспорта, затем удалите его регистрацию; резервные копии сохраняйте отдельно.
+The helper copies the database to `~/.bb/plugins/work-board`, preserves the ID and all tables, migrates attachments, and updates only old attachment URLs to the new ID, including links in questions and the JSON history. The source remains untouched; migrating over existing data is prohibited. On first run, the previous `autoArchiveAfterDays`, `staleIdleMinutes`, and `defaultScreen` settings are migrated automatically. Archiving and idle thresholds are later adjusted in the settings of the selected project; the default page is set in General. PR settings and links are stored directly in the database: migrate their current values at the time of switching. Keep the old plugin disabled until you verify the migration and export, then unregister it; keep backups stored separately.
 
-При откате после новых записей переносите **последние** данные назад, а не заменяйте их старым снимком. Отключите Work Board, сохраните оба каталога и освободите каталог назначения, затем используйте `--source-plugin work-board --destination-plugin agent-board` (или `tasks-plus`); установите прежний замороженный релиз и восстановите настройки. Параметр `--data-dir` поддерживает другой каталог BB.
+When rolling back after new entries, migrate the **latest** data back, rather than overwriting it with an old snapshot. Disable Work Board, back up both directories, and clear the destination folder, then run `--source-plugin work-board --destination-plugin agent-board` (or `tasks-plus`); install the previous frozen release and restore your settings. The `--data-dir` parameter supports an alternate BB directory.
 
-Последний проект, вид, фильтры и предпочитаемые тред/пресет переносятся на устройстве один раз; текущие предпочтения Agent Board приоритетнее старых Tasks Plus. Старые значения сохраняются для отката, кеши не переносятся. Исторические сообщения и сериализованные упоминания в BB не переписываются. Директива `::task{key="ABC-1"}` сохраняется. Старые ссылки вложений внутри импортируемых архивов нормализуются; архивы с данными аккаунтов и токенами не создаются.
+The last project, view, filters, and preferred thread/preset are migrated to the device only once; current Agent Board preferences take priority over older Tasks Plus ones. Legacy values are retained for rollback purposes, but caches are not migrated. Historical messages and serialized mentions in BB are not rewritten. The `::task{key="ABC-1"}` directive is preserved. Old attachment links within imported archives are normalized; archives containing account data and tokens are not generated.
 
-## Загрузка карточки
+## Card Loading
 
-Карточка показывает локальные данные задачи, сохранённые треды и комментарии, не ожидая GitHub и уточнения метаданных агентов. Эти данные обновляются независимо в фоне: карточка остаётся доступной, открытые редакторы и вводимый заголовок сохраняются. Загрузка Git обозначается вращающейся стрелкой в блоке Pull requests; синхронизация не блокирует добавление и редактирование PR-ссылок. В Activity сначала отображаются последние 20 записей; **Show earlier activity** раскрывает более ранние порциями по 20, не удаляя историю. Обычные комментарии читает штатный Markdown-рендер BB вместо отдельного редактора на каждый комментарий; старые специальные ссылки плагина продолжают работать.
+The card displays local task data, saved threads, and comments without waiting for GitHub or agent metadata refinement. These data updates independently in the background: the card remains available, open editors stay intact, and the typed title is preserved. Git loading is indicated by a spinning arrow in the Pull requests block; synchronization does not block adding or editing PR links. The Activity section initially shows the latest 20 entries; **Show earlier activity** expands older entries in batches of 20 without discarding history. Standard comments are rendered by BB's native Markdown renderer instead of launching a separate editor for each comment, and legacy plugin special links continue to work.
 
-Evidence сначала показывает последние 15 записей. **Show earlier evidence** раскрывает историю порциями по 15; группировка по PR и head и отметки superseded сохраняются. Ограничение касается отображения, вся история остаётся в данных и экспорте.
+The Evidence section initially shows the latest 15 entries. **Show earlier evidence** expands history in batches of 15, preserving grouping by PR and head, as well as superseded markers. The limitation applies only to the UI; the full history remains in the data and exports.
 
-Доска показывает первую страницу задач сразу, не дожидаясь метаданных, вопросов, PR и Git. При повторном открытии использует сохранённый набор задач и обновляет его в фоне. Доска, обычный список и поиск делят одну загрузку активных задач, включая сабтаски; фильтры списка и поиск работают локально. Страницы UI допускают изменения данных во время чтения и уточняются событиями; CLI по умолчанию сохраняет строгую проверку ревизии курсора.
+The board displays the first page of tasks immediately, without waiting for metadata, questions, PRs, or Git. On subsequent opens, it uses the cached task set and updates it in the background. The board, standard list, and search share a single active task load, including subtasks; list filters and search operate locally. UI pages allow data modifications during reads and refine results via events, whereas the CLI strictly validates cursor revisions by default.
 
-Колонки виртуализированы: в DOM находятся карточки видимой области с запасом, остальные представлены пространством для прокрутки. Высота карточек измеряется; раскрытые сабтаски сохраняют состояние. Прокрутка и перетаскивание используют координаты всей колонки.
+Columns are virtualized: the DOM only contains cards for the visible area with a buffer, while the rest is represented as scrollable space. Card heights are measured; expanded subtasks retain their state. Scrolling and dragging use the full column coordinates.
 
-Счётчики вложений и активные связи с тредами читаются пакетами по 500 ID, максимум четыре RPC одновременно. Вопросы и сводки PR обновляются точечно. Сводки PR читают только нужные JSON-поля из SQLite, без разбора полных CI-отчётов. Git-поллинг отправляет отдельные события для проверенных PR, а не инвалидирует все задачи проекта. Формат экспорта, CLI и данные задач не изменены.
+Attachment counters and active thread connections are read in batches of 500 IDs, with a maximum of four concurrent RPC calls. Questions and PR summaries are updated selectively. PR summaries read only the required JSON fields from SQLite, avoiding parsing of full CI reports. Git polling dispatches individual events for verified PRs instead of invalidating all project tasks. The export format, CLI behavior, and task data remain unchanged.
 
-## Индикаторы здоровья тредов
+## Thread Health Indicators
 
-Карточки на доске (основная и боковая панель) и строки списка показывают пассивные маркеры; задача в detail показывает упавший тред красной рамкой и временем сбоя. Ничего не отправляется в треды и агентам, серверных таймеров и уведомлений нет.
+Task cards on the board (main and side panels) and list rows display passive markers; the detail view shows a failed thread outlined in red with a failure timestamp. Nothing is sent to threads or agents, and no server-side timers or notifications are used.
 
-- **Красный маркер** — у незавершённой задачи (не `done`/`canceled`) есть прикреплённый тред в статусе `failed` (bb шлёт `thread.failed` и для упавшего хода, и для прерванного: перезапуск демона, потеря связи). Подсказка: «Thread <title> failed». Маркер гаснет, когда тред снова активен, откреплён или в архиве. Показывается и у завершённых задач.
-- **Янтарный маркер** «Thread idle 52 min, task not updated» — задача не `done`/`canceled`/`in_review`, есть idle-тред, нет working/starting-треда и `now − max(idleSince, lastTaskActivityAt) ≥ порог`. `idleSince` — это `task_threads.updated_at` (время последней смены статуса, миграция не нужна; при нескольких idle-тредах берётся самый поздний); `lastTaskActivityAt` — максимум из `tasks.updated_at` (поля, статус) и комментариев не-system, включая evidence. Порог задаётся отдельно для каждого проекта: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, по умолчанию 45). Расчёт идёт при чтении (`listTaskCardMeta`), UI сверяет часы раз в минуту.
-- `show --json` и `list --json` содержат `threadHealth: {failed: [threadId…], staleIdle: {threadId, idleMinutes} | null}`.
+- **Red marker** — an incomplete task (not `done`/`canceled`) has an attached thread in `failed` status (BB sends `thread.failed` for both crashed steps and interrupted runs: daemon restart, lost connection). Tooltip: "Thread <title> failed". The marker clears when the thread becomes active, detached, or archived. It is also shown for completed tasks.
+- **Amber marker** "Thread idle 52 min, task not updated" — the task is not `done`/`canceled`/`in_review`, there is an idle thread, no working/starting thread, and `now − max(idleSince, lastTaskActivityAt) ≥ threshold`. `idleSince` is `task_threads.updated_at` (time of the last status change, no migration required; if multiple idle threads exist, the most recent is used); `lastTaskActivityAt` is the maximum of `tasks.updated_at` (field and status updates) and non-system comments, including evidence. The threshold is configured per project: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, default 45). Calculation runs on read (`listTaskCardMeta`), and the UI refreshes the timer once per minute.
+- `show --json` and `list --json` include `threadHealth: {failed: [threadId…], staleIdle: {threadId, idleMinutes} | null}`.
 
-Данные не экспортируются: это производное состояние. Фильтр «needs attention» не добавлялся.
+The data is not exported: it is derived state. The "needs attention" filter has not been added.
 
-## Статусы проекта
+## Project Statuses
 
-В **Settings → Plugins → Work Board → Task statuses** выберите проект. Кнопка **+ Add status** добавляет строку с названием нового этапа (например, **In testing**). ID создаётся автоматически. Название сохраняется по Enter или при выходе из поля; добавленные статусы удаляются корзиной. Перетаскивание за маркер слева меняет порядок статусов и колонок на доске. С клавиатуры: пробел, стрелки, затем пробел или Enter; Escape отменяет перенос. Сохранение автоматическое. Настройки относятся только к выбранному проекту и используются в списке, основной и правой досках, фильтрах и меню карточки.
+In **Settings → Plugins → Work Board → Task statuses**, select a project. The **+ Add status** button adds a row for a new stage (e.g., **In testing**). The ID is generated automatically. The name is saved on Enter or when leaving the field; added statuses are removed using the trash icon. Dragging the handle on the left changes the order of statuses and board columns. Keyboard shortcuts: Space, arrow keys, then Space or Enter; Escape cancels the move. Changes are saved automatically. Settings apply only to the selected project and are used in the list, main and right boards, filters, and card menus.
 
-Нажмите на иконку рядом с названием статуса, чтобы выбрать один из 20 доступных значков. **Default** возвращает исходный значок. Иконки сохраняются автоматически для выбранного проекта и используются во всех представлениях задач; выбор значка не меняет поведение статуса. Рядом доступен выбор из 10 цветов существующей палитры. Цвет сохраняется отдельно от иконки. Для статусов без выбранного цвета используется цвет из темы.
+Click the icon next to the status name to select one of 20 available icons. **Default** restores the original icon. Icons are saved automatically for the selected project and appear in all task views; selecting an icon does not affect status behavior. You can also choose from 10 colors in the existing palette. The color is saved independently of the icon. Statuses without a selected color use the theme color.
 
-ID статуса — постоянная ссылка, имя можно менять. Разрешены 1–64 строчных латинских символа, цифры и `_`, первый символ — буква. Имя: 1–80 символов. В проекте 6–32 статуса, ID и имена уникальны. Шесть системных ID (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `canceled`) сохраняются; названия и порядок менять можно. Новые этапы считаются незавершёнными. Завершение задач и уведомления owner по-прежнему привязаны к `done`, отмена — к `canceled`.
-
-Удаление статуса с задачами отклоняется: сначала перенесите их в другой статус. Перенос задачи/эпика между проектами сохраняет статус и отклоняется целиком, если в целевом проекте нет нужного ID.
+The status ID is permanent and cannot be changed, but the name can be edited. IDs allow 1–64 lowercase Latin letters, digits, and `_`, and must start with a letter. Names allow 1–80 characters. A project can contain 6–32 statuses; IDs and names must be unique within the project. The six system IDs (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `canceled`) are preserved; you can edit their names and reorder them. New stages are treated as incomplete. Task completion and owner notifications remain tied to `done`, while cancellation is tied to `canceled`.
 
 ```sh
 bb work-board project show EXA --json
-bb work-board create --project EXA --title 'Проверить сборку' --status in_testing
+bb work-board create --project EXA --title 'Check the build' --status in_testing
 bb work-board update EXA-8 --status in_testing
 bb work-board list --project EXA --status in_testing
 bb work-board list --project EXA --exclude-status done,canceled
 bb work-board project update EXA --statuses-file ./statuses.json
 ```
 
-Файл `statuses.json` — полный упорядоченный массив `[{"id":"backlog","name":"Backlog"}, …]` со всеми системными ID. Он читается на вызывающей машине; для удалённой машины поддерживается `--machine`. RPC: `updateProject({projectId, statuses:[{id,name},…]})`; поле `project.statuses` есть в JSON проекта. Экспорт **v6** сохраняет этот массив в `project.json`, `task.status` содержит ID. Импорт v1–v5 восстанавливает исходные шесть статусов. Другие файлы архива не меняются.
+The `statuses.json` file is a complete ordered array `[{"id":"backlog","name":"Backlog"}, …]` containing all system IDs. It is read on the calling machine; for remote machines, use `--machine`. RPC method: `updateProject({projectId, statuses:[{id,name},…]})`; the `project.statuses` field is available in the project JSON. Export **v6** stores this array in `project.json`, and `task.status` contains the ID. Importing v1–v5 restores the original six statuses. Other archive files remain unchanged.
 
-## Защита от секретов
+## Secrets Protection
 
-Начиная с **0.1.1**, создание и изменение задач и эпиков, запись комментариев (включая агентские) и импорт проверяют новые заголовки, описания и тела комментариев на известные форматы ключей GitHub, AWS, Slack, Google, Anthropic, OpenAI, JWT и блоки приватных ключей. Запись отклоняется целиком; ошибка называет поле и формат, не раскрывая значение. Обходного флага нет, `import --overwrite` тоже не отключает проверку.
+Starting with **0.1.1**, creating and editing tasks and epics, writing comments (including agent-generated ones), and imports check new headers, descriptions, and comment bodies for known key formats from GitHub, AWS, Slack, Google, Anthropic, OpenAI, JWT, and private key blocks. The write operation is rejected entirely; the error identifies the field and format without exposing the value. No bypass flag exists, and `import --overwrite` does not disable the check either.
 
-Проверка распознаёт форматы, а не все возможные секреты. Вложения и уже сохранённые данные она не сканирует; проверку перед отправкой в Git следует сохранить.
+The check recognizes known formats rather than detecting all possible secrets. It does not scan attachments or previously saved data, so pre-Git commit checks should still be maintained.
 
-## Вопросы с выбором ответа
+## Multiple-choice questions
 
-В карточке задачи или эпика откройте **Add question** в правом баре (в узкой карточке — среди свойств сверху). Добавьте текст и 2–20 вариантов; **Allow multiple answers** включает множественный выбор. Ответ сохраняется кнопкой **Save answer**; **Clear selection → Save answer** очищает его. Это текущее решение по вопросу, не опрос с отдельными голосами каждого пользователя. Изменения ответов записываются в историю задачи. У вопроса и каждого варианта свои постоянные ID; подписи не используются как ссылки. Конкурирующий ответ со старой revision отклоняется.
+In a task or epic card, open **Add question** in the right bar (in narrow mode, among the top properties). Add a prompt and 2–20 options; **Allow multiple answers** enables multiple-choice mode. Save the selection with **Save answer**; **Clear selection → Save answer** clears it. This captures the definitive answer to the question, not a poll where each user casts a separate vote. Answer changes are logged in the task history. Both questions and options have fixed persistent IDs; labels are not used as references. Conflicting answers from an older revision are rejected.
 
 ```sh
-bb work-board question add EXA-8 --prompt 'Какой размер?' --option 'Маленький' --option 'Большой' --json
-bb work-board question add EXA-8 --prompt 'Какие платформы?' --option macOS --option Linux --multiple --json
+bb work-board question add EXA-8 --prompt 'Which size?' --option 'Small' --option 'Large' --json
+bb work-board question add EXA-8 --prompt 'Which platforms?' --option macOS --option Linux --multiple --json
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1
 bb work-board question answer EXA-8 --question <question-id> --clear --revision 2
 bb work-board question delete EXA-8 --question <question-id> --revision 3
 ```
 
-Для множественного выбора повторите `--answer`. Вопросы видны в центральной и боковой карточке, в `show --json`, контексте делегирования и упоминаниях задач. Экспорт переносит вопросы вместе с вариантами, выбранными ID, автором ответа и revision. Защита от секретов действует на текст вопросов, вариантов и метаданные ответа.
+For multiple selections, repeat `--answer`. Questions are visible in the main and side cards, in `show --json` output, in delegation context, and in task mentions. Exports include the questions, options, selected IDs, answer author, and revision. Secret protection covers the question and option text as well as answer metadata.
 
-
-После изменения ответа плагин уведомляет askedByThread, если он задан; иначе первый закреплённый рабочий тред (активные идут первыми), иначе — последнего ответившего агента. Занятый тред получает сообщение в очередь; повторное сохранение того же ответа не уведомляет снова. Ошибка доставки сохраняет ответ и отображает предупреждение. Перед продолжением агент перечитывает актуальное решение. На карточках и строках показывается иконка вопроса со счётчиком и подсказкой; фильтр **Waiting on me** работает в списке, центральной и правой досках и запоминается для проекта.
+When an answer is updated, the plugin notifies askedByThread if provided; otherwise, it targets the first pinned work thread (active ones first), or the most recent responding agent. If a thread is busy, the notification is queued. Re-submitting the same answer won't trigger another notification. Delivery failures still save the answer and display a warning. Agents re-read the current answer before proceeding. Cards and rows display a question icon with a count and tooltip. The **Waiting on me** filter works across lists, the main board, and the right board, and is remembered per project.
 
 Free text is always available. Single choice accepts either one option or text; multiple choice also permits both. Use `bb work-board question answer KEY --question ID --revision N --text "Answer"`.
 
-Редактирование: **Edit question** в карточке, либо `bb work-board question update KEY --question ID --revision N --prompt "Новый текст"`. `--options-file` читает JSON-массив `[{"id":"существующий ULID","label":"Новое название"},{"label":"Новый вариант"}]` на вызывающей машине; существующие ID сохраняйте, для новых вариантов ID не указывайте. `--mode single|multiple` меняет режим. У отвеченного вопроса требуется явное **Clear the saved answer and request a new decision** или `--reopen`: прежний ответ остаётся в **History**, текущий очищается и снова появляется Needs answer. Старая revision отклоняется. Каждое изменение сохраняет прежний снимок; отмена и повторное сохранение одинакового содержимого историю не меняют.
+Editing: use **Edit question** in the card, or run `bb work-board question update KEY --question ID --revision N --prompt "New text"`. The `--options-file` flag reads a JSON array `[{"id":"existing ULID","label":"New label"},{"label":"New option"}]` on the calling machine; retain existing IDs and omit them for new options. `--mode single|multiple` switches the selection mode. For a completed question, explicitly choose **Clear the saved answer and request a new decision** or use `--reopen`: the original answer remains in **History**, the current state is cleared, and the status reverts to Needs answer. The old revision is rejected. Each modification saves the previous snapshot; canceling and re-saving identical content leaves the history unchanged.
 
-Рекомендуемый вариант показывается жирным, без метки и автоматического выбора. В редакторе включите **Recommend** рядом с вариантом; необязательное поле **Recommendation reason** объясняет рекомендацию. CLI: `bb work-board question add KEY --prompt 'Вопрос?' --option A --option B --recommend 1 --recommendation-reason 'Обоснование'`; номера при создании начинаются с 1. Изменение по постоянному ID: `question update KEY --question ID --revision N --recommend OPTION_ID [--recommendation-reason TEXT]`; повторяйте `--recommend` для multiple, `--no-recommendation` очищает рекомендации. В options JSON допустимы optional `recommended: true` и `recommendationReason`. У single максимум один рекомендуемый вариант, у multiple — несколько; обоснование допустимо только для recommended=true. Секреты проверяются и в обосновании. Экспорт v4 сохраняет эти поля также в history; импорт v1–v3 поддерживается. Старые явные суффиксы «(рекомендую)» / «(recommended)» отображаются жирным без суффикса, сохранённые подписи не меняются автоматически.
+Recommended options are shown in bold, without a badge or auto-selection. In the editor, toggle **Recommend** next to an option and optionally fill in **Recommendation reason**. CLI: `bb work-board question add KEY --prompt 'Question?' --option A --option B --recommend 1 --recommendation-reason 'Rationale'`; indices start at 1. Update by persistent ID: `question update KEY --question ID --revision N --recommend OPTION_ID [--recommendation-reason TEXT]`; repeat `--recommend` for multiple selection, and use `--no-recommendation` to clear recommendations. The options JSON schema supports optional `recommended: true` and `recommendationReason`. Single-choice questions allow only one recommended option, while multiple-choice allow several. The reason is only valid when `recommended=true`. Secret scanning also applies to recommendation reasons. Export v4 includes these fields in history; import from v1–v3 is supported. Legacy explicit suffixes "(рекомендую)" / "(recommended)" are displayed in bold without the suffix; saved labels are not automatically updated.
 
-## Evidence и шаблоны описаний
+## Evidence and description templates
 
-`bb work-board comment` без `--kind` остаётся обычным комментарием. `--kind review|qa|merge|deploy|exemption|outcome` добавляет проверенные структурированные данные; `--body` / `--body-file` по-прежнему содержит свободное замечание. Все SHA — ровно 40 hex-символов. Evidence сохраняется как необязательное поле `evidence` комментария; верхнеуровневый `kind` остаётся `user`, `agent` или `system`.
+`bb work-board comment` without `--kind` remains a regular comment. `--kind review|qa|merge|deploy|exemption|outcome` adds verified structured data; `--body` / `--body-file` still contains free-form remarks. All SHA hashes are exactly 40 hexadecimal characters. Evidence is stored as an optional `evidence` field on the comment; the top-level `kind` remains `user`, `agent`, or `system`.
 
 ```sh
-bb work-board comment EXA-8 --kind review --pr 123 --head <full-sha> --verdict approve --thread thr_review --lens correctness --body 'Ревью пройдено'
-bb work-board comment EXA-8 --kind qa --head <full-sha> --verdict partial --thread thr_qa --pr 123 --target localenv --note docs/qa.md --body 'Замечания в отчёте'
-bb work-board comment EXA-8 --kind merge --pr 123 --head <full-sha> --merge <full-sha> --part 1/2 --body 'Слито'
-bb work-board comment EXA-8 --kind deploy --merge <full-sha> --run <ci-run-id-or-url> --env development --body 'Развёрнуто'
-bb work-board comment EXA-8 --kind exemption --row qa --reason 'Только документация' --owner-quote 'QA не требуется' --date 2026-10-23 --body 'Согласовано'
+bb work-board comment EXA-8 --kind review --pr 123 --head <full-sha> --verdict approve --thread thr_review --lens correctness --body 'Review passed'
+bb work-board comment EXA-8 --kind qa --head <full-sha> --verdict partial --thread thr_qa --pr 123 --target localenv --note docs/qa.md --body 'Findings in the report'
+bb work-board comment EXA-8 --kind merge --pr 123 --head <full-sha> --merge <full-sha> --part 1/2 --body 'Merged'
+bb work-board comment EXA-8 --kind deploy --merge <full-sha> --run <ci-run-id-or-url> --env development --body 'Deployed'
+bb work-board comment EXA-8 --kind exemption --row qa --reason 'Docs only' --owner-quote 'No QA needed' --date 2026-10-23 --body 'Approved'
 bb work-board evidence EXA-8 --pr 123 --kind review --kind qa --json
 ```
 
-Для review обязательны PR, head, verdict и thread. Для qa — head, verdict и thread. Для merge — PR, head и merge. Для deploy — merge, run и env. Для exemption — row и reason; owner-quote и date передаются только вместе. Evidence находится над историей в карточке и над Comments в `show`; `--json` сохраняет полные SHA и все поля. Группировка идёт по PR и head, предыдущие heads отмечены superseded. Поздний carry-over verdict по уже встреченному head не объявляет его новым head. Deploy связывается с PR по сохранённому merge. Индекс ничего не решает о полноте проверок и не меняет статус. PR-ссылка появляется, когда её URL уже доступен среди связей карточки с PR; при отсутствии URL показывается номер.
+For review, PR, head, verdict, and thread are required. For qa — head, verdict, and thread. For merge — PR, head, and merge. For deploy — merge, run, and env. For exemption — row and reason; owner-quote and date are passed together. Evidence appears above the history in the card and above Comments in `show`; `--json` preserves full SHA hashes and all fields. Grouping is by PR and head, with previous heads marked as superseded. A late carry-over verdict for a previously seen head does not designate it as a new head. Deploy is linked to the PR via the saved merge. The index does not determine check completeness and does not change the status. The PR link appears when its URL is already available in the card's PR links; otherwise, only the number is displayed.
 
-### Целостность evidence
+### Evidence integrity
 
-Evidence автоматически сохраняет записавший thread (для UI — null); `--thread` остаётся thread проверяющего. Карточка и `show --json` предупреждают о проверке автором PR и об отсутствии approve/pass на merged head; при неизвестном авторе предупреждения нет. Данные сохраняются в экспорте комментариев, старые архивы совместимы. Предупреждения не блокируют запись.
+Evidence automatically saves the thread that recorded it (null for the UI); the `--thread` flag remains tied to the verifier's thread. The card and `show --json` warn when a PR author performs the verification or when approve/pass checks are missing on the merged head; no warning is issued if the author is unknown. Data is preserved in comment exports, and old archives remain compatible. Warnings do not block recording.
 
-Новые записи дополняют историю; существующий evidence-комментарий нельзя заменить через импорт даже с `--overwrite`. Проверка секретов распространяется и на структурированные поля.
+New records append to the history; an existing evidence comment cannot be replaced via import, even with `--overwrite`. Secret scanning also applies to structured fields.
 
 ```sh
 bb work-board template set --project EXA --name task --body-file templates/task.md
 bb work-board template show --project EXA --name task
 bb work-board template list --project EXA --json
-bb work-board create --project EXA --title 'Новая задача' --template task --description 'Дополнительные критерии'
+bb work-board create --project EXA --title 'New task' --template task --description 'Extra criteria'
 bb work-board template delete --project EXA --name task
 ```
 
-Шаблоны хранятся по ID внутри проекта, содержат Markdown и переносятся через архив. `--description` добавляется после шаблона. Необязательный `template set --label <имя>` привязывает шаблон к существующей метке того же проекта по её ID. При создании задачи без `--template` применяется шаблон привязанной метки; неоднозначность требует явного `--template`. Проверок заполнения шаблона и автоматических переходов статуса нет.
+Templates are stored by ID within a project, contain Markdown, and can be migrated via archive. The `--description` flag appends text after the template content. The optional `template set --label <name>` binds a template to an existing label in the same project by its ID. If a task is created without `--template`, the bound label's template is applied; ambiguity requires an explicit `--template`. Template validation and automatic status transitions are not implemented.
 
-Ссылки `::task{key="EXA-8"}` теперь отображаются компактными плашками с коротким названием и полным названием при наведении. Синтаксис остаётся отдельной leaf-директивой; размещение внутри предложения требует поддержки со стороны BB. Колонки доски растут на доступную ширину с минимумом 230 px; узкая панель сохраняет горизонтальную прокрутку.
+Links formatted as `::task{key="EXA-8"}` now render as compact badges displaying a short title, with the full title shown on hover. The syntax remains a standalone leaf directive; rendering it inline within a sentence requires BB support. Board columns expand to fit the available width with a 230 px minimum; a narrow panel preserves horizontal scrolling.
 
-## Эпики
+## Epics
 
-При создании выбери **Type → Epic**. В списке доступен фильтр **Type → Epic**; на доске эпики помечены молнией. В свойствах обычной задачи поле **Epic** добавляет её в эпик того же проекта. В карточке эпика видны задачи и прогресс завершения, кнопка **Add task** создаёт новую входящую задачу. Подзадачи остаются у обычных задач и наследуют контекст эпика через родителя.
+When creating an issue, select **Type → Epic**. The list provides a **Type → Epic** filter; on the board, epics are marked with a lightning bolt. In the properties of a regular task, the **Epic** field adds it to an epic within the same project. The epic card displays linked tasks and completion progress, and the **Add task** button creates a new child task. Subtasks remain attached to regular tasks and inherit the epic's context through their parent.
 
-Эпики используют общую нумерацию проекта, статусы, описание, комментарии, вложения и привязку тредов. Статус эпика меняется вручную; прогресс считается по завершённым входящим задачам. Агент получает описание эпика вместе с контекстом своей задачи.
+Epics share the project's issue numbering, statuses, descriptions, comments, attachments, and thread bindings. The epic status is updated manually; progress is calculated based on completed child tasks. The agent receives the epic description alongside its own task context.
 
-Для постоянной области используй обычную метку проекта `ongoing`: добавь или убери её через **Labels**, либо `bb work-board update ABC-1 --add-label ongoing` / `--remove-label ongoing` (создать метку: `bb work-board label create --project ABC --name ongoing`). Инструкция агентам исключает такой эпик из проверок на закрытие: завершать нужно конечные входящие задачи, статус самого эпика сохраняется по решению владельца. Полное завершение текущих задач не повод повторно спрашивать о закрытии эпика. Закрытие постоянной области требует явного решения владельца. Это соглашение для агентов, без нового статуса или запрета ручного редактирования; метка не наследуется задачами. В JSON доступны `task.labelIds`, а имена — в `show --json` и `label list --project ABC --json`.
+For permanent areas, use the standard project label `ongoing`: add or remove it via **Labels**, or run `bb work-board update ABC-1 --add-label ongoing` / `--remove-label ongoing` (to create the label: `bb work-board label create --project ABC --name ongoing`). The agent instructions exclude such epics from closure checks: you should only complete the final child tasks, while the epic's status remains as decided by the owner. Fully completing current tasks is not a reason to repeatedly ask about closing the epic. Closing a permanent area requires an explicit decision from the owner. This is an agreement for agents, involving no new status or manual editing restrictions; the label is not inherited by tasks. The `task.labelIds` field is available in JSON, while label names can be viewed with `show --json` and `label list --project ABC --json`.
 
 ```sh
 bb work-board create --project ABC --title "Big initiative" --type epic
@@ -228,30 +226,30 @@ bb work-board show ABC-1
 bb work-board update ABC-2 --no-epic
 ```
 
-Перенос эпика в другой проект переносит его задачи вместе с подзадачами, сохраняя связи и старые ключи. Перенос отдельной задачи снимает её связь с прежним эпиком. Удаление эпика сохраняет входящие задачи. Вложенные эпики не поддерживаются; изменить тип можно после удаления связей и дочерних задач. Существующие записи при обновлении остаются обычными задачами.
+Moving an epic to another project moves its tasks and subtasks along with it, preserving links and original keys. Moving a single task removes its association with the previous epic. Deleting an epic preserves its child tasks. Nested epics are not supported; you can change the type only after removing associations and child tasks. Existing records remain as regular tasks when updated.
 
-В свойствах эпика **Timeframe** предлагает **No deadline**, **Due date…** и **Ongoing** (∞). Ongoing добавляет метку `ongoing` и очищает дедлайн; выбор даты или No deadline снимает только эту метку. В компактной карточке доступен тот же выбор. У обычных задач сохраняется Set due date. В CLI для постоянного эпика используй `--add-label ongoing --no-due`, для конечного с датой — `--remove-label ongoing --due YYYY-MM-DD`.
+The **Timeframe** field in epic properties offers **No deadline**, **Due date…**, and **Ongoing** (∞). Selecting Ongoing adds the `ongoing` label and clears the deadline; choosing a date or No deadline removes only that label. The same options are available in the compact card. Regular tasks retain their Set due date option. In the CLI, use `--add-label ongoing --no-due` for permanent epics, or `--remove-label ongoing --due YYYY-MM-DD` for time-bound epics with a date.
 
-## Блокировки ресурсов (dev-контур)
+## Resource Locks (dev environment)
 
-Блокировка — явная пометка «ресурс занят» внутри трекер-проекта (например, общий dev-контур). Имя: `^[a-z][a-z0-9_-]{0,63}$`. Блокировка свободна или принадлежит ровно одному держателю: треду-вызывающему (или человеку — тогда тред пустой), с причиной (1–200 символов, проходит защиту от секретов), необязательным ключом задачи и необязательным сроком `--ttl` (1–1440 минут). Очереди и ожидания нет: занятая блокировка сразу даёт ненулевой код выхода с держателем, причиной, временем захвата и признаком STALE. Уведомлений ожидающим и автоосвобождения при простое треда нет.
+A lock is an explicit "resource in use" marker within a tracker project (e.g., the shared dev environment). Name pattern: `^[a-z][a-z0-9_-]{0,63}$`. A lock is either free or owned by exactly one holder: the calling thread (or a person, in which case the thread is empty), with a reason (1–200 characters, passes secret scanning), an optional task key, and an optional `--ttl` (1–1440 minutes). There is no queue or waiting: an occupied lock immediately returns a non-zero exit code along with the holder, reason, acquisition time, and STALE flag. Waiters are not notified, and locks are not automatically released on thread idle.
 
 ```sh
 bb work-board lock acquire dev --project EXA --reason "dev QA EXA-12" --task EXA-12 --ttl 90
 bb work-board lock release dev --project EXA
 bb work-board lock release dev --project EXA --force --reason "holder is gone"
 bb work-board lock list --project EXA
-bb work-board lock show dev --project EXA      # с историей
-bb work-board lock acquire dev --project EXA --reason "..." --takeover   # только для STALE
+bb work-board lock show dev --project EXA      # with history
+bb work-board lock acquire dev --project EXA --reason "..." --takeover   # STALE only
 ```
 
-Повторный `acquire` тем же держателем обновляет причину и срок. Снять блокировку может только держатель; `--force` позволяет любому, причина пишется в историю. Блокировка считается STALE, если срок истёк либо тред держателя завершился ошибкой, заархивирован или удалён (ошибка чтения треда — «неизвестно», не STALE); STALE можно забрать через `--takeover` без `--force`. Захват и снятие атомарны (одна транзакция SQLite). Хранится текущее состояние и последние 50 событий на блокировку (acquired/released/taken_over/expired).
+A repeated `acquire` by the same holder updates the reason and TTL. Only the holder can release a lock; `--force` allows anyone, and the reason is logged to the history. A lock is considered STALE if the TTL has expired or the holder's thread has terminated with an error, been archived, or deleted (a thread read error is "unknown", not STALE); STALE locks can be claimed via `--takeover` without `--force`. Acquisition and release are atomic (one SQLite transaction). The current state and the last 50 events per lock are stored (acquired/released/taken_over/expired).
 
-В шапке проекта (основной вид, боковая доска и kanban-панель) для каждой занятой блокировки показывается чип «dev · держатель · причина · сколько занята» (янтарный при STALE). Клик открывает карточку с деталями, ссылкой на тред держателя и кнопкой Release (force) с полем причины. Пустых чипов нет, отдельной страницы настроек нет. RPC: `listLocks`, `lockHistory`, `acquireLock`, `releaseLock`.
+In the project header (main view, side board, and kanban panel), each occupied lock displays a chip "dev · holder · reason · duration" (amber if STALE). Clicking it opens a card with details, a link to the holder's thread, and a Release (force) button with a reason field. No empty chips are shown, and there is no dedicated settings page. RPCs: `listLocks`, `lockHistory`, `acquireLock`, `releaseLock`.
 
-Блокировки — оперативное состояние: **в экспорт и импорт не входят** (формат экспорта не менялся).
+Locks are runtime state: **excluded from export and import** (the export format remains unchanged).
 
-## Хранение проекта в Git
+## Storing a Project in Git
 
 ```sh
 bb work-board export --project EXA --out .bb/tasks/<project-id>
@@ -260,7 +258,7 @@ bb work-board import --from .bb/tasks/<project-id>
 bb work-board import --from .bb/tasks/<project-id> --overwrite
 ```
 
-`--project` принимает префикс или ID. `--out` задаёт отдельный каталог, который ещё не существует, пуст либо уже содержит выгрузку этого же проекта. Пути относятся к машине вызывающего треда; вне треда — к серверу BB. Для другой машины есть `--machine <id-or-name>`. Относительные пути считаются от рабочего каталога вызова.
+`--project` accepts a prefix or ID. `--out` specifies a directory that must not exist, must be empty, or must already contain an export of this project. Paths refer to the initiating thread's machine; outside a thread, they refer to the BB server. Use `--machine <id-or-name>` to target a different machine. Relative paths are resolved from the calling working directory.
 
 ```text
 .bb/tasks/<project-id>/
@@ -271,17 +269,17 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
 
 `project.json` contains the bb-work-board format marker, version 17, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
 
-Выгрузка сначала собирается во временном каталоге и затем заменяет предыдущую копию. При ошибке записи или замены предыдущая копия сохраняется. Посторонние файлы в каталоге выгрузки запрещены: исходники репозитория нужно хранить за его пределами.
+The export is first assembled in a temporary directory, then replaces the existing copy. On write or replacement failure, the original copy is preserved. Unrelated files are not allowed in the export directory; repository sources must be kept outside it.
 
-Импорт проверяет формат, связи, владельцев ID и целостность вложений, затем изменяет базу одной транзакцией. Новые записи добавляются, одинаковые пропускаются. Отличающиеся существующие записи требуют `--overwrite`; коллизии ID между разными проектами или владельцами не разрешаются даже этим флагом. Отсутствующие в выгрузке задачи, комментарии, метки и вложения не удаляются. У импортированной задачи поле `labelIds` задаёт её набор меток; его изменение также требует `--overwrite`. Счётчик номеров задач только увеличивается.
+Import validates the format, references, ID ownership, and attachment integrity, then applies changes to the database in a single transaction. New records are inserted, duplicates are skipped. Existing records with differing data require `--overwrite`; ID collisions across different projects or owners are rejected even with this flag. Tasks, comments, labels, and attachments absent from the export are left untouched. The `labelIds` field on an imported task defines its label set; updating it also requires `--overwrite`. The task number counter only increments.
 
-При экспорте каталог отражает текущее состояние BB: сначала импортируй нужные изменения из Git, чтобы не заменить их данными из BB. Команды не делают commit/push и не запускают агентов. Связи с тредами сохраняются как ссылки; полные чаты, внешнее содержимое PR, глобальные пресеты и настройки BB в снимок проекта не входят.
+The exported directory reflects the current BB state: import any pending Git changes first to avoid overwriting them with BB data. The commands do not commit, push, or trigger agents. Thread links are preserved as references; full chats, external PR content, global presets, and BB settings are excluded from the project snapshot.
 
-## Переключение со встроенного плагина
+## Switching from the built-in plugin
 
-Work Board использует ID `work-board`: встроенный ID `tasks` зарезервирован BB. Команда `bb work-board` остаётся прежней, поэтому одновременно включать оба плагина нельзя.
+Work Board uses the ID `work-board`: the built-in ID `tasks` is reserved by BB. The `bb work-board` command remains unchanged, so both plugins cannot be enabled simultaneously.
 
-Выполни из этого каталога после завершения записи задач работающими агентами:
+Execute from this directory after the active agents finish logging tasks:
 
 ```sh
 bb plugin disable tasks
@@ -289,15 +287,15 @@ python3 scripts/import_tasks.py
 bb plugin install .
 ```
 
-Если предыдущие данные не нужны, пропусти импорт. Для другого каталога данных BB: `python3 scripts/import_tasks.py --data-dir /path/to/bb-data`.
+If you do not need the previous data, skip the import. For a different BB data directory: `python3 scripts/import_tasks.py --data-dir /path/to/bb-data`.
 
-Импорт выполняется **до установки Work Board**: копирует SQLite через backup API, сохраняет ID, ключи, проекты, пресеты, комментарии, связи и файлы вложений. В скопированных описаниях и комментариях заменяет URL вложений на новый ID плагина. Оригинальные данные остаются на месте. Импорт откажется работать, если один из плагинов включён или каталог назначения уже существует. Настройки вида интерфейса и старые упоминания, адресованные ID встроенного плагина, не мигрируют.
+Perform the import **before installing Work Board**: it copies the SQLite database via the backup API and preserves IDs, keys, projects, presets, comments, relationships, and attachment files. It updates attachment URLs in copied descriptions and comments to the new plugin ID. The original data remains in place. The import will fail if either plugin is enabled or if the target directory already exists. Interface view settings and old mentions targeting the built-in plugin ID will not be migrated.
 
-После отключения встроенного плагина старые ссылки на вложения в истории чата могут перестать открываться; в перенесённых карточках задачи ссылки обновлены. Новые упоминания и карточки используют Work Board.
+After disabling the built-in plugin, old attachment links in the chat history may stop working; task cards that have been migrated will have updated links. New mentions and cards will use Work Board.
 
-Для возврата: `bb plugin disable work-board`, затем `bb plugin enable tasks`. Новые изменения из Work Board автоматически обратно не переносятся.
+To revert: `bb plugin disable work-board`, then `bb plugin enable tasks`. New changes from Work Board will not be automatically migrated back.
 
-## Проверка и сборка
+## Verification and Build
 
 ```sh
 bun install
@@ -307,7 +305,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 npm run build
 ```
 
-Исходный релиз и лицензия: [UPSTREAM.md](UPSTREAM.md), [LICENSE](LICENSE).
+Source release and license: [UPSTREAM.md](UPSTREAM.md), [LICENSE](LICENSE).
 
 ---
 
@@ -488,7 +486,7 @@ Archive v17 removes the task execution and requester fields. Question records ad
 Project status pushes apply to agent and plugin automation changes. Owner changes in the UI or CLI outside an agent thread never send a status push, including Done.
 
 
-### Исключение статусов в CLI
+### Excluding statuses in the CLI
 
 ```sh
 bb work-board list --project EXA --exclude-status done --json
@@ -496,13 +494,13 @@ bb work-board list --project EXA --exclude-status done,canceled --json
 bb work-board list --project EXA --status todo,done --exclude-status done --json
 ```
 
-Флаг можно повторять. Исключения вычитаются из `--status`, а без него — из всех статусов. Если не осталось статусов, результат пустой. Фильтр применяется до пагинации и сочетается с остальными фильтрами. Формат архива остаётся v5.
+The flag can be repeated. Exclusions are subtracted from `--status`, or from all statuses if the flag is omitted. If no statuses remain, the output is empty. The filter is applied before pagination and combines with the other filters. The archive format remains v5.
 
 
-Кнопка копирования рядом с ключом карточки копирует ключ и актуальное название как `ABC-12 · Название задачи`. Работает в основном экране и боковой панели; успешное копирование отмечается галочкой, ошибка — сообщением.
+The copy button next to the card key copies both the key and the current title as `ABC-12 · Task Title`. It works on the main screen and the side panel; a checkmark indicates a successful copy, while an error shows a message.
 
 
-Вопросы саб-тасок видны на обеих досках и во вкладке Kanban через карточку родителя. Верхний счётчик складывает вопросы родителя и его подзадач; подсказка показывает разбивку. Нажмите счётчик, чтобы раскрыть саб-таски, либо **Sub-tasks · готово/всего**. В раскрытом списке — ключ, название, статус и счётчик вопросов; задачи с вопросами идут первыми. Нажатие открывает саб-таску в текущей панели. Фильтр **Waiting on me** сохраняет родителя при вопросах внутри подзадачи и автоматически раскрывает только подзадачи, ожидающие ответа, кроме завершённых и отменённых. После ответа счётчик и фильтр обновляются. Саб-таски не становятся отдельными карточками/колонками и не участвуют в перетаскивании доски.
+Sub-task questions are visible on both boards and in the Kanban tab via the parent card. The top counter sums questions from the parent and its sub-tasks; the tooltip shows the breakdown. Click the counter to expand sub-tasks, or use **Sub-tasks · completed/total**. The expanded list shows the key, title, status, and question count; tasks with questions appear first. Clicking an item opens the sub-task in the current panel. The **Waiting on me** filter keeps the parent visible when questions exist within sub-tasks, and automatically expands only sub-tasks waiting for a response, excluding completed and canceled ones. The counter and filter update after a response is submitted. Sub-tasks do not become independent cards/columns and are not involved in board drag-and-drop.
 
 
 ### Archived worker threads (0.7.2)
@@ -578,25 +576,25 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v14; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
 
-## Dispatch и иерархия тредов
+## Dispatch and Thread Hierarchy
 
-`bb work-board dispatch KEY --preset NAME`, вызванный из треда, делает новый тред дочерним для вызывающего (`BB_THREAD_ID`), поэтому уведомления о жизненном цикле и архивация следуют иерархии. `--parent-notifications auto|stuck|off` задаёт, какие ходы потомка будят родителя (без флага действует значение bb по умолчанию); `--no-parent` запускает тред вне иерархии (флаги взаимоисключающие). Запуск из UI человеком и `--thread` не меняют родителя. Рекомендации агентам — в разделе «Building a hierarchy without burning provider limits» в `skills/work-board/SKILL.md`.
+`bb work-board dispatch KEY --preset NAME`, when called from a thread, makes the new thread a child of the caller (`BB_THREAD_ID`), so lifecycle notifications and archiving follow the hierarchy. `--parent-notifications auto|stuck|off` specifies which child turns wake the parent (without the flag, bb's default value applies); `--no-parent` runs the thread outside the hierarchy (the flags are mutually exclusive). Launching from the UI by a user and `--thread` do not change the parent. Agent recommendations are in the "Building a hierarchy without burning provider limits" section of `skills/work-board/SKILL.md`.
 
 ## Sequence claims
 
 Create a project sequence with `bb work-board seq create registry_version --project EXA --next 234 --format '1.{n}'`. Use `seq list`, `seq show`, `seq set-next` and `seq delete` with `--project`. Claim with `bb work-board claim registry_version --project EXA --task EXA-12 [--pr URL] [--another]`; plain output is the rendered value. Release with `claim release registry_version 234 --project EXA --reason 'reason'`. Active claims appear on the task. Claims are idempotent per task unless `--another` is supplied; released values are never reused. `set-next --force` permits a lower counter, but allocation remains blocked until it exceeds all prior claims. Sequence state is not exported or imported, and PR close or merge does not release claims automatically.
 
-## Вкладка в правой панели и ссылки на задачи (0.14.0)
+## Right Panel Tab and Task Links (0.14.0)
 
-**Work Board** — постоянная вкладка правой панели треда рядом с Info и Diff, а не закрываемая вкладка из меню «+». Карточка `::task` открывает задачу в этой вкладке. Вкладка помнит, что было открыто в треде (задача или доска), до перезапуска приложения; запрос «открыть задачу» из чата выполняется один раз и не повторяется при возвращении в тред. Вкладки Navigation и Kanban на странице Work Board зарегистрированы тем же способом (`experimental_tab`), их ID прежние. Счётчик открытых задач снова виден на пункте навигации (`experimental_useBadge`).
+**Work Board** is a permanent right panel tab for the thread, located next to Info and Diff, rather than a closable tab from the “+” menu. A `::task` card opens a task in this tab. The tab remembers what was open in the thread (a task or board) until the app is restarted; a “open task” request from chat executes only once and is not repeated when returning to the thread. The Navigation and Kanban tabs on the Work Board page are registered in the same way (`experimental_tab`), and their IDs remain unchanged. The open task counter is visible on the navigation item again (`experimental_useBadge`).
 
-В ответах в чате bb ссылка на задачу пишется обычной Markdown-ссылкой `[EXA-12](/plugins/work-board/work-board/task/EXA-12)`. На странице треда клик по ней открывает задачу во вкладке Work Board правой панели, не уводя из чата; клик с ⌘/Ctrl/Shift/Alt и клик вне треда открывают страницу Work Board в основной области. `bb work-board show` и `create` печатают её готовой (поле `link` в `--json`), упоминание задачи через `@` передаёт её агенту. Тредам в bb-проектах, связанных с Work Board, плагин добавляет короткое правило про такие ссылки в системные инструкции. Оно появляется у тредов, запущенных или возобновлённых после установки.
+In bb chat responses, task links use standard Markdown syntax `[EXA-12](/plugins/work-board/work-board/task/EXA-12)`. Clicking the link on a thread page opens the task in the right panel Work Board tab without leaving the chat; clicking with ⌘/Ctrl/Shift/Alt or clicking outside the thread opens the Work Board page in the main area. The `bb work-board show` and `create` commands output it in ready format (the `link` field when using `--json`), and mentioning a task via `@` passes it to the agent. The plugin adds a brief rule about these links to the system instructions for threads in bb-projects connected to Work Board. It appears for threads started or resumed after installation.
 
-PR из окружений воркеров читаются через встроенный плагин GitHub PR Status (`bb--github-pr-status`) одним пакетным запросом: в bb 0.48 `bb.sdk.environments.pullRequest` больше нет. Если плагин GitHub PR Status выключен, такие PR помечаются как недоступные; явные ссылки на PR и Git-синхронизация работают как раньше.
+PRs from worker environments are read via the built-in GitHub PR Status plugin (`bb--github-pr-status`) in a single batch request: in bb 0.48, `bb.sdk.environments.pullRequest` no longer exists. If the GitHub PR Status plugin is disabled, such PRs are marked as unavailable; explicit PR links and Git synchronization continue to work as before.
 
-## Счётчик на значке Work Board (0.15.1)
+## Work Board Badge Counter (0.15.1)
 
-В настройках Work Board (Settings → Plugins → Work Board или шестерёнка на странице Work Board) свёрнутый блок **Navigation badge** выбирает, что считает значок Work Board в навигации: открытые задачи (по умолчанию), задачи на ревью, задачи с вопросами без ответа, задачи с упавшим тредом и задачи с тредом в простое без обновлений (порог — настройка Flag idle threads without task updates). Можно выбрать несколько вариантов: значок показывает число уникальных задач, совпавших хотя бы с одним из них, задача считается один раз. Подсказка значка показывает разбивку, например «3 tasks: 2 with unanswered questions, 1 in review». Без выбранных вариантов значка нет. Учитываются незаархивированные задачи; `done` и `canceled` не считаются нигде. Выбор хранится в данных плагина на сервере и общий для всех устройств; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. Значок обновляется по событиям задач, тредов и смене выбора, а при включённом простое тредов ещё и раз в минуту.
+In Work Board settings (Settings → Plugins → Work Board or the gear icon on the Work Board page), the **Navigation badge** section lets you choose what the Work Board navigation badge counts: open tasks (default), tasks in review, tasks with unanswered questions, tasks with failed threads, and tasks with idle threads that lack updates (threshold controlled by the Flag idle threads without task updates setting). You can select multiple criteria: the badge shows the number of unique tasks matching at least one criterion, counting each task only once. The tooltip provides a breakdown, for example, "3 tasks: 2 with unanswered questions, 1 in review". If no criteria are selected, the badge is hidden. Only non-archived tasks are counted; `done` and `canceled` statuses are excluded everywhere. Settings are saved in the plugin's server-side data and shared across all devices; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. The badge updates on task and thread events, when criteria change, and additionally once per minute when thread idle monitoring is enabled.
 
 ### Upgrade and rollback (0.16.0)
 
@@ -638,9 +636,9 @@ Cards, task details, and CLI `list` / `show` expose advisory warnings (`advisori
 
 Agent tasks in `in_progress` with complete activity diagnostics and no live attached session prompt reassignment or queueing. The report includes the latest retained attachment and task activity; removed attachment details may no longer be retained. Session checks expire after one minute. Expired UI advice disappears until a fresh metadata read; there are no extra GitHub requests or per-card network polling. PR refreshes invalidate both predecessor and dependent advice. These checks never move statuses, remove dependency links, block commands or send notifications. Only Done satisfies a dependency; a merged PR alone does not.
 
-Управление метками и пресетами доступно из верхней панели: **шестерёнка → Manage labels and presets → Labels**. Пункт **Plugin settings** в том же меню открывает настройки Work Board.
+Label and preset management is available from the top panel: **gear icon → Manage labels and presets → Labels**. The **Plugin settings** item in the same menu opens Work Board settings.
 
-В заголовке карточки кнопка **Copy task link** рядом с ключом копирует Markdown-ссылку для вставки в чат агента; отдельной дублирующей кнопки Share в карточке нет. В Scheduled доступен прежний Share.
+The card header includes a **Copy task link** button next to the key, which copies a Markdown link for pasting into the agent chat; the card does not have a separate duplicate Share button. The original Share option remains available in Scheduled.
 
 ### Reports to the parent thread (0.40.0)
 

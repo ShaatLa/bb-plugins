@@ -1,70 +1,72 @@
 # Tokenomos
 
-Tokenomos показывает, сколько токенов и API-эквивалентных денег расходуют треды BB и сколько сэкономили компакция и локальные модели.
+English | [Русский](README.ru.md)
 
-Все суммы — **API-эквивалент**: сколько стоили бы те же токены по публичным ценам API. По подписке вы платите иначе, поэтому число нужно читать как меру объёма, а не как счёт.
+Tokenomos shows how many tokens and API-equivalent costs BB threads consume, and how much compaction and local models have saved.
 
-## Что показывает страница
+All amounts are **API-equivalent**: what those same tokens would cost at public API prices. Since you pay differently under a subscription, treat this number as a measure of volume rather than a bill.
 
-- **Диапазоны.** День (24 часа), Неделя (7 дней), Месяц (30 дней), 3 месяца (13 недель). Границы — календарные, по часовому поясу сервера.
-- **Плитки.** «Расход (API-эквивалент)» с изменением к предыдущему периоду; «Токены» с долей cache-read; «Компакция ~» — оценка экономии от компакции; «Локальные модели ~» — оценка экономии от локальных моделей.
-- **График и таблица.** Столбцы по интервалам с подсказкой по каждому сегменту; переключатель «По провайдерам / По моделям».
-- **Разбивка.** Свежий вход, cache read, cache write, output, число вызовов и ~$.
-- **Топ тредов.** По 50 на страницу, кнопка «Ещё». Для каждого треда — собственный ~$ и с под-тредами; клик открывает тред.
-- **Компакции в диапазоне.** Тред, время, токены «до → после», источник и ~ чистая экономия.
+## What the page shows
 
-## Откуда берутся числа
+- **Ranges.** Day (24 hours), Week (7 days), Month (30 days), 3 months (13 weeks). Boundaries are calendar-aligned and follow the server time zone.
+- **Tiles.** "Spending (API equivalent)" with change vs. the previous period; "Tokens" with cache-read share; "Compaction ~" — estimated savings from compaction; "Local models ~" — estimated savings from local models.
+- **Chart and table.** Columns by interval with a tooltip for each segment; a "By provider / By model" toggle.
+- **Breakdown.** Fresh input, cache read, cache write, output, number of calls, and ~$.
+- **Top threads.** 50 per page, with a "More" button. Each thread shows its own ~$ and the ~$ including sub-threads; clicking a thread opens it.
+- **Compactions in range.** Thread, time, tokens "before → after", source, and ~ net savings.
 
-| Источник | Что даёт | Когда используется |
+## Where the numbers come from
+
+| Source | What it provides | When it is used |
 | --- | --- | --- |
-| **Claude Code** | Транскрипты `~/.claude/projects/**/*.jsonl` на машине сервера BB, включая субагентов. | Тред Claude Code, для которого найден файл. |
-| **Codex** | Транскрипты `~/.codex/sessions` и `~/.codex/archived_sessions` на машине сервера BB, включая дочерние треды (например, guardian-проверки). | Корневой тред Codex, для которого найден файл. |
-| **События BB** | `thread/tokenUsage/updated`, модели ходов, контекст, компакции. | Все остальные провайдеры, удалённые машины, а также тред, для которого файл не появился через 10 минут после первого события BB. Если файл не покрывает три хода подряд, Tokenomos переключается на события BB для этого интервала. |
-| **local-models** | RPC `usage.list` плагина local-models — по одной записи на запрос модели. | Локальные модели; стоимость 0, а в савингах считается по эталонной модели. |
-| **Antigravity** | RPC `usage.list` плагина antigravity (по шагам модели из `agy` stream-json). | Нужна версия плагина antigravity с `usage.list` (ветка `feat/antigravity-usage`, ещё не выпущена). Без неё треды Antigravity не учитываются. Расход до её установки не восстанавливается. |
-| **Idle Compact** | RPC `compactions.list` плагина `idle-compact`. | Помечает компакции как `idle-compact` и сверяет их с компакциями BB по треду и времени (±2 минуты). |
+| **Claude Code** | Transcripts `~/.claude/projects/**/*.jsonl` on the BB server machine, including subagents. | The Claude Code thread for which the file was found. |
+| **Codex** | Transcripts `~/.codex/sessions` and `~/.codex/archived_sessions` on the BB server machine, including child threads (e.g., guardian checks). | The root Codex thread for which the file was found. |
+| **BB Events** | `thread/tokenUsage/updated`, step counts, context, compactions. | All other providers, remote machines, and threads where the file does not appear within 10 minutes after the first BB event. If the file does not cover three consecutive steps, Tokenomos switches to BB events for that interval. |
+| **local-models** | RPC `usage.list` of the local-models plugin — one record per model request. | Local models; cost is 0, and savings are calculated based on the reference model. |
+| **Antigravity** | RPC `usage.list` of the antigravity plugin (per model steps from the `agy` stream-json). | A version of the antigravity plugin with `usage.list` is required (branch `feat/antigravity-usage`, not yet released). Without it, Antigravity threads are not accounted for. Usage prior to its installation cannot be recovered. |
+| **Idle Compact** | RPC `compactions.list` of the `idle-compact` plugin. | Marks compactions as `idle-compact` and verifies them against BB compactions by thread and time (±2 minutes). |
 
-Обновление: события BB и транскрипты читаются с интервалом около 5 секунд для изменившихся тредов; `usage.list` и `compactions.list` опрашиваются раз в 60 секунд; лимиты BB кэшируются на 60 секунд.
+Update: BB events and transcripts are read at ~5-second intervals for modified threads; `usage.list` and `compactions.list` are polled every 60 seconds; BB rate limits are cached for 60 seconds.
 
-## Ограничения и обозначения
+## Limitations and Notations
 
-- **«~»** — в числе есть оценка: цена не сверена, строка восстановлена по событиям BB или сумма — это контрафактная оценка экономии.
-- **«(частично)»** — часть расхода не учтена. Причины: неизвестная модель или тир тарифа (тогда стоимость «?», а не ноль), неизвестный тред в запросе, пропущенные события BB (восстановленные строки), треды с нарушенным покрытием, а для экономии компакции — контрафактные вызовы, которые попали в другой ценовой диапазон по размеру промпта и поэтому не оценены в деньгах.
-- **Удалённые машины** не имеют транскриптов на сервере, поэтому их расход берётся из событий BB. Он может быть неполным, и такие итоги помечаются «частично».
-- **Цены.** Anthropic и OpenAI сверены с публичными страницами; Gemini не сверена, поэтому любой расход Gemini — «~». Таблица цен и её версия видны в настройках.
-- **Экономия — оценка.** Компакция считает, сколько стоил бы контекст без неё при тех же вызовах и моделях; расчёт идёт по текущим ценам на момент чтения. Экономия локальных моделей — это те же токены по ценам эталонной модели, а не реальные деньги.
+- **“~”** — indicates an estimate: the price has not been verified, the row was reconstructed from BB events, or the figure is a counterfactual estimate of savings.
+- **“(partial)”** — some costs are unaccounted for. Reasons include: an unknown model or pricing tier (cost shown as “?” instead of zero), an unrecognized thread in the request, missing BB events (resulting in reconstructed rows), threads with incomplete coverage, and for compaction savings, counterfactual calls that fell into a different pricing tier due to prompt size and thus lack a monetary estimate.
+- **Remote machines** do not have transcripts stored on the server, so their usage is sourced from BB events. This data may be incomplete, and such totals are marked as “(partial)”.
+- **Prices.** Anthropic and OpenAI rates are verified against official documentation; Gemini rates are not, so any Gemini usage is marked with “~”. The price table and its version are visible in Settings.
+- **Savings are estimates.** Compaction calculates what the context would have cost without it under the same calls and models, using current prices at the time of viewing. Savings for local models reflect the same token volume priced at the reference model’s rates, rather than actual monetary savings.
 
-## Настройки
+## Settings
 
-Раздел «Tokenomos» в настройках BB.
+The "Tokenomos" section in BB settings.
 
-| Настройка | По умолчанию | Диапазон / варианты | Что делает |
+| Setting | Default | Range / Options | Description |
 | --- | --- | --- | --- |
-| Language | `en` | `en` (English), `ru` (Русский) | Язык интерфейса страницы и раздела настроек; числа, даты и время форматируются по языку. Подписи самих настроек в BB объявляются заранее и не переключаются: они всегда на английском. |
-| Хранить сырые записи, дней | 30 | 7–60 | Срок хранения построчных записей. Почасовые итоги хранятся дольше. |
-| Хранить почасовые итоги, дней | 200 | 184–400 | Срок хранения почасовых итогов; 200 дней покрывают период сравнения «3 месяца». |
-| Эталонная модель для расчёта экономии | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, `gpt-6.1-sol`, `gpt-6.1-terra` | Модель, по ценам которой считается экономия локальных моделей. |
-| Учитывать использование вне BB | выкл. | вкл / выкл | Сессии Claude Code и Codex в тех же каталогах, которые не связаны ни с одним тредом BB, попадают в отдельную группу «Вне bb». Каталоги сканируются раз в 5 минут. Эти строки не входят в итоги тредов. |
-| Порог контекста watchlist | 300000 | 50000–1000000 | Треды с большим текущим контекстом и вызовами за последний час. |
-| Свои цены ($/MTok, JSON) | `{}` | JSON-объект; значения проверяются схемой | Переопределяют ставки модели (`input`, `output`, `cacheRead`, `cacheWriteShort`, `cacheWriteLong`, $/MTok). Меняют только ставки и применяются ко всей истории сразу. |
+| Language | `en` | `en` (English), `ru` (Russian) | Interface language for the page and settings section; numbers, dates, and times are formatted according to the selected language. The labels for the settings themselves in BB are predefined and do not switch: they are always in English. |
+| Keep raw records, days | 30 | 7–60 | Retention period for line-level records. Hourly aggregates are kept longer. |
+| Keep hourly aggregates, days | 200 | 184–400 | Retention period for hourly aggregates; 200 days cover the "3 months" comparison period. |
+| Reference model for cost savings | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, `gpt-6.1-sol`, `gpt-6.1-terra` | Model whose prices are used to calculate the savings of local models. |
+| Track usage outside BB | off | on / off | Claude Code and Codex sessions in the same directories that are not linked to any BB thread go into a separate "Outside BB" group. Directories are scanned every 5 minutes. These entries are not included in thread totals. |
+| Watchlist context threshold | 300000 | 50000–1000000 | Threads with high current context and calls within the last hour. |
+| Custom prices ($/MTok, JSON) | `{}` | JSON object; values are validated against the schema | Override model rates (`input`, `output`, `cacheRead`, `cacheWriteShort`, `cacheWriteLong`, $/MTok). Only changes the rates and applies to the entire history at once. |
 
-Кроме этого, раздел настроек показывает статус каждого источника, объём диска и число строк, кнопку **«Очистить старые данные»** и таблицу цен с версией. Фоновая очистка запускается каждый день в 04:17 по расписанию BB.
+Additionally, the settings section shows the status of each source, disk volume, and row count, a **Clear old data** button, and a versioned price table. Background cleanup runs daily at 04:17 according to the BB schedule.
 
-## Интеграции с Work Board и Answers
+## Integrations with Work Board and Answers
 
-Публичный контракт: RPC `costs.threads` и `costs.sum`. Оба необязательные в обе стороны: Tokenomos не требует другие плагины, а вызывающий плагин должен работать без Tokenomos — с таймаутом и без показа цифры при ошибке.
+Public contract: RPC `costs.threads` and `costs.sum`. Both are optional in either direction: Tokenomos does not require other plugins, and the calling plugin must work without Tokenomos—with a timeout and without displaying the value on error.
 
-**Важно:** в этой версии Answers и Work Board к RPC ещё не обращаются. Контракт готов для их подключения.
+**Important:** in this version, Answers and Work Board do not yet call the RPC. The contract is ready for their integration.
 
-Схемы из `contract.ts`:
+Schemas from `contract.ts`:
 
 ```ts
-// Общий тип стоимости
+// Shared cost type
 Cost = {
-  usd: number | null,                         // null: цена неизвестна
+  usd: number | null,                         // null: price unknown
   tokens: { freshIn, cacheRead, cacheWrite, output: number },
-  estimated: boolean,                         // «~»
-  partial: boolean,                           // «(частично)»
+  estimated: boolean,                         // "~"
+  partial: boolean,                           // "(partial)"
 }
 
 // costs.threads
@@ -78,23 +80,23 @@ input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
      |  { spans: { threadId: string, from: number, to: number | null }[] /* 1–2000 */,
           includeDescendants: boolean }
 output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number }
-// spans: вызов считается, только если его время попало в окно своего треда (to: null — до сейчас).
-// Пересекающиеся окна одного треда объединяются, вызов считается один раз. Потомок считается
-// по объединению окон своих корней. threadCount — треды хотя бы с одним учтённым вызовом.
-// Целые часы берутся из почасовых итогов; час, разрезанный границей окна, считается по вызовам,
-// пока сырые записи хранятся (30 дней), а позже — целиком, с пометкой estimated.
+// spans: a call counts only if its time falls inside its thread's window (to: null means until now).
+// Overlapping windows of one thread are merged, so a call counts once. A descendant counts
+// by the union of its roots' windows. threadCount: threads with at least one counted call.
+// Whole hours come from hourly totals; an hour cut by a window edge is counted per call
+// while raw records are kept (30 days), and later as a whole hour, marked estimated.
 ```
 
-Оба RPC имеют тег `usage` и вызываются через `bb.sdk.plugins.callRpc({ pluginId: "tokenomos", method, input, outputSchema, signal })`. Пример вызова со сроком ожидания 3 секунды:
+Both RPCs carry the `usage` tag and are called via `bb.sdk.plugins.callRpc({ pluginId: "tokenomos", method, input, outputSchema, signal })`. Example call with a 3-second timeout:
 
 ```ts
 const sum = await sdk.plugins.callRpc({
   pluginId: "tokenomos",
   method: "costs.sum",
   input: { threadIds, includeDescendants: true },
-  outputSchema: yourCostSumSchema,   // zod-схема вызывающего плагина
+  outputSchema: yourCostSumSchema,   // the calling plugin's zod schema
   signal: AbortSignal.timeout(3000),
-}).catch(() => null);                 // ошибка или отсутствие Tokenomos — не показывать сумму
+}).catch(() => null);                 // error or no Tokenomos: hide the total
 ```
 
 ## CLI
@@ -105,24 +107,24 @@ bb tokenomos status [--json]
 bb tokenomos summary [--range day|week|month|3m] [--json]
 ```
 
-- `status` — источники (id, число строк, состояние `ok` / `degraded` / `no-data`, время последнего импорта), число нарушенных тредов и объём диска.
-- `summary` — итоги по провайдерам и моделям за диапазон; по умолчанию `week`. Без `--json` выводит строку итогов и разбивки; с `--json` — объект `{ providers, models }`.
+- `status` — sources (id, number of rows, status `ok` / `degraded` / `no-data`, last import time), number of failed threads, and disk usage.
+- `summary` — results by provider and model for the selected range; defaults to `week`. Without `--json`, it outputs a summary and breakdown string; with `--json`, it returns a `{ providers, models }` object.
 
-## Приватность
+## Privacy
 
-Tokenomos читает из транскриптов только числа токенов, идентификаторы сессий и сообщений, метки времени и названия моделей и тиров. Из BB берутся идентификаторы тредов, проекты, модели ходов и события использования. Текст сообщений, промптов и ответов не сохраняется; единственный текст, который хранится, — названия тредов, нужные для списка топа и компакций.
+Tokenomos reads only token counts, session and message identifiers, timestamps, and model and tier names from the transcripts. From BB, it collects thread identifiers, projects, move models, and usage events. The text of messages, prompts, and responses is not stored; the only text retained is thread names, which are needed for the top list and compacts.
 
-## Требования
+## Requirements
 
-- **BB 0.46 или новее** (`engines.bb` ≥ 0.46).
+- **BB 0.46 or newer** (`engines.bb` ≥ 0.46).
 - **Plugin SDK 0.6.132** (`@get-bb/plugin-sdk` 0.6.132; `engines.bbPluginSdk` ≥ 0.6.132).
-- Для данных Claude Code и Codex — эти CLI на машине сервера BB; без них работают только события BB.
-- Для сборки и тестов: Node.js 22.19, `npm ci` в `plugins/tokenomos`.
+- For Claude Code and Codex data, these CLIs must be available on the BB server machine; without them, only BB events are supported.
+- For building and testing: Node.js 22.19, run `npm ci` in `plugins/tokenomos`.
 
-Установка:
+Installation:
 
 ```sh
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
 ```
 
-- `wake-cost` — текущий контекст и оценка стоимости холодного и тёплого пробуждения, TTL кэша и его происхождение; неизвестный контекст отличается от неизвестного треда.
+- `wake-cost`: current context, estimated cost for cold and warm wake-ups, cache TTL, and its origin; an unknown context is distinct from an unknown thread.
