@@ -95,6 +95,13 @@ it('groups consecutive questions with a shared answer', async () => {
   await slot.findByText('Shared answer'); expect(slot.getAllByText('Shared answer')).toHaveLength(1);
   expect(document.querySelectorAll('[data-history-ids]')).toHaveLength(1);
 });
+it('shows the owner\'s reply to an agent question once: as the message it sent, not again under the question', async () => {
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'replied' as const, question:'Pick one?', questionSeq:2, answer:'Take B', createdAt:1 };
+  const sent = { ...base, id:'ans_sent', question:'> Pick one?\n\nTake B', questionSeq:3, answer:null, status:'waiting' as const, createdAt:2 };
+  const { slot, recipients } = setup({ list: () => ({ items:[sent, ask], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findAllByText('Pick one?');
+  expect(document.body.textContent!.split('Take B')).toHaveLength(2);
+});
 // 11:01 deferred question, 11:24 child update, 11:30 the answer.
 const asked = Date.now() - 3600000, minute = 60000;
 const late = { ...base, id:'ans_q', question:'Deferred question', interim:'Working on it', answer:'Final answer', createdAt:asked, answeredAt:asked + 29 * minute };
