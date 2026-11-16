@@ -297,3 +297,8 @@ it('updates composer geometry on size changes without measuring each render', ()
     expect(slot.container.querySelector('form')?.style.getPropertyValue('--right-w')).toBe('80px');
   } finally { width.mockRestore(); vi.unstubAllGlobals(); }
 });
+
+it('resolves repeated thread mentions through the same sidebar labels', () => {
+  const { box } = editor('Ask @thread:thr_one and @thread:thr_one#msg=2');
+  expect(Array.from(box.querySelectorAll('.prompt-mention-pill')).map(pill => pill.textContent)).toEqual(['Fix login', 'Fix login· message']);
+});

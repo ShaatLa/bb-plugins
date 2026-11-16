@@ -1,6 +1,6 @@
 import { taskKeyRegex } from './task-links';
 import { rpcContract } from './contract';
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_promptMentionClipboardAttributes, experimental_readPromptMentionClipboard, experimental_useSidebarThreads, experimental_useRpcQuery as useQuery, experimental_ThreadTitleText as ThreadTitleText, useSdk } from '@get-bb/plugin-sdk/app';
 import { threadToken, rememberMention, pastedMentions, type ThreadLabel } from './mentions';
@@ -29,6 +29,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   disabled?: boolean; autoFocus?: boolean; label: string; placeholder: string; onBlur?(): void; className: string; editorRef: React.RefObject<HTMLDivElement | null>; insertRef: React.MutableRefObject<(text: string) => void>;
 }) {
   const sdk = useSdk(), { threads } = experimental_useSidebarThreads();
+  const threadById = useMemo(() => new Map(threads.map(thread => [thread.id, thread])), [threads]);
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const task = taskKeyRegex(workBoard?.projects.map(p => p.prefix) ?? []);
   const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
@@ -59,7 +60,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const drawn = useRef('');
   const [pillContents, setPillContents] = useState<React.ReactPortal[]>([]);
   const spans = Array.from(value.matchAll(matcher), match => {
-    const thread = match[1] ? threads.find(t => t.id === match[1]) : undefined;
+    const thread = match[1] ? threadById.get(match[1]) : undefined;
     const mention = match[1] ? { kind: 'thread' as const, threadId: match[1], label: thread?.displayTitle ?? fetched[match[1]]?.label ?? match[1], ...(thread?.projectId || fetched[match[1]]?.projectId ? { projectId: thread?.projectId ?? fetched[match[1]]?.projectId } : {}) } : match[6] ? pastedMentions().get(match[6]) : undefined;
     return { match, mention };
   });
@@ -69,12 +70,12 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
-      for (const match of value.matchAll(threadToken)) if (!threads.some(t => t.id === match[1]) && !fetched[match[1]]) void sdk.threads.get({ threadId: match[1] }).then(thread => {
+      for (const match of value.matchAll(threadToken)) if (!threadById.has(match[1]) && !fetched[match[1]]) void sdk.threads.get({ threadId: match[1] }).then(thread => {
         if (live) setFetched(old => ({ ...old, [match[1]]: { label: thread.title ?? match[1], projectId: thread.projectId } }));
       }).catch(() => { if (live) setFetched(old => ({ ...old, [match[1]]: { label: match[1] } })); });
     }, 300);
     return () => { live = false; clearTimeout(timer); };
-  }, [value, threads, fetched, sdk]);
+  }, [value, threadById, fetched, sdk]);
   // Opening never scrolls: a quote popup is placed in view already, and focusing it must not move the chat under it.
   useEffect(() => { if (autoFocus) editorRef.current?.focus({ preventScroll: true }); }, [autoFocus, editorRef]);
   useLayoutEffect(() => {
