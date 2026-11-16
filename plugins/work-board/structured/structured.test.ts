@@ -573,6 +573,7 @@ describe("task questions", () => {
           }),
         ],
       ]);
+      expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).not.toContain("Treat this as updated context");
       expect(store.tasks.listComments(task.id)[0]?.notifiedCount).toBe(
         fails ? 0 : 1,
       );

@@ -11,19 +11,24 @@ interface DeliverCommentInput {
   authorName: string;
   threadId?: string;
   mode?: "steer-if-active" | "queue-if-active";
+  /** Question answers carry their own next step, so they skip the reply hint. */
+  replyHint?: boolean;
 }
 
 function steerPrompt(
   taskKey: string,
   authorName: string,
   body: string,
+  replyHint = true,
 ): string {
   return (
     "**Work Board** · `New comment`\n" +
     `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
-    `- From: ${authorName}\n\n${body}\n\n` +
-    "Treat this as updated context for your work on this task; " +
-    `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+    `- From: ${authorName}\n\n${body}` +
+    (replyHint
+      ? "\n\nTreat this as updated context for your work on this task; " +
+        `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+      : "")
   );
 }
 
@@ -89,7 +94,7 @@ export async function deliverCommentToLatestAgent(
       ...links.map((link) => link.threadId),
     ]),
   ];
-  const prompt = steerPrompt(task.key, input.authorName, input.body);
+  const prompt = steerPrompt(task.key, input.authorName, input.body, input.replyHint);
   for (const threadId of candidates) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });

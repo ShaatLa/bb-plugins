@@ -273,6 +273,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         authorName: input.authorName,
         threadId,
         mode: "queue-if-active",
+        replyHint: false,
       });
       store.transaction(() =>
         store.tasks.updateComment(comment!.id, { notifiedCount }),
