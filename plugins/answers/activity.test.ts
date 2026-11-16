@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { activityOf, labelOf, sceneOf, stateOf } from './activity';
 
@@ -50,4 +51,20 @@ describe('scene and words agree', () => {
   ])('%o', (item, scene, label) => {
     expect(sceneOf(item as never)).toBe(scene); expect(labelOf(item as never)).toBe(label);
   });
+});
+
+it('retains the same activity object across equal polls', async () => {
+  const { renderSlot } = await import('@get-bb/plugin-sdk/testing/app');
+  const { act, cleanup } = await import('@testing-library/react');
+  const { vi } = await import('vitest');
+  const { useAgentActivity } = await import('./activity');
+  const seen: unknown[] = [];
+  vi.useFakeTimers();
+  try {
+    renderSlot({ component: () => { seen.push(useAgentActivity('poll_equal', true, true)); return null; } }, {}, { sdk: { threads: { events: { list: async () => [started({ type: 'fileRead', path: 'same.ts' })] } } } } as any);
+    await act(async () => {});
+    const first = seen.at(-1);
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(seen.at(-1)).toBe(first);
+  } finally { cleanup(); vi.useRealTimers(); }
 });

@@ -98,7 +98,7 @@ export function useAgentActivity(threadId: string | undefined, working: boolean,
   useEffect(() => {
     if (!threadId || !working || !visible) return;
     let live = true;
-    const read = () => void Promise.resolve().then(() => sdk.threads.events.list({ threadId, order: 'desc', limit: '40' })).then(rows => { if (live) setState(stateOf(rows as Row[])); }).catch(() => {});
+    const read = () => void Promise.resolve().then(() => sdk.threads.events.list({ threadId, order: 'desc', limit: '40' })).then(rows => { if (live) { const next = stateOf(rows as Row[]); setState(old => old.activity === next.activity && old.label === next.label ? old : next); } }).catch(() => {});
     read(); const timer = setInterval(read, 2500);
     return () => { live = false; clearInterval(timer); };
   }, [sdk, threadId, working, visible]);
