@@ -69,6 +69,17 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
     /** Rewrites one stored job (e.g. after a signature re-scan); the indexed columns never change. */
     /** Names of the jobs that succeeded at a head commit (merge queue groups: what that group ran and passed). */
     /** True when a push run is stored for the commit: it is on a branch (the default branch), not a merge queue group commit. */
+    pushAt(repository: string, sha: string, branch: string | null): string | null {
+      return (database.prepare("SELECT MIN(created_at) AS at FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' AND json_extract(data, '$.headBranch') = ?").get(repository, sha, branch) as { at: string | null }).at;
+    },
+    landingSha(repository: string, number: number, branch: string | null): string | null {
+      const rows = database.prepare("SELECT DISTINCT head_sha AS sha, json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND json_extract(data, '$.event') = 'merge_group' AND json_extract(data, '$.headBranch') LIKE ? ORDER BY created_at DESC").all(repository, `%/pr-${number}-%`) as { sha: string; branch: string }[];
+      return rows.find((row) => queuePullRequest(row.branch) === number && this.pushAt(repository, row.sha, branch) !== null)?.sha ?? null;
+    },
+    landedPullRequest(repository: string, sha: string): number | null {
+      const row = database.prepare("SELECT json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'merge_group' LIMIT 1").get(repository, sha) as { branch: string } | undefined;
+      return queuePullRequest(row?.branch ?? null);
+    },
     pushedAt(repository: string, sha: string): boolean { return !!database.prepare("SELECT 1 FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' LIMIT 1").get(repository, sha); },
     passedAtHead(repository: string, sha: string): string[] { return (database.prepare("SELECT DISTINCT json_extract(data, '$.jobName') AS name FROM ci_jobs WHERE repository = ? AND head_sha = ? AND conclusion = 'success'").all(repository, sha) as { name: string }[]).map((row) => row.name); },
     saveJob(j: JobRecord) { database.prepare("UPDATE ci_jobs SET data = ? WHERE repository = ? AND run_id = ? AND attempt = ? AND job_id = ?").run(slim(j), j.repository, j.runId, j.attempt, j.jobId); },

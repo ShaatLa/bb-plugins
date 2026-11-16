@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyJobs, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
-import { acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
+import { deploymentMode, acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
 import { at, classify, failed, failure, job, LOSS, REPO } from "./test-support";
 import { parseRef } from "./ci-refs";
 
@@ -561,3 +561,37 @@ describe("inherited merge queue failures", () => {
   });
 });
 
+
+it("normalizes legacy deployment modes", () => {
+  for (const value of [true, "true", "all", "garbage", undefined]) expect(deploymentMode(value)).toBe("all");
+  for (const value of [false, "false", "off"]) expect(deploymentMode(value)).toBe("off");
+  expect(deploymentMode("failures")).toBe("failures");
+  expect(enabledEvents({ observeDeployments: "off" }).deploy).toBe(false);
+});
+it("resolves deployment PR locally before fallback and ignores lookup errors", async () => {
+  for (const local of [12, null]) {
+    const paths: string[] = [];
+    const request = async (path: string) => {
+      paths.push(path);
+      return { body: path.includes("/statuses") ? [{ state: "success", created_at: at(5) }] : path.includes("/commits/") ? [{ number: 13, merge_commit_sha: "abcdef0", merged_at: at(1) }] : [{ id: 1, sha: "abcdef0", environment: "production", created_at: at(1) }], headers: new Headers(), status: 200, hasNext: false };
+    };
+    const events = await deploymentEvents({ request, repository: "owner/repo", state: emptyRepoState(), since: 0, now: Date.parse(at(6)), landedPullRequest: () => local });
+    expect(events[0]!.render()).toContain(` · #${local ?? 13} · `);
+    expect(paths.filter((p) => p.includes("/commits/"))).toHaveLength(local === null ? 1 : 0);
+  }
+});
+
+it("looks up PRs only for final deployments and continues after budget errors", async () => {
+  const paths: string[] = [];
+  const request = async (path: string) => {
+    paths.push(path);
+    if (path.includes("/commits/")) throw new Error("429 Budget exhausted");
+    return { body: path.includes("/statuses") ? [{ state: path.includes("/1/") ? "in_progress" : "success", created_at: at(5) }] : [1, 2, 3].map((id) => ({ id, sha: `sha${id}`, created_at: at(1) })), hasNext: false };
+  };
+  const events = await deploymentEvents({ request, repository: "owner/repo", state: emptyRepoState(), since: 0, now: Date.parse(at(6)) });
+  expect(events).toHaveLength(2);
+  expect(paths.filter((path) => path.includes("/commits/"))).toHaveLength(2);
+  expect(paths.some((path) => path.includes("/commits/sha1/"))).toBe(false);
+  expect(events.every((event) => event.deploy?.pullRequest === null)).toBe(true);
+  expect(subscriptionNotice([], enabledEvents({}), 0, 0, "failures")).toContain("deployment failures");
+});

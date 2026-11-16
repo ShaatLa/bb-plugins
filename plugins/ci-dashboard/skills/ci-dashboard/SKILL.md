@@ -184,3 +184,14 @@ Confirmed draft deferrals are excluded from pass rates, chart denominators, fail
 Draft recognition is configurable in Settings → Plugins → CI Dashboard: Draft deferral: workflow name (`draftWorkflow`), only failed job name (`draftJob`) and only failed step name (`draftStep`). All three default to blank, and the rule is disabled unless all three are set. Names are exact, case-sensitive matches, trimmed and limited to 200 characters. Updating them applies to dashboard summaries, charts, interval statistics, failure lists and agent reports. Settings changes invalidate previous cached results and classifications, so matching evidence is collected again. The BB repository import switch appears before the additional repository list.
 
 The three draft-recognition fields are grouped behind a Draft deferral disclosure, collapsed by default. The expanded group has a rounded border, inset rows and horizontal separators; it is visually separated from the remaining settings. A cleanup-safe content script decorates the host settings form; native inputs, validation and autosave are retained. Reopening the settings page collapses the group again. If the host form structure changes, fields remain visible rather than becoming inaccessible.
+
+
+PR deployment subscriptions: `ci_dashboard_manage` with `action: "subscribe_pr", number: 12` subscribes the lead's calling thread; `unsubscribe_pr` cancels it. Pass `repository: "owner/repo"` when several repositories are configured and `threadId: "thr_a"` to select another thread. `list` includes `prSubscriptions` with ISO subscription times.
+
+Deployment lines name the PR when known. `observeDeployments` accepts `all` (default), `failures` (failure, error and gate refusal), or `off`; old boolean settings still work. A successful deployment containing a subscribed PR goes directly to its subscribers instead of observers, then ends those subscriptions. A later successful default-branch deployment also completes earlier PRs when stored merge-group and push jobs prove coverage. Unknown push times keep subscriptions waiting. Failures go only to observers. PR subscriptions poll even with no observers and mode `off`, bypass quiet windows and digests, and end on delivery, thread archive/deletion, or after 14 days (200 entries maximum).
+
+The discoverable `manage` RPC takes the same input as the tool. Actions needing a thread require explicit `threadId` over RPC. Write `{ "action": "subscribe_pr", "number": 12, "threadId": "thr_a" }` to `f.json`, then run:
+
+```sh
+bb plugin rpc call delivery-dashboard manage --input-file f.json --json
+```

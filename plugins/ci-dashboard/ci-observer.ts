@@ -13,7 +13,10 @@ export const OBSERVER_TYPES = ["queue", "loss", "red", "stall", "mass", "deploy"
 export type ObserverType = typeof OBSERVER_TYPES[number];
 export const OBSERVER_TYPE_SETTINGS = { queue: "observeQueueRemoval", loss: "observeRunnerLoss", red: "observeDefaultRed", stall: "observePoolStall", mass: "observeMassCancel", deploy: "observeDeployments" } as const;
 export const OBSERVER_TYPE_LABELS: Record<ObserverType, string> = { queue: "merge queue removals", loss: "runner losses", red: "default-branch red", stall: "pool stalls", mass: "mass cancels", deploy: "deployments" };
-export const enabledEvents = (values: Partial<Record<string, unknown>>) => Object.fromEntries(OBSERVER_TYPES.map((type) => [type, values[OBSERVER_TYPE_SETTINGS[type]] !== false])) as Record<ObserverType, boolean>;
+export function deploymentMode(value: unknown): "all" | "failures" | "off" {
+  return value === false || value === "false" || value === "off" ? "off" : value === "failures" ? "failures" : "all";
+}
+export const enabledEvents = (values: Partial<Record<string, unknown>>) => Object.fromEntries(OBSERVER_TYPES.map((type) => [type, type === "deploy" ? deploymentMode(values.observeDeployments) !== "off" : values[OBSERVER_TYPE_SETTINGS[type]] !== false])) as Record<ObserverType, boolean>;
 
 // --- observer thread list (setting value: comma-separated BB thread ids) ---
 export const MAX_OBSERVERS = 10;
@@ -65,6 +68,7 @@ const completedAt = (job: JobRecord) => Date.parse(job.completedAt ?? job.create
 
 export type ObserverEvent = {
   type: ObserverType; key: string;
+  deploy?: { pullRequest: number | null; sha: string; state: "success" | "failure" | "error" };
   /** When the thing happened; events from before the type or the thread was switched on are never sent. */
   at: number;
   /** "once": one message per key for as long as the key is remembered. "quiet": a key that reopens (a stall) is repeated only after the quiet window. */
@@ -215,7 +219,7 @@ export function deployRunOutcome(classified: ClassifiedJob[]): DeployRunOutcome 
     return refused.length === own.length ? { refused: refused[0]!.evidence ?? refused[0]!.job.failedSteps[0] ?? "gate step" } : "failed";
   };
 }
-export async function deploymentEvents({ request, repository, state, since, now, maxStatuses = 10, runOutcome = () => null }: { request: GitHubRequest; repository: string; state: ObserverRepoState; since: number; now: number; maxStatuses?: number; runOutcome?: DeployRunOutcome }): Promise<ObserverEvent[]> {
+export async function deploymentEvents({ request, repository, state, since, now, maxStatuses = 10, runOutcome = () => null, landedPullRequest = () => null }: { request: GitHubRequest; repository: string; state: ObserverRepoState; since: number; now: number; maxStatuses?: number; runOutcome?: DeployRunOutcome; landedPullRequest?: (repository: string, sha: string) => number | null }): Promise<ObserverEvent[]> {
   const list = z.array(deploymentRow).parse((await request(`/repos/${repository}/deployments?per_page=30`)).body);
   for (const [id, seen] of Object.entries(state.deploys)) if (seen < since) delete state.deploys[id];
   const events: ObserverEvent[] = [];
@@ -242,9 +246,16 @@ export async function deploymentEvents({ request, repository, state, since, now,
       if (outcome === null && now - Date.parse(status.created_at) < DEPLOY_WAIT_MS) continue; // the run's jobs are not stored yet: look again next loop
       if (outcome && outcome !== "failed") label = `refused (${outcome.refused})`;
     }
+    let pullRequest = landedPullRequest(repository, d.sha ?? "");
+    if (pullRequest === null && d.sha) {
+      try {
+        const prs = z.array(z.object({ number: z.number().int().positive(), merge_commit_sha: z.string().nullable(), merged_at: z.string().nullable() })).parse((await request(`/repos/${repository}/commits/${d.sha}/pulls`)).body);
+        pullRequest = (prs.find((pr) => pr.merge_commit_sha === d.sha) ?? prs.find((pr) => pr.merged_at))?.number ?? null;
+      } catch { /* PR context must never prevent delivery. */ }
+    }
     state.deploys[String(d.id)] = Date.parse(status.created_at);
-    events.push({ type: "deploy", key: `deploy:${d.id}:${status.state}`, dedupe: "once", at: Date.parse(status.created_at),
-      render: () => fit(`Deploy ${environment} ${label} · ${sha7(d.sha ?? "")} · deployment ${d.id}`, url) });
+    events.push({ deploy: { pullRequest, sha: d.sha ?? "", state: status.state as "success" | "failure" | "error" }, type: "deploy", key: `deploy:${d.id}:${status.state}`, dedupe: "once", at: Date.parse(status.created_at),
+      render: () => fit(`Deploy ${environment} ${label}${pullRequest === null ? "" : ` · #${pullRequest}`} · ${sha7(d.sha ?? "")} · deployment ${d.id}`, url) });
   }
   return events;
 }
@@ -362,7 +373,7 @@ export function dispatch(state: ObserverRepoState, items: Rendered[], global: Ob
 }
 
 /** First message to a newly subscribed thread. */
-export function subscriptionNotice(repositories: string[], enabled: Record<ObserverType, boolean>, quietMinutes: number, batchMinutes: number) {
-  const types = OBSERVER_TYPES.filter((type) => enabled[type]).map((type) => OBSERVER_TYPE_LABELS[type]).join(", ") || "no event types";
+export function subscriptionNotice(repositories: string[], enabled: Record<ObserverType, boolean>, quietMinutes: number, batchMinutes: number, mode = "all") {
+  const types = OBSERVER_TYPES.filter((type) => enabled[type]).map((type) => type === "deploy" && mode === "failures" ? "deployment failures" : OBSERVER_TYPE_LABELS[type]).join(", ") || "no event types";
   return fit(`${PREFIX} Subscribed to CI events for ${repositories.join(", ") || "no repositories"}: ${types}; quiet window ${quietMinutes} min${batchMinutes > 0 ? `; digest every ${batchMinutes} min` : ""}`);
 }

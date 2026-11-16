@@ -11,7 +11,7 @@ import { resolveRange } from "./date-range";
 import { createJobStore } from "./ci-jobs";
 import { buildProblems } from "./ci-problems";
 import { cleanupCache } from "./cache-cleanup";
-import { zip } from "./test-support";
+import { zip, job } from "./test-support";
 
 vi.mock("./auth", () => ({ resolveGithubToken: vi.fn() }));
 // Pass-through spies: the real code runs, the tests only count calls.
@@ -2049,7 +2049,7 @@ test("ci_dashboard_manage observer actions subscribe, replaces, unsubscribes and
   try {
     await plugin(bb);
     const call = async (input: object, threadId = "thr_caller") => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", input, { threadId }) as string);
-    expect(await call({ action: "list" })).toEqual({ observerThreads: [], events: ["merge queue removals", "runner losses", "default-branch red", "pool stalls", "mass cancels", "deployments"], quietMinutes: 30, batchMinutes: 0 });
+    expect(await call({ action: "list" })).toEqual({ prSubscriptions: [], observerThreads: [], events: ["merge queue removals", "runner losses", "default-branch red", "pool stalls", "mass cancels", "deployments"], quietMinutes: 30, batchMinutes: 0 });
     expect(await call({ action: "subscribe" })).toMatchObject({ observerThreads: ["thr_caller"] });
     expect(sentTo(send, "thr_caller")).toEqual([expect.stringContaining("Subscribed to CI events for acme/widgets")]);
     // Subscribing again changes nothing and repeats nothing.
@@ -2245,5 +2245,84 @@ test("cache cleanup on the metrics paths runs at most once per five minutes", as
     await harness.behavior.callRpc("metrics", { days: 7 });
     await harness.behavior.callRpc("metrics", { days: 30 });
     expect(calls()).toBe(atStart + 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("PR subscriptions validate, serialize, expire and clean up; manage RPC requires a thread", async () => {
+  const { bb, harness, get } = observerHost({ repository: "owner/repo", observerThreads: "" });
+  try {
+    await plugin(bb);
+    const call = async (input: object) => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", input, { threadId: "thr_a" }) as string);
+    await expect(call({ action: "subscribe_pr" })).rejects.toThrow("number");
+    await expect(call({ action: "subscribe_pr", number: 12, threadId: "bad" })).rejects.toThrow("thread id");
+    get.mockResolvedValueOnce({ id: "thr_b", archivedAt: 1 });
+    await expect(call({ action: "subscribe_pr", number: 12, threadId: "thr_b" })).rejects.toThrow("archived");
+    await expect(harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12 })).rejects.toThrow("threadId is required when called over RPC");
+    await Promise.all([call({ action: "subscribe_pr", number: 12 }), call({ action: "subscribe_pr", number: 12 }), call({ action: "subscribe_pr", number: 13 })]);
+    expect((await call({ action: "list" })).prSubscriptions).toHaveLength(2);
+    expect(await call({ action: "unsubscribe_pr", number: 13 })).toMatchObject({ threadIds: [] });
+    expect(await harness.behavior.callRpc("manage", { action: "list" })).toMatchObject({ prSubscriptions: [{ repository: "owner/repo", number: 12, threadId: "thr_a", at: new Date().toISOString() }] });
+    await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_a" }) });
+    expect((await call({ action: "list" })).prSubscriptions).toEqual([]);
+    await call({ action: "subscribe_pr", number: 12 });
+    vi.setSystemTime(Date.now() + 14 * 86_400_000);
+    expect((await call({ action: "list" })).prSubscriptions).toEqual([]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+for (const mode of ["all", "failures", "off"]) for (const state of ["success", "failure", "error"]) for (const subscribed of [false, true]) {
+  test(`deployment routing mode=${mode} state=${state} subscribed=${subscribed}`, async () => {
+    const scenario = ciScenario();
+    scenario.running = [];
+    scenario.deployments = [{ id: 31, environment: "staging", sha: "deadbeefcafe", created_at: "2026-10-20T11:59:00Z" }];
+    scenario.deploymentStatus = [{ state, created_at: "2026-10-20T12:00:30Z" }];
+    const { bb, harness, send } = observerHost({ observeDeployments: mode, observerThreads: mode === "off" ? "" : "thr_observer" });
+    try {
+      await plugin(bb);
+      const call = async (input: object) => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", input, { threadId: "thr_a" }) as string);
+      const repository = subscribed ? (await call({ action: "subscribe_pr", number: 12 })).repository : "";
+      if (subscribed) createJobStore(bb.storage.database()).saveAttempt(repository, 700, 1, [job({ repository, event: "merge_group", headBranch: "gh-readonly-queue/main/pr-12-abc", headSha: "deadbeefcafe", runId: 700 })], true);
+      await signalsPass(harness, 0);
+      await signalsPass(harness);
+      const observer = sentTo(send, "thr_observer").filter((line) => line.includes("Deploy "));
+      expect(observer).toHaveLength(mode !== "off" && !(state === "success" && (subscribed || mode === "failures")) ? 1 : 0);
+      expect(sentTo(send, "thr_a")).toHaveLength(subscribed && state === "success" ? 1 : 0);
+      expect((await call({ action: "list" })).prSubscriptions).toHaveLength(subscribed && state !== "success" ? 1 : 0);
+    } finally { await harness.lifecycle.dispose(); }
+  });
+}
+
+for (const knownPush of [false, true]) test(`later deployment covers earlier landing only with known push time (${knownPush})`, async () => {
+  const scenario = ciScenario();
+  scenario.running = [];
+  scenario.deployments = [{ id: 31, environment: "staging", sha: "latercommit", created_at: "2026-10-20T11:59:00Z" }];
+  scenario.deploymentStatus = [{ state: "success", created_at: "2026-10-20T12:00:30Z" }];
+  const { bb, harness, send } = observerHost({ observeDeployments: "off", observerThreads: "" });
+  try {
+    await plugin(bb);
+    const dashboard = await harness.behavior.callRpc("metrics", { days: 1 }) as { repositories: Metrics[] };
+    const snapshot = bb.storage.database().prepare("SELECT configuration FROM dashboard_snapshots LIMIT 1").get() as { configuration: string };
+    const metrics = dashboard.repositories[0]!;
+    bb.storage.database().prepare("INSERT OR REPLACE INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?)").run(metrics.repository, snapshot.configuration, JSON.stringify({ metrics, records: { deployments: [], runs: [], commits: [], branch: "main" }, coverage: metrics.range, checkedAt: Date.now() }), Date.now());
+    const result = JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", { action: "subscribe_pr", number: 12 }, { threadId: "thr_a" }) as string);
+    const repository = result.repository, store = createJobStore(bb.storage.database());
+    store.saveAttempt(repository, 700, 1, [job({ repository, runId: 700, event: "merge_group", headBranch: "gh-readonly-queue/main/pr-12-abc", headSha: "earlycommit" })], true);
+    store.saveAttempt(repository, 701, 1, [job({ repository, runId: 701, event: "push", headBranch: "main", headSha: "earlycommit", createdAt: "2026-10-20T11:00:00Z" })], true);
+    if (knownPush) store.saveAttempt(repository, 702, 1, [job({ repository, runId: 702, event: "push", headBranch: "main", headSha: "latercommit", createdAt: "2026-10-20T11:30:00Z" })], true);
+    expect(store.landingSha(repository, 12, "main")).toBe("earlycommit");
+    const historyRows = bb.storage.database().prepare("SELECT data FROM repository_history").all() as { data: Buffer }[];
+    expect(historyRows.map((row) => unpack(row.data).records.branch)).toContain("main");
+    await signalsPass(harness, 0);
+    expect(sentTo(send, "thr_a")).toEqual(knownPush ? [expect.stringContaining("Deploy staging success · #12 · in `laterco` · deployment 31")] : []);
+    const listed = await harness.behavior.callRpc("manage", { action: "list" }) as { prSubscriptions: unknown[] };
+    expect(listed.prSubscriptions).toHaveLength(knownPush ? 0 : 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("PR subscriptions require repository selection with several repositories", async () => {
+  const { bb, harness } = observerHost({ repository: "owner/repo, owner/other", observerThreads: "" });
+  try {
+    await plugin(bb);
+    await expect(harness.behavior.callAgentTool("ci_dashboard_manage", { action: "subscribe_pr", number: 12 }, { threadId: "thr_a" })).rejects.toThrow("Several repositories are configured; pass repository");
   } finally { await harness.lifecycle.dispose(); }
 });
