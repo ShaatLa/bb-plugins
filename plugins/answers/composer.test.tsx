@@ -97,6 +97,18 @@ it('draws "> " lines as one quote block with hidden markers, like bb composer, a
   expect(onChange).toHaveBeenLastCalledWith('');
 });
 
+it('quotes the selected lines on Cmd+Shift+9 and unquotes them on a second press', () => {
+  const { box, onChange } = editor('intro\nfirst line\n\nsecond line');
+  const text = box.firstChild!, range = document.createRange(), selection = window.getSelection()!;
+  range.setStart(text, 8); range.setEnd(text, 20); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(box, { key: '(', code: 'Digit9', metaKey: true, shiftKey: true });
+  expect(onChange).toHaveBeenLastCalledWith('intro\n> first line\n>\n> second line');
+  cleanup(); const quoted = editor('intro\n> first line\n>\n> second line'), quote = quoted.box.querySelector('[data-quote]')!;
+  range.selectNodeContents(quote); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.keyDown(quoted.box, { key: '(', code: 'Digit9', ctrlKey: true, shiftKey: true });
+  expect(quoted.onChange).toHaveBeenLastCalledWith('intro\nfirst line\n\nsecond line');
+});
+
 function nativeEditor(options: any = {}) {
   const onSend = vi.fn();
   const slot = renderSlot({ component: () => {

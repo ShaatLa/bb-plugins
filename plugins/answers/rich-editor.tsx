@@ -146,6 +146,14 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : choices.length - 1)) % choices.length); return; }
       if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(choices[active].id); return; }
     }
+    // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail: quotes the selected lines (or the caret's line), or unquotes them
+    // when all already are; bb's context menu cannot take a plugin item. event.code keeps it working on any keyboard layout.
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') {
+      event.preventDefault();
+      const [a,b] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', b > a && value[b - 1] === '\n' ? b - 1 : b), end = stop < 0 ? value.length : stop;
+      const lines = value.slice(start, end).split('\n'), isQuote = (line: string) => /^>(?: |$)/.test(line), unquote = lines.every(isQuote);
+      replace(lines.map(line => unquote ? line.replace(/^> ?/, '') : isQuote(line) ? line : line ? `> ${line}` : '>').join('\n'), start, end); return;
+    }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
     if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey) { const [a] = selection(); replace(/^>(?: |\n|$)/.test(value.slice(a ? value.lastIndexOf('\n', a - 1) + 1 : 0)) ? '\n> ' : '\n'); } else onSend(); return; }
     if (event.key === 'Backspace' || event.key === 'Delete') {
