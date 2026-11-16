@@ -280,7 +280,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // A second click on the open contact lists its sub-sessions as bb's sidebar nests them; their chats do not open here yet,
   // and their bb thread menu gains Copy ID.
   type SidebarThread = typeof sidebarThreads[number];
-  const subTree = (id: string, depth = 1): [SidebarThread, number][] => (children.get(id) ?? []).flatMap(t => [[t, depth] as [SidebarThread, number], ...subTree(t.id, depth + 1)]);
+  // rails[k]: whether the node on this row's path at depth k+1 has a later sibling, so the guide line of that level runs on.
+  const subTree = (id: string, depth = 1, rails: boolean[] = []): [SidebarThread, number, boolean[]][] => { const kids = children.get(id) ?? []; return kids.flatMap((t, i) => { const own = [...rails, i < kids.length - 1]; return [[t, depth, own] as [SidebarThread, number, boolean[]], ...subTree(t.id, depth + 1, own)]; }); };
   const [openSubs, setOpenSubs] = useStoredState<string[]>('bb-plugin-answers:page:open-subs', []);
   const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
   // Archiving or deleting the open thread (here or in bb) drops it from the sidebar; the chat closes with it.
@@ -677,9 +678,12 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
         if (!tally) return <Fragment key={recipient.threadId}>{menu}</Fragment>;
         const name = recipient.threadTitle ?? 'Untitled thread';
         // bb's sidebar child rows: 8px plus 24px a level, the provider icon, the title, the status glyph only while working.
-        return <Fragment key={recipient.threadId}>{menu}{openSubs.includes(recipient.threadId) && <ul aria-label={`Sub-sessions of ${name}`} className="pb-1">{subTree(recipient.threadId).map(([sub, depth]) => { const own = resolveThreadStatus({ thread: sub, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }), info = providers.find(p => p.id === sub.providerId), provider = sub.providerId ? info ?? { id: sub.providerId } : null, providerName = info?.displayName ?? sub.providerId;
+        return <Fragment key={recipient.threadId}>{menu}{openSubs.includes(recipient.threadId) && <ul aria-label={`Sub-sessions of ${name}`} className="pb-1">{subTree(recipient.threadId).map(([sub, depth, rails]) => { const own = resolveThreadStatus({ thread: sub, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }), info = providers.find(p => p.id === sub.providerId), provider = sub.providerId ? info ?? { id: sub.providerId } : null, providerName = info?.displayName ?? sub.providerId;
           return <ThreadActionsContextMenu key={sub.id} thread={{ ...sub, environment: sub.environment?.id ? { id: sub.environment.id, path: sub.environment.path } : null }} inline={[{ key: 'answers-copy-id', group: THREAD_ACTION_GROUPS.open, action: { label: 'Copy ID', icon: 'Copy', run: () => void copyToClipboard({ text: sub.id }) } }]}>
-            <li title="Sub-session chats do not open here yet" className="flex h-[var(--bb-sidebar-row-height,28px)] w-full cursor-default items-center gap-2 rounded-md pr-2 text-sm text-sidebar-foreground has-[[data-state=open]]:bg-sidebar-accent data-[state=open]:bg-sidebar-accent" style={{ paddingLeft: 8 + depth * 24 }}>
+            <li title="Sub-session chats do not open here yet" className="relative flex h-[var(--bb-sidebar-row-height,28px)] w-full cursor-default items-center gap-2 rounded-md pr-2 text-sm text-sidebar-foreground has-[[data-state=open]]:bg-sidebar-accent data-[state=open]:bg-sidebar-accent" style={{ paddingLeft: 8 + depth * 24 }}>
+              {/* bb's hairline guides, unbroken: each level's line runs under its parent's icon (the contact's avatar for the first)
+                  down to its last child, ending at that row's middle. */}
+              {rails.map((more, k) => (more || k === depth - 1) && <span key={k} data-guide={k + 1} aria-hidden className={`pointer-events-none absolute top-0 w-px bg-border-hairline opacity-70 ${more ? 'bottom-0' : 'h-1/2'}`} style={{ left: k ? 16 + k * 24 : 24 }} />)}
               <span className="flex min-w-0 flex-1 items-center">{provider && <span role="img" aria-label={providerName ?? undefined} className="mr-2 flex size-4 shrink-0 items-center justify-center text-muted-foreground"><ProviderIcon providerKind="agent" provider={provider} className="size-3.5" /></span>}<span className="min-w-0 truncate">{sub.title ?? 'Untitled thread'}</span></span>
               {own.isWorking && <span role="img" aria-label="Working" className="inline-flex size-4 shrink-0 items-center justify-center text-subtle-foreground"><ThreadStatusGlyph indicator={own.indicator} /></span>}
             </li>
