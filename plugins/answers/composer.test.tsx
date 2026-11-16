@@ -281,3 +281,19 @@ it('keeps edit previews by path and revokes only removed images', async () => {
   expect(read).toHaveBeenCalledTimes(2); expect(revoke).not.toHaveBeenCalledWith('blob:second');
   slot.unmount(); expect(revoke).toHaveBeenCalledWith('blob:second');
 });
+
+it('updates composer geometry on size changes without measuring each render', () => {
+  const callbacks: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { callbacks.push(callback); } observe() {} disconnect() {} });
+  const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(80);
+  const props = { label: 'Geometry', value: 'one', onChange: () => {}, attachments: [], onAttachments: () => {}, projectId: null, onSend: () => {} };
+  try {
+    const slot = renderSlot({ component: Composer }, props);
+    width.mockClear();
+    slot.rerender(<Composer {...props} value="two" />);
+    expect(width).not.toHaveBeenCalled();
+    callbacks.forEach(run => run());
+    expect(width).toHaveBeenCalled();
+    expect(slot.container.querySelector('form')?.style.getPropertyValue('--right-w')).toBe('80px');
+  } finally { width.mockRestore(); vi.unstubAllGlobals(); }
+});

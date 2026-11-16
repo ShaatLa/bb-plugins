@@ -65,11 +65,16 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   }, [value, tall]);
   // The send group can include extra actions; its width places bb's microphone just left of it in the open layout.
   useLayoutEffect(() => {
-    if (!root.current || !right.current) return;
-    root.current.style.setProperty('--right-w', `${right.current.offsetWidth}px`);
-    // Mic box offset from the form's padding edge to the send group, row padding included (it differs per layout).
-    root.current.style.setProperty('--mic-r', `${root.current.getBoundingClientRect().right - root.current.clientLeft - right.current.getBoundingClientRect().left}px`);
-  });
+    const form = root.current, group = right.current; if (!form || !group) return;
+    const measure = () => {
+      const width = group.offsetWidth, mic = form.getBoundingClientRect().right - form.clientLeft - group.getBoundingClientRect().left;
+      form.style.setProperty('--right-w', `${width}px`);
+      form.style.setProperty('--mic-r', `${mic}px`);
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure); observer?.observe(form); observer?.observe(group);
+    return () => observer?.disconnect();
+  }, [tall]);
   async function attach(files: File[]) {
     if (!files.length) return;
     if (!projectId) { setError('Attachments need a thread in a project'); return; }
