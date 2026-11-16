@@ -702,6 +702,20 @@ it('shows sidebar project, worktree branch, and context remaining', async () => 
   expect(await slot.findByText('Plugins')).toBeTruthy(); expect(slot.getByText('answers/3g').parentElement!.getAttribute('title')).toBe('Worktree'); fireEvent.click(await slot.findByRole('button', { name:'Context window 38% used' })); expect(slot.getByRole('dialog', { name:'Context window' }).textContent).toContain('62% left');
 });
 
+it('keeps the context ring through a failed read or one without usage', async () => {
+  let visible = true;
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
+  const context = vi.fn(async () => ({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) as any);
+  const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
+  const { slot, recipients } = setup({ context, sidebarThreads:{ threads:[thread], projects:[] } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByRole('button', { name:'Context window 38% used' })).toBeTruthy();
+  const reread = async (answer: () => Promise<any>) => { context.mockImplementationOnce(answer); visible = false; act(() => { document.dispatchEvent(new Event('visibilitychange')); }); visible = true; act(() => { document.dispatchEvent(new Event('visibilitychange')); }); await waitFor(() => expect(context.mock.results.at(-1)?.type).toBe('return')); await act(async () => { await Promise.resolve(); }); };
+  const calls = context.mock.calls.length;
+  await reread(async () => { throw new Error('busy'); });
+  await reread(async () => ({ usage:null }));
+  expect(context.mock.calls.length).toBe(calls + 2);
+  expect(slot.getByRole('button', { name:'Context window 38% used' })).toBeTruthy();
+});
 it('pauses queue and context polling while hidden and refetches when visible', async () => {
   let visible = true;
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
