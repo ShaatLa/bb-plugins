@@ -74,6 +74,7 @@ const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 
 type Draft = { threadId: string; projectId?: string | null; itemId: string; quote: string; quoteSeq?: number; top: number; above?: number; left: number; width: number };
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
+export function receivePage(old: { threadId?: string; pages: ListResult[] }, threadId: string, index: number, data: ListResult) { if (old.threadId === threadId && old.pages[index] === data) return old; const next = old.threadId === threadId ? [...old.pages] : []; next[index] = data; if (!data.nextCursor) next.length = index + 1; return { threadId, pages: next }; }
 const NO_PAGES: ListResult[] = [];
 // Pages can land out of order (an older one from cache while the newest refetches); only the unbroken run from the newest is shown.
 export const unbroken = (pages: ListResult[]) => { const gap = pages.findIndex(page => !page); return gap < 0 ? pages : pages.slice(0, gap); };
@@ -372,7 +373,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     return () => { active = false; clearTimeout(timer); };
   }, [selected, search, query, rpc]);
   const jumpTo = useCallback((token: string) => { setJump(token); setOlder(false); }, []);
-  const receive = useRef((threadId: string, index: number, data: ListResult) => setLoaded(old => { const next = old.threadId === threadId ? [...old.pages] : []; next[index] = data; if (!data.nextCursor) next.length = index + 1; return { threadId, pages: next }; })).current;
+  const receive = useRef((threadId: string, index: number, data: ListResult) => setLoaded(old => receivePage(old, threadId, index, data))).current;
   // fresh: just opened, start at the top; prepend: Load earlier grew the top, keep the reader's place.
   const position = useRef({ height: 0, top: 0, bottom: false, fresh: true, prepend: false });
   // First unread message when the conversation opened; it keeps its divider after the thread is marked read.
