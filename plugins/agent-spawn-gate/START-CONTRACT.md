@@ -40,6 +40,7 @@ Environment is the bb SDK environment object, not a list of CLI flags:
 - New worktree: {type:"host",hostId?:"host_...",workspace:{type:"managed-worktree",baseBranch:{kind:"named",name:"main"}}}; baseBranch may instead be {kind:"default"}.
 - Personal: {type:"host",hostId?:"host_...",workspace:{type:"personal"}}.
 - Existing path: {type:"host",hostId?:"host_...",workspace:{type:"unmanaged",path:"/absolute/path"}}.
+For non-personal host workspaces, an omitted hostId is resolved from the parent session’s environment, then the project’s default source host. If neither exists, start fails before minting. Explicit hostId is preserved. Dry-run returns the resolved hostId. Personal workspaces keep core’s existing default behavior.
 Paths describe the selected execution host, not the builder checkout. The builder checkout is never used as the child workspace implicitly.
 
 Plugin sequence: validate builder JSON -> mint exact brief for resolved project/parent -> spawn via bb SDK with returned prompt and whitelisted spawn fields. The plugin owns tokens, attribution, project binding and spawn invocation. It does not retry spawn automatically, to avoid duplicate children.

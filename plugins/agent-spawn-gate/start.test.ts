@@ -19,8 +19,9 @@ async function fixture() {
   await mkdir(repo);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git("init", "-b", "main"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");
-  const write = async (brief = "first") => {
-    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"}}))\n`);
+  const write = async (brief = "first", environment?: Record<string, unknown>) => {
+    const extra = environment ? `,"environment":json.loads(${JSON.stringify(JSON.stringify(environment))})` : "";
+    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"${extra}}}))\n`);
     git("add", "."); git("commit", "-m", brief);
     return git("rev-parse", "HEAD");
   };
@@ -97,4 +98,29 @@ it("revokes the minted admission when spawn fails without retrying the child", a
   await expect(f.start(f.request)).rejects.toThrow("HTTP 400");
   expect(f.spawn).toHaveBeenCalledTimes(1);
   expect(f.revoke).toHaveBeenCalledExactlyOnceWith("test-token");
+});
+
+it.each([
+  ["parent", "env_parent", undefined, "host_parent"],
+  ["default source", null, undefined, "host_default"],
+  ["explicit", "env_parent", "host_chosen", "host_chosen"],
+] as const)("resolves new-worktree host from %s before dry-run and mint", async (_label, environmentId, hostId, expected) => {
+  const f = await fixture();
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId: "host_parent" }));
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId: "host_default" }] }));
+  const environment = { type: "host", ...(hostId ? { hostId } : {}), workspace: { type: "managed-worktree", baseBranch: { kind: "named", name: "main" } } };
+  await f.write("worktree", environment);
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({ build: { spawn: { environment: { hostId: expected } } } });
+  expect(f.mint).not.toHaveBeenCalled();
+  await f.start(f.request);
+  expect(f.spawn).toHaveBeenCalledWith(expect.objectContaining({ environment: { ...environment, hostId: expected } }));
+});
+it("rejects a new workspace with no resolvable host before minting", async () => {
+  const f = await fixture();
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: null }));
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [] }));
+  await f.write("worktree", { type: "host", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } });
+  await expect(f.start(f.request)).rejects.toThrow("Cannot resolve execution host");
+  expect(f.mint).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
 });

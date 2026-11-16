@@ -121,6 +121,13 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
       const build = buildSchema.parse(parsed);
       if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent");
+      const target = build.spawn.environment;
+      if (target?.type === "host" && !target.hostId && target.workspace.type !== "personal") {
+        const parentEnvironment = parent.environmentId ? await bb.sdk.environments.get({ environmentId: parent.environmentId }) : null;
+        const hostId = parentEnvironment?.hostId ?? project.sources.find(source => source.isDefault)?.hostId;
+        if (!hostId) throw new Error("Cannot resolve execution host: set hostId or configure a project default source");
+        target.hostId = hostId;
+      }
       const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceCommit };
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();
