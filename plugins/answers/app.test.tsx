@@ -249,6 +249,30 @@ it('keeps the quote popup under its selection when the chat moves it (new messag
   bottom = 130; fireEvent.scroll(dialog.closest('.overflow-auto')!);
   await waitFor(() => expect(dialog.style.top).toBe('114px'));
 });
+it('does not follow a new message to the bottom while a quote popup is open', async () => {
+  let fresh = false, height = 1000;
+  const tops = new WeakMap<Element, number>();
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    const { slot } = await inboxSetup({ list: () => ({ items: fresh ? [{ ...item, id: 'ans_new', question: 'Newer', answer: 'Newer answer', createdAt: item.createdAt + 1, answeredAt: (item.answeredAt ?? item.createdAt) + 1 }, item] : [item], nextCursor: null }) });
+    const view = slot.getByText('The answer').closest('.overflow-auto') as HTMLElement;
+    fireEvent.wheel(view); tops.set(view, 500); fireEvent.scroll(view); // the reader is at the bottom
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const body = slot.getByText('The answer').closest('[data-agent-body]')!, range = document.createRange(); range.selectNodeContents(body);
+    Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, top: 20, bottom: 30, width: 50, height: 10 }] });
+    vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
+    fireEvent.mouseUp(body); expect(slot.getByRole('dialog', { name: 'Quote reply' })).toBeTruthy();
+    fresh = true; height = 1600;
+    await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+    await slot.findByText('Newer answer');
+    expect(tops.get(view)).toBe(500);
+  } finally { spies.forEach(spy => spy.mockRestore()); }
+});
 it('snapshots a quote draft through focus and refresh; Add to reply pool opens the pool tab', async () => {
   const poolAdd = vi.fn(() => ({ id: 'pool_new' }));
   const { slot } = await inboxSetup({ poolAdd });

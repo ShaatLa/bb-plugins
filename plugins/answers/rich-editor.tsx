@@ -75,7 +75,8 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     }, 300);
     return () => { live = false; clearTimeout(timer); };
   }, [value, threads, fetched, sdk]);
-  useEffect(() => { if (autoFocus) editorRef.current?.focus(); }, [autoFocus, editorRef]);
+  // Opening never scrolls: a quote popup is placed in view already, and focusing it must not move the chat under it.
+  useEffect(() => { if (autoFocus) editorRef.current?.focus({ preventScroll: true }); }, [autoFocus, editorRef]);
   useLayoutEffect(() => {
     const root = editorRef.current; if (!root) return;
     if (raw(root) === value && drawn.current === signature) { caret.current = null; return; }

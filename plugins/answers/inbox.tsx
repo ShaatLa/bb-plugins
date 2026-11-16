@@ -497,7 +497,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       pin.current = divider || !keep ? { target: divider, until: Date.now() + 3000 } : anchor ? { target: anchor, offset: keep!.offset ?? 0, until: Date.now() + 3000 } : null;
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
-    else if (old.bottom) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
+    // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
+    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false };
   }, [pages]);
   useEffect(() => {
@@ -578,7 +579,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
     const observer = new ResizeObserver(() => {
       const next = node.clientHeight;
       if (!next && !node.clientWidth) { hidden = true; return; }
-      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
+      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
       if (node.clientWidth !== width) {
         width = node.clientWidth; resizedAt.current = Date.now();
         if (!settle) { for (const card of cards()) { const style = getComputedStyle(card); card.style.containIntrinsicSize = `auto ${card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)}px`; card.style.contentVisibility = 'auto'; } }
