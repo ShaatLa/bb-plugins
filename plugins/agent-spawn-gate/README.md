@@ -1,4 +1,4 @@
-# Agent Spawn Gate 0.6.1
+# Agent Spawn Gate 0.6.2
 
 Persistent per-project launch workflows for new agent sessions. The core
 `message.dispatch` hook enforces a one-use admission before any provider runs.

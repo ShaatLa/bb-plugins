@@ -27,17 +27,18 @@ async function fixture() {
   const first = await write();
   const { bb, harness } = createFakePluginHost({ pluginId: "agent-spawn-gate", sdk: { projects: { get: async () => ({ gitRemoteUrl: repo }) }, threads: { get: async () => makeThreadResponse({ projectId: "proj_example" }) } } });
   cleanups.push(() => harness.lifecycle.dispose());
-  const mint = vi.fn(async ({ brief }) => ({ prompt: `${brief}\nagent-admission v1 token=example` }));
-  const spawn = vi.fn(async () => makeThreadResponse({ id: "thr_child" }));
+  const mint = vi.fn(async ({ brief }) => ({ token: "test-token", prompt: `${brief}\nagent-admission v1 token=example` }));
+  const spawn = vi.fn(async (_request: Record<string, unknown>) => makeThreadResponse({ id: "thr_child" }));
   harness.sdk.stub("threads.spawn", spawn);
   // This fixture uses the real process/git runner with a plugin-owned temporary database location.
   const scoped = Object.create(bb);
   Object.defineProperty(scoped, "storage", { value: { database: () => ({ name: join(root, "data.db") }) } });
   const policy = { method: "script", script: "builder.py" };
-  const start = createStart(scoped, mint, () => policy);
+  const revoke = vi.fn();
+  const start = createStart(scoped, mint, () => policy, revoke);
   registerStartCli(scoped, start);
   const request = { projectId: "proj_example", parentThreadId: "thr_parent", args: [] };
-  return { root, repo, git, write, first, start, request, mint, spawn, policy, harness };
+  return { root, repo, git, write, first, start, request, mint, spawn, revoke, policy, harness };
 }
 it("dry-runs fresh remote main without minting, then starts the exact brief with resolved spawn fields", async () => {
   const f = await fixture();
@@ -47,6 +48,7 @@ it("dry-runs fresh remote main without minting, then starts the exact brief with
   const result = await f.start(f.request);
   expect(result).toMatchObject({ dryRun: false, threadId: "thr_child", sourceCommit: second });
   expect(f.mint).toHaveBeenCalledWith({ projectId: "proj_example", parentThreadId: "thr_parent", brief: "second" });
+  expect(f.spawn.mock.calls[0][0]).not.toHaveProperty("startedOnBehalfOf");
   expect(f.spawn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "second\nagent-admission v1 token=example", providerId: "codex", parentNotifications: "stuck", environment: { type: "project-default" }, projectId: "proj_example", parentThreadId: "thr_parent" }));
   const cli = await f.harness.behavior.runCli(["start", "--project", "proj_example", "--parent-thread", "thr_parent", "--dry-run", "--", "--arbitrary-builder-flag"]);
   expect(cli.exitCode).toBe(0);
@@ -87,4 +89,12 @@ print(json.dumps({"version":1,"brief":"runtime works","spawn":{"parentThreadId":
   const env = await builderEnvironment({ BB_CLI: "/missing/bb", BB_CLI_LAUNCHER: process.env.BB_CLI, PATH: "/usr/bin:/bin" });
   expect(env.BB_CLI).toBe(process.env.BB_CLI);
   await expect(builderEnvironment({ PATH: "/missing" })).rejects.toThrow("Cannot resolve bb");
+});
+
+it("revokes the minted admission when spawn fails without retrying the child", async () => {
+  const f = await fixture();
+  f.spawn.mockRejectedValueOnce(new Error("HTTP 400"));
+  await expect(f.start(f.request)).rejects.toThrow("HTTP 400");
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+  expect(f.revoke).toHaveBeenCalledExactlyOnceWith("test-token");
 });

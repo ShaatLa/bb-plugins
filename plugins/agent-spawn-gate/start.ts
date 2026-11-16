@@ -74,7 +74,7 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
   });
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string }>, policy: (id: string) => { method: string; script: string }) {
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -125,10 +125,15 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();
       const admission = await mint({ projectId: request.projectId, parentThreadId: request.parentThreadId, brief: build.brief });
-      const thread = await bb.sdk.threads.spawn({ ...build.spawn, projectId: request.projectId, prompt: admission.prompt,
-        environment: build.spawn.environment ?? { type: "project-default" }, senderThreadId: request.parentThreadId,
-        startedOnBehalfOf: { initiator: "agent", senderThreadId: request.parentThreadId } });
-      return { dryRun: false as const, ...common, threadId: thread.id };
+      try {
+        signal.throwIfAborted();
+        const thread = await bb.sdk.threads.spawn({ ...build.spawn, projectId: request.projectId, prompt: admission.prompt,
+          environment: build.spawn.environment ?? { type: "project-default" }, senderThreadId: request.parentThreadId });
+        return { dryRun: false as const, ...common, threadId: thread.id };
+      } catch (error) {
+        revoke(admission.token);
+        throw error;
+      }
     };
     const next = (queues.get(request.projectId) ?? Promise.resolve()).catch(() => {}).then(operation);
     queues.set(request.projectId, next);

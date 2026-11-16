@@ -66,7 +66,7 @@ The brief may be plain task text; no Work Board card or marker is required.`;
       lines.splice(1, 0, `agent-admission v1 token=${token}`);
       return { token, expiresAt, prompt: lines.join("\n") };
     };
-  const start = createStart(bb, mint, policy);
+  const start = createStart(bb, mint, policy, token => { db.prepare("DELETE FROM tokens WHERE digest = ?").run(hash(token)); });
   registerStartCli(bb, start);
   bb.rpc.register(rpcContract, {
     async "settings.read"() {
