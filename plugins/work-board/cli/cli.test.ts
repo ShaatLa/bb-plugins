@@ -266,6 +266,33 @@ describe("bb work-board CLI", () => {
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
   });
 
+  it("lists the caller's open children with their cards and state notes", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Kids", "--prefix", "KID"]);
+    await harness.runCli(["create", "--project", "KID", "--title", "First"]);
+    await harness.runCli(["create", "--project", "KID", "--title", "Second"]);
+    const thread = (id: string, extra: object = {}) => ({ id, title: id, titleFallback: null, status: "idle", parentThreadId: "thr_parent", archivedAt: null, deletedAt: null, updatedAt: 1, ...extra });
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => thread(threadId) as never);
+    harness.sdk.stub("threads.list", async (query: { parentThreadId?: string; threadIds?: string[] }) =>
+      (query.parentThreadId === "thr_parent" ? [thread("thr_a", { updatedAt: 2 }), thread("thr_b"), thread("thr_gone", { archivedAt: 5 })] : (query.threadIds ?? []).map((id) => thread(id))) as never);
+    vi.stubEnv("BB_THREAD_ID", "");
+    try {
+      expect((await harness.runCli(["attach", "KID-1", "--thread", "thr_a"])).stderr).toBe("");
+      await harness.runCli(["update", "KID-1", "--progress", "Tests green; next: PR"], { threadId: "thr_a" });
+      const shown = JSON.parse(stdout(await harness.runCli(["children", "--json"], { threadId: "thr_parent" })));
+      expect(shown).toMatchObject({ parentThreadId: "thr_parent", truncated: false, children: [
+        { threadId: "thr_a", cards: [{ key: "KID-1", progressNote: "Tests green; next: PR", progressUpdatedAt: expect.any(String) }] },
+        { threadId: "thr_b", cards: [] },
+      ] });
+      expect(shown.children).toHaveLength(2);
+      const text = stdout(await harness.runCli(["children", "--thread", "thr_parent"]));
+      expect(text).toContain("KID-1");
+      expect(text).toContain("Tests green; next: PR");
+      expect(text).toContain("(no linked cards)");
+    } finally { vi.unstubAllEnvs(); await harness.dispose(); }
+  });
+
   it("shows a brief task and pages its comments newest first", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

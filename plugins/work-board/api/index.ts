@@ -557,6 +557,32 @@ export async function reportToParent(
   return { comment: updated, parentThreadId, notified };
 }
 
+// shortcut: one page of 200 children, page with offset if a parent ever has more.
+const MAX_CHILDREN = 200;
+
+/** A parent's open child threads with the cards each one is linked to and their state notes. */
+export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, parentThreadId: string) {
+  const threads = await bb.sdk.threads.list({ parentThreadId, limit: MAX_CHILDREN });
+  const children = threads
+    .filter((thread) => thread.archivedAt == null)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((thread) => ({
+      threadId: thread.id,
+      title: thread.title ?? thread.titleFallback ?? null,
+      status: thread.status,
+      cards: store.tasks
+        .listTaskThreadsByThreadId(thread.id)
+        .filter((link) => link.presetName !== "Parent thread")
+        .flatMap((link) => {
+          const task = store.tasks.getTask(link.taskId);
+          return task && !task.archivedAt
+            ? [{ key: task.key, title: task.title, status: task.status, progressNote: task.progressNote, progressUpdatedAt: task.progressUpdatedAt }]
+            : [];
+        }),
+    }));
+  return { parentThreadId, children, truncated: threads.length >= MAX_CHILDREN };
+}
+
 interface TaskPullRequestsResult {
   pullRequests: TaskPullRequest[];
   unavailableThreadIds: string[];

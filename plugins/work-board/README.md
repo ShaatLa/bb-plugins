@@ -645,3 +645,7 @@ Agent tasks in `in_progress` with complete activity diagnostics and no live atta
 ### Reports to the parent thread (0.40.0)
 
 `bb work-board report KEY --kind ready|question|blocker (--body <markdown> | --body-file <path>)` is how a child session tells its parent what the parent must act on. It must run inside a bb thread. The report is saved on the card as an agent comment whose first line is the kind (**READY**, **QUESTION**, **BLOCKER**). Then the caller's own `parentThreadId` is woken with `queue-if-active`, and the message starts with `KEY · KIND`. If the parent is busy and its last queued message is a Work Board notice, the report is appended to it instead of queued separately. A thread without a parent, or with an archived parent, gets an error and nothing is saved. If waking fails, the comment stays (`notifiedCount` 0) and the command exits 1 with a hint to tell the parent manually. Progress is not a report kind: `update KEY --progress` replaces the card's state note and wakes nobody.
+
+### Children's state notes (0.41.0)
+
+`bb work-board children [--thread <id>] [--json]` lists the open (non-archived) child threads of the invoking thread, or of `--thread`. For each child it shows the unarchived cards it is linked to, excluding Parent thread fallback links, with each card's status and Current state note (`progressNote`, `progressUpdatedAt`). The text output shortens each note to one 200-character line; `--json` returns full notes. It reads one page of 200 children (`truncated: true` when there may be more) and wakes nobody.
