@@ -7,7 +7,15 @@ Settings → Installed plugins → Agent Spawn Gate selects a Script or Instruct
 workflow independently for each bb project. Follow the configured workflow
 before creating child sessions. Live project instructions specify the steps.
 
-Call plugin `agent-spawn-gate`, RPC `mint`, with
+In Script mode use `bb agent-spawn-gate start --project <projectId>
+--parent-thread <threadId> -- <builder args...>`. It runs the configured JSON
+builder from a freshly fetched remote-default-branch checkout, mints and
+starts the session. `--dry-run` before `--` builds without minting or spawning.
+RPC `start` takes `{projectId,parentThreadId,args,dryRun?}`. Builder contract:
+START-CONTRACT.md in the plugin package. Absolute builder input paths must be
+readable on the bb server machine. The caller's branch is never used.
+
+In Instruction mode, or for existing integrations, call plugin `agent-spawn-gate`, RPC `mint`, with
 `{projectId,parentThreadId,brief}`. CLI: `bb plugin rpc call agent-spawn-gate mint
 --input-file request.json --json`. The brief may be plain task text.
 Output is `{token,expiresAt,prompt}`. Write prompt verbatim to a file and use

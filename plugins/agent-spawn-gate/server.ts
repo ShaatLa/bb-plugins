@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { defineRpcContract, type BbPluginApi, type MessageDispatchHookContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { createStart, registerStartCli, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
@@ -8,6 +9,7 @@ const projectValues = z.object({ enabled: z.boolean(), method: z.enum(["script",
 export const rpcContract = defineRpcContract({
   "settings.read": { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), values: projectValues })) }) },
   "settings.write": { input: z.object({ projectId: z.string(), values: projectValues.partial() }).strict(), output: projectValues },
+  start: { input: startInput, output: startOutput },
   mint: {
     input: z.object({ projectId: z.string().regex(/^proj_[a-z0-9]+$/), parentThreadId: z.string().regex(/^thr_[a-z0-9]+$/), brief: z.string().min(1).max(1_000_000) }).strict(),
     output: z.object({ token: z.string(), expiresAt: z.number(), prompt: z.string() }).strict(),
@@ -28,11 +30,14 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.contributeInstructions(({ projectId, threadId }) => {
     const rules = policy(projectId);
     if (!rules.enabled) return null;
-    const workflow = rules.method === "script" ? `Use this launch script: ${rules.script}` : `Follow these launch instructions:
+    const workflow = rules.method === "script" ? `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start -- <builder args> to use its current remote-default-branch version` : `Follow these launch instructions:
 ${rules.instruction || "Launch instructions are empty. Ask the owner to configure Agent Spawn Gate before starting children."}`;
+    const launch = rules.method === "script"
+      ? `Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${threadId} -- <builder args>. The plugin refreshes the remote default branch, runs the builder, mints and starts the child. Use --dry-run before -- to validate without starting. RPC start takes {projectId, parentThreadId, args, dryRun?}.`
+      : `Call plugin agent-spawn-gate RPC mint with {projectId: "${projectId}", parentThreadId: "${threadId}", brief: <complete child task>}. CLI: bb plugin rpc call agent-spawn-gate mint --input-file <request.json> --json. Submit its prompt verbatim with bb thread spawn --project ${projectId} --parent-thread ${threadId} --prompt-file <prompt.txt>. Do not modify or reuse tokens.`;
     return `Agent Spawn Gate — child sessions in project ${projectId}:
 ${workflow}
-Before spawning, call plugin agent-spawn-gate RPC mint with {projectId: "${projectId}", parentThreadId: "${threadId}", brief: <complete child task>}. CLI: bb plugin rpc call agent-spawn-gate mint --input-file <request.json> --json. Submit the returned prompt verbatim using bb thread spawn --project ${projectId} --parent-thread ${threadId} --prompt-file <prompt.txt>. Do not invent, modify or reuse tokens.
+${launch}
 The brief may be plain task text; no Work Board card or marker is required.`;
   });
   const db = bb.storage.database();
@@ -47,6 +52,22 @@ The brief may be plain task text; no Work Board card or marker is required.`;
     remember.run(thread);
     return true;
   });
+  const mint = async ({ projectId, parentThreadId, brief }: { projectId: string; parentThreadId: string; brief: string }) => {
+      const rules = policy(projectId);
+      if (rules.method === "instruction" && !rules.instruction.trim()) throw new Error("Configure launch instructions before minting an admission");
+      if (brief.split("\n").some(line => line.startsWith("agent-admission ")))
+        throw new Error("Embedded admission is not allowed");
+      const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
+      if (parent.projectId !== projectId) throw new Error("Parent belongs to another project");
+      const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + rules.ttl;
+      db.prepare("DELETE FROM tokens WHERE expires <= ?").run(Date.now());
+      db.prepare("INSERT INTO tokens VALUES (?, ?, ?, ?, ?)").run(hash(token), projectId, parentThreadId, hash(brief), expiresAt);
+      const lines = brief.split("\n");
+      lines.splice(1, 0, `agent-admission v1 token=${token}`);
+      return { token, expiresAt, prompt: lines.join("\n") };
+    };
+  const start = createStart(bb, mint, policy);
+  registerStartCli(bb, start);
   bb.rpc.register(rpcContract, {
     async "settings.read"() {
       return { projects: (await bb.sdk.projects.list()).map(project => ({ id: project.id, name: project.name, values: view(project.id) })) };
@@ -63,20 +84,8 @@ The brief may be plain task text; no Work Board card or marker is required.`;
       await write;
       return view(projectId);
     },
-    async mint({ projectId, parentThreadId, brief }) {
-      const rules = policy(projectId);
-      if (rules.method === "instruction" && !rules.instruction.trim()) throw new Error("Configure launch instructions before minting an admission");
-      if (brief.split("\n").some(line => line.startsWith("agent-admission ")))
-        throw new Error("Embedded admission is not allowed");
-      const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
-      if (parent.projectId !== projectId) throw new Error("Parent belongs to another project");
-      const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + rules.ttl;
-      db.prepare("DELETE FROM tokens WHERE expires <= ?").run(Date.now());
-      db.prepare("INSERT INTO tokens VALUES (?, ?, ?, ?, ?)").run(hash(token), projectId, parentThreadId, hash(brief), expiresAt);
-      const lines = brief.split("\n");
-      lines.splice(1, 0, `agent-admission v1 token=${token}`);
-      return { token, expiresAt, prompt: lines.join("\n") };
-    },
+    mint,
+    start: (input, context) => start(input, context.experimental_signal),
   });
   bb.experimental_hooks.on("message.dispatch", async (ctx: MessageDispatchHookContext) => {
     const rules = policy(ctx.project.id);
@@ -96,6 +105,6 @@ The brief may be plain task text; no Work Board card or marker is required.`;
     if (parent && token && parent === ctx.parentThreadId && consume(token, ctx.project.id, parent, lines.join("\n"), ctx.thread.id))
       return { action: "proceed" };
     bb.log.info(`Rejected start ${ctx.thread.id} in ${ctx.project.id} (${ctx.thread.providerId}, ${ctx.initiator})`);
-    return { action: "reject", message: `Agent Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? rules.script : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh agent-spawn-gate mint admission for this project, parent and exact brief.` };
+    return { action: "reject", message: `Agent Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? `bb agent-spawn-gate start -- (${rules.script})` : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh agent-spawn-gate mint admission for this project, parent and exact brief.` };
   });
 }

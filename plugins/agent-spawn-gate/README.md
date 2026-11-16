@@ -1,4 +1,4 @@
-# Agent Spawn Gate 0.5.0
+# Agent Spawn Gate 0.6.0
 
 Persistent per-project launch workflows for new agent sessions. The core
 `message.dispatch` hook enforces a one-use admission before any provider runs.
@@ -27,8 +27,8 @@ there is no custom stylesheet.
 
 The selected workflow and mint procedure are contributed to agents when their
 provider sessions are next constructed. Existing sessions are not hot-rewritten.
-Refusals also show the selected workflow. The plugin does not execute scripts
-or verify that the agent followed the configured steps.
+Refusals also show the selected workflow. In Script mode, start executes the configured builder from a fresh remote
+default-branch checkout. It does not verify compliance with instruction text.
 
 ## Settings RPC
 
@@ -51,6 +51,31 @@ Example settings.json (use an existing bb project ID):
 ```json
 {"projectId":"proj_example","values":{"enabled":false,"method":"script","script":"tools/spawn.py"}}
 ```
+
+## Start command and RPC
+
+```sh
+bb agent-spawn-gate start --project <projectId> --parent-thread <threadId> -- <builder args...>
+bb agent-spawn-gate start --project <projectId> --parent-thread <threadId> --dry-run -- <builder args...>
+```
+
+Project and parent default to the invoking CLI context. The plugin owns a clean
+checkout under its data directory, fetches the Git remote's current default
+branch on every invocation, runs the configured JSON builder there, validates
+its output, mints the exact brief and starts the child via bb SDK. No stale
+checkout fallback; no automatic spawn retry. This command currently requires
+Script mode. Instruction mode keeps the mint workflow below.
+
+RPC `start` input: `{projectId,parentThreadId,args:string[],dryRun?:boolean}`.
+The CLI and RPC return the same JSON. Dry-run runs the builder without minting
+or spawning. See [START-CONTRACT.md](START-CONTRACT.md) for builder stdin/stdout,
+allowed spawn fields and result shapes. Builders run on the bb server machine;
+absolute path arguments must be accessible there. Child environment paths
+refer to the selected execution host. Each subprocess has a 60-second timeout
+and a combined 1 MiB stdout/stderr limit. Starts serialize per project.
+
+The builder is trusted repository code: it must only build the brief and spawn
+parameters. It must not mint or spawn children itself.
 
 ## Mint RPC
 

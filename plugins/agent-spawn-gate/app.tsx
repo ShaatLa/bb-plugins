@@ -34,7 +34,7 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
         </Select>
       </SettingsWithControl>
       {value.method === "script" ? <>
-        <SettingsWithControl label="Launch script" description="Path to the launch script in the project repository." controlPlacement="below">
+        <SettingsWithControl label="Launch script" description="Repository-relative JSON builder. The plugin runs its latest remote-default-branch version, then admits and starts the session." controlPlacement="below">
           <Input aria-label="Launch script" value={value.script} required maxLength={500} onChange={e => update({ script: e.target.value })} />
         </SettingsWithControl>
       </> : <SettingsWithControl label="Launch instructions" description="Steps for the agent to follow before creating a child session." controlPlacement="below">
