@@ -8,7 +8,8 @@ export function command(command: string, args: string[], cwd: string, signal: Ab
     const child = spawn(command, args, { cwd, env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', failure: Error | undefined;
     const timer = setTimeout(() => { failure = new Error(`${command} timed out`); child.kill('SIGKILL'); }, timeout);
-    const collect = (chunk: Buffer) => { if (failure) return; output += chunk.toString(); if (Buffer.byteLength(output) > 1000000) { failure = new Error(`${command} output exceeds 1 MB`); child.kill('SIGKILL'); } };
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    const collect = (chunk: string) => { if (failure) return; output += chunk; if (Buffer.byteLength(output) > 1000000) { failure = new Error(`${command} output exceeds 1 MB`); child.kill('SIGKILL'); } };
     child.stdout.on('data', collect); child.stderr.on('data', collect);
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', (code, sig) => { clearTimeout(timer); if (failure) reject(failure); else if (code === null) reject(new Error(`${command} killed by ${sig}`)); else resolve({ code, output }); });

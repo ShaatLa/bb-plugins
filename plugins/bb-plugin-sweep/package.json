@@ -29,6 +29,6 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types delivery.test.mjs && node --experimental-strip-types server.test.mjs"
+    "test": "node --experimental-strip-types delivery.test.mjs && node --experimental-strip-types server.test.mjs && node --experimental-strip-types runner.test.mjs"
   }
 }

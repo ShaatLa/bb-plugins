@@ -12,7 +12,7 @@ Settings → Plugins → Sweep exposes **Project sweeps (JSON)**, a map from pro
 
 `{manager}` in arguments is resolved on each run. The manager must be a live, unarchived thread in the configured project. Other plugins should resolve it through RPC `manager` with `{projectId}`, returning `{manager: string|null}`. CLI: `bb sweep manager --project <id> --json`.
 
-`bb sweep status --project <id> --json` shows configuration (including manager), lastRun, exitCode, delivered, deliveredAt, nextRun, error, alertError and pending message. Times are Unix milliseconds. A missing nextRun means the first enabled tick is due on the next minute boundary. Schedules run only while BB and Sweep are loaded; missed intervals coalesce into one tick.
+`bb sweep status --project <id> --json` shows configuration (including manager), lastRun, exitCode, delivered, deliveredAt, nextRun, error, alertError and pending message. Times are Unix milliseconds. tickId identifies the latest scheduled tick; deliveredTickId and deliveredTo identify the accepted message and recipient. A manager can be in another project when explicitly configured. A missing nextRun means the first enabled tick is due on the next minute boundary. Schedules run only while BB and Sweep are loaded; missed intervals coalesce into one tick.
 
 `bb sweep run --project <id> [--dry-run]` refreshes and runs manually without telling, acknowledging or changing status. Scripts must obey the read-only snapshot protocol themselves; Sweep cannot prevent arbitrary repository code from changing external state.
 

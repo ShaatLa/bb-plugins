@@ -91,9 +91,9 @@ export default async function plugin(bb: BbPluginApi) {
   let writes = Promise.resolve();
   const configure = async ({ projectId, config }: { projectId: string; config: Config }) => {
     const operation = writes.then(async () => { if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error('Unknown project'); const projects = await configs(); projects[projectId] = config; await settings.experimental_set({ projects: JSON.stringify(projects) }); });
-    writes = operation.catch(() => {}); await operation; return status(projectId);
+    writes = operation.catch(() => {}); await operation; if (!busy.has(projectId)) save(projectId, { ...state(projectId), nextRun: Date.now() }); return status(projectId);
   };
-  bb.rpc.register(contract, { configure, 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); if (!(await configs())[projectId]) throw new Error('Project not configured'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
+  bb.rpc.register(contract, { configure, 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
   const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.
