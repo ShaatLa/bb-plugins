@@ -314,6 +314,12 @@ function commandEditor(value = '') {
 it('offers the thread’s skills and commands after / and inserts the picked one', async () => {
   const { box, slot, onChange, list } = commandEditor();
   await waitFor(() => expect(list).toHaveBeenCalledWith({ projectId:'proj_one', environmentId:'env', provider:'claude-code' }));
+  box.dataset.testValue = '/'; fireEvent.input(box);
+  const all = await slot.findByRole('listbox', { name: 'Commands and skills' });
+  // Like bb's menu: above the composer box rather than inside it, skills and commands under their own headings.
+  expect(all.closest('form')).toBeNull();
+  expect(within(within(all).getByRole('group', { name: 'Skills' })).getByRole('option', { name: /optimize/ })).toBeTruthy();
+  expect(within(within(all).getByRole('group', { name: 'Commands' })).getByRole('option', { name: /reload-skills/ })).toBeTruthy();
   box.dataset.testValue = '/opt'; fireEvent.input(box);
   const menu = await slot.findByRole('listbox', { name: 'Commands and skills' });
   expect(within(menu).getByRole('option', { name: /optimize/ })).toBeTruthy(); expect(within(menu).queryByRole('option', { name: /reload-skills/ })).toBeNull();

@@ -2,7 +2,7 @@ import { taskKeyRegex } from './task-links';
 import { rpcContract } from './contract';
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_promptMentionClipboardAttributes, experimental_readPromptMentionClipboard, experimental_useSidebarThreads, experimental_useRpcQuery as useQuery, experimental_ThreadTitleText as ThreadTitleText, useSdk } from '@get-bb/plugin-sdk/app';
+import { experimental_describePromptMention, experimental_Icon as Icon, experimental_PromptMentionIcon as PromptMentionIcon, experimental_promptMentionClipboardAttributes, experimental_readPromptMentionClipboard, experimental_useSidebarThreads, experimental_useRpcQuery as useQuery, experimental_ThreadTitleText as ThreadTitleText, useSdk } from '@get-bb/plugin-sdk/app';
 import { threadToken, rememberMention, pastedMentions, type ThreadLabel } from './mentions';
 
 const parts = /@thread:(thr_[a-zA-Z0-9_-]+)(?:#msg=(\d+))?|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
@@ -44,9 +44,9 @@ function position(root: HTMLElement, at: number): [Node, number] {
   }
   return [root, root.childNodes.length];
 }
-export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, disabled, autoFocus, label, placeholder, onBlur, className, editorRef, insertRef }: {
+export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, disabled, autoFocus, label, placeholder, onBlur, className, editorRef, insertRef, menuAnchor }: {
   value: string; onChange(value: string): void; onSend(): void; onCancel?(): void; onPasteFiles(files: File[]): void;
-  disabled?: boolean; autoFocus?: boolean; label: string; placeholder: string; onBlur?(): void; className: string; editorRef: React.RefObject<HTMLDivElement | null>; insertRef: React.MutableRefObject<(text: string) => void>;
+  disabled?: boolean; autoFocus?: boolean; label: string; placeholder: string; onBlur?(): void; className: string; editorRef: React.RefObject<HTMLDivElement | null>; insertRef: React.MutableRefObject<(text: string) => void>; menuAnchor?: React.RefObject<HTMLElement | null>;
 }) {
   const sdk = useSdk(), { threads } = experimental_useSidebarThreads();
   const threadById = useMemo(() => new Map(threads.map(thread => [thread.id, thread])), [threads]);
@@ -121,7 +121,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         for (const [key, data] of Object.entries(experimental_promptMentionClipboardAttributes(mention, match[0]))) pill.setAttribute(key, data);
         const icon = document.createElement('span'), label = document.createElement('span');
         label.className = 'truncate'; pill.append(icon, label);
-        contents.push(createPortal(<PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" />, icon, `${match.index}-icon`));
+        contents.push(createPortal(mention.kind === 'command' && mention.source === 'skill' ? <Icon name="Zap" aria-hidden className="size-3.5 shrink-0 self-center text-muted-foreground" /> : <PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" />, icon, `${match.index}-icon`));
         contents.push(createPortal(mention.kind === 'thread' ? <ThreadTitleText title={mention.label} /> : mention.label, label, `${match.index}-label`));
         if (match[2]) { const suffix = document.createElement('span'); suffix.className = 'shrink-0 text-muted-foreground'; suffix.textContent = '· message'; pill.append(suffix); }
       } else {
@@ -183,9 +183,22 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const choices = menu?.trigger === '@' ? threads.filter(t => t.displayTitle.toLowerCase().includes(menu.query.toLowerCase())).slice(0,8) : [];
   // Commands whose name starts with the query come first, then the ones that only contain it.
   const query = menu?.query.toLowerCase() ?? '';
-  const commandChoices = menu && menu.trigger !== '@' ? commands.filter(c => c.name.toLowerCase().includes(query)).sort((a, b) => Number(!a.name.toLowerCase().startsWith(query)) - Number(!b.name.toLowerCase().startsWith(query))).slice(0, 8) : [];
+  // Grouped as bb's menu is (Skills, then Commands), each ranked; the list scrolls instead of cutting off.
+  const ranked = menu && menu.trigger !== '@' ? commands.filter(c => c.name.toLowerCase().includes(query)).sort((a, b) => Number(!a.name.toLowerCase().startsWith(query)) - Number(!b.name.toLowerCase().startsWith(query))) : [];
+  const commandGroups = ([['skill', 'Skills'], ['command', 'Commands']] as const).map(([source, label]) => ({ label, items: ranked.filter(c => c.source === source).slice(0, 100) })).filter(group => group.items.length);
+  const commandChoices = commandGroups.flatMap(group => group.items);
   const count = menu?.trigger === '@' ? choices.length : commandChoices.length;
   const pick = (id: string) => { if (menu) replace(`@thread:${id} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
+  // Menus float above the whole composer box at its width, as bb's do, instead of covering the box from inside it.
+  const [menuAt, setMenuAt] = useState<React.CSSProperties | null>(null), menuOpen = !!menu && (choices.length > 0 || commandChoices.length > 0), listRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!menuOpen) { setMenuAt(null); return; }
+    const place = () => { const r = (menuAnchor?.current ?? editorRef.current?.parentElement)?.getBoundingClientRect(); if (r) setMenuAt({ left: r.left, width: r.width, bottom: window.innerHeight - r.top + 6 }); };
+    place(); window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [menuOpen, menuAnchor, editorRef]);
+  useEffect(() => { listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }); }, [active, menuOpen]);
+  const floating = (children: React.ReactNode) => menuAt && createPortal(<div ref={listRef} className="fixed z-[100] max-h-72 overflow-auto rounded-xl border border-border bg-background p-1 shadow-lg" style={menuAt}>{children}</div>, document.body);
   const pickCommand = (command: Command) => { if (menu) replace(`${menu.trigger}${command.name} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
   const paste = (event: ClipboardEvent<HTMLDivElement>) => { event.preventDefault(); insertClipboard(Array.from(event.clipboardData.files), event.clipboardData.getData('text/plain'), event.clipboardData.getData('text/html')); };
   // The menu's Paste reads the clipboard itself (bb's window allows it) and inserts it the way ⌘V does.
@@ -261,7 +274,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         ? <button key={entry[0]} type="button" role="menuitem" disabled={entry[3] === true} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover disabled:pointer-events-none disabled:opacity-50" onMouseDown={event => event.preventDefault()} onClick={() => { setContext(null); entry[2](); }}>{entry[0]}<span className="text-xs text-muted-foreground">{entry[1]}</span></button>
         : <div key={`sep${i}`} role="separator" className="my-1 h-px bg-border" />)}
     </div>, document.body)}
-    {menu && choices.length > 0 && <div role="listbox" aria-label="Threads" className="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>}
-    {menu && commandChoices.length > 0 && <div role="listbox" aria-label="Commands and skills" className="absolute bottom-full left-0 z-30 mb-1 max-h-72 w-96 max-w-full overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{commandChoices.map((command, i) => <button type="button" key={`${command.source}:${command.name}`} role="option" aria-selected={i===active} className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pickCommand(command)}><PromptMentionIcon mention={commandMention(command, menu.trigger as '/' | '$')} className="size-3.5 shrink-0 text-muted-foreground" /><span className="shrink-0">{command.name}</span>{command.description && <span className="min-w-0 truncate text-xs text-muted-foreground">{command.description}</span>}</button>)}</div>}
+    {menu && choices.length > 0 && floating(<div role="listbox" aria-label="Threads">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>)}
+    {menu && commandChoices.length > 0 && floating(<div role="listbox" aria-label="Commands and skills">{commandGroups.map(group => <div key={group.label} role="group" aria-label={group.label}><div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{group.label}</div>{group.items.map(command => { const i = commandChoices.indexOf(command); return <button type="button" key={`${command.source}:${command.name}`} role="option" aria-selected={i===active} className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => pickCommand(command)}>{command.source === 'skill' ? <Icon name="Zap" aria-hidden className="size-3.5 shrink-0 text-muted-foreground" /> : <PromptMentionIcon mention={commandMention(command, menu.trigger as '/' | '$')} className="size-3.5 shrink-0 text-muted-foreground" />}<span className="shrink-0 text-foreground">{command.name}</span>{command.description && <span className="min-w-0 truncate text-muted-foreground">{command.description}</span>}</button>; })}</div>)}</div>)}
   </div>;
 }
