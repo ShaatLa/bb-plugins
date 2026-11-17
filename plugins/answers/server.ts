@@ -15,14 +15,16 @@ import { inlineCommentPreview } from './inline-comments';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
 const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
+// A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
+const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
   report: z.object({}).strict(),
   withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
-  ask: z.object({question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:z.boolean().optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
-    questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:z.boolean().optional(),recommended:z.string().trim().min(1).optional()}).strict()
+  ask: z.object({question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
+    questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional()}).strict()
       .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect requires options',path:['multiSelect']})
       .refine(q=>q.recommended===undefined || q.options?.includes(q.recommended),{message:'recommended must equal one of options',path:['recommended']})).min(2).max(10).optional()}).strict()
     .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined),{message:'with questions, put options, multiSelect and recommended on each question',path:['questions']})

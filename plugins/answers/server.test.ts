@@ -692,7 +692,7 @@ describe('0.3 server attention',()=>{
   const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
   for(const bad of [{question:'Pick',multiSelect:true},{question:'Pick',questions:[{question:'One'}]},{question:'Pick',options:['a'],questions:[{question:'One'},{question:'Two'}]},
     {question:'Pick',questions:[{question:'One',multiSelect:true},{question:'Two'}]},{question:'Pick',questions:[{question:'One',options:['a'],recommended:'b'},{question:'Two'}]}]) await expect(ask(bad)).rejects.toThrow();
-  const multi=await ask({question:'Which?',options:['A','B'],multiSelect:true,recommended:'B'});
+  const multi=await ask({question:'Which?',options:['A','B'],multiSelect:'true',recommended:'B'});
   expect(db.prepare('SELECT question,options,questions FROM items WHERE id=?').get(multi)).toEqual({question:'Which?',options:'null',questions:JSON.stringify([{id:'q1',prompt:'Which?',options:[{value:'A',label:'A'},{value:'B',label:'B',description:'Recommended'}],multiSelect:true,allowFreeText:true,required:true}])});
   const composite=await ask({question:'Setup',questions:[{question:'Name?',header:'Name'},{question:'Colors?',options:['Red','Blue'],multiSelect:true}]});
   expect(db.prepare('SELECT question FROM items WHERE id=?').get(composite)).toEqual({question:'Setup\n\n1. **Name.** Name?\n2. Colors?'});
