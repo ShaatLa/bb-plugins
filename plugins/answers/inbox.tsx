@@ -1,16 +1,16 @@
-import { setOpenChat } from './open-chat';
+import { ContactsList, useContacts } from './contacts';
+import { selectContact, useSelectedContact, setOpenChat } from './open-chat';
 import { mentionsForText } from './mentions';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useSettings, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_ProviderIcon as ProviderIcon, experimental_useProviders, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerValue } from '@get-bb/plugin-sdk/app';
+import { experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_ProviderIcon as ProviderIcon, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerValue } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent, type Modifier } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS as DndCSS } from '@dnd-kit/utilities';
-import { ContactsFooter } from './contacts-footer';
 import { ContextRing, type ContextUsage } from './context-ring';
 import { ThreadCostLabel, useThreadCost } from './cost';
 import { CompactButton } from './compact-button';
@@ -334,64 +334,16 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // useTabVisible is false outside a panel tab, and this page is not one, so only the document's visibility pauses polling.
   const visible = documentVisible;
   const sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads, projects = sidebar.projects;
-  const providers = experimental_useProviders().providers;
-  // A thread read in bb drops its unread mark there; refetch so the server can mark the same answers read here.
-  const bbReadKey = sidebarThreads.filter(t => !t.isUnread).map(t => t.id).join(' ');
-  const firstBbRead = useRef(true);
   // The contact column is resizable at the chat's expense; the width is remembered like the rest of the page state.
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
-  // Like a collapsed row in bb's sidebar, a contact counts its sub-threads' work, so a manager shows busy while its leads run.
-  const children = new Map<string, typeof sidebarThreads[number][]>();
-  for (const t of sidebarThreads) if (t.parentThreadId) children.set(t.parentThreadId, [...(children.get(t.parentThreadId) ?? []), t]);
-  const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
-  const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: false, rowStatus: null });
   // A plain send to a thread whose turn is running joins its queue (queue-if-active), so it shows there, not as a chat bubble.
   const willQueue = (threadId: string, options?: SendOptions) => options?.mode !== 'steer' && ['active', 'pending', 'starting', 'stopping'].includes(sidebarThreads.find(t => t.id === threadId)?.status ?? '');
-  const ownWorking = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).isWorking;
-  // A contact with sub-sessions previews their tally instead of the last message: direct and deeper ones, working and idle.
-  const subTally = (id: string) => {
-    const direct = children.get(id)?.length ?? 0, all = descendants(id);
-    if (!all.length) return null;
-    const working = all.filter(ownWorking).length;
-    return [`${direct} sub${all.length > direct ? ` + ${all.length - direct} nested` : ''}`, working && `${working} working`, all.length > working && `${all.length - working} idle`].filter(Boolean).join(' · ');
-  };
-  // A second click on the open contact lists its sub-sessions as bb's sidebar nests them; their chats do not open here yet,
-  // and their bb thread menu gains Copy ID.
-  type SidebarThread = typeof sidebarThreads[number];
-  // rails[k]: whether the node on this row's path at depth k+1 has a later sibling, so the guide line of that level runs on.
-  const subTree = (id: string, depth = 1, rails: boolean[] = []): [SidebarThread, number, boolean[]][] => { const kids = children.get(id) ?? []; return kids.flatMap((t, i) => { const own = [...rails, i < kids.length - 1]; return [[t, depth, own] as [SidebarThread, number, boolean[]], ...subTree(t.id, depth + 1, own)]; }); };
-  const [openSubs, setOpenSubs] = useStoredState<string[]>('bb-plugin-answers:page:open-subs', []);
-  const [selected, setSelected] = useStoredState<string | undefined>('bb-plugin-answers:page:selected', undefined);
+  const selected = useSelectedContact(), setSelected = selectContact;
+  const contacts = useContacts(selected), { recipients, statusOf, descendants, ownWorking } = contacts;
   // Archiving or deleting the open thread (here or in bb) drops it from the sidebar; the chat closes with it.
   const seenOpen = useRef<string | null>(null);
   useEffect(() => { if (!selected) return; if (sidebarThreads.some(t => t.id === selected)) seenOpen.current = selected; else if (seenOpen.current === selected) { seenOpen.current = null; setSelected(undefined); } }, [selected, sidebarThreads]);
-  const result = useQuery({ contract: rpcContract, method: 'recipients', input: selected ? { selected } : {} }), recipientsError = useSteadyError(result.error);
-  // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
-  // and the server's invalidation refreshes the rest when that changed something.
-  useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } void result.refetch(); }, [bbReadKey]);
-  // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
-  // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
-  const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const settledRecipients = lastRecipients.current ?? result.data;
-  // bb's sidebar threads are live, so a rename shows at once instead of on the next recipients refetch.
-  const liveTitles = new Map(sidebarThreads.flatMap(t => t.title ? [[t.id, t.title] as const] : []));
-  const recipients = settledRecipients && { ...settledRecipients, recipients: settledRecipients.recipients.map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle })) };
-  // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
-  // to read it, so Answers keeps its order in plugin settings; projects missing from it follow in bb's project order.
-  const prefs = useSettings().values, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
-  for (const r of recipients?.recipients ?? []) { const key = byProject ? r.projectId ?? '' : null; grouped.set(key, [...(grouped.get(key) ?? []), r]); }
-  const saved = String(prefs?.projectOrder ?? ''), [projectOrder, setProjectOrder] = useState<string[] | null>(null);
-  useEffect(() => setProjectOrder(null), [saved]);
-  const known = sidebar.projects.filter(p => !p.isPersonal).map(p => p.id), stored = saved.split(',').filter(id => known.includes(id));
-  const order = projectOrder ?? [...stored, ...known.filter(id => !stored.includes(id))];
-  const rank = (key: string | null) => { const i = key ? order.indexOf(key) : -1; return i < 0 ? Infinity : i; };
-  const groups = [...grouped].sort((a, b) => rank(a[0]) - rank(b[0]));
-  const [drag, setDrag] = useState<{ id: string; over?: string; after?: boolean } | null>(null);
-  function moveProject(id: string, target: string, after: boolean) {
-    const next = order.filter(x => x !== id); let at = next.indexOf(target); if (at < 0 || !order.includes(id)) return; if (after) at++;
-    next.splice(at, 0, id); setProjectOrder(next);
-    void rpc.call('setPreferences', { projectOrder: next.join(',') }).catch(e => { setProjectOrder(null); setError(errorText(e)); });
-  }
 
   // Once a thread's reply pool holds an entry, quote replies keep collecting into it (see poolFirst).
   const pools = useQuery({ contract: rpcContract, method: 'pools', input: {} });
@@ -408,6 +360,8 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
   // The previous conversation stays on screen until the new one's first page arrives, then both swap in one frame.
   const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = loaded.threadId === selected ? loadedPages : NO_PAGES;
   const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[] }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, { usage: ContextUsage; at: number }>());
+  const previousSelection = useRef(selected);
+  useLayoutEffect(() => { if (previousSelection.current === selected) return; previousSelection.current = selected; if (!selected) return; const saved = readScrolls()[selected]; restore.current = saved ? { threadId: selected, ...saved } : null; setCompose(drafts[selected] ?? { text: '', files: [] }); setComposeError(''); setDepth(saved?.depth ?? 1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; }, [selected]);
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId || row.waitingOn?.kind === 'plugin'));
   // Why a queued message is held, worded and iconed as bb's own queue does (a plain wait behind the running turn, or a
   // schedule already shown as such, says nothing).
@@ -787,35 +741,7 @@ export function Inbox({ onBulkRead, bbChat = false, search: searchProp, onSearch
       onPointerDown={event => { event.preventDefault(); const handle = event.currentTarget, left = grid.current!.getBoundingClientRect().left; handle.setPointerCapture(event.pointerId); const move = (e: PointerEvent) => resize(e.clientX - left); const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); }; handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); }}
       onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resize(contactsWidth + (event.key === 'ArrowLeft' ? -16 : 16)); } }}
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
-    <div className={`flex min-h-0 min-w-0 flex-col min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><div role="listbox" aria-label="Recipients" className="relative min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
-      {/* With a list already shown, a failed refresh (e.g. while the plugin restarts) floats over it instead of pushing the rows down. */}
-      {recipientsError && <p role="alert" className={recipients ? 'absolute inset-x-2 top-2 z-10 rounded-md border border-border bg-background px-2 py-1 text-xs text-destructive shadow-lift' : 'px-2 py-1 text-xs text-destructive'}>{recipientsError.message}</p>}
-      {recipients?.recipients.length === 0 && <EmptyState icon="MailOpen" title="All caught up">New answers from your threads will show up here.</EmptyState>}
-      {groups.map(([group, list]) => { const movable = !!group && order.includes(group), over = drag?.over === group && drag.id !== group; return <div key={group ?? ''} role={group !== null ? 'group' : undefined} aria-label={group !== null ? list[0]?.projectName ?? 'No project' : undefined}
-        className={`space-y-0.5 ${over ? (drag!.after ? 'shadow-[0_2px_0_0_var(--color-ring,currentColor)]' : 'shadow-[0_-2px_0_0_var(--color-ring,currentColor)]') : ''} ${drag?.id === group ? 'opacity-50' : ''}`}
-        onDragOver={event => { if (!drag || !movable || drag.id === group) return; event.preventDefault(); const r = event.currentTarget.getBoundingClientRect(), after = event.clientY > r.top + r.height / 2; if (drag.over !== group || drag.after !== after) setDrag({ ...drag, over: group!, after }); }}
-        onDrop={event => { if (!drag || !movable || drag.id === group) return; event.preventDefault(); moveProject(drag.id, group!, !!drag.after); setDrag(null); }}>
-        {group !== null && <p draggable={movable} title={movable ? 'Drag to reorder projects' : undefined} className={`px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground ${movable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-          onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', group); setDrag({ id: group }); }} onDragEnd={() => setDrag(null)}>{list[0]?.projectName ?? 'No project'}</p>}{list.map(recipient => { const thread = sidebarThreads.find(t => t.id === recipient.threadId), status = thread ? statusOf(thread) : null, tally = subTally(recipient.threadId), busy = !!status && (status.isWorking || status.indicator === 'waiting-for-input'); const row = <button role="option" aria-selected={selected === recipient.threadId} className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 ${selected === recipient.threadId ? 'bg-state-active' : 'hover:bg-state-hover'} ${recipient.unread ? '' : 'opacity-70'}`} onKeyDown={event => { const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0; if (!step) return; const options = Array.from(event.currentTarget.closest('[role=listbox]')?.querySelectorAll<HTMLElement>('[role=option]') ?? []); options[options.indexOf(event.currentTarget) + step]?.focus(); }} onClick={async () => {
-        if (selected !== recipient.threadId) { const saved = readScrolls()[recipient.threadId]; restore.current = saved ? { threadId: recipient.threadId, ...saved } : null; setCompose(drafts[recipient.threadId] ?? { text: '', files: [] }); setComposeError(''); setDepth(saved?.depth ?? 1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; setSelected(recipient.threadId); }
-        else { if (tally) setOpenSubs(openSubs.includes(recipient.threadId) ? openSubs.filter(id => id !== recipient.threadId) : [...openSubs, recipient.threadId]); try { onBulkRead?.(await rpc.call('markThreadRead', { threadId: recipient.threadId })); } catch (e) { setError(errorText(e)); } }
-      }}><span className="relative shrink-0"><Avatar id={recipient.threadId} title={recipient.threadTitle} provider={(id => id ? providers.find(p => p.id === id) ?? { id } : undefined)(thread?.providerId)} />{thread?.hasPendingInteraction && <Icon name="CircleQuestion" aria-label="Needs input" className="absolute -top-1 -right-1 size-3.5 rounded-full bg-background text-attention" />}</span><span className="min-w-0 flex-1"><span className="flex items-baseline gap-2"><span className={`min-w-0 flex-1 truncate ${recipient.unread ? 'font-medium' : 'font-normal text-muted-foreground'}`}>{recipient.threadTitle ?? 'Untitled thread'}</span><span className="flex shrink-0 items-center text-[11px] text-muted-foreground">{busy ? <ThreadStatusGlyph indicator={status!.indicator} size="compact" /> : ago(recipient.lastAt)}</span></span><span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{tally ?? (recipient.preview || recipient.projectName || 'No project')}</span>{recipient.unread > 0 && <span aria-label={`${recipient.unread} unread`} className="shrink-0 rounded-full bg-foreground/85 px-1.5 text-[11px] font-medium leading-[18px] text-background">{recipient.unread}</span>}</span></span></button>
-        // bb's own thread menu on right-click (Archive, Pin, Rename, Delete); threads bb does not list keep a plain row.
-        const menu = thread ? <ThreadActionsContextMenu thread={{ ...thread, environment: thread.environment?.id ? { id: thread.environment.id, path: thread.environment.path } : null }}>{row}</ThreadActionsContextMenu> : row;
-        if (!tally) return <Fragment key={recipient.threadId}>{menu}</Fragment>;
-        const name = recipient.threadTitle ?? 'Untitled thread';
-        // bb's sidebar child rows: 8px plus 24px a level, the provider icon, the title, the status glyph only while working.
-        return <Fragment key={recipient.threadId}>{menu}{openSubs.includes(recipient.threadId) && <ul aria-label={`Sub-sessions of ${name}`} className="pb-1">{subTree(recipient.threadId).map(([sub, depth, rails]) => { const own = resolveThreadStatus({ thread: sub, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }), info = providers.find(p => p.id === sub.providerId), provider = sub.providerId ? info ?? { id: sub.providerId } : null, providerName = info?.displayName ?? sub.providerId;
-          return <ThreadActionsContextMenu key={sub.id} thread={{ ...sub, environment: sub.environment?.id ? { id: sub.environment.id, path: sub.environment.path } : null }} inline={[{ key: 'answers-copy-id', group: THREAD_ACTION_GROUPS.open, action: { label: 'Copy ID', icon: 'Copy', run: () => void copyToClipboard({ text: sub.id }) } }]}>
-            <li title="Sub-session chats do not open here yet" className="relative flex h-[var(--bb-sidebar-row-height,28px)] w-full cursor-default items-center gap-2 rounded-md pr-2 text-sm text-sidebar-foreground has-[[data-state=open]]:bg-sidebar-accent data-[state=open]:bg-sidebar-accent" style={{ paddingLeft: 8 + depth * 24 }}>
-              {/* bb's hairline guides, unbroken: each level's line runs under its parent's icon (the contact's avatar for the first)
-                  down to its last child, ending at that row's middle. */}
-              {rails.map((more, k) => (more || k === depth - 1) && <span key={k} data-guide={k + 1} aria-hidden className={`pointer-events-none absolute top-0 w-px bg-border-hairline opacity-70 ${more ? 'bottom-0' : 'h-1/2'}`} style={{ left: k ? 16 + k * 24 : 24 }} />)}
-              <span className="flex min-w-0 flex-1 items-center">{provider && <span role="img" aria-label={providerName ?? undefined} className="mr-2 flex size-4 shrink-0 items-center justify-center text-muted-foreground"><ProviderIcon providerKind="agent" provider={provider} className="size-3.5" /></span>}<span className="min-w-0 truncate">{sub.title ?? 'Untitled thread'}</span></span>
-              {own.isWorking && <span role="img" aria-label="Working" className="inline-flex size-4 shrink-0 items-center justify-center text-subtle-foreground"><ThreadStatusGlyph indicator={own.indicator} /></span>}
-            </li>
-          </ThreadActionsContextMenu>; })}</ul>}</Fragment>; })}</div>; })}
-    </div><ContactsFooter /></div>
+    <div className={`flex min-h-0 min-w-0 flex-col min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={setSelected} onBulkRead={onBulkRead} /></div>
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
     <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}

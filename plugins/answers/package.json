@@ -63,6 +63,7 @@
     "skills",
     "README.md",
     "inbox.tsx",
+    "contacts.tsx",
     "selection.ts",
     "open-chat.ts",
     "chat-tabs.tsx",

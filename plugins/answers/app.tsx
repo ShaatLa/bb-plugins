@@ -1,3 +1,5 @@
+import { AnswersContacts } from './contacts';
+import { CONTACT_SELECTED, selectContact } from './open-chat';
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
@@ -520,11 +522,12 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const questions = questionsTab && !savedTab, setQuestions = (on: boolean) => { setQuestionsTab(on); setSavedTab(false); };
   const section = savedTab ? 'saved' : questions ? 'questions' : 'chats', setSection = (next: typeof section) => { setQuestionsTab(next === 'questions'); setSavedTab(next === 'saved'); };
   // Opening a thread's conversation: the Chats view picks the stored selection up when it mounts.
-  const openChat = (id: string) => { try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } setQuestions(false); };
+  const openChat = (id: string) => { selectContact(id); setQuestions(false); };
+  useEffect(() => { if (threadId) return; const open = () => setQuestions(false); window.addEventListener(CONTACT_SELECTED, open); return () => window.removeEventListener(CONTACT_SELECTED, open); }, [threadId]);
   // A link from bb's chat (?thread=) opens that conversation once; the parameter is dropped so a reload keeps the user's place.
   // The selection is stored during this render, before the Chats view mounts and reads it; the section switch follows.
   const [linked] = useState(() => { const id = threadId ? null : linkedThread(); if (!id) return null; try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } const url = new URL(window.location.href); url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); return id; });
-  useEffect(() => { if (linked) setQuestions(false); }, [linked]);
+  useEffect(() => { if (linked) { selectContact(linked); setQuestions(false); } }, [linked]);
   const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
   // The Questions section is page-only, so a thread tab never reads the global list.
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
@@ -646,6 +649,7 @@ function AnswersPage() {
 }
 
 export default definePluginApp(app => {
+  app.slots.experimental_threadList({ id: 'answers', title: 'Answers contacts', description: 'Open your Answers conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
   app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });

@@ -16,3 +16,12 @@ export function setOpenChat(threadId: string | undefined, isWorking: boolean) {
 export function useOpenChat() {
   return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => snapshot, () => snapshot);
 }
+
+export const CONTACT_SELECTED = 'answers:contact-selected';
+export function selectContact(threadId: string | undefined) {
+  try { if (threadId) localStorage.setItem(OPEN_CHAT_KEY, JSON.stringify(threadId)); else localStorage.removeItem(OPEN_CHAT_KEY); } catch { /* storage unavailable */ }
+  window.dispatchEvent(new Event(CONTACT_SELECTED));
+}
+export function useSelectedContact() {
+  return useSyncExternalStore(listener => { window.addEventListener(CONTACT_SELECTED, listener); window.addEventListener('storage', listener); return () => { window.removeEventListener(CONTACT_SELECTED, listener); window.removeEventListener('storage', listener); }; }, initialThread, () => undefined);
+}
