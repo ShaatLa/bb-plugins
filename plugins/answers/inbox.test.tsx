@@ -716,6 +716,7 @@ it('shows the scheduled time and changes it through the SDK', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Change when queued message 1 sends' }));
   const was = new Date(row.sendAt - new Date(row.sendAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   expect((slot.getByLabelText('Send at') as HTMLInputElement).value).toBe(was);
+  expect(slot.getByLabelText('Send at').closest('section[aria-label="Queued messages"]')).toBeNull();
   const at = new Date(Date.now() + 3 * 86400000); at.setSeconds(0, 0);
   const local = new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   change(slot.getByLabelText('Send at'), { target:{ value:local } }); fireEvent.click(slot.getByRole('button', { name:'Schedule' }));
@@ -741,6 +742,8 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   expect(order()).toEqual(['now', 'soon', 'late']);
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
   const dialog = await slot.findByRole('dialog', { name:'Change send time' });
+  // The queue list clips its rows, so the popover lives outside it.
+  expect(dialog.closest('section[aria-label="Queued messages"]')).toBeNull();
   fireEvent.click(within(dialog).getByRole('button', { name:'Cancel' }));
   expect(slot.queryByRole('dialog', { name:'Change send time' })).toBeNull(); expect(update).not.toHaveBeenCalled(); expect(reorder).not.toHaveBeenCalled();
   // 'late' moved above 'soon' leads it now: the default lands 3 minutes before, the menu offers more.
