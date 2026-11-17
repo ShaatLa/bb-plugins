@@ -1,5 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname } from 'node:path';
 import { deliveryStore } from './delivery.ts';
 import { execute } from './runner.ts';
@@ -89,7 +90,15 @@ export default async function plugin(bb: BbPluginApi) {
     writes = operation.catch(() => {}); await operation; return status(projectId);
   };
   bb.rpc.register(contract, { configure, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
-  bb.background.schedule('sweep', '* * * * *', async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); });
+  const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
+  bb.background.schedule('sweep', '* * * * *', runDue);
+  // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.
+  bb.background.service('due-ticks', { async start(signal) {
+    while (!signal.aborted) {
+      await runDue();
+      try { await delay(30000, undefined, { signal }); } catch { break; }
+    }
+  } });
   bb.cli.register({ name: 'sweep', summary: 'Read Sweep status, manager or run without advancing state', async run(argv, ctx) {
     try {
       if (!argv.length || argv.includes('--help')) return { exitCode: 0, stdout: 'bb sweep status|manager|run [--project <id>] [--json]. Configure in Settings → Sweep, or RPC configure.' };
