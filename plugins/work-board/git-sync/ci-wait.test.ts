@@ -97,6 +97,14 @@ describe("assessCiChecks", () => {
     const newestCancelled = state({ required: [...REQUIRED, gate], runs: [state().runs[0]!, { ...cancelled, id: 3 }] });
     expect(judge(newestCancelled)).toMatchObject({ exitCode: CI_EXIT.cancelled });
   });
+
+  it("does not judge required checks a gate posts after CI, but names their state", () => {
+    const value = state({ required: [...REQUIRED, { context: "anvil/ready-check", appId: null }] });
+    const ignored = ["anvil/ready-check"];
+    expect(assessCiChecks(value, 600_000, 600_000, T0 + 600_000, ignored)).toMatchObject({ exitCode: CI_EXIT.green, message: expect.stringContaining("anvil/ready-check missing") });
+    const red = state({ ...value, checks: [{ ...state().checks[0]!, state: "failed" }, state().checks[1]!] });
+    expect(assessCiChecks(red, 600_000, 600_000, T0 + 600_000, ignored)).toMatchObject({ exitCode: CI_EXIT.red });
+  });
 });
 
 function fakeClock() {

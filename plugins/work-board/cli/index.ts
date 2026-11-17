@@ -2,6 +2,7 @@ import { isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
+import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
@@ -1032,6 +1033,7 @@ export function registerTasksCli(
             url: { type: "string", required: true, description: "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123" },
             head: { type: "string", description: "Full 40-character head SHA to judge (default: the PR head when the wait starts)" },
             timeout: { type: "duration", defaultUnit: "m", default: 45 * 60_000, min: 60_000, max: 60 * 60_000, description: "How long to wait, 1 to 60 min (default 45 min)" },
+            "ignore-context": { type: "string", repeatable: true, description: "Required check posted after CI by a gate; reported, never waited for. Adds to the project's Git setting; repeatable" },
             json: JSON_OPTION,
           },
           run(input, ctx) { return guard(async () => {
@@ -1046,12 +1048,17 @@ export function registerTasksCli(
               if (!token || Date.now() - token.at > 60_000) token = { at: Date.now(), value: githubToken(signal) };
               return token.value;
             } });
-            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout }, signal);
+            const ignored = new Set<string>(input.options["ignore-context"] ?? []);
+            for (const project of await listProjects(domain)) {
+              const config = gitSyncConfigSchema.parse((await domain.getGitSyncConfig({ projectId: project.id })).config);
+              if (config.repositories.some((repository) => repository.toLowerCase() === match[1]!.toLowerCase())) config.prWaitIgnoredChecks.forEach((name) => ignored.add(name));
+            }
+            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout, ignored: [...ignored] }, signal);
             const from = head ? "--head" : "the PR head";
             return {
               exitCode: result.exitCode,
               stdout: input.options.json
-                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], waitedMs: result.waitedMs })
+                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], ignored: [...ignored], waitedMs: result.waitedMs })
                 : `${match[1]}#${match[2]} at ${result.sha || "unknown head"} (from ${from}), waited ${Math.round(result.waitedMs / 60_000)} min\n${result.message}`,
             };
           }); },

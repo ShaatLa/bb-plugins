@@ -30,6 +30,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [repositories, setRepositories] = useState("");
   const [checks, setChecks] = useState("");
   const [workflows, setWorkflows] = useState("");
+  const [ignored, setIgnored] = useState("");
   const [overlapRules, setOverlapRules] = useState("[]");
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -44,6 +45,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       setRepositories(query.data.config.repositories.join("\n"));
       setChecks(query.data.config.requiredChecks.join("\n"));
       setWorkflows(query.data.config.postMergeWorkflows.join("\n"));
+      setIgnored(query.data.config.prWaitIgnoredChecks.join("\n"));
       setOverlapRules(JSON.stringify(query.data.config.overlapRules ?? [], null, 2));
     }
   }, [query.data]);
@@ -61,6 +63,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             repositories: lines(repositories),
             requiredChecks: lines(checks),
             postMergeWorkflows: lines(workflows),
+            prWaitIgnoredChecks: lines(ignored),
             overlapRules: JSON.parse(overlapRules),
           }),
         });
@@ -352,6 +355,23 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 className="min-h-14 px-2 py-1.5 text-xs"
                 value={checks}
                 onChange={(event) => setChecks(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor={`${id}-ignored`} className="font-medium">
+                Checks outside CI
+              </label>
+              <p id={`${id}-ignored-help`} className="text-muted-foreground">
+                Required checks a gate posts after CI, one per line. PR wait reports them but does not wait for them.
+              </p>
+              <Textarea
+                id={`${id}-ignored`}
+                aria-label="Checks outside CI"
+                aria-describedby={`${id}-ignored-help`}
+                rows={2}
+                className="min-h-14 px-2 py-1.5 text-xs"
+                value={ignored}
+                onChange={(event) => setIgnored(event.target.value)}
               />
             </div>
             <div className="space-y-1.5">
