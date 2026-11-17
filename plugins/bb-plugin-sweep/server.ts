@@ -17,7 +17,7 @@ export const contract = defineRpcContract({
 });
 type State = { lastRun?: number; exitCode?: number; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
 export default async function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({ projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
+  const settings = bb.settings.define({ bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
   const db = bb.storage.database(), deliveries = deliveryStore(db);
   db.exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
@@ -60,8 +60,8 @@ export default async function plugin(bb: BbPluginApi) {
         await managerFor(id);
       }
       let result;
-      try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal); }
-      catch (e) { result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null }; }
+      try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal, (await settings.get()).bbCli); }
+      catch (e) { if (controller.signal.aborted) throw e; result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null }; }
       if (manual) return { exitCode: result.code, output: result.output, manual: true };
       current.exitCode = result.code;
       const heartbeat = !current.heartbeatAt || Date.now() - current.heartbeatAt >= 3600000;
@@ -76,7 +76,7 @@ export default async function plugin(bb: BbPluginApi) {
       save(id, current);
       return await status(id);
     } catch (e) {
-      if (!manual) {
+      if (!manual && !controller.signal.aborted) {
         current.error = String(e); save(id, current);
         try { await bb.sdk.plugins.callRpc({ pluginId: 'push-notifications', method: 'notifications.send', input: { title: 'Sweep manager unreachable', body: `${id}: ${String(e)}` }, outputSchema: z.unknown() }); }
         catch (alert) { current.alertError = String(alert); save(id, current); bb.log.error(`Sweep push failed: ${String(alert)}`); }

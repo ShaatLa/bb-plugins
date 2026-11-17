@@ -4,11 +4,11 @@ on:
   push:
     paths:
       - "plugins/bb-plugin-sweep/**"
-      - ".github/workflows/bb-plugin-sweep.yml"
+      - ".github/workflows/sweep.yml"
   pull_request:
     paths:
       - "plugins/bb-plugin-sweep/**"
-      - ".github/workflows/bb-plugin-sweep.yml"
+      - ".github/workflows/sweep.yml"
 
 permissions:
   contents: read
