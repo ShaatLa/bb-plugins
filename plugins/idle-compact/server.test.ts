@@ -156,20 +156,6 @@ it.each(["claude-code", "codex"])("compacts a %s thread that stops at 80% of its
   expect((await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items).toEqual([expect.objectContaining({ trigger: "threshold", usedTokensBefore: 800_000 })]);
 });
 
-it("holds a message that arrives while the stop check is still reading the usage, then compacts first", async () => {
-  const h = await setup({ used: 800_000 });
-  let open!: () => void;
-  h.state.timeline = new Promise<void>(resolve => { open = resolve; });
-  await h.emit("thread.idle");
-  const base = h.host.harness.recheckCount;
-  expect(await h.send()).toMatchObject({ action: "wait" });
-  expect(h.compact).not.toHaveBeenCalled();
-  h.state.timeline = null; open(); await h.advance(0);
-  expect(h.host.harness.recheckCount).toBe(base + 1); // bb runs the hook again
-  expect(await h.send()).toMatchObject({ action: "wait" });
-  expect(h.compact).toHaveBeenCalledTimes(1);
-});
-
 it("does not compact at the next message when keep is applied while that compaction reads the usage, and releases the message", async () => {
   const h = await setup({ used: 800_000 });
   await h.emit("thread.idle"); await h.advance(0);

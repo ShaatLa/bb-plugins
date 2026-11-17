@@ -76,15 +76,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // Idle threads found at or past the share when they stopped, with that share: compacted before their next message.
   // shortcut: kept in memory; after a plugin restart such a thread gets only the 50-minute check.
   const beforeNext = new Map<string, number>();
-  // The stop check of an idle thread that has not decided yet: a message arriving meanwhile waits (held) for the decision,
-  // then bb runs the hook again. The guard releases it if the check never settles.
-  const deciding = new Map<string, { period: number; guard: ReturnType<typeof setTimeout> }>(), held = new Set<string>();
-  const decided = (threadId: string, period: number) => {
-    const entry = deciding.get(threadId);
-    if (entry?.period !== period) return;
-    clearTimeout(entry.guard); deciding.delete(threadId);
-    if (held.delete(threadId)) void bb.experimental_hooks.recheck("message.dispatch");
-  };
+  // shortcut: a message arriving while the stop check is still reading the usage (well under a second) runs on the full
+  // context. Holding it until the check decided (0.5.0) kept a live message waiting ~30 s; do not hold on the check.
   // taken: queued requests a pending dispatch took; a cancel removes them, so a refused call does not bring them back.
   const taken = new Set<string>();
   // pending: a compact call has not returned yet. Unlike running, a stop that arrives first does not clear it.
@@ -294,7 +287,6 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
         return { action: "wait", reason: "Idle Compact is compacting the context first" };
       }
     }
-    if (attempt === "start-turn" && deciding.has(thread.id)) { held.add(thread.id); return { action: "wait", reason: "Idle Compact is checking the context size" }; }
     // Joining the running turn needs nothing new; only a turn that would start on the uncompacted context waits.
     if (attempt !== "start-turn" || (!queued.has(thread.id) && !running.has(thread.id))) return { action: "proceed" };
     // An idle thread whose compaction is still queued: the stop event came before the request was stored.
@@ -346,11 +338,10 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   bb.events.on("thread.idle", async ({ thread }) => {
     const since = now(), period = ++generation;
     periods.set(thread.id, period);
-    deciding.set(thread.id, { period, guard: setTimeout(() => decided(thread.id, period), 30_000) });
     // A request still queued after this plugin's own compaction turn (one that turn did not cover) runs now rather than
     // leaving the thread's next message waiting.
-    if (await ownTurnEnded(thread.id, period) || queued.has(thread.id)) { periods.delete(thread.id); decided(thread.id, period); return void runQueued(thread.id); }
-    void atOnce(thread.id, period, true).then(() => decided(thread.id, period));
+    if (await ownTurnEnded(thread.id, period) || queued.has(thread.id)) { periods.delete(thread.id); return void runQueued(thread.id); }
+    void atOnce(thread.id, period, true);
     await bb.storage.kv.set(IDLE + thread.id, since);
     schedule(thread.id, since, period);
   });
@@ -387,7 +378,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     else if (thread.status === "idle" || thread.status === "error") void runQueued(threadId);
   }
   await bb.experimental_hooks.recheck("message.dispatch");
-  bb.onDispose(() => { periods.clear(); beforeNext.clear(); for (const { guard } of deciding.values()) clearTimeout(guard); deciding.clear(); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
+  bb.onDispose(() => { periods.clear(); beforeNext.clear(); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
 
   const usage = "Usage:\n  bb idle-compact status [--json]\n  bb idle-compact keep [thread-id]\n  bb idle-compact release [thread-id]";
   bb.cli.register({
