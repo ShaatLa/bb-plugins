@@ -8,8 +8,9 @@ import { Button } from './components/ui/button';
 const previews = new Map<string, string>();
 const dropPreview = (path: string) => { const url = previews.get(path); if (url) { URL.revokeObjectURL(url); previews.delete(path); } };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-// datetime-local value for the next whole hour, in local time.
-function nextHour() { const at = new Date(Date.now() + 3600e3); at.setMinutes(0, 0, 0); return new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
+// datetime-local value (local time) for a moment, and for the next whole hour.
+export const localInput = (at: number) => new Date(at - new Date(at).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+function nextHour() { const at = new Date(Date.now() + 3600e3); at.setMinutes(0, 0, 0); return localInput(at.getTime()); }
 
 type Props = {
   label: string; value: string; onChange: (value: string) => void;

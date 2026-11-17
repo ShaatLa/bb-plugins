@@ -714,6 +714,8 @@ it('shows the scheduled time and changes it through the SDK', async () => {
   const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve([row]), update } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText(/Scheduled for/)).toBeTruthy(); expect(slot.getByText(/in 2d/)).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name:'Change when queued message 1 sends' }));
+  const was = new Date(row.sendAt - new Date(row.sendAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  expect((slot.getByLabelText('Send at') as HTMLInputElement).value).toBe(was);
   const at = new Date(Date.now() + 3 * 86400000); at.setSeconds(0, 0);
   const local = new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   change(slot.getByLabelText('Send at'), { target:{ value:local } }); fireEvent.click(slot.getByRole('button', { name:'Schedule' }));
