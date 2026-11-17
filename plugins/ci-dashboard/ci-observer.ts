@@ -64,6 +64,9 @@ const runUrl = (repository: string, runId: number) => `https://github.com/${repo
 const jobUrl = (repository: string, job: Pick<JobRecord, "runId" | "jobId">) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
 const sha7 = (sha: string) => sha ? `\`${sha.slice(0, 7)}\`` : "unknown";
 const more = (items: string[], max: number) => items.length > max ? `${items.slice(0, max).join(", ")}, +${items.length - max}` : items.join(", ");
+/** One indented line per shown failed test that has a message: the assertion a real failure needs, so nobody has to open the report. */
+const failureLines = (tests?: string[] | null, messages?: Record<string, string> | null) =>
+  (tests ?? []).slice(0, MAX_TESTS).flatMap((name) => messages?.[name] ? [`\n  - ${clip(squash(name), 100)}: ${messages[name]}`] : []).join("");
 const completedAt = (job: JobRecord) => Date.parse(job.completedAt ?? job.createdAt);
 
 export type ObserverEvent = {
@@ -74,7 +77,8 @@ export type ObserverEvent = {
   /** "once": one message per key for as long as the key is remembered. "quiet": a key that reopens (a stall) is repeated only after the quiet window. */
   dedupe: "once" | "quiet";
   /** `problem`: the id of the open problem this event maps to, when it does (passed in by the caller, which knows the open problems). */
-  render: (tests?: string[] | null, problem?: string) => string;
+  /** `messages`: first failure message per failed test name (already sanitized), shown only for failures classified real. */
+  render: (tests?: string[] | null, problem?: string, messages?: Record<string, string> | null) => string;
   /** Id the event's problem would have; it counts only while that problem is open (events of info signals or old runs are not problems). */
   problem?: string;
   /** Present when the line can name failed tests; the caller looks them up only for events that are really going out. */
@@ -151,7 +155,8 @@ export function queueRemovalEvents(repository: string, classified: ClassifiedJob
       ...(pr === null ? {} : { removal: { pullRequest: pr, since: Number.isFinite(started) ? started : completedAt(jobs[0]!.job), sha: headSha, ...(cancelOnly ? { exactOnly: true } : {}) } }),
       type: "queue", key: `queue:${runId}:${attempt}`, dedupe: "once", at: Math.max(...jobs.map((c) => completedAt(c.job))),
       tests: jobs.some((c) => TEST_CLASSES.has(c.class)) ? { run: { id: runId, attempt }, jobs: jobs.map((c) => c.job) } : undefined,
-      render: (tests) => fit(`${pr === null ? `Merge queue run failed${origin === undefined ? "" : ` (inherited from #${origin})`}` : `PR #${pr} ${verb}`} · ${more(jobs.map(describeJob(classified, limit, confirmed)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId), inspectTag(queueRef(runId, attempt))),
+      render: (tests, _problem, messages) => fit(`${pr === null ? `Merge queue run failed${origin === undefined ? "" : ` (inherited from #${origin})`}` : `PR #${pr} ${verb}`} · ${more(jobs.map(describeJob(classified, limit, confirmed)), MAX_JOBS)}${tests?.length ? ` · failed tests: ${more(tests.map((name) => clip(squash(name), 100)), MAX_TESTS)}` : ""}`, runUrl(repository, runId), inspectTag(queueRef(runId, attempt)))
+        + (jobs.some((c) => c.class === "real") ? failureLines(tests, messages) : ""),
     }];
   });
 }

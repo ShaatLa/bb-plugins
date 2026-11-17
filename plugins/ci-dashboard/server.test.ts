@@ -1985,7 +1985,7 @@ test("observer: failed test names come from the configured artifacts, FAILED ent
     scenario.running = [];
     await signalsPass(harness);
     const queue = sentTo(send).find((line) => line.includes("PR #7"))!;
-    expect(queue).toBe(`${PREFIX} PR #7 removed from merge queue · Unit tests: real · failed tests: cart.Spec.removes item · inspect \`queue:901:1\` · [run 901](${RUNS}/901)`);
+    expect(queue).toBe(`${PREFIX} PR #7 removed from merge queue · Unit tests: real · failed tests: cart.Spec.removes item · inspect \`queue:901:1\` · [run 901](${RUNS}/901)\n  - cart.Spec.removes item: boom | env: | API_TOKEN: …`);
     // The runner loss has no test report to read.
     expect(sentTo(send).find((line) => line.includes("PR #8"))).not.toContain("failed tests");
     for (const line of sentTo(send)) expect(line).not.toContain("hunter2");

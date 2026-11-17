@@ -52,6 +52,10 @@ describe("inspect", () => {
     expect(get("job:500").related).toEqual(expect.arrayContaining(["run:50:1", "queue:50:1", "sha:0123456", "pool:self-hosted"]));
     expect(get("job:700").related).toEqual(expect.arrayContaining(["run:70:1", "pool:self-hosted"]));
     expect(get("job:500", { cachedTests: () => null }).facts).not.toHaveProperty("failedTests");
+    const messages = { cachedMessages: () => ({ "a.Spec one": "AssertionError: expected 1 to be 2" }) };
+    expect(get("job:500", messages).facts).toMatchObject({ class: "real", failureMessages: { "a.Spec one": "AssertionError: expected 1 to be 2" } });
+    expect(get("job:400", messages).facts).not.toHaveProperty("failureMessages");
+    expect(get("queue:50:1", messages).facts).toMatchObject({ failedTests: ["a.Spec one", "b.Spec two"], failureMessages: { "a.Spec one": "AssertionError: expected 1 to be 2" } });
     expect(() => get("job:12345")).toThrow(/Job 12345 is not known/);
   });
   it("queue: PR, confirmation status, jobs with class", () => {
