@@ -24,15 +24,17 @@ it("shows actionable evidence and opens the predecessor, PR and last session", (
   expect(toThread).toHaveBeenCalledWith("thr_old");
   expect(screen.getAllByText(/Checked .*valid until/)).toHaveLength(2);
 });
-it("expires advice without making a network request or retaining a stale warning", () => {
+it("keeps expired advice through the recheck grace, then drops it without a network request", () => {
   vi.useFakeTimers();
   const { container } = render(<TaskAdvisories items={items()} compact />);
   expect(screen.getByText("Needs attention · 2").getAttribute("title")).toContain("Check acceptance criteria");
   act(() => { vi.advanceTimersByTime(60_001); });
+  expect(screen.getByText("Needs attention · 2")).toBeTruthy();
+  act(() => { vi.advanceTimersByTime(60_000); });
   expect(container.textContent).toBe("");
   expect(vi.getTimerCount()).toBe(0);
 });
 it("does not show expired snapshots on mount", () => {
-  const { container } = render(<TaskAdvisories items={items().map(item => ({ ...item, validUntil: new Date(Date.now() - 1).toISOString() }))} />);
+  const { container } = render(<TaskAdvisories items={items().map(item => ({ ...item, validUntil: new Date(Date.now() - 60_001).toISOString() }))} />);
   expect(container.textContent).toBe("");
 });
