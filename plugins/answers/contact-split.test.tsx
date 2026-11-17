@@ -77,3 +77,16 @@ it('preserves thread split props when navigation split is unavailable', async ()
   const { sidebar } = await setup();
   expect(within(sidebar.container).getByRole('option', { name: /one/ }).getAttribute('data-thread-split')).toBe('true');
 });
+it('lets a pane bb mounts just after the release claim the drag, leaving the existing pane alone', async () => {
+  const { sidebar, page } = await setup();
+  const first = page();
+  fireEvent.click(await within(first.container).findByRole('option', { name: /one/ }));
+  fireEvent.pointerDown(within(sidebar.container).getByRole('option', { name: /two/ }));
+  fireEvent.pointerUp(document.body);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const next = page();
+  await waitFor(() => expect(selected(next, 'two')).toBe('true'));
+  await new Promise(resolve => setTimeout(resolve, 700));
+  expect(selected(first, 'one')).toBe('true');
+  expect(selected(next, 'two')).toBe('true');
+});

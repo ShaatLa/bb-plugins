@@ -47,7 +47,8 @@ export function beginContactDrag(threadId: string) {
   const release = (event: PointerEvent) => {
     const target = document.elementFromPoint?.(event.clientX, event.clientY) ?? event.target;
     if (target instanceof Element && target.closest('[role="listbox"][aria-label="Recipients"]')) { dispose(); return; }
-    timer = setTimeout(() => { dispose(); if (activePage) choose(activePage, threadId); }, 0);
+    // bb mounts the new pane after its own pointerup handler; waiting lets that pane claim the drag before an existing one does.
+    timer = setTimeout(() => { dispose(); if (activePage) choose(activePage, threadId); }, 600);
   };
   pending = { threadId, dispose };
   window.addEventListener('pointerup', release, true); window.addEventListener('pointercancel', dispose, true); window.addEventListener('keydown', escape, true); window.addEventListener('blur', dispose);
