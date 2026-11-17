@@ -9,10 +9,13 @@ prompt cache is still warm, so the next wake rewrites only the summary instead o
 whole context. A thread found idle longer than 57 minutes (for example after the machine
 slept) is left alone, because by then compacting costs as much as waking it.
 
-It also compacts at once a thread on any provider that goes idle or fails with its
-context at 80% of the model's window or more (the share is a setting, 70–95% or off), as
-the former auto-compact plugin did. A failed compaction is not retried
-until the context changes.
+It also compacts a thread on any provider whose context is at 80% of the model's window
+or more (the share is a setting, 70–95% or off), as the former auto-compact plugin did:
+a failed thread at once; an idle one just before its next message, which waits for the
+compaction and then runs on the compacted context, or after 50 minutes idle if no message
+comes. A full thread archived before its next message is never compacted, so a parent can
+still read a child's final report with `bb thread output` (a compaction empties it). A
+failed compaction is not retried until the context changes.
 
 The Compact button in the open thread's header compacts that thread now, on any
 provider and regardless of the settings or keep; it is enabled only while the thread is
@@ -21,8 +24,8 @@ when the thread stops, before its next message. Agents compact a thread with `bb
 compact` instead.
 
 Commands:
-- `bb idle-compact status [--json]`: settings, threads due for compaction and when, and
-  threads that keep their full context.
+- `bb idle-compact status [--json]`: settings, threads due for compaction and when, full
+  threads waiting for their next message, and threads that keep their full context.
 - `bb idle-compact keep [thread-id]`: never idle-compact this thread (defaults to the
   current thread). Use it for a thread whose exact earlier wording matters more than cost.
 - `bb idle-compact release [thread-id]`: let the thread be idle-compacted again.

@@ -5,8 +5,10 @@
 // wake then rewrites only the summary. Past the hour the compaction itself pays the full rewrite,
 // so a thread found idle longer than WARM_MS is left alone.
 //
-// It also compacts, as the former auto-compact plugin did, any thread that goes idle or fails with its context at or past
-// a share of the model's window: right away, while the cache is warm, instead of mid-turn at the provider's own limit.
+// It also compacts, as the former auto-compact plugin did, any thread whose context is at or past a share of the model's
+// window, so its next turn does not run into the provider's own limit: a failed one right away; an idle one just before
+// its next message (the dispatch hook holds the message), or at 50 minutes idle if none comes. A child read and archived
+// by its parent is then never compacted, and its final output stays readable until then.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
@@ -57,7 +59,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   const settings = bb.settings.define({
     enabled: { type: "boolean", label: "Compact idle threads", description: "Compact a Claude Code thread after 50 minutes idle, while its prompt cache is still warm, and any thread that stops with a nearly full context.", default: true },
     minTokens: { type: "number", label: "Minimum context, tokens", description: "After 50 minutes idle, threads with a smaller context are left alone: compacting them saves less than it costs.", default: 100_000 },
-    thresholdPercent: { type: "select", label: "Compact at once when context usage reaches", description: "Share of the model's context window at which a thread is compacted as soon as it goes idle or fails, on any provider.", options: ["off", "70", "75", "80", "85", "90", "95"], default: "80" },
+    thresholdPercent: { type: "select", label: "Compact at once when context usage reaches", description: "Share of the model's context window from which a thread on any provider is compacted before its next message (or after 50 minutes idle if none comes); a failed thread at once.", options: ["off", "70", "75", "80", "85", "90", "95"], default: "80" },
   });
   let config = await settings.get();
   settings.onChange(next => { config = next; });
@@ -69,8 +71,20 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // ended. While either holds a thread, the dispatch hook keeps its next turn waiting.
   const queued = new Set<string>(), running = new Set<string>();
   // retry: threads whose queued compaction found another call holding the in-flight guard; whoever releases it runs it.
-  const retry = new Set<string>();
-  const release = (threadId: string) => { inflight.delete(threadId); if (retry.delete(threadId)) void runQueued(threadId); };
+  const retry = new Map<string, Compaction["trigger"]>();
+  const release = (threadId: string) => { inflight.delete(threadId); const trigger = retry.get(threadId); if (retry.delete(threadId)) void runQueued(threadId, trigger); };
+  // Idle threads found at or past the share when they stopped, with that share: compacted before their next message.
+  // shortcut: kept in memory; after a plugin restart such a thread gets only the 50-minute check.
+  const beforeNext = new Map<string, number>();
+  // The stop check of an idle thread that has not decided yet: a message arriving meanwhile waits (held) for the decision,
+  // then bb runs the hook again. The guard releases it if the check never settles.
+  const deciding = new Map<string, { period: number; guard: ReturnType<typeof setTimeout> }>(), held = new Set<string>();
+  const decided = (threadId: string, period: number) => {
+    const entry = deciding.get(threadId);
+    if (entry?.period !== period) return;
+    clearTimeout(entry.guard); deciding.delete(threadId);
+    if (held.delete(threadId)) void bb.experimental_hooks.recheck("message.dispatch");
+  };
   // taken: queued requests a pending dispatch took; a cancel removes them, so a refused call does not bring them back.
   const taken = new Set<string>();
   // pending: a compact call has not returned yet. Unlike running, a stop that arrives first does not clear it.
@@ -79,6 +93,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // the call returns. A queued request runs at most once: bb has no acceptance a restart could read back, so its key goes
   // before the call and comes back only if the call is refused. A restart in between loses the request, never repeats it.
   async function dispatch(threadId: string) {
+    beforeNext.delete(threadId);
     running.add(threadId);
     const wasQueued = queued.delete(threadId);
     if (wasQueued) taken.add(threadId);
@@ -104,8 +119,9 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   }
   let generation = 0;
 
-  const cancel = async (threadId: string) => {
+  const cancel = async (threadId: string, why: string) => {
     periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId);
+    if (beforeNext.delete(threadId)) bb.log.info(`Compact ${threadId}: compaction before its next message dropped, thread ${why}`);
     await bb.storage.kv.delete(IDLE + threadId);
   };
   const schedule = (threadId: string, since: number, period: number) => {
@@ -124,7 +140,8 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   }
 
   // `full`: the check made the moment a thread stops, by share of the window; otherwise the one after 50 minutes idle.
-  async function attempt(threadId: string, since: number, live: () => boolean, full = false): Promise<string> {
+  // `later` (full only): a thread over the share is marked for compaction before its next message instead.
+  async function attempt(threadId: string, since: number, live: () => boolean, full = false, later = false): Promise<string> {
     // The window share once read; stale() re-evaluates it against the current setting, which may change mid-check.
     let share: number | null = null;
     const below = () => full && share != null && !(share >= Number(config.thresholdPercent));
@@ -136,17 +153,20 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     if (await bb.storage.kv.get(KEEP + threadId)) return "skipped: keeps its full context";
     const thread = await bb.sdk.threads.get({ threadId });
     if ((thread.status !== "idle" && !(full && thread.status === "error")) || thread.archivedAt) return `skipped: thread is ${thread.archivedAt ? "archived" : thread.status}`;
-    if (!full && thread.providerId !== "claude-code") return `skipped: provider ${thread.providerId}`;
     const { usedTokens: used, modelContextWindow: window } = (await bb.sdk.threads.timeline({ threadId })).contextWindowUsage ?? {};
     if (used == null) return "skipped: context size unknown";
     share = window ? used / window * 100 : null;
     const percent = share == null ? "?" : share.toFixed(1);
     if (full && share == null) return "skipped: context window size unknown";
     if (below()) return stale()!;
-    if (!full && used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
+    // At 50 minutes a thread over the share (one whose next message never came) is compacted on any provider and size.
+    const over = !full && share != null && config.thresholdPercent !== "off" && share >= Number(config.thresholdPercent);
+    if (!full && !over && thread.providerId !== "claude-code") return `skipped: provider ${thread.providerId}`;
+    if (!full && !over && used < config.minTokens) return `skipped: ${used} tokens, below ${config.minTokens}`;
     // The usage figure may still show the pre-compaction size until the next turn.
     if (await bb.storage.kv.get<number>(COMPACTED + threadId) === used) return "skipped: no turn since the last compaction";
     if (stale()) return stale()!;
+    if (later) { beforeNext.set(threadId, share!); return `${used} tokens at ${percent}% of the window; compacting before its next message, or after 50 min idle`; }
     // The in-flight guard is taken before any marker is written and held until they are cleaned up, so this check never
     // touches the markers of a compaction (automatic or from the header) that another call is dispatching.
     if (inflight.has(threadId)) return "skipped: an earlier compaction has not finished";
@@ -242,19 +262,39 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     await bb.storage.kv.delete(QUEUED + threadId);
     if (had) { bb.log.info(`Compact ${threadId}: queued compaction cancelled`); await bb.experimental_hooks.recheck("message.dispatch"); }
   }
-  async function runQueued(threadId: string) {
-    if (!queued.has(threadId)) return;
-    if (inflight.has(threadId)) { retry.add(threadId); return; }
-    try { await manual(threadId); }
-    catch (error) {
+  // shortcut: a request carried over to a later stop (its first call refused as not idle) is logged as manual.
+  // runners: a runQueued call is executing this thread's request; a second one (a repeated hook pass) adds nothing, and must
+  // not leave a retry that release() would start after the first one skipped or failed.
+  const runners = new Set<string>();
+  async function runQueued(threadId: string, trigger: Compaction["trigger"] = "manual") {
+    if (!queued.has(threadId) || runners.has(threadId)) return;
+    if (inflight.has(threadId)) { retry.set(threadId, trigger); return; }
+    runners.add(threadId);
+    try {
+      const skipped = await manual(threadId, trigger);
+      if (skipped) { bb.log.info(`Compact ${threadId}: ${skipped}`); await unqueue(threadId); }
+    } catch (error) {
       // A thread that started a turn again (Send now) gets the compaction at its next stop; any other refusal drops the
       // request, since a thread left idle has no next stop to retry at and its waiting messages must go.
       if (NOT_IDLE.test(message(error))) return;
       bb.log.warn(`Compact ${threadId}: queued compaction failed: ${message(error)}`);
       await unqueue(threadId);
-    }
+    } finally { runners.delete(threadId); }
   }
   bb.experimental_hooks.on("message.dispatch", ({ thread, attempt }) => {
+    // A thread that stopped over the share is compacted first; its message then runs on the compacted context. The settings
+    // are read again, as they may have changed while the thread was idle.
+    const share = beforeNext.get(thread.id);
+    if (attempt === "start-turn" && share != null && (thread.status === "idle" || thread.status === "error")) {
+      beforeNext.delete(thread.id);
+      if (config.enabled && config.thresholdPercent !== "off" && share >= Number(config.thresholdPercent) && !queued.has(thread.id) && !running.has(thread.id)) {
+        queued.add(thread.id);
+        bb.log.info(`Compact ${thread.id}: ${share.toFixed(1)}% of the window; compacting before its next message`);
+        void runQueued(thread.id, "threshold");
+        return { action: "wait", reason: "Idle Compact is compacting the context first" };
+      }
+    }
+    if (attempt === "start-turn" && deciding.has(thread.id)) { held.add(thread.id); return { action: "wait", reason: "Idle Compact is checking the context size" }; }
     // Joining the running turn needs nothing new; only a turn that would start on the uncompacted context waits.
     if (attempt !== "start-turn" || (!queued.has(thread.id) && !running.has(thread.id))) return { action: "proceed" };
     // An idle thread whose compaction is still queued: the stop event came before the request was stored.
@@ -264,24 +304,32 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
 
   // The header button: any provider, regardless of the settings, size and keep. The server still refuses a thread that is
   // not idle or errored. OWN makes the stop ending this compaction turn start no checks, as for the plugin's own.
-  async function manual(threadId: string) {
+  // A threshold compaction (one the dispatch hook started) still follows the settings, keep and share up to the call, as
+  // attempt() does; it returns the reason when it skips.
+  async function manual(threadId: string, trigger: Compaction["trigger"] = "manual"): Promise<string | undefined> {
     if (inflight.has(threadId)) throw new Error("An earlier compaction of this thread has not finished");
     inflight.add(threadId);
     try {
       // usedTokensBefore is null when bb does not know the context size.
       const { usedTokens: used, modelContextWindow: window } = (await bb.sdk.threads.timeline({ threadId })).contextWindowUsage ?? {};
       await bb.storage.kv.set(OWN + threadId, true);
+      const share = used != null && window ? used / window * 100 : null;
+      const off = () => !config.enabled || config.thresholdPercent === "off" || share == null || share < Number(config.thresholdPercent);
+      if (trigger === "threshold" && (off() || await bb.storage.kv.get(KEEP + threadId) || off())) {
+        await bb.storage.kv.delete(OWN + threadId);
+        return "skipped: kept, turned off or below the share since it stopped";
+      }
       try { await dispatch(threadId); } catch (error) { await bb.storage.kv.delete(OWN + threadId); throw error; }
-      record({ threadId, trigger: "manual", usedTokensBefore: used ?? null, contextWindow: window ?? null });
+      record({ threadId, trigger, usedTokensBefore: used ?? null, contextWindow: window ?? null });
       // The usage figure may still show the pre-compaction size until the next turn.
       if (used != null) await bb.storage.kv.set(COMPACTED + threadId, used);
     } finally { release(threadId); }
-    bb.log.info(`Compact ${threadId}: compacted from the thread header`);
+    bb.log.info(`Compact ${threadId}: ${trigger === "manual" ? "compacted from the thread header" : "compacted before its next message"}`);
   }
 
-  const atOnce = (threadId: string, period: number) => {
+  const atOnce = async (threadId: string, period: number, later: boolean) => {
     if (config.thresholdPercent === "off") return;
-    void attempt(threadId, now(), () => periods.get(threadId) === period, true).then(result => bb.log.info(`Compact ${threadId}: ${result}`), error => bb.log.warn(`Compact ${threadId} failed: ${message(error)}`));
+    await attempt(threadId, now(), () => periods.get(threadId) === period, true, later).then(result => bb.log.info(`Compact ${threadId}: ${result}`), error => bb.log.warn(`Compact ${threadId} failed: ${message(error)}`));
   };
 
   // The stop that ends this plugin's own compaction turn: consume the marker and start nothing.
@@ -298,23 +346,24 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   bb.events.on("thread.idle", async ({ thread }) => {
     const since = now(), period = ++generation;
     periods.set(thread.id, period);
+    deciding.set(thread.id, { period, guard: setTimeout(() => decided(thread.id, period), 30_000) });
     // A request still queued after this plugin's own compaction turn (one that turn did not cover) runs now rather than
     // leaving the thread's next message waiting.
-    if (await ownTurnEnded(thread.id, period) || queued.has(thread.id)) { periods.delete(thread.id); return void runQueued(thread.id); }
-    atOnce(thread.id, period);
+    if (await ownTurnEnded(thread.id, period) || queued.has(thread.id)) { periods.delete(thread.id); decided(thread.id, period); return void runQueued(thread.id); }
+    void atOnce(thread.id, period, true).then(() => decided(thread.id, period));
     await bb.storage.kv.set(IDLE + thread.id, since);
     schedule(thread.id, since, period);
   });
-  bb.events.on("thread.active", ({ thread }) => cancel(thread.id));
-  for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, async ({ thread }) => { stopped(thread.id); await unqueue(thread.id); await cancel(thread.id); });
+  bb.events.on("thread.active", ({ thread }) => cancel(thread.id, "became active"));
+  for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, async ({ thread }) => { stopped(thread.id); await unqueue(thread.id); await cancel(thread.id, event === "thread.archived" ? "archived" : "deleted"); });
   // A failed thread gets no idle timer, only the check by share of the window, under its own generation.
   bb.events.on("thread.failed", async ({ thread }) => {
-    const done = cancel(thread.id), period = ++generation;
+    const done = cancel(thread.id, "failed"), period = ++generation;
     periods.set(thread.id, period); await done;
     // A request still queued after this plugin's own compaction turn (one that turn did not cover) runs now rather than
     // leaving the thread's next message waiting.
     if (await ownTurnEnded(thread.id, period) || queued.has(thread.id)) { periods.delete(thread.id); return void runQueued(thread.id); }
-    atOnce(thread.id, period);
+    void atOnce(thread.id, period, false);
   });
 
   // Timers die with the server; threads that went idle before a restart are picked up again while still warm.
@@ -338,7 +387,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
     else if (thread.status === "idle" || thread.status === "error") void runQueued(threadId);
   }
   await bb.experimental_hooks.recheck("message.dispatch");
-  bb.onDispose(() => { for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
+  bb.onDispose(() => { periods.clear(); beforeNext.clear(); for (const { guard } of deciding.values()) clearTimeout(guard); deciding.clear(); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
 
   const usage = "Usage:\n  bb idle-compact status [--json]\n  bb idle-compact keep [thread-id]\n  bb idle-compact release [thread-id]";
   bb.cli.register({
@@ -355,14 +404,14 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
         const pending: Record<string, string> = {};
         for (const key of await bb.storage.kv.list(IDLE)) { const since = await bb.storage.kv.get<number>(key); if (typeof since === "number") pending[key.slice(IDLE.length)] = new Date(since + IDLE_MS).toISOString(); }
         const kept = (await bb.storage.kv.list(KEEP)).map(key => key.slice(KEEP.length));
-        const value = { enabled: config.enabled, idleMinutes: IDLE_MS / 60_000, minTokens: config.minTokens, thresholdPercent: config.thresholdPercent, pending, kept };
-        return { exitCode: 0, stdout: json ? JSON.stringify(value) : [`enabled: ${value.enabled}`, `compacts after: ${value.idleMinutes} min idle, ${value.minTokens} tokens or more`, `compacts at once from: ${value.thresholdPercent === "off" ? "off" : `${value.thresholdPercent}% of the window`}`, `pending: ${Object.entries(pending).map(([id, at]) => `${id} at ${at}`).join(", ") || "none"}`, `keep full context: ${kept.join(", ") || "none"}`].join("\n") };
+        const value = { enabled: config.enabled, idleMinutes: IDLE_MS / 60_000, minTokens: config.minTokens, thresholdPercent: config.thresholdPercent, pending, beforeNextMessage: [...beforeNext.keys()], kept };
+        return { exitCode: 0, stdout: json ? JSON.stringify(value) : [`enabled: ${value.enabled}`, `compacts after: ${value.idleMinutes} min idle, ${value.minTokens} tokens or more`, `compacts a full thread from: ${value.thresholdPercent === "off" ? "off" : `${value.thresholdPercent}% of the window, before its next message (failed: at once)`}`, `pending: ${Object.entries(pending).map(([id, at]) => `${id} at ${at}`).join(", ") || "none"}`, `before next message: ${value.beforeNextMessage.join(", ") || "none"}`, `keep full context: ${kept.join(", ") || "none"}`].join("\n") };
       }
       if (command === "keep" || command === "release") {
         const threadId = rest[0] ?? ctx.threadId;
         if (!threadId || rest.length > 1) return { exitCode: 1, stderr: usage };
         await bb.sdk.threads.get({ threadId });
-        if (command === "keep") { periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId); await bb.storage.kv.set(KEEP + threadId, true); } else await bb.storage.kv.delete(KEEP + threadId);
+        if (command === "keep") { beforeNext.delete(threadId); periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId); await bb.storage.kv.set(KEEP + threadId, true); } else await bb.storage.kv.delete(KEEP + threadId);
         return { exitCode: 0, stdout: json ? JSON.stringify({ threadId, keep: command === "keep" }) : `${threadId}: ${command === "keep" ? "keeps its full context" : "can be idle-compacted"}` };
       }
       if (command && command !== "help" && command !== "--help") return { exitCode: 1, stderr: usage };
