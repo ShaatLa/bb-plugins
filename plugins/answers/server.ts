@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -23,13 +23,14 @@ const toolInputs = {
   resolve: z.object({id:idSchema}).strict(),
   report: z.object({}).strict(),
   withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
-  ask: z.object({question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
+  ask: z.object({deadlineMinutes:z.number().int().min(5).max(10080).optional(),question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
     questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional()}).strict()
       .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect requires options',path:['multiSelect']})
       .refine(q=>q.recommended===undefined || q.options?.includes(q.recommended),{message:'recommended must equal one of options',path:['recommended']})).min(2).max(10).optional()}).strict()
     .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined),{message:'with questions, put options, multiSelect and recommended on each question',path:['questions']})
     .refine(p=>!p.multiSelect || !!p.options,{message:'multiSelect requires options',path:['multiSelect']})
     .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
+    .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes requires recommended for a single question',path:['deadlineMinutes']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
 const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
@@ -184,14 +185,29 @@ export default function plugin(bb: BbPluginApi) {
     const threads='ids' in p ? threadsOf(`id IN (${p.ids.map(()=>'?').join(',')})`,...p.ids) : p.threadId ? [p.threadId] : result.batch ? threadsOf('read_batch=?',result.batch) : [];
     await syncBbRead(threads,true); return result;
   }
+  const deadlinePending=new Set<string>();
   let wakeTimer: ReturnType<typeof setTimeout>|undefined, disposed=false;
   function wakeDue() {
     if (disposed) return;
     if (wakeTimer) clearTimeout(wakeTimer);
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
-    const next=db.prepare('SELECT min(snoozed_until) AS at FROM items WHERE snoozed_until IS NOT NULL').get() as {at:number|null};
-    if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(0,next.at-Date.now()),2147483647)); wakeTimer.unref();}
+    const due=db.prepare("SELECT * FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at<=?").all(Date.now()) as Row[];
+    for (const row of due) {
+      if (deadlinePending.has(row.id) || sending.has(row.thread_id)) continue;
+      deadlinePending.add(row.id);
+      void guarded(row.thread_id,async()=>{
+        const item=get(row.id);
+        if (item.status!=='open' || item.dismissed_at!==null || item.deadline_at===null || item.deadline_at>Date.now()) return;
+        const note=`No answer by the deadline, so going with the default:\n${defaultAnswer({questions:item.questions ? JSON.parse(item.questions) : null,recommended:item.recommended})}`;
+        try {
+          await deliver(item.thread_id,buildReplyMessage([{quote:item.question,note}]));
+          commit("UPDATE items SET status='replied',answer=?,answer_source='agent',deadline_at=NULL,updated_at=? WHERE id=? AND status='open'",note,Date.now(),item.id);
+        } catch(e) {bb.log.warn(`Answers deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
+      }).finally(()=>{deadlinePending.delete(row.id);wakeDue();});
+    }
+    const next=db.prepare("SELECT min(at) AS at FROM (SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get() as {at:number|null};
+    if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(1000,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
     if (sending.has(threadId)) throw new Error('A reply to this thread is already sending');
@@ -429,7 +445,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Parts may return Skipped or Your call (decide yourself).'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Parts may return Skipped or Your call (decide yourself). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -448,8 +464,8 @@ export default function plugin(bb: BbPluginApi) {
             // Several questions or checkboxes go to bb's question form; the text keeps every part for the quote, push and search.
             const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question,ask)] : null;
             const text=ask.questions ? `${ask.question}\n\n${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question;
-            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,now,now);
-            onAttention();
+            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000,now,now);
+            onAttention(); wakeDue();
             return id;
           }
           if (method==='report') {

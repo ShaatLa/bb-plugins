@@ -1,3 +1,4 @@
+import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
@@ -321,7 +322,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.chatAsked && <span title="The agent asked this in its reply text, not through Answers" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
+      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Answers" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
@@ -678,3 +679,10 @@ export default definePluginApp(app => {
     experimental_panel.openTab({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
   } });
 });
+
+function Deadline({item}:{item:Item}) {
+ const [now,setNow]=useState(Date.now());
+ useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
+ const minutes=Math.max(0,Math.ceil((item.deadlineAt!-now)/60000)), due=minutes<60 ? `${minutes}m` : minutes<1440 ? `${Math.ceil(minutes/60)}h` : `${Math.ceil(minutes/1440)}d`, answer=defaultAnswer(item).replace(/\*\*/g,'').replace(/\n/g,'; ');
+ return <span className="truncate text-muted-foreground" title={answer}>Due in {due} · default: {answer.length>60 ? answer.slice(0,60)+'…' : answer}</span>;
+}

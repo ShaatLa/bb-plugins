@@ -860,3 +860,8 @@ it.each(['deferred', 'answered'] as const)('renders the interim reply once when 
   expect(slot.getAllByText('Shared interim fragment')).toHaveLength(1);
   if (status === 'answered') expect(slot.getByText('Final reply')).toBeTruthy();
 });
+
+it('shows a deadline and compact default on an open question',async()=>{
+ const slot=await questionsSetup({}, {deadlineAt:Date.now()+2*3600000,recommended:'A'});
+ expect(slot.getByText('Due in 2h · default: A')).toBeTruthy();
+});

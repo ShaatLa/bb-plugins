@@ -838,3 +838,25 @@ describe('owed answers', () => {
   expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({dismissed_at:now});
  });
 });
+
+it('defaults deadlines once and lets an earlier owner reply win',async()=>{
+ vi.useFakeTimers(); const {harness,db,send}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ for(const deadlineMinutes of [4,10081,5.5]) await expect(ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes})).rejects.toThrow();
+ await expect(ask({question:'Pick',deadlineMinutes:5})).rejects.toThrow();
+ const id=await ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes:5});
+ await vi.advanceTimersByTimeAsync(300000);
+ expect(db.prepare('SELECT status,answer_source,answer FROM items WHERE id=?').get(id)).toEqual({status:'replied',answer_source:'agent',answer:'No answer by the deadline, so going with the default:\nA'});
+ const owner=await ask({question:'Pick again',options:['B'],recommended:'B',deadlineMinutes:5}); await harness.behavior.callRpc('reply',{id:owner,text:'Mine'}); await vi.advanceTimersByTimeAsync(300000);
+ expect(db.prepare('SELECT answer_source FROM items WHERE id=?').get(owner)).toEqual({answer_source:'user'});expect(send).toHaveBeenCalledTimes(2);
+ const failed=await ask({question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5}); send.mockRejectedValueOnce(new Error('offline'));
+ await vi.advanceTimersByTimeAsync(300000); expect(db.prepare('SELECT status,deadline_at FROM items WHERE id=?').get(failed)).toEqual({status:'open',deadline_at:null});
+ await vi.advanceTimersByTimeAsync(300000);expect(send).toHaveBeenCalledTimes(3);
+});
+
+it('restores composite deadlines after restart',async()=>{
+ vi.useFakeTimers();const h=setup();
+ const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5},{threadId:'t'});
+ const next=await h.harness.lifecycle.reload(plugin); cleanup.push(()=>next.harness.lifecycle.dispose());
+ await vi.advanceTimersByTimeAsync(300000);
+ expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. **One** — A\n2. **Two** — Your call (decide yourself)');
+});
