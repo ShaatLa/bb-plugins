@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
-import { Markdown, experimental_useRpcQuery as useQuery } from '@get-bb/plugin-sdk/app';
+import { Markdown, experimental_useRpcQuery as useQuery, useBbNavigate, useSdk } from '@get-bb/plugin-sdk/app';
 import { rpcContract } from './contract';
 
 // bb's chat shows inline-vis pages (an ::inline-vis{file="…"} directive, or an ```inline-vis fenced page) through the
@@ -64,7 +64,41 @@ function FilePage({ threadId, file, source }: { threadId: string; file: string; 
 }
 
 /** An agent's message: Markdown, with inline-vis pages shown in place. */
+// bb routes a message's local file links by the thread route it renders in; the plugin page has none, so such a link
+// would navigate the app to the path. The chat opens it in bb's file preview panel instead, as bb's thread view does.
+const APP_ROUTE = /^\/(?:projects|threads|plugins|settings|compose|new|docs|automations)(?:[/?#]|$)/;
+export function localLink(href: string): { path: string; line: number | null } | null {
+  if (href.startsWith('file://')) href = href.slice(7);
+  else if (!href || href.startsWith('#') || href.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(href) || APP_ROUTE.test(href)) return null;
+  let path = href, line: number | null = null;
+  const hash = /#L(\d+)(?:-L?\d+)?$/.exec(path) ?? /:(\d+)(?::\d+)?$/.exec(path);
+  if (hash) { line = Number(hash[1]); path = path.slice(0, hash.index); }
+  try { path = decodeURIComponent(path.split(/[?#]/)[0]!); } catch { return null; }
+  return path ? { path, line } : null;
+}
+const environments = new Map<string, Promise<{ id: string; hostId: string; path: string | null } | null>>();
+export function LocalLinks({ threadId, children }: { threadId: string; children: React.ReactNode }) {
+  const sdk = useSdk(), navigate = useBbNavigate();
+  const onClick = (event: React.MouseEvent) => {
+    const anchor = (event.target as Element).closest?.('a[href]');
+    if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = localLink(anchor.getAttribute('href') ?? '');
+    if (!link) return;
+    event.preventDefault(); event.stopPropagation();
+    if (!environments.has(threadId)) environments.set(threadId, sdk.threads.get({ threadId }).then(t => t.environmentId ? sdk.environments.get({ environmentId: t.environmentId }) : null).then(e => e && { id: e.id, hostId: e.hostId, path: e.path }).catch(() => { environments.delete(threadId); return null; }));
+    void environments.get(threadId)!.then(env => {
+      if (!env) return;
+      const root = env.path?.replace(/\/+$/, '') ?? null, absolute = link.path.startsWith('/');
+      if (!absolute && root === null) return;
+      const inside = root !== null && (!absolute || link.path.startsWith(root + '/'));
+      const target = inside ? { kind: 'workspace' as const, environmentId: env.id, path: absolute ? link.path.slice(root!.length + 1) : link.path.replace(/^\.\//, '') } : { kind: 'host' as const, hostId: env.hostId, path: link.path };
+      navigate.experimental_openFilePreview({ target, location: link.line ? { kind: 'line', line: link.line, column: null } : null });
+    });
+  };
+  return <div className="contents" onClickCapture={onClick}>{children}</div>;
+}
+
 export function AgentMarkdown({ content, threadId }: { content: string; threadId: string }) {
-  if (!content.includes('inline-vis')) return <Markdown content={content} />;
-  return <>{splitInlineVis(content).map((segment, i) => <Fragment key={i}>{segment.kind === 'markdown' ? <Markdown content={segment.text} /> : segment.kind === 'page' ? <Page html={segment.html} /> : <FilePage threadId={threadId} file={segment.file} source={segment.source} />}</Fragment>)}</>;
+  if (!content.includes('inline-vis')) return <LocalLinks threadId={threadId}><Markdown content={content} /></LocalLinks>;
+  return <LocalLinks threadId={threadId}>{splitInlineVis(content).map((segment, i) => <Fragment key={i}>{segment.kind === 'markdown' ? <Markdown content={segment.text} /> : segment.kind === 'page' ? <Page html={segment.html} /> : <FilePage threadId={threadId} file={segment.file} source={segment.source} />}</Fragment>)}</LocalLinks>;
 }
