@@ -421,7 +421,7 @@ Blocks until every **required** check of the PR head settles and exits with a ve
 
 - **Which head.** `--head` takes the full SHA (`git rev-parse HEAD`); a short one is refused. Without it the wait judges the PR head at the moment it starts. If the head moves while waiting, the result is superseded (exit 2); if the requested SHA never becomes the head within 2 minutes, exit 3.
 - **What is green.** The required set is read from GitHub for the PR's base branch (branch protection plus rulesets), never hard-coded. Green means every required check passed (skipped/neutral count, as on GitHub) on that exact head **and** no workflow run for the head is still running. A single summary job such as `CI complete` passing alone is not enough when other checks are required.
-- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. A PR that is still a draft after 2 minutes gives exit 3.
+- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. Of several runs of one workflow on the head only the newest counts, so a draft-time run its successor cancelled does not make the verdict "cancelled". A PR that is still a draft after 2 minutes gives exit 3.
 - **Complete listing.** Checks come from the head's check runs and commit statuses (all pages), not from `gh run view --json jobs`, which can omit jobs.
 
 | Exit | Verdict | Meaning |

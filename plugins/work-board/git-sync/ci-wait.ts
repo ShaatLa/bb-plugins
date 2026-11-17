@@ -57,7 +57,11 @@ export function assessCiChecks(state: CiState, sinceStartMs: number, sinceHeadMs
     return verdict(CI_EXIT.noVerdict, "the required check set is unknown: the server's GitHub token cannot read branch protection or rulesets");
   if (!state.required.length) return verdict(CI_EXIT.noVerdict, "the base branch requires no status checks, so there is nothing to wait for");
   const readyAt = state.readyAt ? Date.parse(state.readyAt) : 0;
-  const runs = state.runs.filter((run) => Date.parse(run.createdAt) >= readyAt);
+  // Per workflow only the newest run counts: a draft-time run cancelled by its successor must not judge the head.
+  const newest = new Map<number, CiState["runs"][number]>();
+  for (const run of state.runs)
+    if (Date.parse(run.createdAt) >= readyAt && (newest.get(run.workflowId)?.id ?? -1) < run.id) newest.set(run.workflowId, run);
+  const runs = [...newest.values()];
   const active = runs.find((run) => run.status !== "completed");
   if (active) return { wait: `run ${active.name ?? active.id} ${active.status}: ${active.url}` };
   const rules = state.required.map((rule) => ({ name: rule.context, state: ruleState(state, rule, readyAt) }));

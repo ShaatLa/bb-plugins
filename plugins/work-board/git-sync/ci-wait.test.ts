@@ -14,7 +14,7 @@ function state(patch: Partial<CiState> = {}): CiState {
       { name: "CI complete", app: "github-actions", appId: 15368, state: "passed", url: null, startedAt: iso(T0 + 60_000) },
       { name: "PR metadata", app: "github-actions", appId: 15368, state: "passed", url: null, startedAt: iso(T0 + 30_000) },
     ],
-    runs: [{ id: 2, name: "CI", status: "completed", conclusion: "success", url: "https://github.com/o/r/actions/runs/2", createdAt: iso(T0 + 10_000) }],
+    runs: [{ id: 2, workflowId: 1, name: "CI", status: "completed", conclusion: "success", url: "https://github.com/o/r/actions/runs/2", createdAt: iso(T0 + 10_000) }],
     ...patch,
   };
 }
@@ -41,7 +41,7 @@ describe("assessCiChecks", () => {
 
   it("never judges the finished draft run once the PR was marked ready", () => {
     const readyAt = T0 + 300_000;
-    const draftRun = { id: 1, name: "CI", status: "completed", conclusion: "failure", url: "https://github.com/o/r/actions/runs/1", createdAt: iso(T0) };
+    const draftRun = { id: 1, workflowId: 1, name: "CI", status: "completed", conclusion: "failure", url: "https://github.com/o/r/actions/runs/1", createdAt: iso(T0) };
     const draftChecks: CiState["checks"] = [
       { name: "CI complete", app: "github-actions", appId: 15368, state: "failed", url: null, startedAt: iso(T0 + 60_000) },
       { name: "PR metadata", app: "github-actions", appId: 15368, state: "passed", url: null, startedAt: iso(T0 + 30_000) },
@@ -50,7 +50,7 @@ describe("assessCiChecks", () => {
     const justReady = state({ readyAt: iso(readyAt), runs: [draftRun], checks: draftChecks });
     expect(judge(justReady, 10_000, readyAt + 10_000)).toEqual({ wait: "no CI run registered yet" });
     // The ready run registered and is running; the gate job has not started, so its old check is still the latest.
-    const readyRun = { id: 3, name: "CI", status: "in_progress", conclusion: null, url: "https://github.com/o/r/actions/runs/3", createdAt: iso(readyAt + 5_000) };
+    const readyRun = { id: 3, workflowId: 1, name: "CI", status: "in_progress", conclusion: null, url: "https://github.com/o/r/actions/runs/3", createdAt: iso(readyAt + 5_000) };
     expect(judge(state({ readyAt: iso(readyAt), runs: [draftRun, readyRun], checks: draftChecks }), 60_000, readyAt + 60_000)).toEqual({ wait: expect.stringContaining("in_progress") });
     // The ready run finished green.
     const finished = state({
@@ -87,6 +87,15 @@ describe("assessCiChecks", () => {
   it("treats a cancelled required check or run as cancelled", () => {
     const value = state({ checks: [{ ...state().checks[0]!, state: "cancelled" }, state().checks[1]!] });
     expect(judge(value)).toMatchObject({ exitCode: CI_EXIT.cancelled });
+  });
+
+  it("lets the newest run of a workflow decide, not an older cancelled one (PR #2205)", () => {
+    const cancelled = { ...state().runs[0]!, id: 1, conclusion: "cancelled" };
+    const gate = { context: "anvil/ready-check", appId: null };
+    const value = state({ required: [...REQUIRED, gate], runs: [cancelled, state().runs[0]!] });
+    expect(judge(value)).toMatchObject({ exitCode: CI_EXIT.noVerdict, message: expect.stringContaining("anvil/ready-check") });
+    const newestCancelled = state({ required: [...REQUIRED, gate], runs: [state().runs[0]!, { ...cancelled, id: 3 }] });
+    expect(judge(newestCancelled)).toMatchObject({ exitCode: CI_EXIT.cancelled });
   });
 });
 

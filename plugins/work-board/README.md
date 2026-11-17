@@ -540,7 +540,7 @@ Automatic retention is a device/plugin setting, applies to all tracker projects,
 
 ### Waiting for PR CI (0.30.0)
 
-`bb work-board pr wait --url <PR URL> [--head <SHA>] [--timeout 45m] [--json]` blocks on the bb server until every required check of the PR head settles: exit 0 green, 1 red (failed names printed), 2 cancelled or superseded, 3 no verdict (DIRTY, draft, no run, unknown required set, timeout). The required set comes from branch protection and rulesets; Actions checks older than the PR's latest `ready_for_review` are ignored, so a finished draft run is never judged. See the work-board skill, section "Waiting for PR CI".
+`bb work-board pr wait --url <PR URL> [--head <SHA>] [--timeout 45m] [--json]` blocks on the bb server until every required check of the PR head settles: exit 0 green, 1 red (failed names printed), 2 cancelled or superseded, 3 no verdict (DIRTY, draft, no run, unknown required set, timeout). The required set comes from branch protection and rulesets; Actions checks older than the PR's latest `ready_for_review` are ignored, so a finished draft run is never judged, and of several runs of one workflow on the head only the newest counts. See the work-board skill, section "Waiting for PR CI".
 
 ### PR file overlaps
 
