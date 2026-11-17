@@ -14,11 +14,13 @@ export function command(command: string, args: string[], cwd: string, signal: Ab
     child.on('close', (code, sig) => { clearTimeout(timer); if (failure) reject(failure); else if (code === null) reject(new Error(`${command} killed by ${sig}`)); else resolve({ code, output }); });
   });
 }
-export async function execute(base: string, projectId: string, config: Config, previous: Buffer | null, signal: AbortSignal, bbCli = process.env.BB_CLI ?? '') {
+export async function execute(base: string, projectId: string, config: Config, previous: Buffer | null, signal: AbortSignal, bbCli = process.env.BB_CLI ?? '', runtimePath = '') {
   const root = join(base, 'checkouts', projectId);
   await mkdir(root, { recursive: true });
   const git = async (args: string[]) => { const result = await command('git', ['-c', 'core.hooksPath=/dev/null', ...args], root, signal, 60000, { ...process.env, GIT_TERMINAL_PROMPT: '0' }); if (result.code) throw new Error(`Checkout refresh failed: ${result.output}`); return result.output; };
   await git(['init']);
+  try { await git(['remote', 'get-url', 'origin']); } catch { await git(['remote', 'add', 'origin', config.remote]); }
+  await git(['remote', 'set-url', 'origin', config.remote]);
   await git(['fetch', '--depth=1', '--', config.remote, config.branch]);
   await git(['checkout', '--force', '--detach', 'FETCH_HEAD']);
   await git(['clean', '-ffdx']);
@@ -29,7 +31,7 @@ export async function execute(base: string, projectId: string, config: Config, p
     const committed = join(temp, 'committed.json'), candidate = join(temp, 'candidate.json');
     if (previous) await writeFile(committed, previous, { mode: 0o400 });
     if (bbCli && !isAbsolute(bbCli)) throw new Error('BB CLI path must be absolute');
-    const env = { ...process.env, ...(bbCli ? { BB_CLI: bbCli, PATH: dirname(bbCli) + delimiter + (process.env.PATH ?? '') } : {}), BB_PROJECT_ID: projectId, BB_THREAD_ID: config.manager, BB_SWEEP_COMMITTED_STATE: committed, BB_SWEEP_CANDIDATE_SNAPSHOT: candidate };
+    const env = { ...process.env, PATH: [bbCli ? dirname(bbCli) : '', runtimePath || process.env.PATH || ''].filter(Boolean).join(delimiter), ...(bbCli ? { BB_CLI: bbCli } : {}), BB_PROJECT_ID: projectId, BB_THREAD_ID: config.manager, BB_SWEEP_COMMITTED_STATE: committed, BB_SWEEP_CANDIDATE_SNAPSHOT: candidate };
     const args = config.args.map(arg => arg.replaceAll('{manager}', config.manager));
     const result = await command(script.endsWith('.py') ? 'python3' : script, [...(script.endsWith('.py') ? [script] : []), ...args, ...(config.snapshots ? ['--committed-state', committed, '--candidate-snapshot', candidate] : [])], root, signal, config.timeoutSeconds * 1000, env);
     let snapshot: Buffer | null = null;

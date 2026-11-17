@@ -2,7 +2,7 @@
 
 Sweep refreshes a dedicated server-local checkout and runs a repository script on a per-project interval (default ten minutes). Checks stay in the repository. It sends nonzero results to the project manager and one heartbeat per hour on quiet runs. Python scripts run with python3; other scripts must be executable. Git, Python and BB CLI access must be available on the BB server machine. Checkout location is `<plugin-data>/checkouts/<projectId>`; it is disposable and cleaned before every run.
 
-Set **BB CLI absolute path** to the installed `bb` executable if the server PATH does not include it. Sweep adds its directory to the script PATH and sets BB_CLI.
+Set **BB CLI absolute path** to the installed `bb` executable if the server PATH does not include it. Sweep adds its directory to the script PATH and sets BB_CLI. Set **Script PATH** to the normal login PATH when tools such as gh are absent from the server environment. HOME and GitHub authentication variables are inherited without modification.
 
 Settings → Plugins → Sweep exposes **Project sweeps (JSON)**, a map from project id to configuration. Every project defaults disabled. Example:
 

@@ -17,7 +17,7 @@ export const contract = defineRpcContract({
 });
 type State = { lastRun?: number; exitCode?: number; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
 export default async function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({ bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
+  const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
   const db = bb.storage.database(), deliveries = deliveryStore(db);
   db.exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
@@ -41,10 +41,9 @@ export default async function plugin(bb: BbPluginApi) {
     const pending = deliveries.read(id)?.pending_message;
     if (!pending) return;
     await send(id, pending);
-    deliveries.acknowledge(id);
     current.delivered = pending; current.deliveredAt = Date.now();
     if (pending.startsWith('[sweep] alive')) current.heartbeatAt = Date.now();
-    save(id, current);
+    db.transaction(() => { deliveries.acknowledge(id); save(id, current); })();
   }
   async function tick(id: string, manual = false) {
     if (busy.has(id)) throw new Error('Sweep already running');
@@ -60,7 +59,7 @@ export default async function plugin(bb: BbPluginApi) {
         await managerFor(id);
       }
       let result;
-      try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal, (await settings.get()).bbCli); }
+      try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal, (await settings.get()).bbCli, (await settings.get()).runtimePath); }
       catch (e) { if (controller.signal.aborted) throw e; result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null }; }
       if (manual) return { exitCode: result.code, output: result.output, manual: true };
       current.exitCode = result.code;
