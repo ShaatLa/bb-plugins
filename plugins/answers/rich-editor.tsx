@@ -120,7 +120,8 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         pill.title = look.title; pill.setAttribute('aria-label', look.text);
         for (const [key, data] of Object.entries(experimental_promptMentionClipboardAttributes(mention, match[0]))) pill.setAttribute(key, data);
         const icon = document.createElement('span'), label = document.createElement('span');
-        label.className = 'truncate'; pill.append(icon, label);
+        // The icon's own box centers it; left to the pill's baseline alignment, a glyph like Zap rides above the text.
+        icon.className = 'flex shrink-0 self-center'; label.className = 'truncate'; pill.append(icon, label);
         contents.push(createPortal(mention.kind === 'command' && mention.source === 'skill' ? <Icon name="Zap" aria-hidden className="size-3.5 shrink-0 self-center text-muted-foreground" /> : <PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" />, icon, `${match.index}-icon`));
         contents.push(createPortal(mention.kind === 'thread' ? <ThreadTitleText title={mention.label} /> : mention.label, label, `${match.index}-label`));
         if (match[2]) { const suffix = document.createElement('span'); suffix.className = 'shrink-0 text-muted-foreground'; suffix.textContent = '· message'; pill.append(suffix); }
