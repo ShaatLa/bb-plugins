@@ -548,11 +548,12 @@ it('shows a quoted queued reply as the quote line and the message line', async (
 });
 it('renders queued messages and sends or deletes them through the SDK', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
-  const sendNow = vi.fn(() => Promise.resolve({})), remove = vi.fn(() => Promise.resolve({}));
+  // bb keeps this one queued (the thread cannot take it now), so the row comes back to be deleted.
+  const sendNow = vi.fn(() => Promise.resolve({ ok:true, delivery:'queued' })), remove = vi.fn(() => Promise.resolve({}));
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), send:sendNow, delete:remove } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Waiting text')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
-  fireEvent.click(slot.getByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
+  fireEvent.click(await slot.findByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
 it('drops a queued row bb already sent: deleting it answers 404 quietly and rereads the queue', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
@@ -606,6 +607,19 @@ it('offers bb\'s Scroll to latest button once the last message is out of sight b
   fireEvent.click(button); expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior:'smooth' }));
   last.getBoundingClientRect = () => ({ top:300, bottom:450 }) as DOMRect; fireEvent.scroll(view);
   await waitFor(() => expect(button.className).toContain('invisible'));
+});
+it('moves a queued message sent now straight from the queue into the chat', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Steer me', mentions:[] }], updatedAt:1, sendAt:Date.now() + 3600000, state:'scheduled' };
+  let rows = [row], finish = (_: unknown) => {};
+  const sendNow = vi.fn(() => { rows = []; return new Promise(resolve => { finish = resolve; }); });
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Steer me');
+  fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' }));
+  // Before bb even answers, the row is gone from the queue and the message stands in the chat.
+  await waitFor(() => expect(slot.queryByRole('region', { name:'Queued messages' })?.textContent ?? '').not.toContain('Steer me'));
+  expect(slot.getByText('Steer me')).toBeTruthy();
+  finish({ ok:true, delivery:'sent' });
+  await waitFor(() => expect(sendNow).toHaveBeenCalled());
 });
 it('keeps a delivered queued message in the queue card until the chat records it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
