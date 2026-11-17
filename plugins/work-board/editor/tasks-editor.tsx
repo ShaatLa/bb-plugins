@@ -43,6 +43,11 @@ const EDITOR_CSS = `
 .bb-work-board-editor[data-variant="doc"] { display: flex; flex-direction: column; }
 .bb-work-board-editor[data-variant="doc"] .bb-work-board-editor-surface { display: flex; flex: 1 1 auto; flex-direction: column; }
 .bb-work-board-editor[data-variant="doc"] .bb-work-board-editor-surface .tiptap { flex: 1 1 auto; }
+/* Justified description paragraphs once lines are long enough; on narrow
+   panels without hyphenation it would open wide gaps between words. */
+@container (min-width: 45rem) {
+  .bb-work-board-editor[data-variant="doc"] .tiptap :is(p, li) { text-align: justify; }
+}
 .bb-work-board-editor .tiptap > :first-child,
 .bb-work-board-editor .tiptap li > :first-child,
 .bb-work-board-editor .tiptap blockquote > :first-child { margin-top: 0; }
