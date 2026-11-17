@@ -1,5 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { experimental_useRpcQuery as useQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { useState } from "react";
 import { z } from "zod";
 import { useTasksQuery } from "../shell/data";
 
@@ -85,21 +86,49 @@ export function modelSlices(models: ModelCost[]): ModelSlice[] {
   return slices;
 }
 
-function ModelPie({ slices }: { slices: ModelSlice[] }) {
+export type CostUnit = "%" | "$";
+
+function UnitToggle({ unit, onChange }: { unit: CostUnit; onChange: (unit: CostUnit) => void }) {
+  return (
+    <div className="flex items-center rounded-md bg-muted p-0.5" aria-label="Show models as">
+      {(["%", "$"] as const).map((value) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={unit === value}
+          aria-label={value === "%" ? "Share" : "Amount"}
+          onClick={() => onChange(value)}
+          className={`rounded-sm px-1.5 text-2xs tabular-nums ${unit === value ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          {value}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ModelPie({ slices, unit }: { slices: ModelSlice[]; unit: CostUnit }) {
+  // Hovering a slice or its legend row highlights that model and dims the rest.
+  const [active, setActive] = useState<string | null>(null);
+  const dim = (label: string) => (active !== null && active !== label ? "opacity-35" : "");
   // A circle of circumference 100 lets each slice's dash length be its percentage.
   let offset = 25;
   const gap = slices.length > 1 ? 0.6 : 0;
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex items-start gap-3" onMouseLeave={() => setActive(null)}>
       <svg viewBox="0 0 42 42" className="size-16 shrink-0" role="img" aria-label="Cost by model">
         {slices.map((slice) => {
           const length = slice.share * 100;
+          const dash = Math.max(length - gap, 0.1);
           const circle = (
             <circle
               key={slice.label}
-              cx="21" cy="21" r="15.9155" fill="none" stroke={slice.color} strokeWidth="7"
-              strokeDasharray={`${Math.max(length - gap, 0.1)} ${100 - Math.max(length - gap, 0.1)}`}
+              cx="21" cy="21" r="15.9155" fill="none" stroke={slice.color}
+              strokeWidth={active === slice.label ? 9 : 7}
+              strokeDasharray={`${dash} ${100 - dash}`}
               strokeDashoffset={offset}
+              className={`cursor-default transition-[opacity,stroke-width] ${dim(slice.label)}`}
+              onMouseEnter={() => setActive(slice.label)}
             >
               <title>{`${slice.label}: ${Math.round(slice.share * 100)}% · ${slice.amount}`}</title>
             </circle>
@@ -110,11 +139,17 @@ function ModelPie({ slices }: { slices: ModelSlice[] }) {
       </svg>
       <ul className="min-w-0 flex-1 space-y-0.5">
         {slices.map((slice) => (
-          <li key={slice.label} className="flex min-w-0 items-center gap-1.5" title={slice.title}>
+          <li
+            key={slice.label}
+            className={`flex min-w-0 items-center gap-1.5 rounded-sm transition-opacity ${dim(slice.label)} ${active === slice.label ? "font-medium" : ""}`}
+            title={`${slice.title} · ${Math.round(slice.share * 100)}% · ${slice.amount}`}
+            onMouseEnter={() => setActive(slice.label)}
+          >
             <span className="size-2 shrink-0 rounded-sm" style={{ backgroundColor: slice.color }} />
             <span className="min-w-0 flex-1 truncate">{slice.label}</span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(slice.share * 100)}%</span>
-            <span className="w-14 shrink-0 text-right tabular-nums">{slice.amount}</span>
+            <span className="shrink-0 text-right tabular-nums">
+              {unit === "%" ? `${Math.round(slice.share * 100)}%` : slice.amount}
+            </span>
           </li>
         ))}
       </ul>
@@ -125,6 +160,7 @@ function ModelPie({ slices }: { slices: ModelSlice[] }) {
 /** Spend of every thread that worked on the task or its epic members and subtasks, from the optional Tokenomos plugin. */
 export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolean }) {
   const navigate = useBbNavigate();
+  const [unit, setUnit] = useState<CostUnit>("%");
   const spans = useTasksQuery(
     async (rpc) => rpc.call("getTaskCostSpans", { taskId }),
     ["threads:changed", "comments:changed"],
@@ -149,7 +185,10 @@ export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolea
   const threads = result.threads ?? [];
   return (
     <section aria-label="Task cost" className="mt-4 min-w-0 space-y-2 border-t border-border-hairline pt-3 text-xs">
-      <h3 className="text-xs font-semibold text-muted-foreground">Cost</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold text-muted-foreground">Cost</h3>
+        {slices.length ? <UnitToggle unit={unit} onChange={setUnit} /> : null}
+      </div>
       <div title={detail}>
         <span className="text-sm font-medium tabular-nums">{amount}</span>
         <span className="text-muted-foreground">
@@ -157,7 +196,7 @@ export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolea
           {epic || spans.taskCount > 1 ? ` across ${plural(spans.taskCount, "task")}` : ""}
         </span>
       </div>
-      {slices.length ? <ModelPie slices={slices} /> : null}
+      {slices.length ? <ModelPie slices={slices} unit={unit} /> : null}
       {threads.length ? (
         <details className="group">
           <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
