@@ -748,8 +748,11 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   expect(slot.queryByRole('dialog', { name:'Change send time' })).toBeNull(); expect(update).not.toHaveBeenCalled(); expect(reorder).not.toHaveBeenCalled();
   // 'late' moved above 'soon' leads it now: the default lands 3 minutes before, the menu offers more.
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
-  fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:'Other send times' }));
-  fireEvent.click(slot.getByRole('menuitem', { name:/−10 min/ }));
+  const moved = await slot.findByRole('dialog', { name:'Change send time' });
+  // Labels say how far 'late' itself moves: from 60 minutes out to 27 is −33 min.
+  expect(within(moved).getByRole('button', { name:/^Yes/ }).textContent).toContain('−33 min');
+  fireEvent.click(within(moved).getByRole('button', { name:'Other send times' }));
+  fireEvent.click(slot.getByRole('menuitem', { name:/−40 min/ }));
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'late', sendAt:at(30) - 10 * 60000 })));
   // An unscheduled message dropped below a scheduled one gets a time after it.
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 1' }), { key:'ArrowDown' });
@@ -764,7 +767,9 @@ it('keeps a moved message between its new neighbours when they are closer than t
   const update = vi.fn(() => Promise.resolve({}));
   const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows), update } }); fireEvent.click(await recipients.findByRole('option'));
   fireEvent.keyDown(await slot.findByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
-  fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ }));
+  const yes = within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ });
+  expect(yes.textContent).toContain('−9 min');
+  fireEvent.click(yes);
   await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
   const sendAt = (update.mock.calls[0] as any)[0].sendAt;
   expect(sendAt).toBeGreaterThan(minute(30)); expect(sendAt).toBeLessThan(minute(33));

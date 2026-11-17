@@ -194,6 +194,9 @@ function RowPopover({ anchor, label, className, onClose, children }: { anchor: H
 }
 const isScheduled = (row: QueueRow) => !!row.sendAt && row.sendAt > Date.now();
 const RETIME_MINUTES = [3, 5, 10, 20, 40];
+const span = (minutes: number) => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+// How far the message's own send time moves (or, unscheduled, how soon it will go), not the step from its new neighbour.
+const shift = (row: QueueRow, at: number) => { if (!isScheduled(row)) return `in ${span(Math.max(1, Math.round((at - Date.now()) / 60000)))}`; const minutes = Math.round((at - row.sendAt!) / 60000); return `${minutes < 0 ? '−' : '+'}${span(Math.abs(minutes))}`; };
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projectId, edit, onEdit, onFinish, onSend, onDelete, onSchedule, onReorder }: { rows: QueueRow[]; sourceName: (row: QueueRow) => string | null; waitReason: (row: QueueRow) => { icon: ReactNode; text: string } | null; projectId?: string | null; edit: QueueEdit | null; onEdit: (row: QueueRow, update?: Partial<QueueEdit>) => void; onFinish: (row: QueueRow, save: boolean) => void; onSend: (row: QueueRow) => void; onDelete: (row: QueueRow) => void; onSchedule: (row: QueueRow, sendAt: number) => void; onReorder: (row: QueueRow, previousQueuedMessageId: string | null, nextQueuedMessageId: string | null) => void }) {
   // The bottom fade only hints at rows hidden below; with nothing to scroll it would just shade the last row.
@@ -212,7 +215,7 @@ const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projec
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   // Dropping a message among scheduled ones moves it in time, not in the queue: the owner confirms a new send time
   // a few minutes after the scheduled message it now follows (or before the one it now leads).
-  const [retime, setRetime] = useState<{ row: QueueRow; sign: string; options: { minutes: number; at: number }[] } | null>(null), [retimeMenu, setRetimeMenu] = useState(false);
+  const [retime, setRetime] = useState<{ row: QueueRow; options: { minutes: number; at: number }[] } | null>(null), [retimeMenu, setRetimeMenu] = useState(false);
   const place = (row: QueueRow, to: number, dragged = false) => {
     const others = rows.filter(item => item.id !== row.id), before = others[to - 1], after = others.slice(to).find(isScheduled);
     const base = before && isScheduled(before) ? { at: before.sendAt!, sign: 1 } : isScheduled(row) && after ? { at: after.sendAt!, sign: -1 } : null;
@@ -222,7 +225,7 @@ const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projec
     const options = RETIME_MINUTES.map(minutes => ({ minutes, at: base.at + base.sign * minutes * 60000 })).filter(option => option.at > Math.max(low, now + 30000) && option.at < high);
     // A gap narrower than any step gets one time in its middle, on a whole minute when one fits.
     if (!options.length && high - Math.max(low, now) > 2000) { const middle = (Math.max(low, now) + high) / 2, minute = Math.floor(middle / 60000) * 60000, at = minute > Math.max(low, now) ? minute : middle; options.push({ minutes: Math.max(1, Math.round(Math.abs(at - base.at) / 60000)), at }); }
-    if (options.length) { setRetime({ row, sign: base.sign > 0 ? '+' : '−', options }); setRetimeMenu(false); }
+    if (options.length) { setRetime({ row, options }); setRetimeMenu(false); }
   };
   const drop = ({ active, over }: DragEndEvent) => { const row = rows.find(item => item.id === active.id), to = rows.findIndex(item => item.id === over?.id); if (!row || to < 0 || row.id === over!.id) return; place(row, to, true); };
   const action = 'inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:bg-state-hover';
@@ -246,8 +249,8 @@ const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projec
         {retime?.row.id === row.id && <RowPopover anchor={rowNode(row.id)} label="Change send time" className="w-60" onClose={() => setRetime(null)}>
           <p className="px-1 text-sm text-foreground">Change send time?</p>
           <div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={() => setRetime(null)}>Cancel</Button>
-            <div className="relative flex"><Button size="sm" autoFocus className="rounded-r-none" onClick={() => { onSchedule(row, retime.options[0]!.at); setRetime(null); }}>Yes, {clock(retime.options[0]!.at)} <span className="opacity-70">{retime.sign}{retime.options[0]!.minutes} min</span></Button>{retime.options.length > 1 && <Button size="sm" className="w-6 rounded-l-none border-l border-background/25 px-0" aria-label="Other send times" aria-haspopup="menu" aria-expanded={retimeMenu} onClick={() => setRetimeMenu(!retimeMenu)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>}
-              {retimeMenu && <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-44 rounded-lg border border-border bg-background p-1 shadow-lg">{retime.options.slice(1).map(option => <button key={option.minutes} type="button" role="menuitem" className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { onSchedule(row, option.at); setRetime(null); }}><span>{clock(option.at)}</span><span className="text-xs text-muted-foreground">{retime.sign}{option.minutes} min</span></button>)}</div>}</div></div>
+            <div className="relative flex"><Button size="sm" autoFocus className="rounded-r-none" onClick={() => { onSchedule(row, retime.options[0]!.at); setRetime(null); }}>Yes, {clock(retime.options[0]!.at)} <span className="opacity-70">{shift(row, retime.options[0]!.at)}</span></Button>{retime.options.length > 1 && <Button size="sm" className="w-6 rounded-l-none border-l border-background/25 px-0" aria-label="Other send times" aria-haspopup="menu" aria-expanded={retimeMenu} onClick={() => setRetimeMenu(!retimeMenu)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>}
+              {retimeMenu && <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-44 rounded-lg border border-border bg-background p-1 shadow-lg">{retime.options.slice(1).map(option => <button key={option.minutes} type="button" role="menuitem" className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { onSchedule(row, option.at); setRetime(null); }}><span>{clock(option.at)}</span><span className="text-xs text-muted-foreground">{shift(row, option.at)}</span></button>)}</div>}</div></div>
         </RowPopover>}
         {later === row.id && <RowPopover anchor={rowNode(row.id)} label="Schedule queued message" className="w-56" onClose={() => setLater(null)}><input type="datetime-local" aria-label="Send at" autoFocus className="w-full rounded-md border border-border-seam bg-transparent px-2 py-1 text-sm" value={date} onChange={event => setDate(event.target.value)} />{dateError && <p role="alert" className="text-xs text-destructive">{dateError}</p>}<div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={() => setLater(null)}>Cancel</Button><Button size="sm" disabled={!date} onClick={() => schedule(row)}>Schedule</Button></div></RowPopover>}
       </>}</SortableRow>;
