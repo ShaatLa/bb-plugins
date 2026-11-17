@@ -5,6 +5,7 @@ import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_readPromptMentionClipboard: (element: Element) => element.getAttribute('data-test-kind') === 'project' ? { text: '@project:proj_one', mention: { kind: 'project', projectId: 'proj_one', label: 'Project One' } } : null, experimental_promptMentionClipboardAttributes: (_mention: any, text: string) => ({ 'data-prompt-mention': 'true', 'data-test-serialized': text }), experimental_VoiceInputTextarea: ({ onValueChange, onVoiceInputActiveChange, ...props }: any) => <><textarea {...props} onChange={event => onValueChange(event.target.value)} /><button onClick={() => onVoiceInputActiveChange(true)}>Start voice</button><button onClick={() => onVoiceInputActiveChange(false)}>Stop voice</button></> }));
 import { Composer } from './composer';
+import { ComposerThread } from './rich-editor';
 afterEach(cleanup);
 it('blocks keyboard and send controls while voice input is active', () => {
   const onSend = vi.fn();
@@ -301,4 +302,27 @@ it('updates composer geometry on size changes without measuring each render', ()
 it('resolves repeated thread mentions through the same sidebar labels', () => {
   const { box } = editor('Ask @thread:thr_one and @thread:thr_one#msg=2');
   expect(Array.from(box.querySelectorAll('.prompt-mention-pill')).map(pill => pill.textContent)).toEqual(['Fix login', 'Fix login· message']);
+});
+
+const commands = [{ name:'optimize', source:'skill', origin:'user', description:'Measured code optimization', argumentHint:null }, { name:'reload-skills', source:'command', origin:'builtin', description:null, argumentHint:null }];
+function commandEditor(value = '') {
+  const onChange = vi.fn(), list = vi.fn(async () => ({ commands }));
+  const sdk = { threads: { get: async () => ({ id:'thr_cmd', projectId:'proj_one', environmentId:'env', providerId:'claude-code' }) }, projects: { commands: list } };
+  const slot = renderSlot({ component: () => <ComposerThread.Provider value="thr_cmd"><Composer label="Reply" value={value} onChange={onChange} attachments={[]} onAttachments={() => {}} projectId="proj_one" onSend={() => {}} /></ComposerThread.Provider> }, {}, { sidebarThreads: { threads: [thread], projects: [] }, sdk } as any);
+  return { slot, onChange, list, box: slot.getByRole('textbox', { name: 'Reply' }) as HTMLElement };
+}
+it('offers the thread’s skills and commands after / and inserts the picked one', async () => {
+  const { box, slot, onChange, list } = commandEditor();
+  await waitFor(() => expect(list).toHaveBeenCalledWith({ projectId:'proj_one', environmentId:'env', provider:'claude-code' }));
+  box.dataset.testValue = '/opt'; fireEvent.input(box);
+  const menu = await slot.findByRole('listbox', { name: 'Commands and skills' });
+  expect(within(menu).getByRole('option', { name: /optimize/ })).toBeTruthy(); expect(within(menu).queryByRole('option', { name: /reload-skills/ })).toBeNull();
+  fireEvent.keyDown(box, { key: 'Enter' });
+  expect(onChange).toHaveBeenLastCalledWith('/optimize ');
+});
+it('draws a known command as bb’s command pill and leaves unknown ones as text', async () => {
+  const { box } = commandEditor('/optimize the /unknown path');
+  await waitFor(() => expect(box.querySelector('[data-raw="/optimize"]')).toBeTruthy());
+  expect(box.querySelector('[data-raw="/optimize"]')!.getAttribute('aria-label')).toContain('optimize');
+  expect(box.querySelector('[data-raw="/unknown"]')).toBeNull();
 });

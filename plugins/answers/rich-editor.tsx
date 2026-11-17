@@ -1,6 +1,6 @@
 import { taskKeyRegex } from './task-links';
 import { rpcContract } from './contract';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_promptMentionClipboardAttributes, experimental_readPromptMentionClipboard, experimental_useSidebarThreads, experimental_useRpcQuery as useQuery, experimental_ThreadTitleText as ThreadTitleText, useSdk } from '@get-bb/plugin-sdk/app';
 import { threadToken, rememberMention, pastedMentions, type ThreadLabel } from './mentions';
@@ -8,6 +8,25 @@ import { threadToken, rememberMention, pastedMentions, type ThreadLabel } from '
 const parts = /@thread:(thr_[a-zA-Z0-9_-]+)(?:#msg=(\d+))?|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
 const threadUrl = /^https?:\/\/[^/\s]+(?:\/projects\/[^/\s]+)?\/threads\/(thr_[a-zA-Z0-9_-]+)(?:[?#][^\s]*)?$/;
 const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+// The thread a composer writes to, so its editor can offer that thread's slash commands and skills as bb's composer does.
+export const ComposerThread = createContext<string | null>(null);
+type Command = Awaited<ReturnType<ReturnType<typeof useSdk>['projects']['commands']>>['commands'][number];
+const commandCache = new Map<string, { at: number; list: Promise<Command[]> }>();
+function useThreadCommands(threadId: string | null) {
+  const sdk = useSdk(), [list, setList] = useState<Command[]>([]);
+  useEffect(() => {
+    if (!threadId) { setList([]); return; }
+    let live = true, cached = commandCache.get(threadId);
+    if (!cached || Date.now() - cached.at > 300000) {
+      cached = { at: Date.now(), list: sdk.threads.get({ threadId }).then(thread => thread.projectId && thread.environmentId && thread.providerId ? sdk.projects.commands({ projectId: thread.projectId, environmentId: thread.environmentId, provider: thread.providerId }).then(result => result.commands) : []).catch(() => { commandCache.delete(threadId); return []; }) };
+      commandCache.set(threadId, cached);
+    }
+    void cached.list.then(commands => { if (live) setList(commands); });
+    return () => { live = false; };
+  }, [sdk, threadId]);
+  return list;
+}
+const commandMention = (command: Command, trigger: '/' | '$') => ({ kind: 'command' as const, trigger, name: command.name, source: command.source, origin: command.origin, argumentHint: command.argumentHint, label: command.name });
 const raw = (node: Node): string => node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : node instanceof HTMLElement && node.dataset.raw ? node.dataset.raw : Array.from(node.childNodes).map(raw).join('');
 function offset(root: HTMLElement, node: Node, at: number) { const range = document.createRange(); range.selectNodeContents(root); range.setEnd(node, at); return raw(range.cloneContents()); }
 function position(root: HTMLElement, at: number): [Node, number] {
@@ -33,7 +52,15 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const task = taskKeyRegex(workBoard?.projects.map(p => p.prefix) ?? []);
   const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
-  const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string } | null>(null), [active, setActive] = useState(0);
+  const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string; trigger: string } | null>(null), [active, setActive] = useState(0);
+  const commands = useThreadCommands(useContext(ComposerThread));
+  // A known command typed after its trigger ("/optimize", "$optimize") shows as bb's command pill; the text stays as typed.
+  const commandSpans = useMemo(() => {
+    if (!commands.length) return [];
+    const names = commands.map(c => c.name).sort((a, b) => b.length - a.length).map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const byName = new Map(commands.map(c => [c.name, c]));
+    return Array.from(value.matchAll(new RegExp(`(^|\\s)([/$])(${names.join('|')})(?=\\s|$)`, 'g')), m => ({ at: m.index + m[1].length, text: m[2] + m[3], mention: commandMention(byName.get(m[3])!, m[2] as '/' | '$') }));
+  }, [commands, value]);
   const caret = useRef<number | null>(null);
   // Own undo history: the editor redraws its DOM on pastes, pills and quotes, which breaks the browser's native undo stack.
   const history = useRef({ past: [] as { value: string; at: number }[], future: [] as { value: string; at: number }[], typedAt: 0, emitted: value });
@@ -66,7 +93,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   });
   // Runs of "> " lines, drawn as one quote block like bb's composer; the draft keeps the Markdown text.
   const quotes = Array.from(value.matchAll(/^>(?: [^\n]*)?(?=\n|$)(?:\n>(?: [^\n]*)?(?=\n|$))*/gm), m => [m.index, m.index + m[0].length, m[0]] as const);
-  const signature = JSON.stringify([spans.map(({ match, mention }) => [match[0], mention, match[2], match[3], match[4], match[5]]), quotes.map(q => q[2])]);
+  const signature = JSON.stringify([spans.map(({ match, mention }) => [match[0], mention, match[2], match[3], match[4], match[5]]), quotes.map(q => q[2]), commandSpans.map(c => [c.at, c.text])]);
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
@@ -106,6 +133,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     // Quote markers and the line break after a quote are hidden but kept in the raw text.
     const hidden = (text: string) => { const marker = document.createElement('span'); marker.contentEditable = 'false'; marker.dataset.raw = text; marker.className = 'hidden'; return marker; };
     const tokens: { at: number; length: number; node(): Node }[] = spans.map(({ match, mention }) => ({ at: match.index, length: match[0].length, node: () => drawPill(match, mention) }));
+    for (const command of commandSpans) tokens.push({ at: command.at, length: command.text.length, node: () => drawPill(Object.assign([command.text], { index: command.at }) as unknown as RegExpMatchArray & { index: number }, command.mention) });
     for (const [start, end] of quotes) {
       for (let at = start; at < end; at = value.indexOf('\n', at) + 1 || end) { const marker = value[at + 1] === ' ' ? '> ' : '>'; tokens.push({ at, length: marker.length, node: () => hidden(marker) }); }
       if (value[end] === '\n') tokens.push({ at: end, length: 1, node: () => hidden('\n') });
@@ -147,12 +175,17 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     updateMenu(next, a + insert.length);
   };
   const updateMenu = (text: string, at: number) => {
-    const before = text.slice(0, at).match(/(?:^|\s)@([^\s@]*)$/);
-    setMenu(before ? { start: at - before[1].length - 1, query: before[1] } : null); setActive(0);
+    const before = text.slice(0, at).match(/(?:^|\s)([@/$])([^\s@/$]*)$/);
+    setMenu(before ? { start: at - before[2].length - 1, query: before[2], trigger: before[1] } : null); setActive(0);
   };
   insertRef.current = text => { replace(text); editorRef.current?.focus(); };
-  const choices = menu ? threads.filter(t => t.displayTitle.toLowerCase().includes(menu.query.toLowerCase())).slice(0,8) : [];
+  const choices = menu?.trigger === '@' ? threads.filter(t => t.displayTitle.toLowerCase().includes(menu.query.toLowerCase())).slice(0,8) : [];
+  // Commands whose name starts with the query come first, then the ones that only contain it.
+  const query = menu?.query.toLowerCase() ?? '';
+  const commandChoices = menu && menu.trigger !== '@' ? commands.filter(c => c.name.toLowerCase().includes(query)).sort((a, b) => Number(!a.name.toLowerCase().startsWith(query)) - Number(!b.name.toLowerCase().startsWith(query))).slice(0, 8) : [];
+  const count = menu?.trigger === '@' ? choices.length : commandChoices.length;
   const pick = (id: string) => { if (menu) replace(`@thread:${id} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
+  const pickCommand = (command: Command) => { if (menu) replace(`${menu.trigger}${command.name} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
   const paste = (event: ClipboardEvent<HTMLDivElement>) => { event.preventDefault(); insertClipboard(Array.from(event.clipboardData.files), event.clipboardData.getData('text/plain'), event.clipboardData.getData('text/html')); };
   // The menu's Paste reads the clipboard itself (bb's window allows it) and inserts it the way ⌘V does.
   const pasteFromMenu = async () => {
@@ -189,9 +222,9 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const removeSelection = () => { const [a,b] = selection(); replace('', /^> ?$/.test(value.slice(0,a)) ? 0 : a, b); };
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (context && event.key === 'Escape') { event.preventDefault(); setContext(null); return; }
-    if (menu && choices.length) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : choices.length - 1)) % choices.length); return; }
-      if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(choices[active].id); return; }
+    if (menu && count) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : count - 1)) % count); return; }
+      if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); if (menu.trigger === '@') pick(choices[active].id); else pickCommand(commandChoices[active]); return; }
     }
     // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail; event.code keeps it working on any keyboard layout.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.code === 'KeyZ' || (event.code === 'KeyY' && event.ctrlKey && !event.shiftKey))) { event.preventDefault(); travel(event.code === 'KeyZ' && !event.shiftKey); return; }
@@ -204,9 +237,9 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     } else onSend(); return; }
     if (event.key === 'Backspace' || event.key === 'Delete') {
       const [a,b] = selection(); if (a !== b) { event.preventDefault(); removeSelection(); return; }
-      const matches = Array.from(value.matchAll(matcher));
-      const pill = matches.find(m => event.key === 'Backspace' ? m.index + m[0].length === a : m.index === a);
-      if (pill) { event.preventDefault(); replace('', pill.index, pill.index + pill[0].length); }
+      const matches = [...Array.from(value.matchAll(matcher), m => ({ index: m.index, length: m[0].length })), ...commandSpans.map(c => ({ index: c.at, length: c.text.length }))];
+      const pill = matches.find(m => event.key === 'Backspace' ? m.index + m.length === a : m.index === a);
+      if (pill) { event.preventDefault(); replace('', pill.index, pill.index + pill.length); }
     }
   };
   return <div className="relative min-w-0 flex-1">
@@ -228,5 +261,6 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         : <div key={`sep${i}`} role="separator" className="my-1 h-px bg-border" />)}
     </div>, document.body)}
     {menu && choices.length > 0 && <div role="listbox" aria-label="Threads" className="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>}
+    {menu && commandChoices.length > 0 && <div role="listbox" aria-label="Commands and skills" className="absolute bottom-full left-0 z-30 mb-1 max-h-72 w-96 max-w-full overflow-auto rounded-lg border border-border bg-background p-1 shadow-lg">{commandChoices.map((command, i) => <button type="button" key={`${command.source}:${command.name}`} role="option" aria-selected={i===active} className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pickCommand(command)}><PromptMentionIcon mention={commandMention(command, menu.trigger as '/' | '$')} className="size-3.5 shrink-0 text-muted-foreground" /><span className="shrink-0">{command.name}</span>{command.description && <span className="min-w-0 truncate text-xs text-muted-foreground">{command.description}</span>}</button>)}</div>}
   </div>;
 }
