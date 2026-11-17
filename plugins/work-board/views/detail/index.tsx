@@ -538,7 +538,7 @@ function TaskDetail({
     <PrLinksProvider taskId={task.id}>
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
-        <div className="mx-auto w-full min-w-0 max-w-[48rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
+        <div className="mx-auto w-full min-w-0 max-w-[72rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
           {header(
             <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
