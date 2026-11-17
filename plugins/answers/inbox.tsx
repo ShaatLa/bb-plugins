@@ -1,5 +1,5 @@
 import { ContactsList, useContacts } from './contacts';
-import { selectContact, useSelectedContact, setOpenChat } from './open-chat';
+import { useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -339,7 +339,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
   // A plain send to a thread whose turn is running joins its queue (queue-if-active), so it shows there, not as a chat bubble.
   const willQueue = (threadId: string, options?: SendOptions) => options?.mode !== 'steer' && ['active', 'pending', 'starting', 'stopping'].includes(sidebarThreads.find(t => t.id === threadId)?.status ?? '');
-  const selected = useSelectedContact(), setSelected = selectContact;
+  const { selected, select: setSelected, setWorking } = useContactSelection();
   const contacts = useContacts(selected), { recipients, statusOf, descendants, ownWorking } = contacts;
   // Archiving or deleting the open thread (here or in bb) drops it from the sidebar; the chat closes with it.
   const seenOpen = useRef<string | null>(null);
@@ -453,7 +453,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   // bb's composer offers Stop only while the chat's own turn runs; background commands, workflows and sub-threads keep the robot, not the button.
   const turnRunning = ['active', 'provisioning', 'starting', 'stopping', 'waiting-for-host'].includes(openThread?.runtimeStatus ?? '');
   const cost = useThreadCost(selected, working);
-  useEffect(() => setOpenChat(selected, working), [selected, working]);
+  useEffect(() => setWorking(working), [selected, working]);
   // What the agent does right now picks the robot's scene (thinking, typing, terminal, fixing, searching, reading, waiting).
   // Its turn over while sub-sessions still run, the agent is waiting on them, not resting.
   const agent = useAgentActivity(selected, working, visible), waitingOnSubs = agent.activity === 'rest' && !!openThread && descendants(openThread.id).some(ownWorking), activity = waitingOnSubs ? 'wait' : agent.activity, activityLabel = waitingOnSubs ? 'Waiting for subagents' : agent.label;

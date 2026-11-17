@@ -1,5 +1,5 @@
 import { AnswersContacts } from './contacts';
-import { CONTACT_SELECTED, selectContact, useSidebarContacts } from './open-chat';
+import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
@@ -506,6 +506,10 @@ function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value
 }
 
 export function AnswersPanel({ threadId }: { threadId?: string }) {
+  return threadId ? <AnswersPanelContent threadId={threadId} /> : <ContactPageProvider><AnswersPanelContent /></ContactPageProvider>;
+}
+function AnswersPanelContent({ threadId }: { threadId?: string }) {
+  const page = useContactPage(), { select: selectContact, activate } = useContactSelection();
   const rpc = useRpc<AnswersRpcContract>();
   const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
@@ -521,13 +525,13 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const [questionsTab, setQuestionsTab] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
   const questions = questionsTab && !savedTab, setQuestions = (on: boolean) => { setQuestionsTab(on); setSavedTab(false); };
   const section = savedTab ? 'saved' : questions ? 'questions' : 'chats', setSection = (next: typeof section) => { setQuestionsTab(next === 'questions'); setSavedTab(next === 'saved'); };
-  // Opening a thread's conversation: the Chats view picks the stored selection up when it mounts.
   const openChat = (id: string) => { selectContact(id); setQuestions(false); };
-  useEffect(() => { if (threadId) return; const open = () => setQuestions(false); window.addEventListener(CONTACT_SELECTED, open); return () => window.removeEventListener(CONTACT_SELECTED, open); }, [threadId]);
-  // A link from bb's chat (?thread=) opens that conversation once; the parameter is dropped so a reload keeps the user's place.
-  // The selection is stored during this render, before the Chats view mounts and reads it; the section switch follows.
-  const [linked] = useState(() => { const id = threadId ? null : linkedThread(); if (!id) return null; try { localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify(id)); } catch { /* storage unavailable */ } const url = new URL(window.location.href); url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); return id; });
-  useEffect(() => { if (linked) { selectContact(linked); setQuestions(false); } }, [linked]);
+  useEffect(() => {
+    if (threadId) return;
+    if (page?.open) setQuestions(false);
+    const open = (event: Event) => { if (page ? (event as CustomEvent).detail === page : true) setQuestions(false); };
+    window.addEventListener(CONTACT_SELECTED, open); return () => window.removeEventListener(CONTACT_SELECTED, open);
+  }, [threadId, page]);
   const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
   // The Questions section is page-only, so a thread tab never reads the global list.
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
@@ -543,7 +547,7 @@ export function AnswersPanel({ threadId }: { threadId?: string }) {
   const inSidebar = useSidebarContacts();
   const [chatSearch, setChatSearch] = useState(false), [chatOpen, setChatOpen] = useState(false);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
-  return <section className="flex h-full flex-col bg-background">
+  return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background">
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-3 py-2">
       <div className="flex items-center gap-1">
@@ -587,7 +591,6 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
 // A thread's open agent questions, oldest first, in bb's collapsible card for the stack above a composer (bb's thread chat
 // and the Inbox conversation). Same items as the Questions section, so an answer anywhere closes them everywhere.
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
-const linkedThread = () => { try { return new URLSearchParams(window.location.search).get('thread'); } catch { return null; } };
 export const answersThreadHref = (threadId: string) => `/plugins/answers/answers?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });

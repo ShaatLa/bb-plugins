@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { useSettings, useRpc, useBbNavigate, experimental_useSidebarThreadSplit, experimental_useSidebarThreads, experimental_useProviders, experimental_useRpcQuery as useQuery, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, type PluginThreadListProps } from '@get-bb/plugin-sdk/app';
+import { useSettings, useRpc, useBbNavigate, experimental_useSidebarNavigation, experimental_useSidebarNavigationSplit, experimental_useSidebarThreadSplit, experimental_useSidebarThreads, experimental_useProviders, experimental_useRpcQuery as useQuery, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, type PluginThreadListProps } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract } from './contract';
 import { useStoredState } from './lib/stored-state';
 import { ContactsFooter } from './contacts-footer';
 import { Avatar, ago } from './inbox';
 import { useSteadyError } from './app';
 import { EmptyState } from './empty';
-import { mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
+import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 export function useContacts(selected: string | undefined) {
   const rpc = useRpc<AnswersRpcContract>(), sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
@@ -62,7 +62,9 @@ export function useContacts(selected: string | undefined) {
   return { sidebar, sidebarThreads, providers, recipients, recipientsError, descendants, statusOf, ownWorking, subTally, subTree, openSubs, setOpenSubs, groups, order, drag, setDrag, moveProject, error, setError };
 }
 function ContactRow({ threadId, split, ...props }: ComponentProps<'button'> & { threadId: string; split: boolean }) {
-  const { splitProps } = experimental_useSidebarThreadSplit(threadId);
+  const item = experimental_useSidebarNavigation().items.find(item => item.action.kind === 'open-plugin-panel' && item.action.pluginId === 'answers' && item.action.panelId === 'answers');
+  const navigation = experimental_useSidebarNavigationSplit(item?.id ?? '', { onDragStart: () => beginContactDrag(threadId) });
+  const thread = experimental_useSidebarThreadSplit(threadId), splitProps = item && navigation.isAvailable ? navigation.splitProps : thread.splitProps;
   return <button {...props} {...(split ? splitProps : {})} />;
 }
 export function ContactsList({ model, selected, onSelect, onBulkRead, onNavigate, footer = true }: { model: ReturnType<typeof useContacts>; selected?: string; footer?: boolean; onSelect: (id: string) => void; onBulkRead?: (result: { batch: string | null; count: number }) => void; onNavigate?: () => void }) {
@@ -103,5 +105,5 @@ export function AnswersContacts({ activeThreadId, onNavigate }: PluginThreadList
   const selected = useSelectedContact(), navigate = useBbNavigate(), model = useContacts(selected);
   useEffect(mountSidebarContacts, []);
   // The usage footer stays on the page: on the sidebar's background it stood out.
-  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} footer={false} selected={activeThreadId ?? selected} onNavigate={onNavigate} onSelect={id => { selectContact(id); if (window.location.pathname !== '/plugins/answers/answers') navigate.toPluginPanel('answers', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
+  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} footer={false} selected={activeThreadId ?? selected} onNavigate={onNavigate} onSelect={id => { const mounted = selectContact(id); if (!mounted && window.location.pathname !== '/plugins/answers/answers') navigate.toPluginPanel('answers', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
 }
