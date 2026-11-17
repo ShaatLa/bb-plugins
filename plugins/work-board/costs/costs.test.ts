@@ -112,6 +112,16 @@ describe("task cost", () => {
     expect(modelSlices([model("x", 1, 300), model("y", null, 100), model("z", 0, 0)]).map((s) => [s.label, s.share]))
       .toEqual([["x", 0.75], ["y", 0.25]]);
     expect(modelSlices([])).toEqual([]);
+    // Colors follow the provider, with lighter shades for its further models.
+    const colors = modelSlices([
+      { ...model("opus", 3), provider: "claude-code" },
+      { ...model("sonnet", 2), provider: "claude-code" },
+      { ...model("sol", 1), provider: "codex" },
+    ]).map((slice) => slice.color);
+    expect(colors[0]).toBe("light-dark(#ea580c, #fb923c)");
+    expect(colors[1]).toContain("#ea580c");
+    expect(colors[1]).not.toBe(colors[0]);
+    expect(colors[2]).toBe("light-dark(#2563eb, #60a5fa)");
   });
 
   it("formats dollars, approximate sums and token-only totals", () => {

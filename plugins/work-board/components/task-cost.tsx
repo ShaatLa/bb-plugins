@@ -52,8 +52,18 @@ export function formatTaskCost(cost: Cost): { amount: string; detail: string } {
 }
 
 // Categorical slots of the validated default palette, in fixed order; the tail folds into a neutral "Other".
-const SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#6250d6"];
-const OTHER_COLOR = "#8a8a86";
+// Same provider hues as Tokenomos' charts, so a provider reads the same color in both plugins.
+const PROVIDER_COLORS: Record<string, string> = {
+  "claude-code": "light-dark(#ea580c, #fb923c)",
+  codex: "light-dark(#2563eb, #60a5fa)",
+  "local-models": "light-dark(#9333ea, #c084fc)",
+  antigravity: "light-dark(#e11d48, #fb7185)",
+};
+const UNKNOWN_PROVIDER_COLOR = "light-dark(#65a30d, #a3e635)";
+const OTHER_COLOR = "light-dark(#8a8a86, #6b6b67)";
+// A provider's second and third models take lighter shades of its hue; the legend names them.
+const SHADES = [100, 65, 40];
+const MAX_SLICES = 6;
 
 export type ModelSlice = { label: string; title: string; share: number; amount: string; color: string };
 
@@ -64,14 +74,22 @@ export function modelSlices(models: ModelCost[]): ModelSlice[] {
   const sorted = models.filter((entry) => weight(entry) > 0).sort((a, b) => weight(b) - weight(a));
   const total = sorted.reduce((sum, entry) => sum + weight(entry), 0);
   if (!total) return [];
-  const head = sorted.length > SLICE_COLORS.length ? sorted.slice(0, SLICE_COLORS.length - 1) : sorted;
+  const head = sorted.length > MAX_SLICES ? sorted.slice(0, MAX_SLICES - 1) : sorted;
   const tail = sorted.slice(head.length);
-  const slices = head.map((entry, index) => ({
+  const perProvider = new Map<string, number>();
+  const color = (provider: string) => {
+    const index = perProvider.get(provider) ?? 0;
+    perProvider.set(provider, index + 1);
+    const base = PROVIDER_COLORS[provider] ?? UNKNOWN_PROVIDER_COLOR;
+    const shade = SHADES[Math.min(index, SHADES.length - 1)]!;
+    return shade === 100 ? base : `color-mix(in oklab, ${base} ${shade}%, transparent)`;
+  };
+  const slices = head.map((entry) => ({
     label: entry.model,
     title: `${entry.provider} · ${entry.model} · ${entry.calls} calls`,
     share: weight(entry) / total,
     amount: money(entry.cost),
-    color: SLICE_COLORS[index]!,
+    color: color(entry.provider),
   }));
   if (tail.length) {
     const rest = tail.reduce((sum, entry) => sum + weight(entry), 0);
@@ -123,7 +141,7 @@ function ModelPie({ slices, unit }: { slices: ModelSlice[]; unit: CostUnit }) {
           const circle = (
             <circle
               key={slice.label}
-              cx="21" cy="21" r="15.9155" fill="none" stroke={slice.color}
+              cx="21" cy="21" r="15.9155" fill="none" style={{ stroke: slice.color }}
               strokeWidth={active === slice.label ? 9 : 7}
               strokeDasharray={`${dash} ${100 - dash}`}
               strokeDashoffset={offset}
