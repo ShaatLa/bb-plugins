@@ -204,7 +204,9 @@ const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projec
     const others = rows.filter(item => item.id !== row.id), before = others[to - 1], after = others.slice(to).find(isScheduled);
     const base = before && isScheduled(before) ? { at: before.sendAt!, sign: 1 } : isScheduled(row) && after ? { at: after.sendAt!, sign: -1 } : null;
     if (!base) { if (isScheduled(row)) return; if (dragged) setOrder([...others.slice(0, to), row, ...others.slice(to)].map(item => item.id)); move(row, to); return; }
-    const options = RETIME_MINUTES.map(minutes => ({ minutes, at: base.at + base.sign * minutes * 60000 })).filter(option => option.at > Date.now() + 30000);
+    const now = Date.now(), options = RETIME_MINUTES.map(minutes => ({ minutes, at: base.at + base.sign * minutes * 60000 })).filter(option => option.at > now + 30000);
+    // Leading a message due within minutes leaves no whole-minute step before it; halfway from now still puts this one first.
+    if (!options.length && base.at > now + 2000) { const at = now + (base.at - now) / 2; options.push({ minutes: Math.max(1, Math.round((base.at - at) / 60000)), at }); }
     if (options.length) { setRetime({ row, sign: base.sign > 0 ? '+' : '−', options }); setRetimeMenu(false); }
   };
   const drop = ({ active, over }: DragEndEvent) => { const row = rows.find(item => item.id === active.id), to = rows.findIndex(item => item.id === over?.id); if (!row || to < 0 || row.id === over!.id) return; place(row, to, true); };

@@ -754,6 +754,19 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'now', sendAt:at(30) + 3 * 60000 })));
   expect(reorder).not.toHaveBeenCalled();
 });
+it('moves a message ahead of one due within minutes to halfway there', async () => {
+  const soon = Date.now() + 2 * 60000, late = Date.now() + 60 * 60000;
+  const rows = [{ id:'soon', threadId:'thr_one', content:[{ type:'text', text:'soon', mentions:[] }], updatedAt:7, sendAt:soon, state:'scheduled' }, { id:'late', threadId:'thr_one', content:[{ type:'text', text:'late', mentions:[] }], updatedAt:7, sendAt:late, state:'scheduled' }];
+  const update = vi.fn(() => Promise.resolve({}));
+  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows), update } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.keyDown(await slot.findByRole('button', { name:'Reorder queued message 2' }), { key:'ArrowUp' });
+  const dialog = await slot.findByRole('dialog', { name:'Change send time' });
+  expect(within(dialog).queryByRole('button', { name:'Other send times' })).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name:/^Yes/ }));
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+  const sendAt = (update.mock.calls[0] as any)[0].sendAt;
+  expect(sendAt).toBeGreaterThan(Date.now()); expect(sendAt).toBeLessThan(soon);
+});
 it('shows sidebar project, worktree branch, and context remaining', async () => {
   const thread = { id:'thr_one', projectId:'pr_one', environment:{ name:'Checkout', branchName:'answers/3g', isWorktree:true }, parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[{ id:'pr_one', name:'Plugins' }] }, context: () => Promise.resolve({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) }); fireEvent.click(await recipients.findByRole('option'));
