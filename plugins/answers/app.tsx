@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
-import { PendingInteractions, usePendingInteractionRows } from './interactions';
+import { answerText, PendingInteractions, QuestionForm, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
@@ -383,6 +383,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
+    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
+      {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {replying && <div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div>}
     {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;

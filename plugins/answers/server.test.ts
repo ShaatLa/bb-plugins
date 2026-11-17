@@ -688,6 +688,17 @@ describe('0.3 server attention',()=>{
   expect(db.prepare('SELECT options,recommended,recommend_reason,notify_state FROM items WHERE id=?').get(id)).toEqual({options:JSON.stringify(['Yes','x'.repeat(200)]),recommended:'Yes',recommend_reason:'Cheaper',notify_state:0});
   expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0]).toMatchObject({recommended:'Yes',recommendReason:'Cheaper'});
  });
+ it('asks several questions at once or with checkboxes through one form',async()=>{
+  const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+  for(const bad of [{question:'Pick',multiSelect:true},{question:'Pick',questions:[{question:'One'}]},{question:'Pick',options:['a'],questions:[{question:'One'},{question:'Two'}]},
+    {question:'Pick',questions:[{question:'One',multiSelect:true},{question:'Two'}]},{question:'Pick',questions:[{question:'One',options:['a'],recommended:'b'},{question:'Two'}]}]) await expect(ask(bad)).rejects.toThrow();
+  const multi=await ask({question:'Which?',options:['A','B'],multiSelect:true,recommended:'B'});
+  expect(db.prepare('SELECT question,options,questions FROM items WHERE id=?').get(multi)).toEqual({question:'Which?',options:'null',questions:JSON.stringify([{id:'q1',prompt:'Which?',options:[{value:'A',label:'A'},{value:'B',label:'B',description:'Recommended'}],multiSelect:true,allowFreeText:true,required:true}])});
+  const composite=await ask({question:'Setup',questions:[{question:'Name?',header:'Name'},{question:'Colors?',options:['Red','Blue'],multiSelect:true}]});
+  expect(db.prepare('SELECT question FROM items WHERE id=?').get(composite)).toEqual({question:'Setup\n\n1. **Name.** Name?\n2. Colors?'});
+  const item=(await harness.behavior.callRpc('list',{view:'for_me'}) as any).items.find((i:any)=>i.id===composite);
+  expect(item.questions.map((q:any)=>[q.id,q.shortLabel,q.multiSelect,q.options?.length])).toEqual([['q1','Name',false,undefined],['q2',undefined,true,2]]);
+ });
  it('retries the latest attempt and handles live pre-acceptance failures',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine');
   db.prepare("UPDATE items SET request_id='a',attempt_request_id='b'").run();

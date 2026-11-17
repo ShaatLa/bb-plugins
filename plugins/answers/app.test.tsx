@@ -477,6 +477,19 @@ it('marks a question filed from the agent\'s reply text as asked in chat, dismis
   fireEvent.click(await slot.findByRole('menuitem', { name: 'Not a question' }));
   await waitFor(() => expect(setDismissed).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', dismissed: true })));
 });
+it('answers a composite question with checkboxes in one reply', async () => {
+  const reply = vi.fn(() => ({ delivery: 'sent' }));
+  const questions = [{ id: 'q1', prompt: 'Colors?', shortLabel: 'Colors', options: [{ value: 'Red', label: 'Red' }, { value: 'Blue', label: 'Blue' }], multiSelect: true, allowFreeText: true, required: true },
+    { id: 'q2', prompt: 'Size?', options: [{ value: 'S', label: 'S' }, { value: 'L', label: 'L' }], multiSelect: false, allowFreeText: true, required: true }];
+  const slot = await questionsSetup({ reply }, { questions });
+  expect(slot.queryByRole('button', { name: 'Cancel' })).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name: /Red/ })); fireEvent.click(slot.getByRole('button', { name: /Blue/ }));
+  fireEvent.click(slot.getByRole('button', { name: 'Next' }));
+  fireEvent.click(await slot.findByRole('button', { name: /^L/ }));
+  fireEvent.click(slot.getByRole('button', { name: 'Submit answer' }));
+  await waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+  expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: '1. **Colors** — Red, Blue\n2. **Size?** — L' });
+});
 it('labels a question the agent withdrew and shows its reason', async () => {
   const slot = await questionsSetup({}, { dismissedAt: 5, answerSource: 'agent', note: 'Found it in the docs' });
   expect(slot.getByText('Withdrawn')).toBeTruthy();

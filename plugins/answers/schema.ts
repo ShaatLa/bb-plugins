@@ -113,4 +113,6 @@ UPDATE items SET wait_children=NULL,wait_windows=NULL WHERE wait_children IS NOT
   // its reply is not filed again. items.chat_asked: a 'for_me' question filed from an agent's plain-text reply.
   `ALTER TABLE turn_updates ADD COLUMN asked INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN chat_asked INTEGER NOT NULL DEFAULT 0;`,
+  // items.questions: the bb question form (JSON) of an answers_ask with multiSelect or with several questions in one.
+  `ALTER TABLE items ADD COLUMN questions TEXT;`,
 ];

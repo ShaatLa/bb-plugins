@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -14,16 +14,24 @@ export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
 export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
+const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
 const toolInputs = {
   list: z.object({}).strict(),
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
   report: z.object({}).strict(),
   withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
-  ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional()}).strict()
+  ask: z.object({question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:z.boolean().optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
+    questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:z.boolean().optional(),recommended:z.string().trim().min(1).optional()}).strict()
+      .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect requires options',path:['multiSelect']})
+      .refine(q=>q.recommended===undefined || q.options?.includes(q.recommended),{message:'recommended must equal one of options',path:['recommended']})).min(2).max(10).optional()}).strict()
+    .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined),{message:'with questions, put options, multiSelect and recommended on each question',path:['questions']})
+    .refine(p=>!p.multiSelect || !!p.options,{message:'multiSelect requires options',path:['multiSelect']})
     .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
+const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
+  ...(q.options ? {options:q.options.map(o=>({value:o,label:o,...(o===q.recommended ? {description:'Recommended'} : {})}))} : {}),multiSelect:!!q.multiSelect,allowFreeText:true,required:true});
 // Deferred answers expire after three days without answer movement.
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
@@ -145,7 +153,7 @@ export default function plugin(bb: BbPluginApi) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};
@@ -419,7 +427,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -435,7 +443,10 @@ export default function plugin(bb: BbPluginApi) {
           if (method==='ask') {
             const id='ans_'+randomUUID();
             const ask=p as z.infer<typeof toolInputs.ask>;
-            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,recommended,recommend_reason,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,ask.question,JSON.stringify(ask.options ?? null),ask.recommended ?? null,ask.reason ?? null,now,now);
+            // Several questions or checkboxes go to bb's question form; the text keeps every part for the quote, push and search.
+            const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question,ask)] : null;
+            const text=ask.questions ? `${ask.question}\n\n${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question;
+            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,1,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,now,now);
             onAttention();
             return id;
           }
