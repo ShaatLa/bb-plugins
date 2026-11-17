@@ -1,5 +1,6 @@
 import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+export const YOUR_CALL = 'Your call';
 export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools', QUEUE_TAG = 'answers:queue', CONTEXT_TAG = 'answers:context';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
 const threadId = z.string().min(1).max(200), time = z.number().int().nonnegative();
@@ -83,3 +84,8 @@ export type SendOptions = z.infer<typeof sendOptionsSchema>;
 export type RecipientsResult = { recipients: Recipient[] };
 export type PoolsResult = { pools: Pool[] };
 export type PoolSendResult = { delivery: 'sent' | 'queued'; sent: number; keptEdited: number };
+
+export function answerText(questions: readonly FormQuestion[], answers: Record<string,{selected:string[];freeText?:string}>) {
+ const value=(q:FormQuestion)=>{const a=answers[q.id], picks=a ? [...a.selected.map(v=>v===YOUR_CALL ? 'Your call (decide yourself)' : q.options?.find(o=>o.value===v)?.label ?? v),...(a.freeText ? [a.freeText] : [])] : []; return picks.length ? picks.join('; ') : 'Skipped';};
+ return questions.length===1 ? value(questions[0]!) : questions.map((q,i)=>`${i+1}. **${q.shortLabel ?? q.prompt}** — ${value(q)}`).join('\n');
+}

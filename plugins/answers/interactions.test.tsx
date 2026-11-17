@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { PendingInteractions } from './interactions';
+import { PendingInteractions, QuestionForm, answerText } from './interactions';
 
 const host = vi.hoisted(() => ({ bound: true, choices: [] as ((n: number) => boolean)[] }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: host.bound ? new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]) : new Map(), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: (handler: (n: number) => boolean) => { host.choices.push(handler); return () => { host.choices.splice(host.choices.indexOf(handler), 1); }; }, registerActionHandler: () => () => {} }) }));
@@ -99,4 +99,15 @@ it('retains a question draft across collapse and reopen', async () => {
   expect((slot.getByRole('textbox', { name: 'Choice answer' }) as HTMLTextAreaElement).value).toBe('Keep this draft');
   fireEvent.click(slot.getByRole('button', { name: 'Submit answer' }));
   await waitFor(() => expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ resolution: { kind: 'user_answer', answers: { q1: { selected: [], freeText: 'Keep this draft' } } } })));
+});
+
+it('requires one partial answer and makes Your call exclusive', async () => {
+ const q={...question().payload.questions[0]!,required:false,multiSelect:true,options:[...question().payload.questions[0]!.options,{value:'Your call',label:'Your call'}]}, submit=vi.fn(async()=>{});
+ const slot=renderSlot({component:QuestionForm},{questions:[q],requireAny:true,onSubmit:submit});
+ expect((slot.getByRole('button',{name:'Submit answer'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(slot.getByRole('button',{name:/Alpha/})); fireEvent.click(slot.getByRole('button',{name:/Other/})); fireEvent.click(slot.getByRole('button',{name:/Your call/}));
+ expect(slot.queryByRole('textbox')).toBeNull();
+ fireEvent.click(slot.getByRole('button',{name:'Submit answer'})); await waitFor(()=>expect(submit).toHaveBeenCalledWith({q1:{selected:['Your call']}}));
+ expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['a,b','c']}})).toContain('a,b; c');
+ expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['Your call']}})).toBe('1. **Choice** — Your call (decide yourself)\n2. **Choice** — Skipped');
 });

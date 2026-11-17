@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { experimental_Icon as Icon, experimental_useQuestionFormHost, experimental_useRpcRefresh, UrlLink, useSdk } from '@get-bb/plugin-sdk/app';
+import { YOUR_CALL } from './contract';
+export { answerText } from './contract';
 import { Button } from './components/ui/button';
 
 type Row = Awaited<ReturnType<ReturnType<typeof useSdk>['threads']['interactions']['list']>>[number];
@@ -55,19 +57,14 @@ function QuestionCard({ stacked, ...props }: { stacked: boolean; questions: Ques
   const [expanded, setExpanded] = useState(true), label = props.questions.length === 1 ? 'Question' : `${props.questions.length} questions`;
   return <section data-pending-question-card aria-label={label} data-expanded={expanded || undefined} className={`@container flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-surface-recessed text-xs text-muted-foreground ${stacked ? '' : 'mb-2 rounded-lg border border-border'}`}><div className={`flex min-h-9 shrink-0 items-center gap-2 pl-3 pr-1.5 ${expanded ? 'border-b border-border-hairline py-1.5' : 'py-1'}`}><span aria-hidden className="size-2 shrink-0 rounded-full bg-attention ring-[3px] ring-surface-attention" /><button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-h-7 min-w-0 flex-1 items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span className="min-w-0 text-xs font-medium text-foreground">{label}</span></button><button type="button" aria-label={expanded ? 'Hide details' : 'Show details'} onClick={() => setExpanded(!expanded)} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground"><Icon name="ChevronDown" className={`size-3.5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} aria-hidden /></button></div><div hidden={!expanded} className="min-h-0 max-h-[min(32rem,50dvh)] touch-pan-y overflow-y-auto overscroll-contain px-3 pb-3 pt-2.5"><QuestionForm {...props} /></div></section>;
 }
-// One reply for an Answers form: a lone question gets its choices, a composite one a numbered line per part.
-export function answerText(questions: readonly Question[], answers: Record<string, Answer>) {
-  const value = (q: Question) => { const a = answers[q.id]; return a ? [...a.selected, ...(a.freeText ? [a.freeText] : [])].join(', ') : 'No answer'; };
-  return questions.length === 1 ? value(questions[0]!) : questions.map((q, i) => `${i + 1}. **${q.shortLabel ?? q.prompt}** — ${value(q)}`).join('\n');
-}
 // Without onCancel (an Answers question) there is nothing to cancel, so the form has no Cancel; hidePrompt when the card already shows it.
-export function QuestionForm({ questions, onSubmit, onCancel, hidePrompt = false }: { questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel?: () => Promise<void>; hidePrompt?: boolean }) {
+export function QuestionForm({ questions, onSubmit, onCancel, hidePrompt = false, requireAny = false }: { questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel?: () => Promise<void>; hidePrompt?: boolean; requireAny?: boolean }) {
   const host = experimental_useQuestionFormHost();
   const [index, setIndex] = useState(0), [answers, setAnswers] = useState<Record<string, Draft>>({}), [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null), question = questions[index];
   const draft = (q: Question): Draft => answers[q.id] ?? { selected: [], other: !(q.options?.length), text: '' };
   const current = question && draft(question);
-  const valid = questions.every(q => !q.required || draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim());
+  const valid = (!requireAny || questions.some(q => draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim())) && questions.every(q => !q.required || draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim());
   function update(q: Question, change: Partial<Draft>) { setAnswers(old => ({ ...old, [q.id]: { ...(old[q.id] ?? { selected: [], other: !(q.options?.length), text: '' }), ...change } })); }
   async function submit() {
     if (busy) return;
@@ -81,8 +78,9 @@ export function QuestionForm({ questions, onSubmit, onCancel, hidePrompt = false
   function choice(n: number) {
     if (!question || busy) return false;
     const option = question.options?.[n];
-    if (option) { update(question, { selected: question.multiSelect ? current!.selected.includes(option.value) ? current!.selected.filter(v => v !== option.value) : [...current!.selected, option.value] : [option.value], other: question.multiSelect ? current!.other : false }); root.current?.focus(); return true; }
-    if (n === (question.options?.length ?? 0) && question.allowFreeText && n > 0) { update(question, { other: !current!.other, selected: question.multiSelect ? current!.selected : [] }); root.current?.focus(); return true; }
+    if (option?.value===YOUR_CALL && requireAny) { update(question,{selected:current!.selected.includes(YOUR_CALL) ? [] : [YOUR_CALL],other:false,text:''}); root.current?.focus(); return true; }
+    if (option) { update(question, { selected: question.multiSelect ? current!.selected.includes(option.value) ? current!.selected.filter(v => v !== option.value) : [...current!.selected.filter(v => !requireAny || v!==YOUR_CALL), option.value] : [option.value], other: question.multiSelect ? current!.other : false }); root.current?.focus(); return true; }
+    if (n === (question.options?.length ?? 0) && question.allowFreeText && n > 0) { update(question, { other: !current!.other, selected: question.multiSelect ? current!.selected.filter(v => !requireAny || v!==YOUR_CALL) : [] }); root.current?.focus(); return true; }
     return false;
   }
   function action(name: string) { if (name === 'cancel') { if (!onCancel) return false; void cancel(); return true; } if (busy) return false; if (name === 'previous' && index > 0) setIndex(index - 1); else if (name === 'next' && index < questions.length - 1) setIndex(index + 1); else if (name === 'submit') void submit(); else return false; root.current?.focus(); return true; }

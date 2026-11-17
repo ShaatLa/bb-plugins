@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -33,7 +33,7 @@ const toolInputs = {
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
 const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
-  ...(q.options ? {options:q.options.map(o=>({value:o,label:o,...(o===q.recommended ? {description:'Recommended'} : {})}))} : {}),multiSelect:!!q.multiSelect,allowFreeText:true,required:true});
+  options:[...(q.options ?? []).filter(o=>o!==YOUR_CALL).map(o=>({value:o,label:o,...(o===q.recommended ? {description:'Recommended'} : {})})),{value:YOUR_CALL,label:YOUR_CALL,description:'Let the agent decide'}],multiSelect:!!q.multiSelect,allowFreeText:true,required:false});
 // Deferred answers expire after three days without answer movement.
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
@@ -429,7 +429,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Parts may return Skipped or Your call (decide yourself).'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
