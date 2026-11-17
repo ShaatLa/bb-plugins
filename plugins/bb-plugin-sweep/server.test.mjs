@@ -32,3 +32,18 @@ try {
  Date.now=()=>original()+3800000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count+1);assert.match(sent.at(-1).input[0].text,/alive/);
  console.log('Sweep retry, redirect, manual-state and status checks passed');
 }finally{await harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
+
+// A reload must cancel in-flight repository work before the service stop deadline.
+const slowRepo = await mkdtemp(join(tmpdir(), 'sweep-stop-'));
+const slowGit = (...args) => execFileSync('git', args, {cwd:slowRepo,stdio:'ignore'});
+slowGit('init','-b','main');slowGit('config','user.email','test@example.com');slowGit('config','user.name','Test');
+await writeFile(join(slowRepo,'sweep.py'),'import time\ntime.sleep(60)\n');slowGit('add','.');slowGit('commit','-m','slow fixture');
+const stopHost=createFakePluginHost({pluginId:'sweep',sdk:{projects:{list:async()=>[{id:projectId,name:'Test'}]},threads:{get:async()=>makeThreadResponse({projectId})}}});
+try {
+ await plugin(stopHost.bb);
+ await stopHost.harness.behavior.callRpc('configure',{projectId,config:{enabled:true,remote:slowRepo,branch:'main',script:'sweep.py',args:[],manager:first}});
+ const service=stopHost.harness.behavior.runService('due-ticks');
+ await new Promise(resolve=>setTimeout(resolve,200));
+ service.controller.abort();
+ let timer;try{await Promise.race([service.done,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('service did not cancel')),2000)})]);}finally{clearTimeout(timer);}
+}finally{await stopHost.harness.lifecycle.dispose();await rm(slowRepo,{recursive:true,force:true});}

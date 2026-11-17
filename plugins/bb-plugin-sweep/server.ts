@@ -17,7 +17,7 @@ export const contract = defineRpcContract({
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; lastRun?: number; exitCode?: number; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
@@ -25,7 +25,7 @@ export default async function plugin(bb: BbPluginApi) {
   db.exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const state = (id: string): State => JSON.parse((db.prepare('SELECT value FROM status WHERE id = ?').get(id) as { value: string } | undefined)?.value ?? '{}');
   const save = (id: string, value: State) => db.prepare('INSERT INTO status VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value').run(id, JSON.stringify(value));
-  const status = async (id: string) => ({ projectId: id, config: (await configs())[id] ?? null, ...state(id), pending: deliveries.read(id)?.pending_message ?? null });
+  const status = async (id: string) => { const config = (await configs())[id] ?? null, current = state(id); return { projectId: id, config, ...current, nextRun: config?.enabled ? current.nextRun ?? Date.now() : null, pending: deliveries.read(id)?.pending_message ?? null }; };
   const controller = new AbortController(); bb.onDispose(() => controller.abort());
   const busy = new Set<string>();
   async function managerFor(id: string) {
@@ -58,7 +58,7 @@ export default async function plugin(bb: BbPluginApi) {
       config = (await configs())[id]; if (!config) throw new Error('Project not configured');
       if (!manual) {
         current.tickId = `${id}:${Date.now()}`;
-        current.lastRun = Date.now(); current.nextRun = Date.now() + config.intervalMinutes * 60000;
+        current.lastRun = Date.now(); current.exitCode = null; current.nextRun = Date.now() + config.intervalMinutes * 60000;
         save(id, current);
         await deliver(id, current);
         await managerFor(id);
@@ -98,10 +98,15 @@ export default async function plugin(bb: BbPluginApi) {
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.
   bb.background.service('due-ticks', { async start(signal) {
-    while (!signal.aborted) {
-      await runDue();
-      try { await delay(30000, undefined, { signal }); } catch { break; }
-    }
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      if (signal.aborted) return;
+      while (!signal.aborted) {
+        await runDue();
+        try { await delay(30000, undefined, { signal }); } catch { break; }
+      }
+    } finally { signal.removeEventListener('abort', abort); }
   } });
   bb.cli.register({ name: 'sweep', summary: 'Read Sweep status, manager or run without advancing state', async run(argv, ctx) {
     try {
