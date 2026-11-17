@@ -18,7 +18,8 @@ function useThreadCommands(threadId: string | null) {
     if (!threadId) { setList([]); return; }
     let live = true, cached = commandCache.get(threadId);
     if (!cached || Date.now() - cached.at > 300000) {
-      cached = { at: Date.now(), list: sdk.threads.get({ threadId }).then(thread => thread.projectId && thread.environmentId && thread.providerId ? sdk.projects.commands({ projectId: thread.projectId, environmentId: thread.environmentId, provider: thread.providerId }).then(result => result.commands) : []).catch(() => { commandCache.delete(threadId); return []; }) };
+      // Any failure (no environment yet, provider without commands) just means no menu; the next composer retries.
+      cached = { at: Date.now(), list: (async () => { const thread = await sdk.threads.get({ threadId }); return thread.projectId && thread.environmentId && thread.providerId ? (await sdk.projects.commands({ projectId: thread.projectId, environmentId: thread.environmentId, provider: thread.providerId })).commands : []; })().catch(() => { commandCache.delete(threadId); return []; }) };
       commandCache.set(threadId, cached);
     }
     void cached.list.then(commands => { if (live) setList(commands); });
