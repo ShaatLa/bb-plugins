@@ -6,7 +6,7 @@ import { ContactsFooter } from './contacts-footer';
 import { Avatar, ago } from './inbox';
 import { useSteadyError } from './app';
 import { EmptyState } from './empty';
-import { selectContact, useSelectedContact } from './open-chat';
+import { mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 export function useContacts(selected: string | undefined) {
   const rpc = useRpc<AnswersRpcContract>(), sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
@@ -65,7 +65,7 @@ function ContactRow({ threadId, split, ...props }: ComponentProps<'button'> & { 
   const { splitProps } = experimental_useSidebarThreadSplit(threadId);
   return <button {...props} {...(split ? splitProps : {})} />;
 }
-export function ContactsList({ model, selected, onSelect, onBulkRead, onNavigate }: { model: ReturnType<typeof useContacts>; selected?: string; onSelect: (id: string) => void; onBulkRead?: (result: { batch: string | null; count: number }) => void; onNavigate?: () => void }) {
+export function ContactsList({ model, selected, onSelect, onBulkRead, onNavigate, footer = true }: { model: ReturnType<typeof useContacts>; selected?: string; footer?: boolean; onSelect: (id: string) => void; onBulkRead?: (result: { batch: string | null; count: number }) => void; onNavigate?: () => void }) {
   const rpc = useRpc<AnswersRpcContract>();
   const { sidebarThreads, providers, recipients, recipientsError, statusOf, subTally, subTree, openSubs, setOpenSubs, groups, order, drag, setDrag, moveProject, error, setError } = model;
   return (    <div role="listbox" aria-label="Recipients" className="relative flex min-h-0 flex-1 flex-col space-y-0.5 overflow-auto p-2 [&>*]:shrink-0">
@@ -97,9 +97,11 @@ export function ContactsList({ model, selected, onSelect, onBulkRead, onNavigate
               {own.isWorking && <span role="img" aria-label="Working" className="inline-flex size-4 shrink-0 items-center justify-center text-subtle-foreground"><ThreadStatusGlyph indicator={own.indicator} /></span>}
             </li>
           </ThreadActionsContextMenu>; })}</ul>}</Fragment>; })}</div>; })}
-    <div className="sticky bottom-0 mt-auto bg-background"><ContactsFooter /></div></div> );
+    {footer && <div className="sticky bottom-0 mt-auto bg-background"><ContactsFooter /></div>}</div> );
 }
 export function AnswersContacts({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const selected = useSelectedContact(), navigate = useBbNavigate(), model = useContacts(selected);
-  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} selected={activeThreadId ?? selected} onNavigate={onNavigate} onSelect={id => { selectContact(id); if (window.location.pathname !== '/plugins/answers/answers') navigate.toPluginPanel('answers', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
+  useEffect(mountSidebarContacts, []);
+  // The usage footer stays on the page: on the sidebar's background it stood out.
+  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} footer={false} selected={activeThreadId ?? selected} onNavigate={onNavigate} onSelect={id => { selectContact(id); if (window.location.pathname !== '/plugins/answers/answers') navigate.toPluginPanel('answers', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
 }

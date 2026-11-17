@@ -32,3 +32,19 @@ it('remembers hidden contacts across remounts and still accepts sidebar selectio
   await waitFor(() => expect(within(page.container).getByRole('option', { name: /One/ }).getAttribute('aria-selected')).toBe('true'));
   expect(page.container.querySelector('[data-contacts-column]')!.classList.contains('min-[640px]:hidden')).toBe(true);
 });
+it('drops the page column, its toggle and the sidebar footer while bb shows our list', async () => {
+  history.replaceState(null, '', '/plugins/answers/answers');
+  const app = await loadPluginApp(() => import('./app'));
+  const page = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc, sdk });
+  const column = () => page.container.querySelector('[data-contacts-column]')!;
+  expect(page.getByRole('button', { name: 'Hide contacts' })).toBeTruthy();
+  const sidebar = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate: vi.fn() }, { rpc, sdk });
+  await within(sidebar.container).findByRole('option', { name: /One/ });
+  await waitFor(() => expect(page.queryByRole('button', { name: 'Hide contacts' })).toBeNull());
+  expect(column().classList.contains('min-[640px]:hidden')).toBe(true);
+  expect(sidebar.container.querySelector('.sticky.bottom-0')).toBeNull();
+  expect(column().querySelector('.sticky.bottom-0')).not.toBeNull();
+  sidebar.unmount();
+  await waitFor(() => expect(page.getByRole('button', { name: 'Hide contacts' })).toBeTruthy());
+  expect(column().classList.contains('min-[640px]:hidden')).toBe(false);
+});

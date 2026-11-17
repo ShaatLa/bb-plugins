@@ -25,3 +25,14 @@ export function selectContact(threadId: string | undefined) {
 export function useSelectedContact() {
   return useSyncExternalStore(listener => { window.addEventListener(CONTACT_SELECTED, listener); window.addEventListener('storage', listener); return () => { window.removeEventListener(CONTACT_SELECTED, listener); window.removeEventListener('storage', listener); }; }, initialThread, () => undefined);
 }
+
+// Counts mounted sidebar contact lists, so the page can drop its own column while bb's sidebar shows ours.
+let sidebarMounts = 0;
+const sidebarListeners = new Set<() => void>();
+export function mountSidebarContacts() {
+  sidebarMounts++; sidebarListeners.forEach(listener => listener());
+  return () => { sidebarMounts--; sidebarListeners.forEach(listener => listener()); };
+}
+export function useSidebarContacts() {
+  return useSyncExternalStore(listener => { sidebarListeners.add(listener); return () => { sidebarListeners.delete(listener); }; }, () => sidebarMounts > 0, () => false);
+}
