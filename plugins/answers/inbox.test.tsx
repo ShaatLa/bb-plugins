@@ -757,6 +757,18 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'now', sendAt:at(30) + 3 * 60000 })));
   expect(reorder).not.toHaveBeenCalled();
 });
+it('keeps a moved message between its new neighbours when they are closer than three minutes', async () => {
+  const minute = (n: number) => { const d = new Date(Date.now() + n * 60000); d.setSeconds(0, 0); return d.getTime(); };
+  const row = (id: string, sendAt: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:id, mentions:[] }], updatedAt:7, sendAt, state:'scheduled' });
+  const rows = [row('a', minute(30)), row('b', minute(33)), row('c', minute(40))];
+  const update = vi.fn(() => Promise.resolve({}));
+  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows), update } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.keyDown(await slot.findByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
+  fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ }));
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+  const sendAt = (update.mock.calls[0] as any)[0].sendAt;
+  expect(sendAt).toBeGreaterThan(minute(30)); expect(sendAt).toBeLessThan(minute(33));
+});
 it('moves a message ahead of one due within minutes to halfway there', async () => {
   const soon = Date.now() + 2 * 60000, late = Date.now() + 60 * 60000;
   const rows = [{ id:'soon', threadId:'thr_one', content:[{ type:'text', text:'soon', mentions:[] }], updatedAt:7, sendAt:soon, state:'scheduled' }, { id:'late', threadId:'thr_one', content:[{ type:'text', text:'late', mentions:[] }], updatedAt:7, sendAt:late, state:'scheduled' }];
