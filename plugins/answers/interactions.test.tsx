@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { PendingInteractions, QuestionForm, answerText } from './interactions';
 
@@ -110,4 +110,25 @@ it('requires one partial answer and makes Your call exclusive', async () => {
  fireEvent.click(slot.getByRole('button',{name:'Submit answer'})); await waitFor(()=>expect(submit).toHaveBeenCalledWith({q1:{selected:['Your call']}}));
  expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['a,b','c']}})).toContain('a,b; c');
  expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['Your call']}})).toBe('1. **Choice** — Your call (decide yourself)\n2. **Choice** — Skipped');
+});
+it('answers Codex MCP elicitations here: Computer Use access, tool approvals and decline', async () => {
+  const elicitation = (id: string, data: object) => ({ id, threadId: 'thr_one', status: 'pending', payload: { kind: 'provider-codex/mcp-elicitation', title: 'MCP request', data: { serverName: 'cua_repl', message: 'Codex wants access', ...data } } });
+  const { slot, respond } = setup([
+    elicitation('app', { kind: 'computer_use', app: { id: 'com.apple.Safari', name: 'Safari', iconDataUrl: null }, scopes: ['session', 'always'], warning: 'It can read your screen', riskLevel: 'high' }),
+    elicitation('tool', { kind: 'tool_approval', toolName: 'browser.open', toolDescription: null, params: [{ name: 'url', label: 'URL', value: 'https://example.com' }], omittedParamCount: 2, scopes: [] }),
+    elicitation('form', { kind: 'form', fields: [] }),
+  ]);
+  expect(await slot.findByText('Allow Computer Use to use Safari?')).toBeTruthy(); expect(slot.getByText('It can read your screen')).toBeTruthy();
+  expect(slot.getByText('https://example.com')).toBeTruthy(); expect(slot.getByText('+2 more')).toBeTruthy();
+  const app = slot.getByText('Allow Computer Use to use Safari?').closest('[data-approval-banner]') as HTMLElement, tool = slot.getByText('Allow browser.open?').closest('[data-approval-banner]') as HTMLElement;
+  // Computer Use grants only with a scope, so it has no plain Allow; the tool approval offers no scopes here.
+  expect(within(app).queryByRole('button', { name: 'Allow' })).toBeNull(); expect(within(tool).queryByRole('button', { name: 'Allow for this session' })).toBeNull();
+  fireEvent.click(within(app).getByRole('button', { name: 'Always allow' }));
+  await waitFor(() => expect(respond).toHaveBeenCalledWith({ threadId: 'thr_one', interactionId: 'app', value: { action: 'accept', persist: 'always' } }));
+  fireEvent.click(within(tool).getByRole('button', { name: 'Allow' }));
+  await waitFor(() => expect(respond).toHaveBeenCalledWith({ threadId: 'thr_one', interactionId: 'tool', value: { action: 'accept' } }));
+  // A form's fields are filled in bb's chat; here it can only be declined.
+  const form = slot.getAllByText('MCP request').map(node => node.closest('[data-approval-banner]') as HTMLElement).find(card => within(card).queryByText('Open in chat to answer'))!;
+  fireEvent.click(within(form).getByRole('button', { name: 'Decline' }));
+  await waitFor(() => expect(respond).toHaveBeenCalledWith({ threadId: 'thr_one', interactionId: 'form', value: { action: 'decline' } }));
 });
