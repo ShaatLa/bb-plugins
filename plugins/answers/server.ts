@@ -33,8 +33,8 @@ const toolInputs = {
     .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes requires recommended for a single question',path:['deadlineMinutes']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
 };
-const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
-  options:[...(q.options ?? []).filter(o=>o!==YOUR_CALL).map(o=>({value:o,label:o,...(o===q.recommended ? {description:'Recommended'} : {})})),{value:YOUR_CALL,label:YOUR_CALL,description:'Let the agent decide'}],multiSelect:!!q.multiSelect,allowFreeText:true,required:false});
+const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string;reason?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
+  options:[...(q.options ?? []).filter(o=>o!==YOUR_CALL).map(o=>({value:o,label:o,...(o===q.recommended ? {description:q.reason ? `Recommended: ${q.reason}` : 'Recommended'} : {})})),{value:YOUR_CALL,label:YOUR_CALL,description:'Let the agent decide'}],multiSelect:!!q.multiSelect,allowFreeText:true,required:false});
 // Deferred answers expire after three days without answer movement.
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
@@ -445,7 +445,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Asks in the same turn merge up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -464,7 +464,23 @@ export default function plugin(bb: BbPluginApi) {
             // Several questions or checkboxes go to bb's question form; the text keeps every part for the quote, push and search.
             const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question,ask)] : null;
             const text=ask.questions ? `${ask.question}\n\n${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question;
-            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,urgency,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,?,?,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000,ask.urgency ?? null,ask.urgency==='low' ? 0 : 1,now,now);
+            const turn=(db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as Row|undefined)?.active_turn_id ?? null, deadline=ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000;
+            const candidates=turn ? db.prepare("SELECT * FROM items WHERE thread_id=? AND turn_id=? AND kind='for_me' AND chat_asked=0 AND status='open' AND dismissed_at IS NULL ORDER BY created_at DESC,rowid DESC").all(ctx.threadId,turn) as Row[] : [];
+            const added=form ?? [formQuestion('q1',ask.question,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
+            for(const old of candidates) {
+              if(sending.has(ctx.threadId)) break;
+              const parts:FormQuestion[]=old.questions ? JSON.parse(old.questions) : [formQuestion('q1',old.question,{options:old.options ? JSON.parse(old.options) ?? undefined : undefined,recommended:old.recommended ?? undefined,reason:old.recommend_reason ?? undefined})];
+              if(parts.length+added.length>10) continue;
+              const intro=parts.length>1 ? old.question.slice(0,-partsText(parts).length-2) : '';
+              if(parts.length===1 && old.recommend_reason) for(const o of parts[0]!.options ?? []) if(o.value===old.recommended) o.description=`Recommended: ${old.recommend_reason}`;
+              const merged=[...parts,...added].map((q,i)=>({...q,id:`q${i+1}`})), rank=(v:string|null|undefined)=>v==='blocking' ? 2 : v==='low' ? 0 : 1;
+              const urgency=rank(ask.urgency)>rank(old.urgency) ? ask.urgency! : old.urgency, raised=urgency==='blocking' && old.urgency!=='blocking';
+              const due=old.deadline_at===null ? deadline : deadline===null ? old.deadline_at : Math.min(old.deadline_at,deadline);
+              commit("UPDATE items SET question=?,questions=?,options=NULL,recommended=NULL,recommend_reason=NULL,urgency=?,deadline_at=?,notify_state=CASE WHEN ? THEN 1 ELSE notify_state END,updated_at=? WHERE id=? AND status='open'",(intro ? intro+'\n\n' : '')+partsText(merged),JSON.stringify(merged),urgency,due,Number(raised),now,old.id);
+              if(raised) onAttention(); wakeDue();
+              return `${old.id}\nMerged into your earlier question from this turn; the user answers all parts in one form.`;
+            }
+            commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,urgency,notify_state,turn_id,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,?,?,?,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,ask.urgency==='low' ? 0 : 1,turn,now,now);
             onAttention(); wakeDue();
             return id;
           }

@@ -867,3 +867,17 @@ it('stores urgency and keeps low questions visible without a push',async()=>{
  expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0].urgency).toBe('low');
  await expect(harness.behavior.callAgentTool('answers_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
 });
+
+it('merges same-turn asks preserving choices, reasons, intro and limits',async()=>{
+ const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ await ask({question:'Earlier turn'});db.prepare("UPDATE threads_state SET active_turn_id='turn1' WHERE thread_id='t'").run();
+ const id=await ask({question:'Pick',options:['A','B'],recommended:'A',reason:'Cheap',deadlineMinutes:10,urgency:'low'});
+ const result=await ask({question:'Which?',options:['C','D'],multiSelect:true,recommended:'D',reason:'Fast',deadlineMinutes:5,urgency:'blocking'});expect(String(result).split('\n')[0]).toBe(id);
+ const row=db.prepare('SELECT * FROM items WHERE id=?').get(id) as any,parts=JSON.parse(row.questions);
+ expect(row).toMatchObject({options:null,recommend_reason:null,turn_id:'turn1',urgency:'blocking'});expect(row.deadline_at).toBeLessThan(Date.now()+301000);
+ expect(parts[0].options[0].description).toBe('Recommended: Cheap');expect(parts[1]).toMatchObject({id:'q2',multiSelect:true});expect(parts[1].options[1].description).toBe('Recommended: Fast');expect(row.question).toBe('1. Pick\n2. Which?');
+ await ask({question:'More',questions:Array.from({length:8},(_,i)=>({question:`Part ${i}`}))});expect(JSON.parse((db.prepare('SELECT questions FROM items WHERE id=?').get(id) as any).questions)).toHaveLength(10);
+ const separate=await ask({question:'New intro',questions:[{question:'First',header:'One'},{question:'Second'}]});expect(separate).not.toBe(id);
+ await ask({question:'Third'});expect((db.prepare('SELECT question FROM items WHERE id=?').get(separate) as any).question).toBe('New intro\n\n1. **One.** First\n2. Second\n3. Third');
+ db.prepare("UPDATE items SET dismissed_at=1 WHERE id=?").run(separate);expect(String(await ask({question:'Separate'}))).not.toContain('Merged');
+});
