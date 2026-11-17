@@ -7,7 +7,7 @@ import { useSettings, experimental_Icon as Icon, experimental_PluginIcon as Plug
 import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
-import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent, type Modifier } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { ContactsFooter } from './contacts-footer';
@@ -193,6 +193,13 @@ function RowPopover({ anchor, label, className, onClose, children }: { anchor: H
   }, [anchor]);
   return at && createPortal(<div role="dialog" aria-label={label} className={`fixed z-[100] space-y-2 rounded-lg border border-border bg-background p-2 shadow-lg ${className}`} style={at} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>{children}</div>, document.body);
 }
+// A dragged row moves only up and down and stays inside the visible queue list: pulled past its bottom it would stretch
+// the list and add a scroll that is not there.
+export const keepInList: Modifier = ({ transform, draggingNodeRect, scrollableAncestorRects }) => {
+  const box = scrollableAncestorRects[0];
+  if (!draggingNodeRect || !box) return { ...transform, x: 0 };
+  return { ...transform, x: 0, y: Math.min(Math.max(transform.y, box.top - draggingNodeRect.top), box.bottom - draggingNodeRect.bottom) };
+};
 const isScheduled = (row: QueueRow) => !!row.sendAt && row.sendAt > Date.now();
 const RETIME_MINUTES = [3, 5, 10, 20, 40];
 const span = (minutes: number) => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
@@ -254,7 +261,7 @@ const QueueCard = memo(function QueueCard({ rows, sourceName, waitReason, projec
   const schedule = (row: QueueRow) => { const sendAt = new Date(date).getTime(); if (!(sendAt > Date.now())) { setDateError('Pick a time in the future'); return; } onSchedule(row, sendAt); setLater(null); setDateError(''); };
   return <section aria-label="Queued messages" className={`relative z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift ${collapsed ? 'mb-1' : '-mb-[11px] rounded-b-none border-b-0 pb-3'}`}>
     <header className="shrink-0"><button type="button" aria-label="Toggle queued messages" aria-expanded={!collapsed} className="flex min-h-8 w-full min-w-0 cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs text-foreground hover:bg-state-hover focus-visible:bg-state-hover" onClick={() => setCollapsed(!collapsed)}><span>Queue</span><span className="ml-auto mr-px flex w-6 shrink-0 items-center justify-center"><span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-surface-recessed px-1 text-2xs leading-none tabular-nums text-subtle-foreground">{rows.length}</span></span></button></header>
-    {!collapsed && <><div className="relative min-h-0 flex-1"><div ref={list} onScroll={measure} className="max-h-64 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain"><DndContext sensors={sensors} onDragEnd={drop}><SortableContext items={rows.map(row => row.id)} strategy={verticalListSortingStrategy}><ul className="group/queue pt-1">{rows.map((row, index) => {
+    {!collapsed && <><div className="relative min-h-0 flex-1"><div ref={list} onScroll={measure} className="max-h-64 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain"><DndContext sensors={sensors} modifiers={[keepInList]} onDragEnd={drop}><SortableContext items={rows.map(row => row.id)} strategy={verticalListSortingStrategy}><ul className="group/queue pt-1">{rows.map((row, index) => {
       const scheduled = row.sendAt && row.sendAt > Date.now(), wait = waitReason(row);
       const distance = scheduled ? Math.max(1, Math.ceil((row.sendAt! - Date.now()) / 60000)) : 0;
       const relative = distance >= 1440 ? `${Math.ceil(distance / 1440)}d` : distance >= 60 ? `${Math.ceil(distance / 60)}h` : `${distance}m`;

@@ -757,7 +757,9 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   fireEvent.click(within(moved).getByRole('button', { name:'Other send times' }));
   fireEvent.click(slot.getByRole('menuitem', { name:/−40 min/ }));
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'late', sendAt:at(30) - 10 * 60000 })));
-  await waitFor(() => expect(order()).toEqual(['now', 'late', 'soon']));
+  // The held row settles once its new time arrives (the next step reads that time).
+  await waitFor(() => expect(slot.getByText('late').closest('li')!.textContent).toContain('in 20m'));
+  expect(order()).toEqual(['now', 'late', 'soon']);
   // An unscheduled message dropped below a scheduled one gets a time after it.
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 1' }), { key:'ArrowDown' });
   fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ }));
@@ -1140,4 +1142,12 @@ it('shares usage polling between keeper and footer and pauses while hidden', asy
     visibility = 'visible'; await act(async () => { fireEvent(document, new Event('visibilitychange')); });
     expect(usageLimits).toHaveBeenCalledTimes(3);
   } finally { cleanup(); vi.useRealTimers(); }
+});
+it('keeps a dragged queue row inside the visible list', async () => {
+  const { keepInList } = await import('./inbox');
+  const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 100, width: 100, height: bottom - top });
+  const args = (y: number) => ({ transform: { x: 12, y, scaleX: 1, scaleY: 1 }, draggingNodeRect: rect(100, 140), scrollableAncestorRects: [rect(50, 200)] }) as any;
+  expect(keepInList(args(30))).toMatchObject({ x: 0, y: 30 });
+  expect(keepInList(args(500))).toMatchObject({ y: 60 });
+  expect(keepInList(args(-500))).toMatchObject({ y: -50 });
 });
