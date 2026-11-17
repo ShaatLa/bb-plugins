@@ -8,12 +8,11 @@
   },
   "bb": {
     "name": "Sweep",
-    "description": "A BB plugin with an example todo list.",
+    "description": "Scheduled project checks and reliable manager delivery.",
     "branding": {
-      "icon": "ListTodo"
+      "icon": "Activity"
     },
-    "server": "./server.ts",
-    "app": "./app.tsx"
+    "server": "./server.ts"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.4.1",

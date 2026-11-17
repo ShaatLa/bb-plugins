@@ -1,225 +1,83 @@
-// bb-plugin-sweep — a BB plugin backend entry.
-//
-// The default export is a factory that receives the plugin API. BB supplies
-// the tiny defineRpcContract runtime helper; the API type remains type-only.
-//
-// The example is a todo list. One store in bb.storage.kv serves three
-// surfaces: the Example todos page (app.tsx, over RPC), the `bb sweep` CLI
-// command (below), and the skill in skills/example-todos/SKILL.md that tells
-// agents how to use that command. A write from any surface publishes a realtime signal so
-// every open page refetches.
-import { randomUUID } from "node:crypto";
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
-import { z } from "zod";
+import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
+import { z } from 'zod';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, isAbsolute } from 'node:path';
+import { deliveryStore } from './delivery';
 
-const todoSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  done: z.boolean(),
-  createdAt: z.string(),
+const configSchema = z.object({ remote: z.string().min(1), branch: z.string().min(1), script: z.string().min(1), args: z.array(z.string()), manager: z.string(), intervalMinutes: z.number().int().min(1).max(1440).default(10), snapshots: z.boolean().default(false) }).strict();
+const projectSchema = z.object({ projectId: z.string().regex(/^proj_[a-z0-9]+$/) });
+const contract = defineRpcContract({
+  configure: { input: projectSchema.extend({ config: configSchema }), output: z.unknown() },
+  manager: { input: projectSchema, output: z.unknown() },
+  status: { input: projectSchema, output: z.unknown() },
+  run: { input: projectSchema, output: z.unknown() },
 });
-export type Todo = z.infer<typeof todoSchema>;
-
-// Both schemas run at the wire boundary. Handler input/output are inferred
-// from the shared contract; app.tsx imports only its type.
-export const rpcContract = defineRpcContract({
-  todos_list: {
-    input: z.null(),
-    output: z.object({ todos: z.array(todoSchema) }),
-  },
-  todos_add: {
-    input: z.object({ title: z.string().trim().min(1).max(200) }),
-    output: todoSchema,
-  },
-  todos_set_done: {
-    input: z.object({ id: z.string(), done: z.boolean() }),
-    output: todoSchema,
-  },
-  todos_remove: {
-    input: z.object({ id: z.string() }),
-    output: z.object({ removed: z.boolean() }),
-  },
-});
-
-/** Realtime channel app.tsx listens on; the payload is the todo count. */
-const TODOS_CHANGED = "todos-changed";
-
+const exec = promisify(execFile);
 export default async function plugin(bb: BbPluginApi) {
-  bb.log.info("loaded");
-
-  // Declarative settings — rendered in BB's settings UI and editable with
-  // `bb plugin config sweep`. Add `secret: true` for values like API keys.
-  // Settings are read once per load: reload the plugin after changing one.
-  const settings = bb.settings.define({
-    showDone: {
-      type: "boolean",
-      label: "Show completed todos",
-      default: true,
-    },
-  });
-  const { showDone } = await settings.get();
-
-  // Namespaced key-value storage in bb.db (JSON values, up to 256KB each).
-  // For bigger or relational data use bb.storage.database().
-  async function readTodos(): Promise<Todo[]> {
-    return (await bb.storage.kv.get<Todo[]>("todos")) ?? [];
-  }
-  async function writeTodos(todos: Todo[]): Promise<void> {
-    await bb.storage.kv.set("todos", todos);
-    // Ephemeral broadcast to every connected client; nothing is persisted.
-    bb.realtime.publish(TODOS_CHANGED, { count: todos.length });
-  }
-
-  async function listTodos(): Promise<Todo[]> {
-    const todos = await readTodos();
-    return showDone ? todos : todos.filter((todo) => !todo.done);
-  }
-  async function addTodo(title: string): Promise<Todo> {
-    const todo: Todo = {
-      id: randomUUID().slice(0, 8),
-      title,
-      done: false,
-      createdAt: new Date().toISOString(),
-    };
-    await writeTodos([...(await readTodos()), todo]);
-    return todo;
-  }
-  async function setTodoDone(id: string, done: boolean): Promise<Todo | null> {
-    const todos = await readTodos();
-    const todo = todos.find((candidate) => candidate.id === id);
-    if (todo === undefined) return null;
-    todo.done = done;
-    await writeTodos(todos);
-    return todo;
-  }
-  async function removeTodo(id: string): Promise<boolean> {
-    const todos = await readTodos();
-    const remaining = todos.filter((todo) => todo.id !== id);
-    if (remaining.length === todos.length) return false;
-    await writeTodos(remaining);
-    return true;
-  }
-
-  bb.rpc.register(rpcContract, {
-    todos_list: async () => ({ todos: await listTodos() }),
-    todos_add: ({ title }) => addTodo(title),
-    todos_set_done: async ({ id, done }) => {
-      const todo = await setTodoDone(id, done);
-      if (todo === null) throw new Error(`No todo with id ${id}`);
-      return todo;
-    },
-    todos_remove: async ({ id }) => ({ removed: await removeTodo(id) }),
-  });
-
-  // The `bb sweep` command: what agents (and you) use from a shell. Parsing
-  // argv is plugin-owned; `commands` is metadata BB renders into help and
-  // the generated plugin-commands skill without running plugin code.
-  const usage = [
-    "Usage:",
-    "  bb sweep list [--json]",
-    "  bb sweep add <title> [--json]",
-    "  bb sweep done <todo-id> [--json]",
-    "  bb sweep undo <todo-id> [--json]",
-    "  bb sweep remove <todo-id> [--json]",
-  ].join("\n");
-  function formatTodo(todo: Todo): string {
-    return `[${todo.done ? "x" : " "}] ${todo.id}  ${todo.title}`;
-  }
-  bb.cli.register({
-    name: "sweep",
-    summary: "Manage the Sweep plugin's example todo list",
-    commands: [
-      { name: "list", summary: "List todos", usage: "bb sweep list [--json]" },
-      {
-        name: "add",
-        summary: "Add a todo",
-        usage: "bb sweep add <title> [--json]",
-      },
-      {
-        name: "done",
-        summary: "Mark a todo done",
-        usage: "bb sweep done <todo-id> [--json]",
-      },
-      {
-        name: "undo",
-        summary: "Mark a todo not done",
-        usage: "bb sweep undo <todo-id> [--json]",
-      },
-      {
-        name: "remove",
-        summary: "Remove a todo",
-        usage: "bb sweep remove <todo-id> [--json]",
-      },
-    ],
-    async run(argv) {
-      const json = argv.includes("--json");
-      const [command, ...args] = argv.filter((arg) => arg !== "--json");
-      const reply = (value: unknown, text: string) => ({
-        exitCode: 0,
-        stdout: json ? JSON.stringify(value) : text,
-      });
-      const notFound = (missingId: string) => ({
-        exitCode: 1,
-        stderr: `No todo with id ${missingId}. Run "bb sweep list" to see ids.`,
-      });
-      const todoId = args[0];
-      switch (command) {
-        case undefined:
-        case "help":
-        case "--help":
-          return { exitCode: 0, stdout: usage };
-        case "list": {
-          const todos = await listTodos();
-          return reply(
-            todos,
-            todos.length === 0 ? "No todos." : todos.map(formatTodo).join("\n"),
-          );
-        }
-        case "add": {
-          const title = args.join(" ").trim();
-          if (title === "") break;
-          const todo = await addTodo(title);
-          return reply(todo, `Added ${formatTodo(todo)}`);
-        }
-        case "done":
-        case "undo": {
-          if (todoId === undefined || args.length !== 1) break;
-          const todo = await setTodoDone(todoId, command === "done");
-          if (todo === null) return notFound(todoId);
-          return reply(todo, formatTodo(todo));
-        }
-        case "remove": {
-          if (todoId === undefined || args.length !== 1) break;
-          if (!(await removeTodo(todoId))) return notFound(todoId);
-          return reply({ removed: true, id: todoId }, `Removed ${todoId}`);
-        }
+  const db = bb.storage.database(), deliveries = deliveryStore(db);
+  db.exec('CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, config TEXT NOT NULL, status TEXT NOT NULL DEFAULT "{}")');
+  const get = (id: string) => db.prepare('SELECT config, status FROM projects WHERE id = ?').get(id) as { config: string; status: string } | undefined;
+  const status = (id: string) => { const row = get(id); return row ? { config: JSON.parse(row.config), ...JSON.parse(row.status), pending: !!deliveries.read(id)?.pending_message } : null; };
+  const saveStatus = (id: string, value: object) => db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(JSON.stringify(value), id);
+  const busy = new Set<string>();
+  async function run(id: string, manual = false) {
+    if (busy.has(id)) throw new Error('Sweep already running');
+    const row = get(id); if (!row) throw new Error('Project not configured');
+    const config = configSchema.parse(JSON.parse(row.config));
+    busy.add(id);
+    let state = JSON.parse(row.status), temp = '';
+    const started = Date.now();
+    try {
+      const manager = await bb.sdk.threads.get({ threadId: config.manager });
+      if (!manager || manager.archivedAt || manager.projectId !== id) throw new Error('Manager missing, archived, or belongs to another project');
+      const send = async (message: string) => { await bb.sdk.threads.send({ threadId: config.manager, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: message, mentions: [] }] }); };
+      if (!manual && deliveries.read(id)?.pending_message) {
+        await send(deliveries.read(id)!.pending_message!);
+        deliveries.acknowledge(id);
       }
-      return { exitCode: 1, stderr: usage };
-    },
-  });
-
-  // Cleanup on reload/disable/shutdown; hooks run LIFO. The sanctioned place
-  // to clear timers and close connections.
-  bb.onDispose(() => {
-    bb.log.info("disposed");
-  });
-
-  // Long-lived background work: starts after load, gets an AbortSignal on
-  // reload/disable/shutdown, and restarts with backoff if it crashes. Sleeps
-  // must wake on abort — a plain setTimeout sleeps through the stop window
-  // and the plugin reports "degraded (service did not stop)" on reload.
-  // bb.background.service("worker", {
-  //   async start(signal) {
-  //     while (!signal.aborted) {
-  //       await new Promise((resolve) => {
-  //         const timer = setTimeout(resolve, 60_000);
-  //         signal.addEventListener(
-  //           "abort",
-  //           () => { clearTimeout(timer); resolve(undefined); },
-  //           { once: true },
-  //         );
-  //       });
-  //     }
-  //   },
-  // });
+      const root = join(dirname(db.name), 'checkouts', id);
+      await mkdir(root, { recursive: true });
+      const git = (args: string[]) => exec('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: root, timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+      try { await git(['rev-parse', '--git-dir']); } catch { await git(['init']); }
+      await git(['fetch', '--depth=1', '--', config.remote, config.branch]);
+      await git(['checkout', '--force', '--detach', 'FETCH_HEAD']);
+      const script = join(root, config.script), rel = relative(root, script);
+      if (isAbsolute(config.script) || rel.startsWith('..')) throw new Error('Script must be inside checkout');
+      temp = await mkdtemp(join(dirname(db.name), 'sweep-'));
+      const committed = join(temp, 'committed.json'), candidate = join(temp, 'candidate.json');
+      const previous = deliveries.read(id)?.committed; if (previous) await writeFile(committed, previous);
+      let code = 0, output = '';
+      try { const result = await exec('python3', [script, ...config.args, ...(config.snapshots ? ['--committed-state', committed, '--candidate-snapshot', candidate] : [])], { cwd: root, timeout: 300000, maxBuffer: 1024 * 1024 }); output = result.stdout + result.stderr; }
+      catch (error) { const e = error as Error & { code?: number; stdout?: string; stderr?: string }; if (typeof e.code !== 'number') throw e; code = e.code; output = (e.stdout ?? '') + (e.stderr ?? ''); }
+      const heartbeat = !state.heartbeatAt || started - state.heartbeatAt >= 3600000;
+      const message = code ? `[sweep] exit ${code}\n${output}` : `[sweep] alive\n${output.split('\n').find(line => line.startsWith('sweep:')) ?? ''}`;
+      let delivered = '';
+      if (!manual && (code !== 0 || heartbeat)) {
+        let snapshot: Buffer | null = null; if (config.snapshots) { try { snapshot = await readFile(candidate); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; } }
+        deliveries.stage(id, message, snapshot);
+        await send(message); deliveries.acknowledge(id); delivered = message;
+        if (!code) state.heartbeatAt = started;
+      }
+      state = { ...state, lastRun: started, exitCode: code, delivered, error: null, nextRun: started + config.intervalMinutes * 60000 };
+      if (!manual) saveStatus(id, state);
+      return { ...state, output };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      if (!manual) { saveStatus(id, { ...state, lastRun: started, error, nextRun: started + config.intervalMinutes * 60000 });
+        try { await bb.sdk.plugins.callRpc({ pluginId: 'push-notifications', method: 'notifications.send', input: { title: 'Sweep failed', body: `${id}: ${error}` }, outputSchema: z.unknown() }); } catch (alert) { bb.log.error(`Sweep notification failed: ${String(alert)}`); }
+      }
+      throw e;
+    } finally { if (temp) await rm(temp, { recursive: true, force: true }); busy.delete(id); }
+  }
+  const handlers = {
+    configure: async ({ projectId, config }: z.infer<typeof projectSchema> & { config: z.infer<typeof configSchema> }) => { if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error('Unknown project'); db.prepare('INSERT INTO projects (id, config) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET config = excluded.config').run(projectId, JSON.stringify(config)); return status(projectId); },
+    manager: async ({ projectId }: z.infer<typeof projectSchema>) => ({ manager: status(projectId)?.config.manager ?? null }),
+    status: async ({ projectId }: z.infer<typeof projectSchema>) => status(projectId),
+    run: async ({ projectId }: z.infer<typeof projectSchema>) => run(projectId, true),
+  };
+  bb.rpc.register(contract, handlers);
+  bb.background.schedule('sweep', '* * * * *', async () => { for (const row of db.prepare('SELECT id, status FROM projects').all() as { id: string; status: string }[]) { if ((JSON.parse(row.status).nextRun ?? 0) <= Date.now()) await run(row.id).catch(e => bb.log.error(String(e))); } });
+  bb.cli.register({ name: 'sweep', summary: 'Sweep status and project manager', async run(argv, ctx) { try { const id = argv[1] ?? ctx.projectId; if (!id) throw new Error('Supply project id'); const result = argv[0] === 'status' ? await handlers.status({ projectId: id }) : argv[0] === 'manager' ? await handlers.manager({ projectId: id }) : argv[0] === 'run' ? await run(id, true) : (() => { throw new Error('Use status, manager or run'); })(); return { exitCode: 0, stdout: JSON.stringify(result) }; } catch (e) { return { exitCode: 1, stderr: String(e) }; } } });
 }
