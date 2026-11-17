@@ -13,7 +13,7 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve, answering in your final message. Ask anything needing the user's decision via answers_ask (chat-text questions never reach Questions), then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. Work Board task decisions go on the task. Scripts waking your own thread via bb thread tell start the text with a [tag].";
+export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve. Ask the user's decisions via answers_ask, then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. A Work Board task's decision, check, acceptance or design review goes on the task (bb work-board question add KEY), never answers_ask or chat. Scripts waking your own thread via bb thread tell start the text with a [tag].";
 const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
 const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
