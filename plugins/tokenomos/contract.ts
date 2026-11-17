@@ -86,10 +86,15 @@ const threadIds = z.array(z.string().min(1)).min(1).max(2000);
 // ---- Public RPC (PLAN §6.1) ----
 
 const costsInput = z.object({ threadIds, includeDescendants: z.boolean() });
+// costs.sum only: breakdown adds per-thread and per-model rows to the total.
+const breakdown = z.boolean().optional();
+const costsSumInput = costsInput.extend({ breakdown });
 // Time-window form: a call counts only while its thread was inside one of its spans (to: null = until now).
 const span = z.object({ threadId: z.string().min(1), from: z.number().int().nonnegative(), to: z.number().int().nonnegative().nullable() })
   .refine(s => s.to === null || s.to >= s.from, { message: "to must not precede from" });
-const costsSpansInput = z.object({ spans: z.array(span).min(1).max(2000), includeDescendants: z.boolean() });
+const costsSpansInput = z.object({ spans: z.array(span).min(1).max(2000), includeDescendants: z.boolean(), breakdown });
+const sumThread = z.object({ threadId: z.string(), title: z.string(), model: z.string(), cost: costSchema });
+const sumModel = z.object({ provider: z.string(), model: z.string(), cost: costSchema, calls: count });
 
 const threadCostSchema = z.object({
   threadId: z.string(), own: costSchema, total: costSchema, descendantCount: count, updatedAt: num,
@@ -126,8 +131,8 @@ export const rpcContract = defineRpcContract({
   },
   "costs.sum": {
     tags,
-    input: z.union([costsInput, costsSpansInput]),
-    output: z.object({ priceVersion: z.string(), cost: costSchema, threadCount: count, updatedAt: num }),
+    input: z.union([costsSumInput, costsSpansInput]),
+    output: z.object({ priceVersion: z.string(), cost: costSchema, threadCount: count, updatedAt: num, threads: z.array(sumThread).optional(), models: z.array(sumModel).optional() }),
   },
   summary: {
     tags,

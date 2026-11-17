@@ -44,6 +44,7 @@ Other plugins should use only these two. Both are tagged `usage` and accept 1 to
 
 - `costs.sum` input `{ threadIds: string[], includeDescendants: boolean }` → `{ priceVersion, cost: Cost, threadCount, updatedAt }`. `cost` is the deduplicated sum.
 - `costs.sum` also accepts `{ spans: { threadId, from, to: number | null }[], includeDescendants }` to count only calls made while each thread was inside its time windows (epoch ms; `to: null` means now). Overlapping spans are merged, a descendant uses the union of its roots' spans, and `threadCount` counts threads with at least one counted call. Hours cut by a span edge are exact for the last 30 days and whole-hour estimates (`estimated: true`) before that.
+- Both `costs.sum` forms take `breakdown: true` to add `threads: { threadId, title, model, cost }[]` (one row per counted thread, descendants included, summing to `cost`; `model` is the thread's top model by usd) and `models: { provider, model, cost, calls }[]`, both sorted by usd descending.
 - `costs.threads` same input → `{ priceVersion, threads: [{ threadId, own: Cost, total: Cost, descendantCount, updatedAt }] }`. `total` includes descendants when `includeDescendants` is true.
 
 Unknown thread IDs are skipped and make the result `partial`.

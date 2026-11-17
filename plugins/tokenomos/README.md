@@ -76,10 +76,15 @@ output: { priceVersion: string,
                      descendantCount: int >= 0, updatedAt: number }[] }
 
 // costs.sum
-input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
+input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean, breakdown?: boolean }
      |  { spans: { threadId: string, from: number, to: number | null }[] /* 1–2000 */,
-          includeDescendants: boolean }
-output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number }
+          includeDescendants: boolean, breakdown?: boolean }
+output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number,
+          // only with breakdown: true, sorted by usd descending:
+          threads?: { threadId: string, title: string, model: string, cost: Cost }[],
+          models?: { provider: string, model: string, cost: Cost, calls: int >= 0 }[] }
+// breakdown: one row per counted thread (descendants separately); the rows sum to cost;
+// model is the thread's most expensive model.
 // spans: a call counts only if its time falls inside its thread's window (to: null means until now).
 // Overlapping windows of one thread are merged, so a call counts once. A descendant counts
 // by the union of its roots' windows. threadCount: threads with at least one counted call.

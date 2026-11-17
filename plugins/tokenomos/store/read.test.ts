@@ -124,6 +124,19 @@ describe('costs.sum with spans', () => {
     expect(costSumSpans(db,[{ threadId:'a',from:old+30*60_000,to:old+HOUR }],false,o)).toMatchObject({ threadCount:1,cost:{ estimated:true } });
     expect(costSumSpans(db,[{ threadId:'a',from:now-300*86_400_000,to:old+HOUR }],false,o).cost.partial).toBe(true);
   });
+  it('breaks the total down per thread (descendants included) and per model, both forms', () => {
+    note('r'); note('c','r');
+    createStore(db).applyRows([row('s1',{ threadId:'r',ts:now-3*HOUR }),row('s2',{ threadId:'r',ts:now-3*HOUR,model:'claude-opus-5-5' }),row('o1',{ threadId:'r',ts:now-3*HOUR,model:'claude-opus-5-5' }),
+      row('l1',{ threadId:'c',ts:now-3*HOUR,provider:'local-models',model:'qwen3' })]);
+    const check = (r: { cost: { usd: number | null }; threads?: { threadId: string; title: string; model: string; cost: { usd: number | null } }[]; models?: { model: string; calls: number }[] }) => {
+      expect(r.threads!.map(t => [t.threadId,t.title,t.model])).toEqual([['r','r','claude-opus-5-5'],['c','c','qwen3']]);
+      expect(r.threads!.reduce((s,t) => s+(t.cost.usd ?? 0),0)).toBeCloseTo(r.cost.usd!);
+      expect(r.models!.map(m => [m.model,m.calls])).toEqual([['claude-opus-5-5',2],['claude-sonnet-5-5',1],['qwen3',1]]);
+    };
+    check(costSumSpans(db,[{ threadId:'r',from:now-4*HOUR,to:null }],true,{ ...o,breakdown:true }));
+    check(costSum(db,['r'],true,overrides,true));
+    expect(costSum(db,['r'],true,overrides)).not.toHaveProperty('threads');
+  });
   it('marks an unknown root partial', () => {
     expect(costSumSpans(db,[{ threadId:'missing',from:0,to:null }],false,o)).toMatchObject({ threadCount:0,cost:{ partial:true } });
   });

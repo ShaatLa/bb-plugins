@@ -76,10 +76,15 @@ output: { priceVersion: string,
                      descendantCount: int >= 0, updatedAt: number }[] }
 
 // costs.sum
-input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean }
+input:  { threadIds: string[] /* 1–2000 */, includeDescendants: boolean, breakdown?: boolean }
      |  { spans: { threadId: string, from: number, to: number | null }[] /* 1–2000 */,
-          includeDescendants: boolean }
-output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number }
+          includeDescendants: boolean, breakdown?: boolean }
+output: { priceVersion: string, cost: Cost, threadCount: int >= 0, updatedAt: number,
+          // только при breakdown: true, по убыванию usd:
+          threads?: { threadId: string, title: string, model: string, cost: Cost }[],
+          models?: { provider: string, model: string, cost: Cost, calls: int >= 0 }[] }
+// breakdown: строка на каждый учтённый тред (потомки отдельно), строки дают в сумме cost;
+// model — самая дорогая модель треда.
 // spans: вызов считается, только если его время попало в окно своего треда (to: null — до сейчас).
 // Пересекающиеся окна одного треда объединяются, вызов считается один раз. Потомок считается
 // по объединению окон своих корней. threadCount — треды хотя бы с одним учтённым вызовом.
