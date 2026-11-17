@@ -1,142 +1,33 @@
-# bb-plugin-sweep
+# Sweep
 
-A BB plugin that keeps a todo list. It shows every surface a plugin can own:
+Sweep refreshes a dedicated server-local checkout and runs a repository script on a per-project interval (default ten minutes). Checks stay in the repository. It sends nonzero results to the project manager and one heartbeat per hour on quiet runs. Python scripts run with python3; other scripts must be executable. Git, Python and BB CLI access must be available on the BB server machine. Checkout location is `<plugin-data>/checkouts/<projectId>`; it is disposable and cleaned before every run.
 
-- `server.ts` — the backend: a todo store in `bb.storage.kv`, RPC methods
-  for the page, a `bb sweep` CLI command, a setting, and a realtime signal
-  that keeps every open page current.
-- `app.tsx` — the frontend: an **Example todos** page in the left sidebar
-  (`app.slots.navPanel`) built from the vendored components.
-- `skills/example-todos/SKILL.md` — a skill that tells agents how to keep the list
-  with `bb sweep`. BB imports it into agent threads automatically.
-- `PLUGIN_OVERVIEW.md` — the store listing text: a longer version of
-  `bb.description` that the plugin detail page shows under it. See
-  [Store listing](#store-listing).
+Settings → Plugins → Sweep exposes **Project sweeps (JSON)**, a map from project id to configuration. Every project defaults disabled. Example:
 
-Try it: install the plugin, open **Example todos** in the sidebar, then run
-`bb sweep add "Ship it"` in a terminal. The page updates at once.
-
-## UI components
-
-`components/ui/` is vendored source you own (the shadcn model): edit the
-files freely — they never update out from under you. Add more from the BB
-component registry (the full shadcn set, version-matched to your BB install
-via the pinned ref in `components.json`):
-
-```
-npx shadcn add @bb/select @bb/table
+```json
+{"proj_example":{"enabled":true,"remote":"https://github.com/example/repo.git","branch":"main","script":"checks/sweep.py","args":["--root","{manager}"],"manager":"thr_example","intervalMinutes":10,"timeoutSeconds":300,"snapshots":false}}
 ```
 
-Run `npm install` once before `bb plugin build` — the vendored components'
-npm deps bundle into your dist. React, and BB-shimmed packages like the
-radix portal primitives and `sonner` (`import { toast } from "sonner"`
-reaches BB's own toaster), are provided by the BB app at runtime and never
-bundled. Every shimmed package is declared in `devDependencies` at the
-host's version so those imports typecheck; keep them there (never in
-`dependencies`, which would bundle a second copy), and `bb plugin types`
-repins declared packages alongside the SDK; unused packages may be removed. Ship `dist/` (npm tarball or committed for
-git installs) so people installing your plugin never need npm.
+`{manager}` in arguments is resolved on each run. The manager must be a live, unarchived thread in the configured project. Other plugins should resolve it through RPC `manager` with `{projectId}`, returning `{manager: string|null}`. CLI: `bb sweep manager --project <id> --json`.
 
-## Manifest
+`bb sweep status --project <id> --json` shows configuration (including manager), lastRun, exitCode, delivered, deliveredAt, nextRun, error, alertError and pending message. Times are Unix milliseconds. A missing nextRun means the first enabled tick is due on the next minute boundary. Schedules run only while BB and Sweep are loaded; missed intervals coalesce into one tick.
 
-`package.json` is the plugin manifest. Notable fields:
+`bb sweep run --project <id> [--dry-run]` refreshes and runs manually without telling, acknowledging or changing status. Scripts must obey the read-only snapshot protocol themselves; Sweep cannot prevent arbitrary repository code from changing external state.
 
-- `bb.server` — backend entry (required).
-- `bb.app` — frontend entry. Delete it, `app.tsx`, `components/`,
-  `hooks/`, and `lib/` for a headless plugin.
-- `bb.skills` — skill roots; omitted here, so BB reads `skills/`. Each
-  directory with a `SKILL.md` is one skill, named after the directory.
-- `bb.name` and `bb.description` — required human-facing identity.
-- `bb.branding` — required; declare `icon` as a BB icon name or a
-  plugin-relative compact SVG, or declare `logo.light` (with optional
-  `logo.dark`). Logo assets must be relative `.svg`, `.png`, or
-  `.webp` files.
-- `engines.bb` — supported bb app version range.
-- `engines.bbPluginSdk` — the lowest plugin SDK you need (scaffold:
-  `>=0.6.132`). BB reads this as a floor, not a ceiling: a later
-  SDK in the same major still loads your plugin.
-- `dependencies` — every package your source imports that BB does not provide.
-  `bb plugin build` inlines them into `dist/`, and git installs resolve this
-  list alone, so a build-required package here rather than in
-  `devDependencies` is what keeps your plugin installable. `devDependencies`
-  is for types and tooling only (BB shims React, the portal primitives, and
-  `@get-bb/plugin-sdk` at runtime — never bundle them).
+RPC `configure` takes `{projectId,config}` and updates the same setting. RPC `status`, `manager`, `run` take `{projectId}`. Use `bb plugin rpc call sweep configure --input-file config.json --json`.
 
-Run `bb plugin build` before publishing git/npm installs. It writes
-`dist/server.js` + `server.meta.json` and `app.js` / `app.css` /
-`app.meta.json`. Each `*.meta.json` stamps SDK major/version,
-`artifactFormatVersion`, `pluginId`, `pluginVersion`, and
-`builtWith` so managed installs can verify the artifacts. `app.meta.json`
-also lists `runtimeSlots`, the shimmed host modules the bundle imports.
+## Script acknowledgement protocol
 
-## Store listing
+Without `snapshots`, stdout and stderr plus exit code are sufficient: 0 quiet, 1 ACTION, 2 or higher failure. A crash, refresh error or timeout becomes exit 2 and is delivered to the manager. Unreachable/unset/archived managers leave durable pending deliveries and trigger the push-notifications plugin. Push failures appear as alertError in status.
 
-Two texts describe the plugin in the store. `bb.description` in package.json
-is the one-sentence hook on every browse card and the lead paragraph on the
-detail page; keep it under about 140 characters. `PLUGIN_OVERVIEW.md` is the
-same claim at length, shown in an Overview section under that paragraph.
-Rewrite the scaffold's copy for your plugin, and update it whenever
-`bb.description` changes, so the two never disagree.
+With `snapshots:true`, Sweep adds `--committed-state <path> --candidate-snapshot <path>`. The committed file may not exist initially. The script reads it, prints **every item requiring acknowledgement**, and writes a complete replacement candidate file. It never writes committed state. Both paths are also available as BB_SWEEP_COMMITTED_STATE and BB_SWEEP_CANDIDATE_SNAPSHOT. Candidates on exit 0 or 1 are accepted; failure candidates are ignored. Every candidate is delivered with full output even on exit 0. Scripts should omit the candidate when nothing needs acknowledgement.
 
-The submission to the public BB Community marketplace requires the file. Keep
-it under 4000 characters (aim for 700 to 1800) and use headings, paragraphs,
-emphasis, code, blockquotes, lists, thematic breaks, and absolute https links
-only — raw HTML, images, tables, footnotes, and task lists are rejected. Do
-not open with a `#` title or repeat `bb.description` verbatim; the page
-shows both directly above.
+Sweep stores candidate bytes and the full message in one SQLite row before telling. It retries the pending message before running the next check and promotes the candidate in one database update only after successful tell. A crash between tell and acknowledgement may duplicate delivery; it cannot acknowledge an undelivered message. Changing manager redirects pending messages as well as new results. Manual runs never stage or acknowledge candidates.
 
-## Install
+## Integration follow-ups
 
-From this directory (`bb plugin new` already ran the install; a fresh clone
-needs it):
+Anvil: move its script path through configuration, add the protocol flags, migrate existing owner-answer state explicitly, and document Sweep as scheduler. Keep its automation until two good plugin ticks are observed; the Anvil manager owns disabling it.
 
-```
-npm install
-bb plugin install .
-```
+Work Board schedules should resolve their target through Sweep manager RPC. Slots should resolve its observer through the same RPC. CI Dashboard should resolve its manager through it. Each integration needs explicit handling for missing Sweep or an unset manager. This release changes none of these plugins.
 
-After editing sources, reload:
-
-```
-bb plugin reload sweep
-```
-
-Or let `bb plugin dev` rebuild and reload on every save.
-
-## Configure
-
-```
-bb plugin config sweep
-bb plugin config sweep set showDone false
-bb plugin reload sweep
-```
-
-## Types & API reference
-
-The plugin API ships as the npm package `@get-bb/plugin-sdk`, pinned to an
-exact version in `devDependencies` (`0.6.132` — the SDK of the BB
-that scaffolded this plugin). After `npm install`, the full surface is on disk
-at:
-
-```
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts      # backend
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts  # frontend
-```
-
-Your editor and `tsc` resolve `@get-bb/plugin-sdk` there through ordinary node
-resolution — no path mapping. These are readable declarations: open them for an
-exact signature.
-
-The SDK surface grows with every BB release, so the pin has to track the BB you
-actually run:
-
-```
-bb plugin types          # sync this plugin's SDK surface to the running BB
-bb plugin types --check  # CI: fail when it does not match
-```
-
-Ask BB to write plugins for you: the `bb-plugin-authoring` skill documents
-the whole surface with examples.
-
-Confused by the API, or need something the types don't explain? Clone the BB
-repo and read the source: <https://github.com/get-bb/bb>.
+Install: `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin sweep`.

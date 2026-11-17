@@ -5,6 +5,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
 | **Agent Spawn Gate** | Project-specific one-use admissions for agent and CLI starts; enforcement off by default. | `agent-spawn-gate` | [README](plugins/agent-spawn-gate/README.md) |
+| **Sweep** | Scheduled repository checks and durable delivery to a project manager. | `sweep` | [README](plugins/bb-plugin-sweep/README.md) |
 | **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
