@@ -13,3 +13,5 @@ assert.equal(store.read('p').pending_message, null);
 store.stage('p', 'heartbeat', null);
 store.acknowledge('p');
 assert.equal(store.read('p').committed.toString(), 'candidate');
+
+store.seed('seeded', Buffer.from('{}'));assert.throws(()=>store.seed('seeded', Buffer.from('{}')));store.stage('pending','message',null);assert.throws(()=>store.seed('pending',Buffer.from('{}')));

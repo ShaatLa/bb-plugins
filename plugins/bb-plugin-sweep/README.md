@@ -33,3 +33,5 @@ Anvil: move its script path through configuration, add the protocol flags, migra
 Work Board schedules should resolve their target through Sweep manager RPC. Slots should resolve its observer through the same RPC. CI Dashboard should resolve its manager through it. Each integration needs explicit handling for missing Sweep or an unset manager. This release changes none of these plugins.
 
 Install: `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin sweep`.
+
+Migration: RPC `seed-state` accepts `{projectId,snapshot}` where snapshot is the original committed JSON file contents as a string. Disable the project first. It refuses to overwrite committed state or a pending message, and refuses while a sweep is running. Committed bytes are stored in plugin SQLite; the script receives a fresh temporary read-only file on each run.

@@ -12,11 +12,12 @@ const projectsSchema = z.record(projectId, configSchema);
 const input = z.object({ projectId }).strict();
 export const contract = defineRpcContract({
   configure: { input: z.object({ projectId, config: configSchema }).strict(), output: z.unknown() },
+  'seed-state': { input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Snapshot must be JSON') }).strict(), output: z.object({ seeded: z.literal(true) }) },
   manager: { input, output: z.object({ manager: z.string().nullable() }) },
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
-type State = { lastRun?: number; exitCode?: number; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; lastRun?: number; exitCode?: number; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
@@ -31,17 +32,19 @@ export default async function plugin(bb: BbPluginApi) {
     const manager = (await configs())[id]?.manager;
     if (!manager) throw new Error('Manager is unset');
     const thread = await bb.sdk.threads.get({ threadId: manager });
-    if (!thread || thread.archivedAt || thread.projectId !== id) throw new Error('Manager missing, archived, or belongs to another project');
+    if (!thread || thread.archivedAt) throw new Error('Manager missing or archived');
     return manager;
   }
   async function send(id: string, text: string) {
     const manager = await managerFor(id);
     await bb.sdk.threads.send({ threadId: manager, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text, mentions: [] }] });
+    return manager;
   }
   async function deliver(id: string, current: State) {
     const pending = deliveries.read(id)?.pending_message;
     if (!pending) return;
-    await send(id, pending);
+    current.deliveredTo = await send(id, pending);
+    current.deliveredTickId = /tick=([^\s]+)/.exec(pending)?.[1];
     current.delivered = pending; current.deliveredAt = Date.now();
     if (pending.startsWith('[sweep] alive')) current.heartbeatAt = Date.now();
     db.transaction(() => { deliveries.acknowledge(id); save(id, current); })();
@@ -54,6 +57,7 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       config = (await configs())[id]; if (!config) throw new Error('Project not configured');
       if (!manual) {
+        current.tickId = `${id}:${Date.now()}`;
         current.lastRun = Date.now(); current.nextRun = Date.now() + config.intervalMinutes * 60000;
         save(id, current);
         await deliver(id, current);
@@ -67,7 +71,7 @@ export default async function plugin(bb: BbPluginApi) {
       const heartbeat = !current.heartbeatAt || Date.now() - current.heartbeatAt >= 3600000;
       // Every candidate is delivered in full before promotion, including exit-zero candidates.
       if (result.code || result.snapshot || heartbeat) {
-        const message = result.code || result.snapshot ? `[sweep] exit ${result.code}\n${result.output}` : `[sweep] alive\n${result.output.split('\n').find(s => s.startsWith('sweep:')) ?? ''}`;
+        const message = result.code || result.snapshot ? `[sweep] exit ${result.code} tick=${current.tickId}\n${result.output}` : `[sweep] alive tick=${current.tickId}\n${result.output.split('\n').find(s => s.startsWith('sweep:')) ?? ''}`;
         deliveries.stage(id, message, result.snapshot);
         await deliver(id, current);
       }
@@ -89,7 +93,7 @@ export default async function plugin(bb: BbPluginApi) {
     const operation = writes.then(async () => { if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error('Unknown project'); const projects = await configs(); projects[projectId] = config; await settings.experimental_set({ projects: JSON.stringify(projects) }); });
     writes = operation.catch(() => {}); await operation; return status(projectId);
   };
-  bb.rpc.register(contract, { configure, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
+  bb.rpc.register(contract, { configure, 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); if (!(await configs())[projectId]) throw new Error('Project not configured'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
   const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.

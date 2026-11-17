@@ -13,6 +13,12 @@ export function deliveryStore(db: Database.Database) {
         WHERE delivery.pending_message IS NULL`).run(project, message, snapshot);
       if (!result.changes) throw new Error("A delivery is already pending");
     },
+    seed(project: string, snapshot: Buffer) {
+      const result = db.prepare(`INSERT INTO delivery (project, committed) VALUES (?, ?)
+        ON CONFLICT(project) DO UPDATE SET committed = excluded.committed
+        WHERE delivery.committed IS NULL AND delivery.pending_message IS NULL`).run(project, snapshot);
+      if (!result.changes) throw new Error("Committed state or pending delivery already exists");
+    },
     acknowledge(project: string) {
       const result = db.prepare(`UPDATE delivery SET committed = COALESCE(pending_snapshot, committed), pending_message = NULL, pending_snapshot = NULL
         WHERE project = ? AND pending_message IS NOT NULL`).run(project);
