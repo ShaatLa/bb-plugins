@@ -477,6 +477,12 @@ it('marks a question filed from the agent\'s reply text as asked in chat, dismis
   fireEvent.click(await slot.findByRole('menuitem', { name: 'Not a question' }));
   await waitFor(() => expect(setDismissed).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', dismissed: true })));
 });
+it('labels a question the agent withdrew and shows its reason', async () => {
+  const slot = await questionsSetup({}, { dismissedAt: 5, answerSource: 'agent', note: 'Found it in the docs' });
+  expect(slot.getByText('Withdrawn')).toBeTruthy();
+  expect(slot.getByText('Found it in the docs')).toBeTruthy();
+  expect(slot.queryByRole('button', { name: 'Won’t reply' })).toBeNull();
+});
 it('shows undo after bulk read and calls undoRead', async () => {
   const undoRead = vi.fn(() => ({ ok: true, count: 2 }));
   const { slot } = await setup({ markRead: () => ({ ok: true, batch: 'batch-one', count: 2 }), undoRead });

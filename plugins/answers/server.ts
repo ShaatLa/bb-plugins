@@ -19,6 +19,7 @@ const toolInputs = {
   defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
   resolve: z.object({id:idSchema}).strict(),
   report: z.object({}).strict(),
+  withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
   ask: z.object({question:z.string().trim().min(1).max(2000),options:z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique').optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional()}).strict()
     .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
     .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
@@ -418,7 +419,7 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
-    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending questions.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
+    bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), recommended (must equal one option) and a short reason.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
@@ -426,7 +427,10 @@ export default function plugin(bb: BbPluginApi) {
           if (method==='list') {
             expireOwed(ctx.threadId);
             const rows=db.prepare("SELECT id,question,note,created_at FROM items WHERE thread_id=? AND kind='mine' AND status IN ('waiting','deferred') AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 20").all(ctx.threadId) as Row[];
-            return cap(rows.map(r=>`${r.id} ${Math.max(0,Math.floor((now-r.created_at)/1000))}s ${r.question.slice(0,160)}${r.note ? ' — '+r.note : ''}`).join('\n') || 'No pending questions.',2000);
+            const asked=db.prepare("SELECT id,question,created_at FROM items WHERE thread_id=? AND kind='for_me' AND status='open' AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 20").all(ctx.threadId) as Row[];
+            const line=(r:Row)=>`${r.id} ${Math.max(0,Math.floor((now-r.created_at)/1000))}s ${r.question.slice(0,160)}${r.note ? ' — '+r.note : ''}`;
+            const text=[rows.length ? rows.map(line).join('\n') : 'No pending questions.',asked.length ? 'Your open questions to the user:\n'+asked.map(line).join('\n') : ''].filter(Boolean).join('\n');
+            return cap(text,2000);
           }
           if (method==='ask') {
             const id='ans_'+randomUUID();
@@ -440,6 +444,14 @@ export default function plugin(bb: BbPluginApi) {
             if (!state?.active_turn_id) throw new Error('no active turn');
             commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,report) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET report=1',ctx.threadId,state.active_turn_id,now);
             return 'This turn’s final message will reach the user as a report.';
+          }
+          if (method==='withdraw') {
+            const {id,reason}=p as z.infer<typeof toolInputs.withdraw>;
+            const item=db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined;
+            if (!item || item.thread_id!==ctx.threadId || item.kind!=='for_me' || item.status!=='open' || item.dismissed_at!==null) throw new Error('open question not found in calling thread');
+            // answer_source='agent' tells a withdrawal from the owner's "Won't reply"; an owner reply still goes through afterwards.
+            commit("UPDATE items SET dismissed_at=?,answer_source='agent',note=?,notify_state=0,updated_at=? WHERE id=?",now,reason,now,id);
+            return 'Withdrawn.';
           }
           const params=p as {id?:string;note?:string};
           const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;

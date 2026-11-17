@@ -124,6 +124,14 @@ describe('server',()=>{
   const list=await call('answers_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
   const id=await call('answers_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});
+  expect(String(await call('answers_list',{}))).toContain(`Your open questions to the user:\n${id} `);
+  await expect(harness.behavior.callAgentTool('answers_withdraw',{id,reason:'x'},{threadId:'other'})).rejects.toThrow('open question not found');
+  await expect(call('answers_withdraw',{id:'ans_mine',reason:'x'})).rejects.toThrow('open question not found');
+  db.prepare('UPDATE items SET notify_state=1 WHERE id=?').run(id);
+  await call('answers_withdraw',{id,reason:' Found it '});
+  expect(db.prepare('SELECT status,answer_source,note,notify_state,dismissed_at IS NOT NULL AS gone FROM items WHERE id=?').get(id)).toEqual({status:'open',answer_source:'agent',note:'Found it',notify_state:0,gone:1});
+  expect(String(await call('answers_list',{}))).not.toContain(id);
+  await expect(call('answers_withdraw',{id,reason:'again'})).rejects.toThrow('open question not found');
  });
  it('defers and resolves the owner messages of one turn together, so its reply is not an answer to one and an interim to another',async()=>{
   const {harness,db}=setup(); seed(db,'ans_q','mine','t'); seed(db,'ans_steer','mine','t'); seed(db,'ans_other','mine','t');
