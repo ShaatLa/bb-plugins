@@ -1,5 +1,5 @@
 import type { TaskAdvisory } from "../../shared/task-advisories";
-import { samePolledMetadata, useActivityPoll } from "../../shell/activity-poll";
+import { samePolledMetadata, useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll";
 import { tasksRpcContract } from "../../shared/contract";
 import { useEffect, useMemo, useRef } from "react";
 import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
@@ -166,13 +166,15 @@ export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]
   const activeIds = [...(query.data ?? new Map()).entries()]
     .filter(([, meta]) => (meta.activity?.attachedCount ?? 0) > 0 || meta.activeThreads.length > 0)
     .map(([id]) => id);
-  useActivityPoll(() => {
+  const refreshRows = (taskIds: string[]) => {
     void query.patch(async (rpc, current) => {
       const next = new Map(current);
-      for (const id of activeIds) next.delete(id);
-      for (const [id, meta] of await readListMeta(rpc, activeIds)) next.set(id, meta);
+      for (const id of taskIds) next.delete(id);
+      for (const [id, meta] of await readListMeta(rpc, taskIds)) next.set(id, meta);
       return samePolledMetadata([...next], [...current]) ? current : next;
     }).catch(() => query.refresh());
-  }, query.isFetching, activeIds.length > 0);
+  };
+  useActivityPoll(() => refreshRows(activeIds), query.isFetching, activeIds.length > 0);
+  useAdvisoryRecheck([...(query.data ?? new Map()).entries()].map(([taskId, meta]) => ({ taskId, advisories: meta.advisories })), refreshRows);
   return query;
 }

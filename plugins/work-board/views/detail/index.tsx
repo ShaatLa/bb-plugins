@@ -1,5 +1,5 @@
 import { CurrentState } from "./current-state";
-import { useActivityPoll } from "../../shell/activity-poll.js";
+import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
@@ -409,6 +409,7 @@ function TaskDetail({
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
   );
   useActivityPoll(activity.refresh, activity.isFetching, !!activity.data?.activity?.attachedCount || !!activity.data?.taskThreads.some(isActiveThread));
+  useAdvisoryRecheck(activity.data ? [activity.data] : undefined, () => activity.refresh());
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
