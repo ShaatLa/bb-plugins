@@ -734,18 +734,21 @@ it('reorders queued messages with keyboard neighbours', async () => {
 it('lines scheduled messages up by send time and asks before moving one in time', async () => {
   const at = (minutes: number) => { const d = new Date(Date.now() + minutes * 60000); d.setSeconds(0, 0); return d.getTime(); };
   const row = (id: string, sendAt?: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:id, mentions:[] }], updatedAt:7, ...(sendAt ? { sendAt, state:'scheduled' } : {}) });
-  const rows = [row('late', at(60)), row('now'), row('soon', at(30))];
-  const update = vi.fn(() => Promise.resolve({})), reorder = vi.fn(() => Promise.resolve(rows));
-  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows), update, reorder } }); fireEvent.click(await recipients.findByRole('option'));
+  const rows: any[] = [row('late', at(60)), row('now'), row('soon', at(30))];
+  const update = vi.fn(({ queuedMessageId, sendAt }: any) => { rows.find(item => item.id === queuedMessageId).sendAt = sendAt; return Promise.resolve({}); }), reorder = vi.fn(() => Promise.resolve(rows));
+  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows.map(item => ({ ...item }))), update, reorder } }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('late');
   const order = () => Array.from(slot.container.querySelectorAll('[aria-label^="Reorder queued message"]')).map(handle => handle.closest('li')!.textContent!.match(/now|soon|late/)![0]);
   expect(order()).toEqual(['now', 'soon', 'late']);
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
   const dialog = await slot.findByRole('dialog', { name:'Change send time' });
+  // While the owner decides, the dropped row stays lifted at its drop place; Cancel lets it go back.
+  expect(order()).toEqual(['now', 'late', 'soon']); expect(slot.container.querySelector('[data-lifted]')?.textContent).toContain('late');
   // The queue list clips its rows, so the popover lives outside it.
   expect(dialog.closest('section[aria-label="Queued messages"]')).toBeNull();
   fireEvent.click(within(dialog).getByRole('button', { name:'Cancel' }));
   expect(slot.queryByRole('dialog', { name:'Change send time' })).toBeNull(); expect(update).not.toHaveBeenCalled(); expect(reorder).not.toHaveBeenCalled();
+  expect(order()).toEqual(['now', 'soon', 'late']); expect(slot.container.querySelector('[data-lifted]')).toBeNull();
   // 'late' moved above 'soon' leads it now: the default lands 3 minutes before, the menu offers more.
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
   const moved = await slot.findByRole('dialog', { name:'Change send time' });
@@ -754,10 +757,11 @@ it('lines scheduled messages up by send time and asks before moving one in time'
   fireEvent.click(within(moved).getByRole('button', { name:'Other send times' }));
   fireEvent.click(slot.getByRole('menuitem', { name:/−40 min/ }));
   await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'late', sendAt:at(30) - 10 * 60000 })));
+  await waitFor(() => expect(order()).toEqual(['now', 'late', 'soon']));
   // An unscheduled message dropped below a scheduled one gets a time after it.
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 1' }), { key:'ArrowDown' });
   fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ }));
-  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'now', sendAt:at(30) + 3 * 60000 })));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'now', sendAt:at(20) + 3 * 60000 })));
   expect(reorder).not.toHaveBeenCalled();
 });
 it('keeps a moved message between its new neighbours when they are closer than three minutes', async () => {
