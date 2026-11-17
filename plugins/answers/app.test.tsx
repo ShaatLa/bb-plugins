@@ -865,3 +865,8 @@ it('shows a deadline and compact default on an open question',async()=>{
  const slot=await questionsSetup({}, {deadlineAt:Date.now()+2*3600000,recommended:'A'});
  expect(slot.getByText('Due in 2h · default: A')).toBeTruthy();
 });
+it('puts blocking questions first in the Questions section',async()=>{
+ const normal={...item,id:'ans_n',kind:'for_me',status:'open',question:'Choose?',createdAt:1}, blocking={...normal,id:'ans_b',question:'Blocking?',urgency:'blocking',createdAt:2};
+ const slot=await questionsSetup({list:()=>({items:[normal,blocking],nextCursor:null})});
+ const text=slot.container.textContent!;expect(text.indexOf('Blocking?')).toBeLessThan(text.indexOf('Choose?'));expect(slot.getByText('Blocking')).toBeTruthy();
+});

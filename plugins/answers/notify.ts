@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ATTENTION_SQL } from './ingest';
 import { inlineCommentPreview } from './inline-comments';
 
-type Row={id:string;kind:string;status:string;thread_id:string;question:string;answer:string|null;failed_at:number|null;asks:number};
+type Row={id:string;kind:string;status:string;thread_id:string;question:string;answer:string|null;failed_at:number|null;asks:number;urgency:string|null};
 type Level='off'|'asked'|'questions'|'all';
 const clean=(s:string,n:number)=>s.replace(/\s+/g,' ').trim().slice(0,n);
 const quietSchema=z.string().regex(/^(?:([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d)?$/).refine(s=>!s || s.slice(0,5)!==s.slice(6),'Quiet hours must have different endpoints');
@@ -22,8 +22,8 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   return until.getTime();
  };
  // An update that asks nothing is never pushed (it collapses into a quiet group); one that asks counts as a question.
- const matches=(r:Row)=>(r.kind!=='update' || !!r.asks) && (level==='all' || (level==='asked' && r.kind==='for_me') || (level==='questions' && (r.kind==='for_me' || r.kind==='update' || (r.kind==='mine' && (r.question.includes('?') || r.question.includes('？'))))));
- const rows=(ids:string[])=>ids.length ? db.prepare(`SELECT id,kind,status,thread_id,question,answer,failed_at,asks FROM items WHERE id IN (${ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`).all(...ids) as Row[] : [];
+ const matches=(r:Row)=>r.urgency!=='low' && (r.kind!=='update' || !!r.asks) && (level==='all' || (level==='asked' && r.kind==='for_me') || (level==='questions' && (r.kind==='for_me' || r.kind==='update' || (r.kind==='mine' && (r.question.includes('?') || r.question.includes('？'))))));
+ const rows=(ids:string[])=>ids.length ? db.prepare(`SELECT id,kind,status,thread_id,question,answer,failed_at,asks,urgency FROM items WHERE id IN (${ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`).all(...ids) as Row[] : [];
  const held=(end:number,ids:string[])=>db.transaction(()=>{
   const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;
   if (old?.value!==end) {db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run(); db.prepare("INSERT INTO notify_meta(key,value) VALUES ('held_for',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(end);}
@@ -41,11 +41,17 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if(disposed) return;
   const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;
   if (!old || old.value>Date.now()) {arm(); return;}
-  const selected=db.prepare(`SELECT id,thread_id,kind,status,question,answer,failed_at,asks FROM items WHERE notify_state=2 AND ${ATTENTION_SQL}`).all() as Row[];
-  const chosen=selected.filter(matches),threads=new Set(chosen.map(r=>r.thread_id)).size;
+  const selected=db.prepare(`SELECT id,thread_id,kind,status,question,answer,failed_at,asks,urgency FROM items WHERE notify_state=2 AND ${ATTENTION_SQL}`).all() as Row[];
+  const valid=selected.filter(matches),chosen=valid.filter(r=>r.urgency!=='blocking'),threads=new Set(chosen.map(r=>r.thread_id)).size;
   db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();})();
+  for(const r of valid.filter(r=>r.urgency==='blocking')) await sendOne(r);
   if(chosen.length && level!=='off') await push({title:'Answers',body:`While you were away: ${chosen.length} new in ${threads} threads`});
   arm();
+ }
+ async function sendOne(r:Row) {
+  const titles=await bb.sdk.threads.list({threadIds:[r.thread_id],includeHidden:true,limit:1});
+  const title=clean(titles[0]?.title ?? 'Answers',80)||'Answers',body=r.kind==='for_me' ? r.question : r.failed_at!==null && r.status!=='answered' ? `Turn failed: ${r.question}` : r.answer ?? r.question;
+  await push({title:r.urgency==='blocking' ? `Blocking · ${title}` : title,body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});
  }
  async function flush(){
   flushTimer=undefined; if(disposed || !queue.size) return;
@@ -57,12 +63,12 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Answers',80)||'Answers',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});}
   else await push({title:`${batch.length} new in Answers`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Answers').join(', '),180),...(ids.length===1?{threadId:ids[0]}:{})});
  }
- function run(){return serial(()=>{
+ function run(){return serial(async()=>{
   if(disposed)return;
-  const selected=db.transaction(()=>{const pending=db.prepare('SELECT id,kind,status,thread_id,question,answer,failed_at,asks FROM items WHERE notify_state=1 ORDER BY rowid').all() as Row[];db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();return pending;})();
+  const selected=db.transaction(()=>{const pending=db.prepare('SELECT id,kind,status,thread_id,question,answer,failed_at,asks,urgency FROM items WHERE notify_state=1 ORDER BY rowid').all() as Row[];db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();return pending;})();
   const valid=rows(selected.map(r=>r.id)).filter(matches);
   const end=windowEnd(); if(end!==null){held(end,valid.map(r=>r.id));arm();return;}
-  for(const r of valid)queue.add(r.id);
+  for(const r of valid) {if(r.urgency==='blocking') {queue.delete(r.id);await sendOne(r);} else queue.add(r.id);}
   if(queue.size && !flushTimer){flushTimer=setTimeout(()=>void serial(flush),10000);flushTimer.unref();}
  });}
  settings.onChange((next)=>{level=next.notify as Level;quiet=next.quietHours;if(level==='off'){queue.clear();if(flushTimer)clearTimeout(flushTimer);flushTimer=undefined;db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();} arm();void run();});

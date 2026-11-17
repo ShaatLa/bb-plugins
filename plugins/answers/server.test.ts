@@ -860,3 +860,10 @@ it('restores composite deadlines after restart',async()=>{
  await vi.advanceTimersByTimeAsync(300000);
  expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. **One** — A\n2. **Two** — Your call (decide yourself)');
 });
+
+it('stores urgency and keeps low questions visible without a push',async()=>{
+ const {harness,db}=setup();const id=await harness.behavior.callAgentTool('answers_ask',{question:'Later?',urgency:'low'},{threadId:'t'});
+ expect(db.prepare('SELECT urgency,notify_state FROM items WHERE id=?').get(id)).toEqual({urgency:'low',notify_state:0});
+ expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0].urgency).toBe('low');
+ await expect(harness.behavior.callAgentTool('answers_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
+});

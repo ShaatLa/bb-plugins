@@ -116,4 +116,5 @@ ALTER TABLE items ADD COLUMN chat_asked INTEGER NOT NULL DEFAULT 0;`,
   // items.questions: the bb question form (JSON) of an answers_ask with multiSelect or with several questions in one.
   `ALTER TABLE items ADD COLUMN questions TEXT;`,
   `ALTER TABLE items ADD COLUMN deadline_at INTEGER;`,
+  `ALTER TABLE items ADD COLUMN urgency TEXT;`,
 ];
