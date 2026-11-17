@@ -186,12 +186,17 @@ export default function plugin(bb: BbPluginApi) {
     await syncBbRead(threads,true); return result;
   }
   const deadlinePending=new Set<string>();
+  let remindHours=0, reminderSettingsChanged=false;
   let wakeTimer: ReturnType<typeof setTimeout>|undefined, disposed=false;
   function wakeDue() {
     if (disposed) return;
     if (wakeTimer) clearTimeout(wakeTimer);
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
+    if(remindHours>0) {
+      const reminders=db.prepare("UPDATE items SET notify_state=1,reminded_at=?,reminders=reminders+1 WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 AND coalesce(reminded_at,created_at)+?<=? AND (deadline_at IS NULL OR deadline_at>?)").run(Date.now(),remindHours*3600000,Date.now(),Date.now()).changes;
+      if(reminders) {invalidate();onAttention();}
+    }
     const due=db.prepare("SELECT * FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at<=?").all(Date.now()) as Row[];
     for (const row of due) {
       if (deadlinePending.has(row.id) || sending.has(row.thread_id)) continue;
@@ -206,7 +211,7 @@ export default function plugin(bb: BbPluginApi) {
         } catch(e) {bb.log.warn(`Answers deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
       }).finally(()=>{deadlinePending.delete(row.id);wakeDue();});
     }
-    const next=db.prepare("SELECT min(at) AS at FROM (SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get() as {at:number|null};
+    const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
     if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(1000,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
@@ -531,6 +536,8 @@ export default function plugin(bb: BbPluginApi) {
   bb.events.on('turn.failed',event=>{
     if (!event.inputAccepted && failRequest(db,event.threadId,event.requestId,Date.now(),true,true)) {invalidate(); onAttention();}
   });
+  notifier.settings.onChange(next=>{reminderSettingsChanged=true;remindHours=next.remindHours;wakeDue();});
+  void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Answers reminders: ${String(e)}`));
   wakeDue();
   const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
   bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});

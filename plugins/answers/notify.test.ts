@@ -40,3 +40,8 @@ it('sends blocking questions separately at once and holds them during quiet hour
  await h.host.harness.behavior.setSettings({quietHours:'11:00-11:01'});h.insert('ans_quiet');h.db.prepare("UPDATE items SET urgency='blocking' WHERE id='ans_quiet'").run();await h.notifier.run();expect(h.sent).toHaveLength(2);
  await vi.advanceTimersByTimeAsync(50000);expect(h.sent).toHaveLength(3);expect(h.sent[2]).toMatchObject({title:'Blocking · Thread title'});
 });
+
+it('sends reminder age and question in an individual blocking push',async()=>{
+ at('11:00');const h=setup({notify:'asked'});await h.notifier.run();h.insert('ans_reminder');h.db.prepare("UPDATE items SET urgency='blocking',reminders=1,reminded_at=?,created_at=? WHERE id='ans_reminder'").run(Date.now(),Date.now()-3*3600000);
+ await h.notifier.run();expect(h.sent).toEqual([{title:'Blocking · Thread title',threadId:'t',body:'Still waiting (3h): Question?'}]);
+});

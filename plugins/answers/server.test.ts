@@ -881,3 +881,22 @@ it('merges same-turn asks preserving choices, reasons, intro and limits',async()
  await ask({question:'Third'});expect((db.prepare('SELECT question FROM items WHERE id=?').get(separate) as any).question).toBe('New intro\n\n1. **One.** First\n2. Second\n3. Third');
  db.prepare("UPDATE items SET dismissed_at=1 WHERE id=?").run(separate);expect(String(await ask({question:'Separate'}))).not.toContain('Merged');
 });
+
+it('reminds blocking questions at the configured interval, at most three times',async()=>{
+ vi.useFakeTimers();const {harness,db}=setup();await harness.behavior.setSettings({remindHours:1});
+ const ask=(question:string,urgency='blocking')=>harness.behavior.callAgentTool('answers_ask',{question,urgency},{threadId:'t'});
+ const id=await ask('Waiting?');const normal=await ask('Normal?','normal');
+ await vi.advanceTimersByTimeAsync(3600000);expect(db.prepare('SELECT reminders,reminded_at FROM items WHERE id=?').get(id)).toEqual({reminders:1,reminded_at:Date.now()});
+ await vi.advanceTimersByTimeAsync(3*3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:3});expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(normal)).toEqual({reminders:0});
+ const off=await ask('Off?');await harness.behavior.setSettings({remindHours:0});await vi.advanceTimersByTimeAsync(4*3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(off)).toEqual({reminders:0});
+ await harness.behavior.callRpc('setDismissed',{id:off,dismissed:true});await harness.behavior.setSettings({remindHours:1});await vi.advanceTimersByTimeAsync(3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(off)).toEqual({reminders:0});
+});
+
+it('restores reminder timing after restart and honors disabled saved settings',async()=>{
+ vi.useFakeTimers();const h=setup();await h.harness.behavior.setSettings({remindHours:0});
+ const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Waiting?',urgency:'blocking'},{threadId:'t'});
+ await vi.advanceTimersByTimeAsync(4*3600000);
+ const next=await h.harness.lifecycle.reload(plugin);cleanup.push(()=>next.harness.lifecycle.dispose());await vi.advanceTimersByTimeAsync(1000);
+ const db=next.bb.storage.database();expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:0});
+ await next.harness.behavior.setSettings({remindHours:3});await vi.advanceTimersByTimeAsync(1000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:1});
+});
