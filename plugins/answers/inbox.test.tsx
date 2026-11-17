@@ -730,6 +730,30 @@ it('reorders queued messages with keyboard neighbours', async () => {
   fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 2' }), { key:'ArrowDown' });
   await waitFor(() => expect(reorder).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q2', previousQueuedMessageId:'q3', nextQueuedMessageId:null }));
 });
+it('lines scheduled messages up by send time and asks before moving one in time', async () => {
+  const at = (minutes: number) => { const d = new Date(Date.now() + minutes * 60000); d.setSeconds(0, 0); return d.getTime(); };
+  const row = (id: string, sendAt?: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:id, mentions:[] }], updatedAt:7, ...(sendAt ? { sendAt, state:'scheduled' } : {}) });
+  const rows = [row('late', at(60)), row('now'), row('soon', at(30))];
+  const update = vi.fn(() => Promise.resolve({})), reorder = vi.fn(() => Promise.resolve(rows));
+  const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve(rows), update, reorder } }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('late');
+  const order = () => Array.from(slot.container.querySelectorAll('[aria-label^="Reorder queued message"]')).map(handle => handle.closest('li')!.textContent!.match(/now|soon|late/)![0]);
+  expect(order()).toEqual(['now', 'soon', 'late']);
+  fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
+  const dialog = await slot.findByRole('dialog', { name:'Change send time' });
+  fireEvent.click(within(dialog).getByRole('button', { name:'Cancel' }));
+  expect(slot.queryByRole('dialog', { name:'Change send time' })).toBeNull(); expect(update).not.toHaveBeenCalled(); expect(reorder).not.toHaveBeenCalled();
+  // 'late' moved above 'soon' leads it now: the default lands 3 minutes before, the menu offers more.
+  fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
+  fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:'Other send times' }));
+  fireEvent.click(slot.getByRole('menuitem', { name:/−10 min/ }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'late', sendAt:at(30) - 10 * 60000 })));
+  // An unscheduled message dropped below a scheduled one gets a time after it.
+  fireEvent.keyDown(slot.getByRole('button', { name:'Reorder queued message 1' }), { key:'ArrowDown' });
+  fireEvent.click(within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ queuedMessageId:'now', sendAt:at(30) + 3 * 60000 })));
+  expect(reorder).not.toHaveBeenCalled();
+});
 it('shows sidebar project, worktree branch, and context remaining', async () => {
   const thread = { id:'thr_one', projectId:'pr_one', environment:{ name:'Checkout', branchName:'answers/3g', isWorktree:true }, parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[{ id:'pr_one', name:'Plugins' }] }, context: () => Promise.resolve({ usage:{ usedTokens:380, modelContextWindow:1000, estimated:false } }) }); fireEvent.click(await recipients.findByRole('option'));
