@@ -851,7 +851,9 @@ it('shows a finished work duration only on a chat answer with a turn', async () 
   const list = renderSlot({ component: () => <ItemCard item={answered} /> }, {}, options);
   expect(list.queryByRole('button', { name: /Worked for/ })).toBeNull(); list.unmount();
   const unknown = renderSlot({ component: () => <ItemCard item={{ ...answered, turnId: null }} chat /> }, {}, options);
-  expect(unknown.queryByRole('button', { name: /Worked for/ })).toBeNull();
+  expect(unknown.queryByRole('button', { name: /Worked for/ })).toBeNull(); unknown.unmount();
+  const asked = renderSlot({ component: () => <ItemCard item={{ ...answered, kind: 'for_me', status: 'replied', answer: 'Yes', answerSource: 'user' }} chat /> }, {}, options);
+  expect(asked.queryByRole('button', { name: /Worked for/ })).toBeNull();
 });
 
 it.each(['deferred', 'answered'] as const)('renders the interim reply once when %s', async status => {
