@@ -23,7 +23,7 @@ import {
   removeAttachmentBlobs,
 } from "../attachments";
 import { deliverCommentToLatestAgent, notifyThread } from "../steer";
-import { getTaskCost } from "../costs";
+import { getTaskCostSpans } from "../costs";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
@@ -1274,8 +1274,8 @@ export function registerHandlers(
         };
       }) };
     },
-    async getTaskCost(input) {
-      return { cost: await getTaskCost(bb, input.taskId) };
+    async getTaskCostSpans(input) {
+      return getTaskCostSpans(bb.storage.database(), input.taskId);
     },
     async listTaskThreads(input) {
       if (input.reconcile !== false) await discoverRunningTaskThreads(bb, store);

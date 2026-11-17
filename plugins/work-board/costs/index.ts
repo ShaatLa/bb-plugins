@@ -1,21 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { z } from "zod";
-import type { TaskCost } from "../shared/contract";
 
-const MAX_SPANS = 2000;
-const TIMEOUT_MS = 3000;
-
-const count = z.number();
-// Local copy of Tokenomos' cost shape: Work Board must not import or require that plugin.
-const tokenomosSum = z.object({
-  cost: z.object({
-    usd: z.number().nullable(),
-    tokens: z.object({ freshIn: count, cacheRead: count, cacheWrite: count, output: count }),
-    estimated: z.boolean(),
-    partial: z.boolean(),
-  }),
-  threadCount: count,
-});
+/** Most spans Tokenomos' costs.sum takes in one call. */
+export const MAX_COST_SPANS = 2000;
 
 type Db = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -109,24 +95,8 @@ export function taskCostSpans(db: Db, taskId: string): { spans: CostSpan[]; task
   };
 }
 
-export async function getTaskCost(bb: BbPluginApi, taskId: string): Promise<TaskCost | null> {
-  const { spans, taskCount } = taskCostSpans(bb.storage.database(), taskId);
-  if (!spans.length) return null;
-  try {
-    const result = await bb.sdk.plugins.callRpc({
-      pluginId: "tokenomos",
-      method: "costs.sum",
-      input: { spans: spans.slice(0, MAX_SPANS), includeDescendants: true },
-      outputSchema: tokenomosSum,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    // One call for the whole tree: Tokenomos merges overlapping spans and dedupes descendants within it.
-    // Nothing counted yet (Tokenomos still importing history): "~$0.00" would mislead.
-    if (result.threadCount === 0) return null;
-    const { usd, tokens, estimated, partial } = result.cost;
-    return { usd, tokens, estimated, partial: partial || spans.length > MAX_SPANS, threadCount: result.threadCount, taskCount };
-  } catch {
-    // Tokenomos is optional: missing, outdated or slow means no cost line.
-    return null;
-  }
+/** Spans for one costs.sum call; the client asks Tokenomos itself so its usage invalidations refresh the cost live. */
+export function getTaskCostSpans(db: Db, taskId: string) {
+  const { spans, taskCount } = taskCostSpans(db, taskId);
+  return { spans: spans.slice(0, MAX_COST_SPANS), truncated: spans.length > MAX_COST_SPANS, taskCount };
 }

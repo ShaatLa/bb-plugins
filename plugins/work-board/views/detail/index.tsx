@@ -4,7 +4,7 @@ import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
-import { TaskCostLine } from "../../components/task-cost";
+import { TaskCostSection } from "../../components/task-cost";
 import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
@@ -735,7 +735,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
-          <TaskCostLine key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
+          <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
           <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>
