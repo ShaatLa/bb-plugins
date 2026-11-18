@@ -28,7 +28,7 @@ function steerPrompt(
     (replyHint
       ? "\n\nTreat this as updated context for your work on this task. Reflect it in Current state " +
         `(\`bb work-board update ${taskKey} --progress ...\`); comment only results or evidence, and ask the owner ` +
-        `with \`bb work-board question add ${taskKey}\` when you need a decision.`
+        `on the task, not in chat, with \`bb work-board question add ${taskKey}\` when you need a decision.`
       : "")
   );
 }

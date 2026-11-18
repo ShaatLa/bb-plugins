@@ -621,7 +621,7 @@ describe("delegation seed prompt", () => {
 
       ## Report-back contract
 
-      You are working on task TASK-1; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update TASK-1 --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment TASK-1 --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add TASK-1 --kind decision|check (steps in --step), not in a comment. When done, move the task to In Review (bb work-board update TASK-1 --status in_review). If this thread has a parent thread, tell it what it must act on with bb work-board report TASK-1 --kind ready|question|blocker --body "..." (ready when the work is ready, blocker when you are stuck): Current state alone wakes nobody.
+      You are working on task TASK-1; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update TASK-1 --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment TASK-1 --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add TASK-1 --kind decision|check (steps in --step), not in chat or a comment. When done, move the task to In Review (bb work-board update TASK-1 --status in_review). If this thread has a parent thread, tell it what it must act on with bb work-board report TASK-1 --kind ready|question|blocker --body "..." (ready when the work is ready, blocker when you are stuck): Current state alone wakes nobody.
 
       ## Preset instructions
 

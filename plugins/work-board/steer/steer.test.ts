@@ -96,7 +96,7 @@ describe("comment notification delivery", () => {
                 "**Work Board** · `New comment`\n" +
                 "- Task: [PLUG-1](/plugins/work-board/work-board/task/PLUG-1)\n" +
                 "- From: Sawyer\n\nPlease include the regression test.\n\n" +
-                "Treat this as updated context for your work on this task. Reflect it in Current state (`bb work-board update PLUG-1 --progress ...`); comment only results or evidence, and ask the owner with `bb work-board question add PLUG-1` when you need a decision.",
+                "Treat this as updated context for your work on this task. Reflect it in Current state (`bb work-board update PLUG-1 --progress ...`); comment only results or evidence, and ask the owner on the task, not in chat, with `bb work-board question add PLUG-1` when you need a decision.",
               mentions: [],
             },
           ],
