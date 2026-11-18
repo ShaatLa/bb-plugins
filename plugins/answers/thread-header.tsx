@@ -1,0 +1,6 @@
+import { experimental_ThreadTitleText as ThreadTitleText, experimental_ThreadActionsMenu as ThreadActionsMenu, experimental_Icon as Icon, type PluginSidebarThread } from '@get-bb/plugin-sdk/app';
+import { Button } from './components/ui/button';
+import { threadTarget } from './thread-target';
+export function ThreadHeader({ thread, parent, title, onSelect }: { thread?: PluginSidebarThread; parent?: PluginSidebarThread; title: string; onSelect: (id: string) => void }) {
+  return <><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium"><ThreadTitleText title={thread?.displayTitle ?? thread?.title ?? title} /></div>{parent && <button type="button" className="answers-hit block max-w-full truncate text-left text-xs text-muted-foreground hover:underline" onClick={() => onSelect(parent.id)}>↑ <ThreadTitleText title={parent.displayTitle ?? parent.title ?? 'Untitled thread'} /></button>}</div>{thread && <ThreadActionsMenu thread={threadTarget(thread)} trigger={props => <Button {...props} size="sm" variant="ghost" aria-label="Thread actions" className={[props.className, 'size-8 px-0'].filter(Boolean).join(' ')}><Icon name="MoreHorizontal" aria-hidden /></Button>} />}</>;
+}

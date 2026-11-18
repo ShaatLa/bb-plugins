@@ -872,3 +872,15 @@ it('saves an attachment through the host file API', async () => {
   fireEvent.click(slot.getByRole('link', { name: 'notes.txt' }));
   await waitFor(() => expect(saveFile).toHaveBeenCalledWith({ fileName: 'notes.txt', blob: expect.any(Blob) }));
 });
+
+it('copies the agent Markdown and its message link from More', async () => {
+  const { ItemCard } = await import('./app');
+  const slot = renderSlot({ component: () => <ItemCard item={{ ...item, threadId: 'thr_example', projectId: 'proj_example', answerSeq: 12 }} chat /> }, {});
+  fireEvent.click(slot.getAllByRole('button', { name: 'Copy' }).at(-1)!);
+  await slot.findByRole('button', { name: 'Copied' });
+  expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: 'The answer' });
+  fireEvent.click(slot.getByRole('button', { name: 'More' }));
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Copy link' }));
+  await slot.findByRole('menuitem', { name: 'Copied' });
+  expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' });
+});

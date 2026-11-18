@@ -114,3 +114,7 @@ Owner messages remain plain text: links, Work Board tasks, thread mentions, and 
 Agent and owner messages offer Copy (Markdown) and Copy link beside the message actions, with brief inline clipboard feedback. Links use the native thread route and message sequence when available.
 
 Coarse-pointer controls have at least 40×40px targets, with desktop spacing and glyphs unchanged. Questions and approvals collapse together, with per-thread state in memory; stacks taller than 40% of the viewport start collapsed on touch devices. Attachments use bb’s save/share path.
+
+The selected chat header shows the host-rendered title, a parent link that opens in Answers, and bb’s thread actions menu. Rename uses bb’s dialog; lifecycle confirmations and selection fallback remain host-driven.
+
+Copy link is in the existing More menu for agent messages; owner bubbles and interim replies without their own menu use an icon action.
