@@ -1,7 +1,7 @@
 import { BbLink } from "../../components/bb-link";
 import { migrateBrowserPreferences } from "../../shell/migrate-preferences.js";
 import { useState } from "react";
-import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
+import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { DelegationRpcContract } from "../../delegate/contract.js";
 import type {
   Preset,
@@ -33,6 +33,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ExistingThreadDialog } from "./existing-thread-dialog";
 import { useDefaultThread } from "./thread-preference";
+import { useOpenThread } from "../../components/open-thread";
 
 function ThreadPullRequestPill({
   pullRequest,
@@ -82,7 +83,7 @@ function ThreadCard({
   busy: boolean;
   onDetach: () => void;
 }) {
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const meta = THREAD_STATUS_META[thread.liveStatus];
   return (
     <div
@@ -120,7 +121,7 @@ function ThreadCard({
       <button
         type="button"
         className="flex shrink-0 items-center gap-1 text-xs font-medium underline decoration-input underline-offset-2 hover:decoration-current"
-        onClick={() => navigate.toThread(thread.threadId)}
+        onClick={() => openThread(thread.threadId)}
       >
         Open thread
         <Icon name="ArrowUpRight" className="size-3" />
@@ -292,10 +293,10 @@ export function DispatchControl(props: DispatchControlProps) {
   const [assigning, setAssigning] = useState(false);
   const defaultThread = useDefaultThread(props.projectId);
   const attachedThread = props.threads[0];
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const rpc = useRpc<DelegationRpcContract>();
   const dispatch = async () => {
-    if (attachedThread) { navigate.toThread(attachedThread.threadId); return; }
+    if (attachedThread) { openThread(attachedThread.threadId); return; }
     if (!defaultThread) { setChoosingThread(true); return; }
     setSending(true);
     try {

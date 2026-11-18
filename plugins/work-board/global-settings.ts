@@ -14,6 +14,8 @@ const BADGE_FIELDS: Record<BadgeCriterion, string> = {
 const descriptors = {
   // Not "defaultScreen": that native key holds the stale pre-0.20 value.
   startScreen: { type: "select", label: "Start screen", options: [...boardPreferencesSchema.shape.defaultScreen.options], default: DEFAULT_BOARD_PREFERENCES.defaultScreen },
+  // Read by the app (components/open-thread.ts); "answers" falls back to bb chat when Answers is not installed.
+  openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "answers"], default: "bb" },
   ...Object.fromEntries(BADGE_CRITERIA.map((criterion) => [BADGE_FIELDS[criterion], {
     type: "boolean", label: `Navigation badge counts: ${BADGE_CRITERION_LABELS[criterion]}`, default: DEFAULT_BADGE_CRITERIA.includes(criterion),
   }])),
