@@ -1,16 +1,19 @@
 {
   "name": "bb-plugin-agent-spawn-gate",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "type": "module",
   "engines": {
     "bb": ">=0.49",
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Agent Spawn Gate",
+    "name": "Spawn Gate",
     "description": "Persistent per-project script or instruction workflows with one-use admission for agent sessions.",
     "branding": {
-      "icon": "Lock"
+      "icon": "./assets/gate.svg",
+      "experimental_icons": {
+        "entry": "./assets/gate.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx"

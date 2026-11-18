@@ -148,5 +148,5 @@ function GatePage() {
 
 export default definePluginApp(app => {
   app.slots.settingsSection({ id: "project-settings", component: GateSettings });
-  app.slots.navPanel({ id: "spawn-gate", title: "Spawn Gate", icon: "Lock", path: "activity", component: GatePage });
+  app.slots.navPanel({ id: "spawn-gate", title: "Spawn Gate", icon: "agent-spawn-gate/entry", path: "activity", component: GatePage });
 });

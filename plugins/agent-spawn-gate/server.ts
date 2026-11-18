@@ -43,11 +43,11 @@ export default async function plugin(bb: BbPluginApi) {
     const rules = policy(projectId);
     if (!rules.enabled) return null;
     const workflow = rules.method === "script" ? `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start -- <builder args> to use its current remote-default-branch version` : `Follow these launch instructions:
-${rules.instruction || "Launch instructions are empty. Ask the owner to configure Agent Spawn Gate before starting children."}`;
+${rules.instruction || "Launch instructions are empty. Ask the owner to configure Spawn Gate before starting children."}`;
     const launch = rules.method === "script"
       ? `Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${threadId} -- <builder args>. The plugin refreshes the remote default branch, runs the builder, mints and starts the child. Use --dry-run before -- to validate without starting. RPC start takes {projectId, parentThreadId, args, dryRun?}.`
       : `Call plugin agent-spawn-gate RPC mint with {projectId: "${projectId}", parentThreadId: "${threadId}", brief: <complete child task>}. CLI: bb plugin rpc call agent-spawn-gate mint --input-file <request.json> --json. Submit its prompt verbatim with bb thread spawn --project ${projectId} --parent-thread ${threadId} --prompt-file <prompt.txt>. Do not modify or reuse tokens.`;
-    return `Agent Spawn Gate — child sessions in project ${projectId}:
+    return `Spawn Gate — child sessions in project ${projectId}:
 ${workflow}
 ${launch}
 The brief may be plain task text; no Work Board card or marker is required.`;
@@ -140,6 +140,6 @@ The brief may be plain task text; no Work Board card or marker is required.`;
       return { action: "proceed" };
     metrics.record(ctx.project.id, "dispatch", hasMarker ? "invalid_admission" : "missing_admission");
     bb.log.info(`Rejected start ${ctx.thread.id} in ${ctx.project.id} (${ctx.thread.providerId}, ${ctx.initiator})`);
-    return { action: "reject", message: `Agent Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? `bb agent-spawn-gate start -- (${rules.script})` : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh agent-spawn-gate mint admission for this project, parent and exact brief.` };
+    return { action: "reject", message: `Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? `bb agent-spawn-gate start -- (${rules.script})` : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh agent-spawn-gate mint admission for this project, parent and exact brief.` };
   });
 }
