@@ -25,7 +25,7 @@ function setup() {
   await driver.schedule('thr_example');
  }
  async function control() {await turn(); expect(send).toHaveBeenCalledExactlyOnceWith({threadId:'thr_example',originPluginId:'answers',mode:'queue-if-active',input:[{type:'text',text:handoff,mentions:[]}]}); send.mockClear();}
- return {...host,db,send,driver,turn,control};
+ return {...host,db,send,driver,turn,control,notifier};
 }
 it.each([{originPluginId:'example'}, {senderThreadId:'thr_sender'}, {initiator:'agent',input:[{type:'text',text:'[example] Continue'}]}, {input:[{type:'text',text:'[example] Continue'}]}])('warns once for live handoff trigger %j, including first discovery',async trigger => {
  const s=setup(); await s.turn(undefined,trigger); expect(s.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({input:[{type:'text',text:handoff,mentions:[]}]}));
@@ -48,6 +48,6 @@ it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does n
  const s=setup(); await s.control();
  if(mode==='sub-thread') s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,parentThreadId:'thr_parent'}));
  if(mode==='archived') {s.db.prepare('INSERT INTO archived_threads VALUES (?)').run('thr_example'); s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,archivedAt:1}));}
- if(mode==='disabled') await s.harness.behavior.setSettings({handoffWarnings:false});
+ if(mode==='disabled') await s.notifier.settings.experimental_set({handoffWarnings:false});
  await s.turn(undefined,mode==='owner-handoff' ? {} : undefined,undefined,mode==='backfill'); expect(s.send).not.toHaveBeenCalled();
 });

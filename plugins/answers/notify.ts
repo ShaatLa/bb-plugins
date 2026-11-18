@@ -1,15 +1,15 @@
 import type Database from 'better-sqlite3';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { createPreferences } from './settings';
 import { ATTENTION_SQL } from './ingest';
 import { inlineCommentPreview } from './inline-comments';
 
 type Row={id:string;kind:string;status:string;thread_id:string;question:string;answer:string|null;failed_at:number|null;asks:number;urgency:string|null;reminders:number;reminded_at:number|null;created_at:number};
 type Level='off'|'asked'|'questions'|'all';
 const clean=(s:string,n:number)=>s.replace(/\s+/g,' ').trim().slice(0,n);
-const quietSchema=z.string().regex(/^(?:([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d)?$/).refine(s=>!s || s.slice(0,5)!==s.slice(6),'Quiet hours must have different endpoints');
 export function createNotifier(bb:BbPluginApi,db:Database.Database) {
- const settings=bb.settings.define({handoffWarnings:{type:'boolean',label:'Warn agents who hand work over or ask in chat without the Answers tools',default:true},remindHours:{type:'number',label:'Blocking reminder interval (hours; 0 disables)',default:3,experimental_schema:z.number().finite().nonnegative()},notify:{type:'select',label:'Push notifications',options:['off','asked','questions','all'],default:'asked'},quietHours:{type:'string',label:'Quiet hours (HH:MM-HH:MM)',default:'',experimental_schema:quietSchema},groupByProject:{type:'boolean',label:'Group conversations by project',default:false},projectOrder:{type:'string',label:'Project order in contacts (set by dragging project headers)',default:''},chatMode:{type:'select',label:'Conversation view',options:['answers','bb'],default:'answers'}});
+ const settings=createPreferences(bb);
  let level:Level='asked',quiet='',disposed=false,chain=Promise.resolve(),flushTimer:ReturnType<typeof setTimeout>|undefined,endTimer:ReturnType<typeof setTimeout>|undefined,lastError=0;
  const queue=new Set<string>();
  const windowEnd=(now=Date.now())=>{

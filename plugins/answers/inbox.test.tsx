@@ -437,7 +437,7 @@ it('wraps a contact in bb’s thread menu when bb lists the thread', async () =>
 });
 it('groups contacts under project headers when the setting is on', async () => {
   const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }, { ...one, threadId:'thr_c', threadTitle:'C', projectId:'pa', projectName:'Acme' }];
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) }, settings: { groupByProject: true } } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { getPreferences: () => ({ groupByProject: true }), recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) } } as any);
   const list = slot.getByRole('listbox', { name:'Recipients' });
   await within(list).findAllByRole('option');
   expect(Array.from(list.querySelectorAll('p, [role=option]')).map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Acme', 'A', 'C', 'Plugins', 'B']);
@@ -458,7 +458,7 @@ it('resizes the contact column with the keyboard and remembers the width', async
 it('orders project groups and saves a dragged order in plugin settings', async () => {
   const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }];
   const setPreferences = vi.fn(() => ({ ok:true }));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }), setPreferences }, settings: { groupByProject: true, projectOrder: 'gone,pb' }, sidebarThreads: { threads: [], projects: [{ id:'personal', name:'Personal', isPersonal:true }, { id:'pb', name:'Plugins', isPersonal:false }, { id:'pa', name:'Acme', isPersonal:false }] } } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { getPreferences: () => ({ groupByProject: true, projectOrder: 'gone,pb' }), recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }), setPreferences }, sidebarThreads: { threads: [], projects: [{ id:'personal', name:'Personal', isPersonal:true }, { id:'pb', name:'Plugins', isPersonal:false }, { id:'pa', name:'Acme', isPersonal:false }] } } as any);
   const list = slot.getByRole('listbox', { name:'Recipients' });
   await within(list).findAllByRole('option');
   const headers = () => Array.from(list.querySelectorAll('p')).map(node => node.textContent);

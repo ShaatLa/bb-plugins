@@ -1,8 +1,9 @@
+import { usePreferences } from './use-preferences';
 import { threadTarget } from './thread-target';
 import { Fragment, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { useSettings, useRpc, useBbNavigate, experimental_useSidebarNavigation, experimental_useSidebarNavigationSplit, experimental_useSidebarThreadSplit, experimental_useSidebarThreads, experimental_useProviders, experimental_useRpcQuery as useQuery, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, type PluginThreadListProps } from '@get-bb/plugin-sdk/app';
 import { useFlip } from './flip';
 import { useDraftThreads } from './drafts';
+import { useRpc, useBbNavigate, experimental_useSidebarNavigation, experimental_useSidebarNavigationSplit, experimental_useSidebarThreadSplit, experimental_useSidebarThreads, experimental_useProviders, experimental_useRpcQuery as useQuery, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, type PluginThreadListProps } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract } from './contract';
 import { useStoredState } from './lib/stored-state';
 import { Avatar, ago } from './inbox';
@@ -45,7 +46,7 @@ export function useContacts(selected: string | undefined) {
   const recipients = settledRecipients && { ...settledRecipients, recipients: settledRecipients.recipients.map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle })) };
   // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
   // to read it, so Answers keeps its order in plugin settings; projects missing from it follow in bb's project order.
-  const prefs = useSettings().values, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
+  const prefs = usePreferences().data, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
   for (const r of recipients?.recipients ?? []) { const key = byProject ? r.projectId ?? '' : null; grouped.set(key, [...(grouped.get(key) ?? []), r]); }
   const saved = String(prefs?.projectOrder ?? ''), [projectOrder, setProjectOrder] = useState<string[] | null>(null);
   useEffect(() => setProjectOrder(null), [saved]);

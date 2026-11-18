@@ -136,3 +136,8 @@ The permission picker beside the model uses the thread’s resolved execution op
 Focused Answers chats register rebindable Focus composer (Mod+Alt+L), Search conversation (Mod+Alt+F), and Thread actions (Mod+Alt+T) commands. Other panels keep their shortcuts. Up at the start of an empty composer recalls this thread’s prompt history; Up/Down browse it and Down past the newest restores the draft and attachments.
 
 Changing provider prepares a Handoff to new thread. Exit handoff restores the source provider. The next send creates and selects a thread in the same project and environment, using the selected provider/model and a `Continue from @thread:<source-id>` mention followed by a blank line and your message. The source thread is unchanged.
+
+## Settings
+
+Open **Settings → Plugins → Answers**. Notifications controls push activity, quiet hours (local From/To times), and blocking reminders. Chat chooses Answers or bb chat. Contacts can group conversations by project and reset the dragged project order. Agents controls warnings about handoffs and questions made without Answers tools. Changes apply live across clients. All seven preferences are stored in plugin KV under `preferences`; existing settings are copied once, without replacing later choices. Legacy Configuration controls may remain for the migration load; reload the plugin once to remove them.
+

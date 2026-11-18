@@ -281,6 +281,8 @@ export default function plugin(bb: BbPluginApi) {
       await bb.sdk.threads.retry({threadId:item.thread_id,turnRequestId:item.attempt_request_id}); invalidate(); return {ok:true as const};
     },
     // Contact-list preferences live in plugin settings, so they follow the user across devices.
+    getPreferences() {return notifier.settings.get();},
+    updatePreferences(raw:unknown) {return notifier.settings.experimental_set(raw);},
     async setPreferences(raw:z.infer<typeof inputs.setPreferences>) {await notifier.settings.experimental_set(inputs.setPreferences.parse(raw)); return {ok:true as const};},
     // bb's Markdown for plugins does not render message directives, so the chat asks the built-in inline-vis plugin for
     // the page an ::inline-vis directive names (it resolves and validates the path and size exactly as bb's chat does).

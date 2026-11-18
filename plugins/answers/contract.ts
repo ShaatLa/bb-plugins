@@ -1,3 +1,4 @@
+import { preferencesSchema, preferencesPatch, PREFERENCES_TAG } from './preferences';
 import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 export const YOUR_CALL = 'Your call';
@@ -51,6 +52,8 @@ export const inputs = {
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({
+ getPreferences:{tags:()=>[PREFERENCES_TAG],input:z.object({}).strict(),output:preferencesSchema},
+ updatePreferences:{input:preferencesPatch,output:preferencesSchema},
  owed:{tags:()=>[ITEMS_TAG],input:inputs.owed,output:z.object({items:z.array(z.object({id:idSchema,question:z.string(),createdAt:time,interim:z.boolean()}))})},
  settleOwed:{input:inputs.settleOwed,output:ok},
  undoRead:{input:inputs.undoRead,output:z.object({ok:z.literal(true),count:time})},

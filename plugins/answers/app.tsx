@@ -1,3 +1,5 @@
+import { AnswersSettings } from './settings-section';
+import { usePreferences } from './use-preferences';
 import { registerChatCommands } from './chat-commands';
 import './touch.css';
 import { MessageCopy, messageLink } from './message-copy';
@@ -9,7 +11,7 @@ import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { answerText, PendingInteractions, QuestionForm, usePendingInteractionRows } from './interactions';
@@ -545,7 +547,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [searchQuery, setSearchQuery] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
-  const bbChat = useSettings().values?.chatMode === 'bb';
+  const bbChat = usePreferences().data?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   // Page only: the Questions section replaces the chats; a stored 'Asked of you' view (now removed) opens it.
   const [questionsTab, setQuestionsTab] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
@@ -685,6 +687,7 @@ function AnswersPage() {
 }
 
 export default definePluginApp(app => {
+  app.slots.settingsSection({id:'settings',title:'Answers',description:'Notifications, conversations and agent warnings.',component:AnswersSettings});
   registerChatCommands(app);
   app.slots.experimental_threadList({ id: 'answers', title: 'Answers contacts', description: 'Open your Answers conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });

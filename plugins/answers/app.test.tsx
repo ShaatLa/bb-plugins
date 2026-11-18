@@ -575,7 +575,7 @@ it('shows the walking robot instead of the waiting label', async () => {
 it('embeds bb\u2019s chat for the selected conversation and marks it read', async () => {
   const app = await loadPluginApp(() => import('./app'));
   const markThreadRead = vi.fn(() => ({ ok: true, batch: 'b', count: 1 }));
-  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [{ threadId: 'thr_one', threadTitle: 'One', projectId: 'p', projectName: 'P', unread: 1, lastAt: 1, preview: 'x' }] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 1, waiting: 0, forMe: 0 }), markThreadRead }, settings: { chatMode: 'bb' } });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { getPreferences: () => ({ chatMode: 'bb' }), recipients: () => ({ recipients: [{ threadId: 'thr_one', threadTitle: 'One', projectId: 'p', projectName: 'P', unread: 1, lastAt: 1, preview: 'x' }] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 1, waiting: 0, forMe: 0 }), markThreadRead } });
   fireEvent.click(await slot.findByRole('option'));
   const chat = await slot.findByTestId('bb-thread-chat');
   expect(chat.getAttribute('data-thread-id')).toBe('thr_one');
