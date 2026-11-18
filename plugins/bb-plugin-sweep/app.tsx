@@ -121,7 +121,7 @@ export function SweepSettings() {
     <ProjectSettings key={selected} projectId={selected} initial={drafts[selected]} hasRepository={data.projects.some(p => p.id === selected && p.hasRepository)} threads={data.threads} onSave={saveProject} />
     <SettingsSection title="Execution environment">
       <details><Summary className="text-sm">Advanced environment settings · all projects</Summary><div className="mt-5 space-y-5">
-        <Field label="BB executable" hint="Absolute path to bb. Leave empty to use the server environment." below><Textarea aria-label="BB executable" rows={2} value={environment.bbCli} onChange={e => setEnvironment(current => ({ ...current, bbCli: e.target.value }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
+        <Field label="BB executable" hint="Absolute path to bb. Leave empty to use the server environment." below><Input aria-label="BB executable" value={environment.bbCli} onChange={e => setEnvironment(current => ({ ...current, bbCli: e.target.value }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
         <Field label="Executable search directories" hint="One directory per line. Leave empty to inherit the server PATH." below><Textarea aria-label="Executable search directories" rows={5} className="break-all font-mono text-xs" value={environment.runtimePath.split(':').join('\n')} onChange={e => setEnvironment(current => ({ ...current, runtimePath: e.target.value.split(/\r?\n/).filter(Boolean).join(':') }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
       </div></details>
     </SettingsSection>

@@ -51,7 +51,7 @@ export const COARSE_POINTER_PROMPT_COMBO_BUTTON_CLASS =
   "h-8 w-8 rounded-l-none border-l border-l-primary-foreground/20 px-0 transition-all hover:border-l-primary-foreground/30 max-md:pointer-coarse:h-10 max-md:pointer-coarse:w-10";
 
 export const COARSE_POINTER_INPUT_HEIGHT_CLASS =
-  "h-9 max-md:pointer-coarse:h-10";
+  "h-8 max-md:pointer-coarse:h-10";
 
 export const COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS =
   "h-7 max-md:pointer-coarse:h-9";
