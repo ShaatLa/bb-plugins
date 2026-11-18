@@ -24,7 +24,7 @@ it.each(['bubble', 'echo', 'owner reply'] as const)('draws known commands in the
   await pills(slot); expect(slot.container.textContent).toContain('/tmp/x');
   expect(slot.container.querySelector('[aria-label="command: optimize"] [data-icon="Zap"]')).toBeTruthy();
 });
-it.each(['passage', 'comment', 'quote'])('draws inline tokens in an inline %s', async site => {
+it.each(['passage', 'comment'])('draws inline tokens in an inline %s', async site => {
   const text = site === 'quote' ? '> /optimize this /tmp/x' : `@short\nContext for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> ${site === 'passage' ? '/optimize this /tmp/x' : 'Passage'}\n\nTheir comment on it: ${site === 'comment' ? '/optimize this /tmp/x' : 'Comment'}`;
   const slot = renderSlot({ component:InlineCommentText }, { text, threadId:'thr_inline' }, { sdk } as any); await pills(slot);
 });
@@ -48,7 +48,7 @@ it('draws commands in pending interaction rows using their own thread', async ()
   const slot = renderSlot({ component:PendingInteractions }, { threadId:'thr_inline', pending:true, shared:[{ id:'pending', status:'pending', payload:{ kind:'test/notice', title:'/optimize this /tmp/x', data:null } }] as any }, { sdk } as any);
   await pills(slot);
 });
-it.each(['queue', 'owed'])('draws commands in the %s preview', async site => {
+it.each(['owed'])('draws commands in the %s preview', async site => {
   const row = { id:'q1', threadId:'thr_inline', content:[{ type:'text', text:'/optimize this /tmp/x', mentions:[] }], updatedAt:1 };
   const slot = renderSlot({ component:Inbox }, {}, { rpc:{ recipients:() => ({ recipients:[{ threadId:'thr_inline', projectId:'p', threadTitle:'Inline', unread:1, lastAt:1, preview:'Done' }] }), list:() => ({ items:[item], nextCursor:null }), owed:() => ({ items:site === 'owed' ? [{ id:'old', question:item.question, createdAt:1, interim:false }] : [] }) }, sdk:{ ...sdk, threads:{ ...sdk.threads, queuedMessages:{ list:async () => site === 'queue' ? [row] : [] } } } } as any);
   fireEvent.click(await slot.findByRole('option'));
@@ -63,4 +63,13 @@ it('draws inline tokens in elicitation messages, warnings and descriptions', asy
 it('draws thread mentions in a deferred answer note', () => {
   const slot = renderSlot({ component:ItemCard }, { item:{ ...base, status:'deferred', answer:null, answerSeq:null, note:'Worker @thread:thr_worker is on it' } }, { sdk } as any);
   expect(Array.from(slot.container.querySelectorAll('[data-testid="bb-markdown"]')).map(m => m.textContent)).toContain('@thread:thr_worker');
+});
+it('keeps Markdown in queue rows and quoted text, as bb renders them', async () => {
+  const text = '**EXA-1 · READY** from a lead';
+  const row = { id:'q1', threadId:'thr_inline', content:[{ type:'text', text, mentions:[] }], updatedAt:1 };
+  const slot = renderSlot({ component:Inbox }, {}, { rpc:{ recipients:() => ({ recipients:[{ threadId:'thr_inline', projectId:'p', threadTitle:'Inline', unread:1, lastAt:1, preview:'Done' }] }), list:() => ({ items:[item], nextCursor:null }), owed:() => ({ items:[] }) }, sdk:{ ...sdk, threads:{ ...sdk.threads, queuedMessages:{ list:async () => [row] } } } } as any);
+  fireEvent.click(await slot.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row] [data-testid="bb-markdown"]')?.textContent).toBe(text));
+  const quote = renderSlot({ component:InlineCommentText }, { text:'> **bold** quote\n\nreply', threadId:'thr_inline' }, { sdk } as any);
+  expect(quote.container.querySelector('[data-testid="bb-markdown"]')?.textContent).toBe('**bold** quote');
 });

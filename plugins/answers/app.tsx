@@ -464,7 +464,7 @@ export function InlineCommentText({ text, prefixes, threadId }: { text: string; 
     {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3"><UserText text={entry.passage} prefixes={prefixes} threadId={threadId} /></div></div>}
     {entry.comment && <div><UserText text={entry.comment} prefixes={prefixes} threadId={threadId} /></div>}
   </div>)}{quoteSegments(parsed.text).map((part, index) => part.quote
-    ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><UserText text={part.text} prefixes={prefixes} threadId={threadId} /></div></div>
+    ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><Markdown content={part.text} /></div></div>
     : <div key={`t${index}`}><UserText text={part.text} prefixes={prefixes} threadId={threadId} /></div>)}</div>;
 }
 // One line for a question's echo: the owner's own words (before any quote they replied to, or their inline comment), without
