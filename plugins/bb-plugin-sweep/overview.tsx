@@ -122,7 +122,14 @@ export function SweepOverview({ subPath }: { subPath: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <div role="group" aria-label="Statistics period" className="inline-flex h-8 items-center rounded-lg bg-muted p-0.5">
               {ranges.map(([value, label]) => (
-                <Button key={value} size="sm" className="h-7" variant={days === value ? 'default' : 'ghost'} aria-pressed={days === value} onClick={() => setDays(value)}>
+                <Button
+                  key={value}
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-muted-foreground aria-pressed:bg-background aria-pressed:shadow-xs aria-pressed:hover:bg-background"
+                  aria-pressed={days === value}
+                  onClick={() => setDays(value)}
+                >
                   {label}
                 </Button>
               ))}
