@@ -36,13 +36,14 @@ export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),p
 const bulkRead=z.object({ok:z.literal(true),batch:z.string().nullable(),count:time});
 const costSchema=z.object({usd:z.number().nullable(),tokens:z.object({freshIn:z.number(),cacheRead:z.number(),cacheWrite:z.number(),output:z.number()}),estimated:z.boolean(),partial:z.boolean()});
 export type Cost=z.infer<typeof costSchema>;
+export const tokenomosSum=z.object({cost:costSchema,models:z.array(z.object({provider:z.string(),model:z.string(),cost:costSchema,calls:z.number()})).optional()}).passthrough();
 export const tokenomosThreads=z.object({priceVersion:z.string(),threads:z.array(z.object({threadId:z.string(),own:costSchema,total:costSchema,descendantCount:z.number(),updatedAt:z.number()}))});
 export const inputs = {
  owed:z.object({threadId}).strict(), settleOwed:z.object({id:idSchema,action:z.enum(['answered','dismissed'])}).strict(),
  undoRead:z.object({batch:z.string().min(1)}).strict(),
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
- workBoardProjects:z.object({}).strict(),threadCost:z.object({threadId}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
+ workBoardProjects:z.object({}).strict(),threadCost:z.object({threadId}).strict(),threadCostDetails:z.object({threadId,today:time,week:time}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
  inlinePreview:z.object({threadId,file:z.string().min(1).max(1000),source:z.enum(['workspace','thread-storage']).default('workspace')}).strict(),
  recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(), queueStamp:z.object({threadId}).strict(), contextStamp:z.object({threadId}).strict(), logClientError:z.object({where:z.string().max(100),message:z.string().max(2000),stack:z.string().max(8000).optional()}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
@@ -67,6 +68,7 @@ export const rpcContract=defineRpcContract({
  snooze:{input:inputs.snooze,output:ok},retryTurn:{input:inputs.retryTurn,output:ok},
  setPreferences:{input:inputs.setPreferences,output:z.object({ok:z.literal(true)})},
  threadCost:{input:inputs.threadCost,output:z.object({available:z.boolean(),own:costSchema.nullable(),total:costSchema.nullable(),descendantCount:z.number()})},
+ threadCostDetails:{input:inputs.threadCostDetails,output:z.object({available:z.boolean(),today:costSchema.nullable(),week:costSchema.nullable(),models:z.array(z.object({provider:z.string(),model:z.string(),cost:costSchema,calls:z.number()}))})},
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  inlinePreview:{input:inputs.inlinePreview,output:inlinePreviewSchema},

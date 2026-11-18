@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
+import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -314,6 +314,16 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       try {const result=tokenomosThreads.parse(await bb.sdk.plugins.callRpc({pluginId:'tokenomos',method:'costs.threads',input:{threadIds:[p.threadId],includeDescendants:true},outputSchema:tokenomosThreads})),t=result.threads[0]; if (t) return {available:true,own:t.own,total:t.total,descendantCount:t.descendantCount};}
       catch { /* not installed, not running, or another shape */ }
       return {available:false,own:null,total:null,descendantCount:0};
+    },
+    // Today, last 7 days and per-model cost from Tokenomos; one failure hides all three, so the popover never shows a mix.
+    async threadCostDetails(raw:z.infer<typeof inputs.threadCostDetails>) {
+      const p=inputs.threadCostDetails.parse(raw);
+      const sum=async(input:Record<string,any>)=>tokenomosSum.parse(await bb.sdk.plugins.callRpc({pluginId:'tokenomos',method:'costs.sum',input,outputSchema:tokenomosSum,signal:AbortSignal.timeout(3000)}));
+      try {
+        const [today,week,all]=await Promise.all([sum({spans:[{threadId:p.threadId,from:p.today,to:null}],includeDescendants:true}),sum({spans:[{threadId:p.threadId,from:p.week,to:null}],includeDescendants:true}),sum({threadIds:[p.threadId],includeDescendants:true,breakdown:true})]);
+        return {available:true,today:today.cost,week:week.cost,models:all.models??[]};
+      } catch { /* not installed, slow, or another shape */ }
+      return {available:false,today:null,week:null,models:[]};
     },
     async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
       inputs.workBoardProjects.parse(raw);

@@ -12,22 +12,36 @@ it('shows API-equivalent dollars, marks estimates, and falls back to tokens', ()
   expect(money(cost(null))).toBe('1.0M tokens');
 });
 
-it('opens Tokenomos on click, leaving modified clicks alone', () => {
-  window.history.replaceState(null, '', '/plugins/agent-hub/agent-hub');
-  const moved = vi.fn(); window.addEventListener('popstate', moved);
-  const view = render(<ThreadCostLabel cost={{ own: cost(0.8), total: cost(1.24), descendantCount: 3 }} />), label = view.getByRole('button', { name: /This session: \$0\.80/ });
-  fireEvent.click(label, { metaKey: true }); expect(window.location.pathname).toBe('/plugins/agent-hub/agent-hub');
-  fireEvent.click(label); expect(window.location.pathname).toBe('/plugins/tokenomos/tokenomos'); expect(moved).toHaveBeenCalledOnce();
-  window.removeEventListener('popstate', moved);
+const own = { threadId: 'thr_a', own: cost(0.8), total: cost(1.24), descendantCount: 3 };
+const details = { available: true, today: cost(0.3), week: cost(2.5), models: [1, 2, 3, 4, 5, 6, 7].map(i => ({ provider: 'p', model: `model-${i}`, cost: cost(i), calls: 1 })) };
+async function open(rpc: unknown) {
+  const { renderSlot } = await import('@get-bb/plugin-sdk/testing/app');
+  const slot = renderSlot({ component: () => <ThreadCostLabel cost={own} /> }, { threadId: 'thr_a' }, { rpc: { threadCostDetails: rpc } } as never);
+  return slot;
+}
+it('shows only the own cost on the chip and toggles the details dialog on click, leaving modified clicks alone', async () => {
+  const rpc = vi.fn(() => details), slot = await open(rpc), chip = slot.getByRole('button', { name: /This session: \$0\.80/ });
+  expect(chip.textContent).toBe('$0.80'); expect(chip.getAttribute('aria-haspopup')).toBe('dialog'); expect(chip.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(chip, { metaKey: true }); expect(slot.queryByRole('dialog')).toBeNull();
+  fireEvent.click(chip);
+  const dialog = slot.getByRole('dialog', { name: 'Cost details' }), text = () => dialog.textContent ?? '';
+  expect(chip.getAttribute('aria-expanded')).toBe('true');
+  expect(text()).toContain('This session$0.80'); expect(text()).toContain('Sub-sessions (3)$0.44'); expect(text()).toContain('Total$1.24');
+  await waitFor(() => expect(text()).toContain('Today$0.30')); expect(text()).toContain('Last 7 days$2.50');
+  expect(text()).toContain('model-1$1.00 · 4%'); expect(text()).not.toContain('model-6'); expect(text()).toContain('Other$13 · 46%');
+  expect(rpc).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thr_a' }));
+  fireEvent.click(chip); expect(slot.queryByRole('dialog')).toBeNull();
 });
-it('shows the sub-sessions as a delta and hides it when it rounds to nothing', () => {
-  const tokens = (n: number) => ({ freshIn: n, cacheRead: 0, cacheWrite: 0, output: 0 });
-  const view = render(<ThreadCostLabel cost={{ own: cost(0.8), total: cost(1.24), descendantCount: 3 }} />);
-  expect(view.getByRole('button').textContent).toBe('$0.80· +$0.44 in 3 subs'); cleanup();
-  const same = render(<ThreadCostLabel cost={{ own: cost(14.2, { tokens: tokens(100) }), total: cost(14.3, { tokens: tokens(120) }), descendantCount: 1 }} />);
-  expect(same.getByRole('button').textContent).toBe('$14');
+it('closes the details on Escape and on a click outside', async () => {
+  const slot = await open(() => details), chip = slot.getByRole('button');
+  fireEvent.click(chip); fireEvent.keyDown(document, { key: 'Escape' }); expect(slot.queryByRole('dialog')).toBeNull();
+  fireEvent.click(chip); fireEvent.mouseDown(document.body); expect(slot.queryByRole('dialog')).toBeNull();
 });
-
+it('says details are unavailable when the read fails', async () => {
+  const slot = await open(() => { throw new Error('down'); });
+  fireEvent.click(slot.getByRole('button'));
+  await waitFor(() => expect(slot.getByRole('dialog').textContent).toContain('Details unavailable'));
+});
 it('never renders the previous thread cost after switching', async () => {
   const { renderSlot } = await import('@get-bb/plugin-sdk/testing/app');
   const seen: unknown[] = [];

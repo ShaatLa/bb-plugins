@@ -848,6 +848,17 @@ it('reads a thread\'s cost from Tokenomos and stays quiet when it is missing', a
   expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:false,own:null,total:null,descendantCount:0});
 });
 
+it('reads today, week and model cost from Tokenomos and reports it unavailable when missing', async () => {
+  const {harness}=setup(), cost={usd:1.5,tokens:{freshIn:1,cacheRead:2,cacheWrite:3,output:4},estimated:false,partial:false}, model={provider:'p',model:'m',cost,calls:2};
+  const inputs:any[]=[]; harness.sdk.stub('plugins.callRpc',async(args:any)=>{inputs.push(args); return {priceVersion:'v1',cost:{...cost,usd:inputs.length},threadCount:1,updatedAt:1,...(args.input.breakdown?{models:[model]}:{})};});
+  const out:any=await harness.behavior.callRpc('threadCostDetails',{threadId:'thr_a',today:100,week:50});
+  expect(inputs.map(i=>i.input)).toEqual([{spans:[{threadId:'thr_a',from:100,to:null}],includeDescendants:true},{spans:[{threadId:'thr_a',from:50,to:null}],includeDescendants:true},{threadIds:['thr_a'],includeDescendants:true,breakdown:true}]);
+  expect(inputs[0]).toMatchObject({pluginId:'tokenomos',method:'costs.sum'}); expect(inputs[0].signal).toBeDefined();
+  expect(out).toMatchObject({available:true,today:{usd:1},week:{usd:2},models:[model]});
+  harness.sdk.stub('plugins.callRpc',async()=>{throw new Error('Plugin tokenomos is not installed');});
+  expect(await harness.behavior.callRpc('threadCostDetails',{threadId:'thr_a',today:100,week:50})).toEqual({available:false,today:null,week:null,models:[]});
+});
+
 describe('owed answers', () => {
  const day=24*60*60*1000, now=10*day;
  function owedSeed(db:Database.Database,id:string,at=now-1000) {
