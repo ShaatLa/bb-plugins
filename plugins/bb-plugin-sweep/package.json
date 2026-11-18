@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-sweep",
-  "version": "0.2.1",
+  "version": "0.5.9",
   "type": "module",
   "engines": {
     "bb": ">=0.49",
@@ -10,7 +10,7 @@
     "name": "Sweep",
     "description": "Scheduled project checks and reliable manager delivery.",
     "branding": {
-      "icon": "Activity"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

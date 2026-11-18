@@ -34,6 +34,8 @@ vi.mock("../../shell/data.js", () => ({
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
   useBbNavigate: () => ({ toThread: vi.fn() }),
+  useSdk: () => ({}),
+  useSettings: () => ({ values: undefined, isLoading: false }),
   // The host renders Markdown; the stub exposes the source it was given.
   Markdown: ({ content }: { content: string }) => (
     <div data-testid="markdown">{content}</div>

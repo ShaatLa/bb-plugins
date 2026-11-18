@@ -456,6 +456,9 @@ const MIGRATIONS = [
   `ALTER TABLE projects ADD COLUMN question_link_hosts TEXT;`,
   // 0.43.0 shipped question link hosts and 0.43.1 withdrew them; the column goes with the setting.
   `ALTER TABLE projects DROP COLUMN question_link_hosts;`,
+  // 0.47.0 changed the default owner-decision label to "owner decision"; existing projects keep the label they had.
+  `UPDATE projects SET workflow_policy = json_set(COALESCE(workflow_policy, '{}'), '$.ownerDecisionLabel', 'решение владельца')
+   WHERE workflow_policy IS NULL OR json_type(workflow_policy, '$.ownerDecisionLabel') IS NULL;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

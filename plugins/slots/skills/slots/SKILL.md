@@ -43,10 +43,13 @@ Manager commands are unrestricted. V1 supports only the BB server host.
 
 On start, a manager session runs `bb slots observer --self`.
 
-Configuration: `bb slots config` shows effective values. Use
-`bb slots config set <key> <value>` and `bb slots config unset <key>` (reset to
-the current machine default); every operation supports `--json`. The `slots_config`
-tool accepts `operation` (`show`, `set`, `unset`), plus `key` and `value` as needed.
+Configuration: read and change one key at a time. `bb slots config get <key>`
+returns that key only; `bb slots config set <key> <value>` and
+`bb slots config unset <key>` (reset to the current machine default) return only
+the changed key. `bb slots config` without a key lists every value. Every operation
+supports `--json`. The `slots_config` tool accepts `operation` (`get`, `set`,
+`unset`, or `show` to list all), plus `key` and `value`; with a key it returns
+`{key, value, default, max?, set}`.
 Configuration is plugin-owned; `bb plugin config slots` no longer applies.
 The optional load watch warns heuristically at checkout level when processes
 use many cores without a heavy slot; small runs do not need a slot.

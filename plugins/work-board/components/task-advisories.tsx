@@ -1,14 +1,15 @@
 import { BbLink } from "./bb-link";
 import { useEffect, useState } from "react";
-import { experimental_Icon as Icon, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import { useTasksNavigation } from "../shell/routes";
 import { advisoryText, type TaskAdvisory } from "../shared/task-advisories";
+import { useOpenThread } from "./open-thread";
 
 // The view rechecks expired advice (useAdvisoryRecheck); keep the last answer visible meanwhile so the warning does not blink.
 const RECHECK_GRACE_MS = 60_000;
 
 export function TaskAdvisories({ items, compact = false }: { items?: readonly TaskAdvisory[]; compact?: boolean }) {
-  const navigation = useTasksNavigation(), navigate = useBbNavigate();
+  const navigation = useTasksNavigation(), openThread = useOpenThread();
   const [clock, setClock] = useState(Date.now);
   const now = Math.max(clock, Date.now());
   const current = items?.filter(item => Date.parse(item.validUntil) + RECHECK_GRACE_MS > now) ?? [];
@@ -35,7 +36,7 @@ export function TaskAdvisories({ items, compact = false }: { items?: readonly Ta
         <BbLink className="block underline" href={item.pr.url}>{item.pr.repository}#{item.pr.number}</BbLink>
         <p className="break-all text-muted-foreground">Merge {item.pr.mergeSha} · {item.pr.mergedAt}</p>
       </> : <>
-        {item.lastAttachment ? <button type="button" className="block text-left underline" onClick={() => navigate.toThread(item.lastAttachment!.threadId)}>Last attachment: {item.lastAttachment.title || item.lastAttachment.threadId} · {item.lastAttachment.attachedAt}</button> : <p>No attachment history retained.</p>}
+        {item.lastAttachment ? <button type="button" className="block text-left underline" onClick={() => openThread(item.lastAttachment!.threadId)}>Last attachment: {item.lastAttachment.title || item.lastAttachment.threadId} · {item.lastAttachment.attachedAt}</button> : <p>No attachment history retained.</p>}
         <p className="text-muted-foreground">Last task activity: {item.lastActivityAt}</p>
       </>}
       <p className="text-muted-foreground">Checked {item.checkedAt} · valid until {item.validUntil}</p>

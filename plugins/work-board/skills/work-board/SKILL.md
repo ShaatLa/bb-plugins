@@ -52,7 +52,7 @@ When asking the owner a question, also set Current state with what you need and 
 
 Board cards and list rows keep the unanswered question count. The Waiting on me filter works in the main area and thread panel; it shares the project view preferences and clears with other filters. An unanswered question has no saved selection (or free-text answer).
 
-Questions belong to tasks and epics. Use `bb work-board question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. A changed answer automatically notifies askedByThread when present, otherwise the first attached worker (active workers take precedence), otherwise the latest agent responder, using queue-if-active delivery. Read the current question before acting on a notification: later answers may supersede it. No-op saves do not notify again; delivery failure preserves the answer and is reported as notification=failed in JSON and a warning in the UI. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
+Questions belong to tasks and epics: ask the owner about a task on the task, not in chat. Use `bb work-board question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. A changed answer automatically notifies askedByThread when present, otherwise the first attached worker (active workers take precedence), otherwise the latest agent responder, using queue-if-active delivery. Read the current question before acting on a notification: later answers may supersede it. No-op saves do not notify again; delivery failure preserves the answer and is reported as notification=failed in JSON and a warning in the UI. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
 
 `bb work-board comment KEY --body 'remark' --kind review --head <40hex> --verdict approve --thread thr_x [--pr 123] [--lens security]` creates an append-only evidence comment; omit `--pr` for a pre-PR review of a frozen head. Other kinds: `qa` requires head/verdict(pass|fail|partial)/thread and permits pr/target(local|development|localenv)/note(repo-relative path); `merge` requires pr/head/merge and permits part(k/m); `deploy` requires merge/run/env(development|production); `exemption` requires row/reason, with owner-quote/date only as a pair. Do not invent owner quotes or waivers. `bb work-board evidence KEY [--pr N] [--head SHA] [--kind review --kind qa] --json` lists evidence and the newest head/kinds summary. Older heads remain visible as superseded. The index makes no completeness judgement and never changes workflow status. Evidence and all optional fields are also in `show --json`. Add a newer record to supersede one; import cannot edit existing evidence even with `--overwrite`.
 
@@ -182,9 +182,10 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    bb work-board attachment get <attachment-id> --out <path>
    ```
 
-3. Do the work. Post one substantive comment at each meaningful milestone,
-   such as a completed investigation, an implementation ready for validation,
-   or a concrete blocker. Only the session responsible for the task (the
+3. Do the work. At each milestone replace Current state
+   (`update KEY --progress`: done, next, waiting for). Post a comment only for
+   results and evidence, such as a completed investigation or an
+   implementation ready for validation, one per real milestone. Only the session responsible for the task (the
    attached worker) comments on it; a sub-session you spawned reports to you,
    its parent thread, never to the task, and you fold its result into your own
    milestone comment. Keep a comment to the outcome, evidence and next step:
@@ -214,7 +215,8 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    removal rules, and machine selection.
 
 5. Set the status to match the completion criteria. Use `done` when they are
-   met, or `in_review` when required review remains:
+   met, or the project's review status (`workflowPolicy.reviewStatus`, default
+   `in_review`) when required review remains:
 
    ```sh
    bb work-board update ABC-12 --status in_review
@@ -229,8 +231,10 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    `bb work-board move ABC-12 --project XYZ`. The task gets a new key in that
    project; the old key keeps resolving, so use the new key from then on.
 
-   If the work cannot proceed, leave the status accurate and comment with the
-   specific blocker, what you tried, and what would unblock it. Do not mark a
+   If the work cannot proceed, leave the status accurate and put the specific
+   blocker, what you tried and what would unblock it in Current state. If the
+   owner must decide or check something, ask with `question add`; a child
+   thread also sends `report --kind blocker` to its parent. Do not mark a
    blocked task complete.
 
 6. Delegated threads are attached automatically. If this thread was not
@@ -254,8 +258,8 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
 One task has one responsible worker session at a time; the board shows it as the attached thread.
 
 - **Take.** When you start real work on a task you were not delegated from Work Board, `bb work-board attach KEY` first, then move it to the project's in-progress status (`bb work-board update KEY --status in_progress`, or the status the project's workflow names). Delegated sessions are already attached; still set the status when work actually starts.
-- **Hand off.** If you stop before the completion criteria (passing it to another session, or blocked on the owner), comment the exact state and next step, leave the status accurate, and `bb work-board detach KEY` unless you stay responsible. Do not leave a task attached to a session that will not continue it.
-- **Finish.** Set `done` or `in_review` per the completion criteria. No detach is needed: links stay as history.
+- **Hand off.** If you stop before the completion criteria (passing it to another session, or blocked on the owner), write the exact state and next step into Current state (keep or add a `Handoff: <path>` line), leave the status accurate, and `bb work-board detach KEY` unless you stay responsible. Do not leave a task attached to a session that will not continue it.
+- **Finish.** Set `done` or the project's review status per the completion criteria. No detach is needed: links stay as history.
 - **Sub-sessions** (reviewers, researchers, fix sessions you spawn) do not comment on, attach to, or change the status of the task; they reply to their parent thread, and the responsible session records the result on the task once. Every comment is kept forever and travels with Git snapshots, so many writers on one card make it slow to read and too large to export.
 - **Orchestrators** (a manager session that only delegates) do not attach themselves to the tasks they hand out. If a worker session disappears while its task is unfinished, Work Board attaches the worker's parent as **Parent thread** so the task stays accountable; a new worker attaching replaces it, and finishing the task (done or canceled) releases it automatically. Project-specific status rules (who moves a task to review, testing or done) belong to the project's own workflow docs and Work Board workflow policy, not to this skill.
 
@@ -302,13 +306,16 @@ line; each renders its own card.
 
 ## Invariants
 
-- Valid task statuses are `backlog`, `todo`, `in_progress`, `in_review`,
-  `done`, and `canceled`.
-- Use `in_review` when implementation is complete but still needs human or
-  agent review. Use `done` only when the task's completion criteria are met.
-- Write one comment per meaningful milestone. Combine related facts into a
-  useful update; never spam progress pings, command-by-command narration, or
-  repeated status messages.
+- Status ids are per project: read them with `project show PREFIX --json`
+  (`project.statuses`). The six system ids `backlog`, `todo`, `in_progress`,
+  `in_review`, `done` and `canceled` always exist; projects can add more.
+- Use the project's review status (`workflowPolicy.reviewStatus`, default
+  `in_review`) when implementation is complete but still needs human or agent
+  review. Use `done` only when the task's completion criteria are met.
+- Current state carries progress, comments carry results and evidence,
+  questions carry owner asks. Write one comment per meaningful milestone;
+  never spam progress pings, command-by-command narration, or repeated status
+  messages.
 - Comments should say what changed or was learned, what validation ran, and any
   remaining risk or blocker.
 - Prefer stable task keys such as `ABC-12` for task commands. Use `--json` for
@@ -316,7 +323,7 @@ line; each renders its own card.
 
 ## Thread health (read-only)
 
-`show --json` and `list --json` include `threadHealth: {failed: [threadId...], staleIdle: {threadId, idleMinutes} | null}`. `failed` lists attached threads whose turn failed or was interrupted; `staleIdle` is set when an attached thread has been idle (no working thread) longer than the project's `staleIdleMinutes` setting (default 45) without a task update, comment or evidence; it is never set for done, canceled or in_review tasks. Use it to find stalled workers; it sends nothing to them.
+`show --json` and `list --json` include `threadHealth: {failed: [threadId...], staleIdle: {threadId, idleMinutes} | null}`. `failed` lists attached threads whose turn failed or was interrupted; `staleIdle` is set when an attached thread has been idle (no working thread) longer than the project's `staleIdleMinutes` setting (default 45) without a task update, comment or evidence; it is never set for done or canceled tasks, for tasks in the project's review status, or while the task has an unanswered owner question (a task the owner tests has one). Use it to find stalled workers; it sends nothing to them.
 
 ## Send a task to an existing thread
 
@@ -324,7 +331,7 @@ Use `bb work-board dispatch ABC-12 --thread thr_existing` to send task context w
 
 ## Default screen
 
-Settings → Work Board → General exposes the shared `defaultScreen`: `last-project-board` (default), `last-project-list`, `all`, or `active`. Change it through General; agents can use the `getBoardPreferences` / `setBoardPreferences` RPCs. It is no longer a generic `bb plugin config` key. The last selected project is remembered in this device's browser storage. The default applies when opening Tasks at its root; explicit project and task links keep their targets.
+Settings → Work Board → General exposes the shared `defaultScreen`: `last-project-board` (default), `last-project-list`, `all`, or `active`. Change it through General, or with `bb plugin config work-board set startScreen <value>` (the `getBoardPreferences` / `setBoardPreferences` RPCs still work). The last selected project is remembered in this device's browser storage. The default applies when opening Tasks at its root; explicit project and task links keep their targets.
 
 ## Kanban in the side panel
 
@@ -348,10 +355,10 @@ Recommendations: `question add KEY ... --recommend 1 [--recommendation-reason TE
 Keep the task attached to your agent thread. Set Current state to explain what you need and why, and keep the workflow status accurate.
 Use a decision when you cannot proceed without a choice, or a check when you know the next step and need validation.
 
-Owner rules for questions (2026-11-13; the owner found a 3,600-character acceptance question unreadable):
+Rules for owner questions (long questions are hard to answer):
 1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
 2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link.
-3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
+3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
@@ -360,12 +367,12 @@ The owner can withdraw a saved answer. You then get a notification "Answer withd
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
-bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
 ```
 
 Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
 
-Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear newest first; answered questions are under Earlier in timeline order.
+Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear in the order they were asked, oldest first; answered questions are under Earlier in timeline order.
 
 Archive v17 removes the task execution and requester fields. Question records add kind (decision/check) and askedByThread (thread ID or null), including history snapshots. Imports v1–v16 discard the old task fields and default questions to decision with no asking thread. No questions are created by the database migration.
 
@@ -401,11 +408,11 @@ Each project has autoArchiveAfterDays, off by default; available values off, 3, 
 
 ## GitHub PR/CI observation (0.9.0)
 
-Configure each tracker project's repositories in plugin settings or `bb work-board git-config --project PREFIX --file CONFIG.json`. Show current configuration with `git-config --project PREFIX --json`. The JSON file replaces the whole configuration, uses defaults for omitted settings, and supports enabled (off initially), repositories (github.com owner/repo), pollMinutes 1–60 (5), lookbackDays 1–365 (30), titleDiscovery (true), requiredChecks (unique check-name override, default empty), postMergeWorkflows (up to 10 unique names or workflow ID strings), postMergeDays 1–90 (7). The connector uses GH_TOKEN/GITHUB_TOKEN or existing gh auth on the BB server; credentials are never exported and accounts are never switched automatically. No remote PR mutation or local checkout changes occur.
+Read or change one project setting with `bb work-board config get [KEY] --project PREFIX` and `config set KEY VALUE --project PREFIX` (keys `autoArchiveAfterDays`, `staleIdleMinutes`, `statusNotifications`, `git.<field>`; lists take JSON or `a, b`); prefer it to rewriting the whole Git config. Global preferences are native: `bb plugin config work-board [set KEY VALUE]` (`startScreen`, `badge*`). Configure each tracker project's repositories in plugin settings or `bb work-board git-config --project PREFIX --file CONFIG.json`. Show current configuration with `git-config --project PREFIX --json`. The JSON file replaces the whole configuration, uses defaults for omitted settings, and supports enabled (off initially), repositories (github.com owner/repo), pollMinutes 1–60 (5), lookbackDays 1–365 (30), titleDiscovery (true), requiredChecks (unique check-name override, default empty), postMergeWorkflows (up to 10 unique names or workflow ID strings), postMergeDays 1–90 (7). The connector uses GH_TOKEN/GITHUB_TOKEN or existing gh auth on the BB server; credentials are never exported and accounts are never switched automatically. No remote PR mutation or local checkout changes occur.
 
 Explicitly link a PR using `bb work-board pr link KEY --url https://github.com/owner/repo/pull/N --role delivers|design|related [--part k/m]`. Project repository configuration is required first. PR numbers are repository-scoped; never treat a bare #N as unique across repositories. `pr list KEY --json` returns durable links, current-head check/review/merge snapshots, workflow coverage, staleness and errors. `show KEY --json` includes prLinks. `pr unlink KEY --url URL` records an exclusion which survives rediscovery; explicitly relink to clear it. Title-key/environment matches are unconfirmed related suggestions, never automatic delivery evidence. Environment PRs are suggested only for attached tasks whose whole key (including historical aliases) appears in the PR title, head branch or body. PRs naming only other tasks, or no task key, are skipped; link these explicitly when needed. This does not alter manual links or persistent exclusions. Existing evidence --pr can suggest only when the configured repository is unambiguous. Do not infer completion from a PR citation, design link or the set of PRs discovered so far.
 
-`bb work-board sync --project PREFIX --json` refreshes PRs/CI without moving task statuses or sending messages. Periodic background sync is opt-in; PR/CI fields remain read-only observations. Automatic status mappings, notifications and merge-evidence posting are not present in this release. Green checks on a previous head are not current results; required-check availability can be unknown, and green CI does not prove merge readiness. Check details separate required/optional/unknown and failed/pending/skipped/neutral/cancelled. Head checks and provider merge state are separate from test-merge/merge-group policy evaluation. Errors preserve stale last-good state. Existing archived tasks/worker histories remain readable.
+`bb work-board sync --project PREFIX --json` refreshes PRs/CI and sends no messages. Periodic background sync is opt-in; PR/CI fields remain read-only observations. One automatic transition exists: when a confirmed `delivers` PR is open or draft, a linked task in one of the project's `earlyStatuses` (default `todo`, `in_progress`) moves to the project's `reviewStatus` (default `in_review`); set `earlyStatuses` to `[]` or `reviewStatus` to null to turn it off. No other status mapping, notification or merge-evidence posting happens. Green checks on a previous head are not current results; required-check availability can be unknown, and green CI does not prove merge readiness. Check details separate required/optional/unknown and failed/pending/skipped/neutral/cancelled. Head checks and provider merge state are separate from test-merge/merge-group policy evaluation. Errors preserve stale last-good state. Existing archived tasks/worker histories remain readable.
 
 Configured post-merge push workflows are tracked on the merge SHA/base branch. A cancelled run is pending, not a failed result. A later run of the same workflow/repository/base branch can cover it only after the GitHub compare API proves ancestry. Read coverage.superseded, originalRunId, runId, sha, state and url; the covering run still needs to finish. A diverged/behind commit is not coverage. Stable workflow IDs avoid ambiguous names. This observation does not replace project QA/evidence rules or authorize marking a card done.
 

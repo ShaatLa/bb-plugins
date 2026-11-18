@@ -806,7 +806,7 @@ export default function plugin(bb: BbPluginApi) {
         coverage: rt.view?.backfill.coveredSince ?? null, analysisAt: rt.analysis?.at ?? null, polledAt: rt.polledAt, now: Date.now(),
         runs: stored?.records.runs, deployments: stored?.records.deployments, liveJobs: rt.liveJobs, windowDays: values.jobHistoryDays, notes: values.investigateNotes, actors: actorNames(values),
         refs: relatedRefs(problem, { classified: rt.analysis?.classified ?? [], massCancels: rt.analysis?.massCancels ?? [], pools: rt.pools, alerts: rt.alerts ?? [], runs: stored?.records.runs }, 8),
-      }));
+      }), bb.pluginId);
       let target = threadId;
       if (target) await bb.sdk.threads.send({ threadId: target, mode: "queue-if-active", input: [{ type: "text", text: prompt, mentions: [] }] });
       else {

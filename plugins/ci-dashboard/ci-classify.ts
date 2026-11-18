@@ -4,7 +4,9 @@ import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary } from "./ci-
 /** Conclusions of a job that did not succeed and was not skipped. */
 export const BAD = new Set(["failure", "cancelled", "timed_out", "startup_failure"]);
 const TRANSIENT = [/http_50[234]/i, / 50[234] /, /Bad Gateway/i, /Gateway Time-?out/i, /Service Unavailable/i, /ECONNRESET/, /ETIMEDOUT/, /EAI_AGAIN/,
-  /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i, /download\w*?[_ -](?:unavailable|timed[_ -]?out)/i];
+  /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i, /download\w*?[_ -](?:unavailable|timed[_ -]?out)/i,
+  // An HTTP client's "<METHOD> <url>: <status>" error (Go net/http style) answered with a server error.
+  /\b(?:GET|POST|PUT|PATCH|DELETE) https?:\/\/\S+: 5\d\d\b/];
 const stripTimestamp = (line: string) => line.replace(/^\s*\d{4}-\d\d-\d\dT[\d:.]+Z\s*/, "").trim();
 const ms = (job: JobRecord) => job.startedAt && job.completedAt ? Math.max(0, Date.parse(job.completedAt) - Date.parse(job.startedAt)) : 0;
 /** PR number of a merge queue run: head branch gh-readonly-queue/<base>/pr-<N>-<sha>; <base> may contain slashes. */
@@ -60,7 +62,8 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
     if (job.failedSteps.length) {
       const refusal = job.failedSteps.find((step) => (opts.refusalSteps ?? []).includes(step));
       if (refusal) return make("refused", "intentional refusal by a gate step", refusal);
-      const line = job.logExcerpt?.split("\n").find((l) => TRANSIENT.some((re) => re.test(l)));
+      // Failure annotations count too: a tool may report its error only there.
+      const line = [...job.logExcerpt?.split("\n") ?? [], ...messages.flatMap((m) => m.split("\n"))].find((l) => TRANSIENT.some((re) => re.test(l)));
       if (line) return make("transient", "tool or network failure in log", stripTimestamp(line));
       // Nothing ran: no signature label and no pass at the same sha makes this a flake.
       const build = job.buildFailure?.match ?? buildFailureLine(job.annotations.filter((a) => a.level === "failure").map((a) => `${a.title}\n${a.message}`).join("\n"));

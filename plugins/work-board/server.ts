@@ -1,12 +1,13 @@
 import { registerScheduled } from "./scheduled";
 import { registerPublicApi } from "./public-api";
 import { migrateSettings } from "./settings";
+import { registerGlobalSettings } from "./global-settings";
 import { storageService } from "./storage";
 import { gitSyncService } from "./git-sync/service";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-import { createStore, registerTasksApi } from "./api";
+import { createStore, publishProjectsChanged, registerTasksApi } from "./api";
 import { registerAttachments } from "./attachments";
 import { registerTasksCli } from "./cli";
 import { registerDelegation } from "./delegate";
@@ -16,7 +17,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.43.3";
+export const WORK_BOARD_PLUGIN_VERSION = "0.49.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -34,6 +35,10 @@ export default async function plugin(bb: BbPluginApi) {
 
   const store = createStore(bb);
   await migrateSettings(bb);
+  await registerGlobalSettings(bb, () => {
+    bb.realtime.publish("badge:changed", {});
+    publishProjectsChanged(bb, null);
+  });
   registerTasksApi(bb, store);
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());

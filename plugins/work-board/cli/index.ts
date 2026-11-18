@@ -1037,6 +1037,41 @@ export function registerTasksCli(
           return input.options.json ? JSON.stringify(result) : `Released ${result.claim.rendered}`;
         }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
+        config: groupCommand("config", "Read or change one project setting at a time", [
+          ["get", "Show one project setting, or all of them"],
+          ["set", "Change one project setting"],
+        ]),
+        "config get": cliCommand({
+          summary: "Show one project setting, or all of them without a key",
+          positionals: [{ name: "key", description: "Setting key, e.g. staleIdleMinutes or git.requiredChecks" }],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const result = await domain["config.get"]({ projectId: project.id, key: input.positionals.key });
+              if (input.options.json) return JSON.stringify(result);
+              return Object.entries(result.values).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n");
+            });
+          },
+        }),
+        "config set": cliCommand({
+          summary: "Change one project setting; lists take JSON or a comma-separated value",
+          positionals: [
+            { name: "key", description: "Setting key; `config get` lists them", required: true },
+            { name: "value", description: "New value: JSON, or plain text", required: true },
+          ],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const raw = input.positionals.value;
+              let value: unknown = raw;
+              try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
+              return input.options.json ? JSON.stringify(result) : `${result.key}=${typeof result.value === "string" ? result.value : JSON.stringify(result.value)}`;
+            });
+          },
+        }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
         pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
         "pr wait": cliCommand({
@@ -1203,7 +1238,7 @@ export function registerTasksCli(
           ],
         ),
         "question add": cliCommand({
-          summary: "Ask the owner one decision or one check (short, one link; details go in a comment)",
+          summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
@@ -1212,10 +1247,15 @@ export function registerTasksCli(
               required: true,
               description: "One or two short sentences, at most one link; evidence and history go in a task comment",
             },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10)",
+            },
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat at least once",
+              description: "Option text; repeat for each option (required for a decision; a check defaults to Confirmed / Problem found)",
             },
             multiple: {
               type: "boolean",
@@ -1264,6 +1304,7 @@ export function registerTasksCli(
                   kind: input.options.kind ?? "decision",
                   askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
+                  steps: input.options.step,
                   options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
                       ? {
@@ -1279,9 +1320,9 @@ export function registerTasksCli(
               );
               const warnings = [
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
-                  ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
+                  ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
                 ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
-                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1413,6 +1454,11 @@ export function registerTasksCli(
               type: "string",
               description: "Replacement question text",
             },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps)",
+            },
             mode: {
               type: "enum",
               values: ["single", "multiple"],
@@ -1485,6 +1531,7 @@ export function registerTasksCli(
                 questionId: current.id,
                 revision: input.options.revision,
                 prompt: input.options.prompt ?? current.prompt,
+                ...(input.options.step.length ? { steps: input.options.step } : {}),
                 mode: input.options.mode ?? current.mode,
                 options,
                 reopen: input.options.reopen,
@@ -2243,10 +2290,12 @@ export function registerTasksCli(
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2463,6 +2512,7 @@ export function registerTasksCli(
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2904,10 +2954,12 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2924,7 +2976,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               placeholder: "status-id",
               aliases: ["state"],
               description:
-                "New workflow status; in_review when implementation needs review, done when the criteria are met",
+                "Project workflow status id (project show --json lists them); the project's review status when implementation needs review, done when the criteria are met",
             },
             priority: {
               type: "enum",
@@ -3921,7 +3973,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },
@@ -4027,7 +4079,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },

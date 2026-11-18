@@ -6,6 +6,8 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.5.2 makes configuration granular: `bb slots config get <key>` and the `slots_config` tool with a key read one setting, and `set`/`unset` return only the changed key as `{key, value, default, max?, set}`. `show` without a key and `settingsWrite` still return the whole view.
+
 Version 0.5.1 sends no "Slot granted" message when the grant goes to a waiting `acquire` (slots-run, plugin RPC), and no "Slot released" message to the thread whose own last `done` freed the lease; plain requests still get grant messages.
 Version 0.5.0 cuts steady-state work: state.json is written and `slots.changed` published only when state changes; queued `acquire` polls read-only status and renews its use every max(30 s, TTL/3); the sidebar coalesces events, polls every 30 s only as a fallback, and Settings saves numbers on blur or Enter; status returns the newest 15 events; SDK calls have a 10 s deadline.
 Version 0.4.8 counts gate readings up to 10% early, so sampler jitter no longer doubles the wait after a grant.
@@ -127,7 +129,7 @@ maxima and explicitly set keys. Writes accept a partial `values` object and/or
 an `unset` key list. Per-field schemas, machine maxima, cross-field combinations
 and observer targets are validated before persistence. Changes publish
 `slots.changed` and apply immediately. `config` powers the CLI and agent tool
-with show/set/unset operations; the two frontend RPCs are not agent tools.
+with get/show/set/unset operations, returning one key when a key is given; the two frontend RPCs are not agent tools.
 
 ### Upgrading from 0.2.x
 

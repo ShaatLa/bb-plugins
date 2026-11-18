@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, useRpc } from '@get-bb/plugin-sdk/app';
 import type { contract, Config } from './server';
+import { overviewPath, SweepOverview } from './overview';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
 import { Switch } from './components/ui/switch';
@@ -8,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Summary } from './components/ui/summary';
 import { SettingsSection, SettingsWithControl } from './components/ui/settings-section';
 
-type Data = { projects: { id: string; name: string; config: Config | null }[]; threads: { id: string; title: string; projectId: string }[]; environment: { bbCli: string; runtimePath: string } };
-const defaults: Config = { enabled: false, remote: '', branch: 'main', script: '', args: [], manager: '', intervalMinutes: 10, timeoutSeconds: 300, snapshots: false };
+type Data = { projects: { id: string; name: string; hasRepository: boolean; config: Config | null }[]; threads: { id: string; title: string; projectId: string }[]; environment: { bbCli: string; runtimePath: string } };
+const defaults: Config = { enabled: false, branch: 'main', script: '', args: [], manager: '', intervalMinutes: 10, timeoutSeconds: 300, snapshots: false };
 const controlWidth = 'w-full @min-[36rem]/settings:w-72';
 function Field({ label, hint, children, below = false }: { label: string; hint?: string; children: ReactNode; below?: boolean }) {
   return <SettingsWithControl label={label} description={hint} controlPlacement={below ? 'below' : 'inline'}>{children}</SettingsWithControl>;
@@ -38,16 +39,20 @@ function hideRawSettings() {
   return () => { observer.disconnect(); previous.forEach((value, element) => { element.hidden = value.hidden; element.style.display = value.display; }); };
 }
 
-function ProjectSettings({ projectId, initial, threads, onSave }: { projectId: string; initial: Config; threads: Data['threads']; onSave: (id: string, config: Config) => void }) {
+function ProjectSettings({ projectId, initial, hasRepository, threads, onSave }: { projectId: string; initial: Config; hasRepository: boolean; threads: Data['threads']; onSave: (id: string, config: Config, previous: Config) => void }) {
   const [value, setValue] = useState(initial), [invalid, setInvalid] = useState(false);
-  const last = useRef(value), form = useRef<HTMLFormElement>(null);
+  const last = useRef(value), lastValid = useRef(value), form = useRef<HTMLFormElement>(null);
   const update = (patch: Partial<Config>) => setValue(current => ({ ...current, ...patch }));
   useEffect(() => {
     if (last.current === value) return;
     last.current = value;
     const valid = form.current?.checkValidity() ?? false;
     setInvalid(!valid);
-    if (valid) onSave(projectId, value);
+    if (valid) {
+      const previous = lastValid.current;
+      lastValid.current = value;
+      onSave(projectId, value, previous);
+    }
   }, [value, projectId, onSave]);
   return <form ref={form} className="space-y-6" onSubmit={e => e.preventDefault()}>
     <SettingsSection bodyClassName="space-y-5" title="Scheduled checks">
@@ -61,7 +66,7 @@ function ProjectSettings({ projectId, initial, threads, onSave }: { projectId: s
       <SettingsWithControl label="Run every, minutes"><Input aria-label="Run every, minutes" className="w-24" type="number" required min={1} max={1440} value={Number.isNaN(value.intervalMinutes) ? '' : value.intervalMinutes} onChange={e => update({ intervalMinutes: e.target.valueAsNumber })} /></SettingsWithControl>
     </SettingsSection>
     <SettingsSection bodyClassName="space-y-5" title="Repository and script">
-      <Field label="Repository URL"><Input aria-label="Repository URL" className={controlWidth} required value={value.remote} onChange={e => update({ remote: e.target.value })} /></Field>
+      {!hasRepository && <p className="text-sm text-muted-foreground">Set a Git remote URL in the bb project settings to run checks.</p>}
       <Field label="Branch"><Input aria-label="Branch" className={controlWidth} required value={value.branch} onChange={e => update({ branch: e.target.value })} /></Field>
       <Field label="Check script" hint="Path relative to the repository."><Input aria-label="Check script" className={controlWidth} required value={value.script} onChange={e => update({ script: e.target.value })} /></Field>
       <Field label="Arguments" hint="One argument per line. {manager} uses the selected manager thread." below><Textarea aria-label="Arguments" rows={3} value={value.args.join('\n')} onChange={e => update({ args: e.target.value === '' ? [] : e.target.value.split('\n') })} /></Field>
@@ -81,13 +86,29 @@ export function SweepSettings() {
   const [environment, setEnvironment] = useState({ bbCli: '', runtimePath: '' });
   const [error, setError] = useState('');
   const writes = useRef(Promise.resolve());
+  const unsaved = useRef(new Map<string, Set<keyof Config>>());
   const enqueue = useCallback((action: () => Promise<unknown>) => {
-    setError('');
-    writes.current = writes.current.then(action).then(() => {}, e => { setError(`Could not save settings: ${String(e)}. Edit the setting to retry.`); });
+    writes.current = writes.current.then(() => {
+      setError('');
+      return action();
+    }).then(() => {}, e => { setError(`Could not save settings: ${String(e)}. Edit the setting to retry.`); });
   }, []);
-  const saveProject = useCallback((projectId: string, config: Config) => {
+  const saveProject = useCallback((projectId: string, config: Config, previous: Config) => {
     setDrafts(current => ({ ...current, [projectId]: config }));
-    enqueue(() => rpc.call('configure', { projectId, config }));
+    const changed = (Object.keys(config) as (keyof Config)[]).filter(key => config[key] !== previous[key]);
+    if (!previous.script && !changed.includes('branch')) changed.push('branch');
+    enqueue(async () => {
+      const pending = unsaved.current.get(projectId) ?? new Set<keyof Config>();
+      for (const key of changed) pending.add(key);
+      unsaved.current.set(projectId, pending);
+      const keys: (keyof Config)[] = [...pending].filter(key => key !== 'enabled');
+      if (pending.has('enabled')) keys.push('enabled');
+      for (const key of keys) {
+        await rpc.call('config.set', { projectId, key, value: config[key] });
+        pending.delete(key);
+      }
+      unsaved.current.delete(projectId);
+    });
   }, [rpc, enqueue]);
   useEffect(() => { let active = true; rpc.call('settings.read', null).then(result => { if (!active) return; setData(result); setEnvironment(result.environment); setSelected(result.projects.find(p => p.config)?.id ?? result.projects[0]?.id ?? ''); setDrafts(Object.fromEntries(result.projects.map(p => [p.id, p.config ?? { ...defaults }]))); }, e => { if (active) setError(String(e)); }); return () => { active = false; }; }, [rpc]);
   useEffect(() => { if (data) return hideRawSettings(); }, [data]);
@@ -97,14 +118,17 @@ export function SweepSettings() {
     <SettingsSection title="Project">
       <Field label="Project" hint="Settings are saved separately for each project."><Select value={selected} onValueChange={setSelected}><SelectTrigger aria-label="Project" className={controlWidth}><SelectValue /></SelectTrigger><SelectContent>{data.projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></Field>
     </SettingsSection>
-    <ProjectSettings key={selected} projectId={selected} initial={drafts[selected]} threads={data.threads} onSave={saveProject} />
+    <ProjectSettings key={selected} projectId={selected} initial={drafts[selected]} hasRepository={data.projects.some(p => p.id === selected && p.hasRepository)} threads={data.threads} onSave={saveProject} />
     <SettingsSection title="Execution environment">
       <details><Summary className="text-sm">Advanced environment settings · all projects</Summary><div className="mt-5 space-y-5">
-        <Field label="BB executable" hint="Absolute path to bb. Leave empty to use the server environment." below><Textarea aria-label="BB executable" rows={2} value={environment.bbCli} onChange={e => setEnvironment(current => ({ ...current, bbCli: e.target.value }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
+        <Field label="BB executable" hint="Absolute path to bb. Leave empty to use the server environment." below><Input aria-label="BB executable" value={environment.bbCli} onChange={e => setEnvironment(current => ({ ...current, bbCli: e.target.value }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
         <Field label="Executable search directories" hint="One directory per line. Leave empty to inherit the server PATH." below><Textarea aria-label="Executable search directories" rows={5} className="break-all font-mono text-xs" value={environment.runtimePath.split(':').join('\n')} onChange={e => setEnvironment(current => ({ ...current, runtimePath: e.target.value.split(/\r?\n/).filter(Boolean).join(':') }))} onBlur={() => enqueue(() => rpc.call('environment.write', environment))} /></Field>
       </div></details>
     </SettingsSection>
     <p role="alert" className="text-sm text-destructive">{error}</p>
   </div>;
 }
-export default definePluginApp(app => { app.slots.settingsSection({ id: 'sweep-settings', component: SweepSettings }); });
+export default definePluginApp(app => {
+  app.slots.settingsSection({ id: 'sweep-settings', component: SweepSettings });
+  app.slots.navPanel({ id: 'sweep', title: 'Sweep', icon: 'Activity', path: overviewPath, component: SweepOverview });
+});

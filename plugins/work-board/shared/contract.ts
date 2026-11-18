@@ -185,6 +185,8 @@ const questionStateSchema = z
     kind: z.enum(["decision", "check"]).default("decision"),
     askedByThread: evidenceThreadSchema.nullable().default(null),
     prompt: nonBlankStringSchema.max(10_000),
+    /** "How to check": short ordered steps shown under the prompt. */
+    steps: z.array(nonBlankStringSchema.max(500)).max(10).default([]),
     mode: z.enum(["single", "multiple"]),
     options: z
       .array(questionOptionInputSchema.extend({ id: idSchema }))
@@ -664,6 +666,15 @@ const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
 export const tasksRpcContract = {
+  // One per-project setting at a time; without a key, get lists them all.
+  "config.get": {
+    input: z.object({ projectId: z.string(), key: z.string().optional() }).strict(),
+    output: z.object({ projectId: z.string(), values: z.record(z.string(), z.unknown()) }).strict(),
+  },
+  "config.set": {
+    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+    output: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+  },
   ...storageMethods,
   listTaskDependencies: {
     input: z.object({ taskId: idSchema }).strict(),
@@ -828,6 +839,7 @@ export const tasksRpcContract = {
         kind: z.enum(["decision", "check"]).default("decision"),
         askedByThread: evidenceThreadSchema.nullable().default(null),
         prompt: nonBlankStringSchema.max(10_000),
+        steps: z.array(nonBlankStringSchema.max(500)).max(10).optional(),
         mode: z.enum(["single", "multiple"]).default("single"),
         allowOther: z.boolean().optional(),
         options: z
@@ -868,6 +880,8 @@ export const tasksRpcContract = {
         questionId: idSchema,
         revision: z.number().int().positive(),
         prompt: nonBlankStringSchema.max(10_000),
+        /** Omitted keeps the current steps; [] clears them. */
+        steps: z.array(nonBlankStringSchema.max(500)).max(10).optional(),
         mode: z.enum(["single", "multiple"]),
         options: z
           .array(questionOptionInputSchema.extend({ id: idSchema.optional() }))

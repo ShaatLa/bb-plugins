@@ -47,6 +47,7 @@ import {
 import { CommentAuthor } from "./comment-author.js";
 import { CommentProviderAvatar } from "./provider-logo.js";
 import { EvidenceSection } from "../detail/evidence";
+import { useOpenThread } from "../../components/open-thread";
 
 interface FeedEntry {
   comment: DisplayComment;
@@ -254,6 +255,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
   const { comment, attachments } = entry;
   const agent = comment.kind === "agent";
   const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const [lightbox, setLightbox] = useState<Attachment | null>(null);
   return (
     <div className="relative mb-3.5 flex gap-2.5">
@@ -265,7 +267,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
       {/* Host Markdown tables size their breakout from the nearest query container. */}
       <div className="@container min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-1.5 text-xs">
-          <CommentAuthor comment={comment} onOpenThread={navigate.toThread} />
+          <CommentAuthor comment={comment} onOpenThread={openThread} />
           {agent && comment.presetName ? (
             <span className="rounded-sm bg-secondary px-1 py-px text-2xs font-semibold text-muted-foreground">
               {comment.presetName}
@@ -281,7 +283,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
             onChange={() => {}}
             readOnly
             variant="comment"
-            onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
         ) : (
@@ -318,6 +320,7 @@ interface ComposerProps {
 export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
   const rpc = useTasksRpc();
   const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const mentionItems = useMentionItems();
   const [body, setBody] = useState("");
   const [notify, setNotify] = useState(true);
@@ -379,7 +382,7 @@ export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
         placeholder="Leave a comment… @-mention tasks and threads to link them"
         className="min-h-11"
         mentionItems={mentionItems}
-        onOpenThread={(threadId) => navigate.toThread(threadId)}
+        onOpenThread={(threadId) => openThread(threadId)}
         onOpenUrl={(url) => navigate.openUrl(url)}
         onSubmit={() => void send()}
         onAttachFiles={(files) =>

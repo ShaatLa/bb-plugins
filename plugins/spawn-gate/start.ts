@@ -3,6 +3,7 @@ import { access, constants, mkdir, realpath, stat } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import type { RecordMetric } from "./metrics";
 
 const text = z.string().min(1).max(1000);
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
@@ -49,7 +50,7 @@ export async function builderEnvironment(env: NodeJS.ProcessEnv = process.env) {
 }
 
 // All paths here belong to this plugin's server-local checkout, never the caller's cwd.
-function run(command: string, args: string[], cwd: string, signal: AbortSignal, input = "", env = process.env): Promise<string> {
+function run(command: string, args: string[], cwd: string, signal: AbortSignal, input = "", env = process.env, diagnostics?: { stderr: string; exitCode?: number | null }): Promise<string> {
   return new Promise((resolve, reject) => {
     let stdout = "", stderr = "", bytes = 0;
     const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"] });
@@ -57,7 +58,11 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
     const collect = (chunk: string, output: boolean) => {
       bytes += Buffer.byteLength(chunk, "utf8");
       if (bytes > 1_048_576) { child.kill("SIGKILL"); reject(new Error(`${command} output exceeds 1 MiB`)); return; }
-      if (output) stdout += chunk; else stderr += chunk;
+      if (output) stdout += chunk;
+      else {
+        stderr += chunk;
+        if (diagnostics) diagnostics.stderr = stderr;
+      }
     };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -67,6 +72,7 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
     child.on("error", error => { clearTimeout(timer); reject(error); });
     child.on("close", code => {
       clearTimeout(timer);
+      if (diagnostics) diagnostics.exitCode = code;
       if (code === 0) resolve(stdout);
       else reject(new Error(`${command} exited ${code}: ${stderr.slice(-16_000)}`));
     });
@@ -74,19 +80,46 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
   });
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void) {
+const builderRefusal = z.object({ reasonCode: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/) }).strict();
+function readBuilderReason(line: string) {
+  try {
+    const result = builderRefusal.safeParse(JSON.parse(line));
+    if (result.success) return result.data.reasonCode;
+  } catch { /* Plain stderr remains a generic builder error. */ }
+}
+
+function builderCard(args: string[]) {
+  const separator = args.indexOf("--");
+  const named = separator < 0 ? args : args.slice(0, separator);
+  for (let index = named.length - 1; index >= 0; index--) {
+    const arg = named[index];
+    if (arg === "--card" || arg.startsWith("--card=")) {
+      const card = arg === "--card" ? named[index + 1] : arg.slice("--card=".length);
+      return card && /^[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}$/.test(card) ? card : null;
+    }
+  }
+  return null;
+}
+
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void, record: RecordMetric) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
   return async (raw: Request, signal = controller.signal) => {
     signal = AbortSignal.any([controller.signal, signal]);
     const request = startInput.parse(raw);
+    const mode = request.dryRun ? "dry-run" : "start";
+    let tracked = false, reason = "request_error";
+    let sourceCommit: string | null = null;
+    const diagnostics: { stderr: string; exitCode?: number | null } = { stderr: "" };
     const operation = async () => {
       signal.throwIfAborted();
       const parent = await bb.sdk.threads.get({ threadId: request.parentThreadId });
       if (parent.projectId !== request.projectId) throw new Error("Parent belongs to another project");
+      tracked = true;
       const rules = policy(request.projectId);
       if (rules.method !== "script") throw new Error("start requires Script mode; Instruction mode still uses mint");
+      reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
       const remote = project.gitRemoteUrl;
       if (!remote || remote.startsWith("-")) throw new Error("Project needs a Git remote");
@@ -104,7 +137,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const branch = /^ref: (refs\/heads\/[^\s]+)\s+HEAD$/m.exec(head)?.[1];
       if (!branch) throw new Error("Remote HEAD must identify a default branch");
       await git(["fetch", "--depth=1", "origin", branch]);
-      const sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
+      sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
       await git(["checkout", "--force", "--detach", sourceCommit]);
       await git(["clean", "-ffdx"]);
       const candidate = join(root, rules.script), lexical = relative(root, candidate);
@@ -112,17 +145,20 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const script = await realpath(candidate);
       const inside = relative(await realpath(root), script);
       if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Launch script must stay inside the checkout");
+      reason = "builder_error";
       const env = { ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId };
       const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
       bb.log.info(`Builder runtime: BB_CLI=${env.BB_CLI}; python3=${python ?? "not used"}`);
       const stdout = await run(python ?? script, [...(python ? [script] : []), ...request.args], root, signal,
-        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n", env);
+        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n", env, diagnostics);
+      reason = "invalid_builder_output";
       let parsed: unknown;
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
       const build = buildSchema.parse(parsed);
       if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent");
       const target = build.spawn.environment;
       if (target?.type === "host" && !target.hostId && target.workspace.type !== "personal") {
+        reason = "host_error";
         const parentEnvironment = parent.environmentId ? await bb.sdk.environments.get({ environmentId: parent.environmentId }) : null;
         const hostId = parentEnvironment?.hostId ?? project.sources.find(source => source.isDefault)?.hostId;
         if (!hostId) throw new Error("Cannot resolve execution host: set hostId or configure a project default source");
@@ -131,8 +167,10 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceCommit };
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();
+      reason = "admission_error";
       const admission = await mint({ projectId: request.projectId, parentThreadId: request.parentThreadId, brief: build.brief });
       try {
+        reason = "spawn_error";
         signal.throwIfAborted();
         const thread = await bb.sdk.threads.spawn({ ...build.spawn, projectId: request.projectId, prompt: admission.prompt,
           environment: build.spawn.environment ?? { type: "project-default" }, senderThreadId: request.parentThreadId });
@@ -144,34 +182,26 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
     };
     const next = (queues.get(request.projectId) ?? Promise.resolve()).catch(() => {}).then(operation);
     queues.set(request.projectId, next);
-    try { return await next; } finally { if (queues.get(request.projectId) === next) queues.delete(request.projectId); }
-  };
-}
-
-export function registerStartCli(bb: BbPluginApi, start: ReturnType<typeof createStart>) {
-  const usage = "bb agent-spawn-gate start [--project <id>] [--parent-thread <id>] [--dry-run] -- <builder args...>";
-  bb.cli.register({ name: "agent-spawn-gate", summary: "Build a child task from the project's current default branch and start it with admission", rendersHelp: true,
-    commands: [{ name: "start", summary: "Refresh the builder, validate its JSON, mint and start", usage }],
-    async run(argv, ctx) {
-      try {
-        if (!argv.length || argv[0] === "--help" || argv.includes("--help") && !argv.includes("--")) return { exitCode: 0, stdout: usage };
-        if (argv[0] !== "start") throw new Error(`Unknown command. ${usage}`);
-        let projectId = ctx.projectId, parentThreadId = ctx.threadId, dryRun = false, args: string[] = [];
-        for (let i = 1; i < argv.length; i++) {
-          const flag = argv[i];
-          if (flag === "--") { args = argv.slice(i + 1); break; }
-          if (flag === "--dry-run") dryRun = true;
-          else if (flag === "--json") continue;
-          else if (flag === "--project" || flag === "--parent-thread") {
-            const value = argv[++i];
-            if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
-            if (flag === "--project") projectId = value; else parentThreadId = value;
-          } else throw new Error(`Unknown option ${flag}; builder arguments must follow --`);
+    try {
+      const result = await next;
+      record(request.projectId, mode, "success");
+      return result;
+    } catch (error) {
+      if (tracked) {
+        if (reason === "builder_error" && diagnostics.exitCode) {
+          const code = readBuilderReason(diagnostics.stderr.trimEnd().split("\n").at(-1) ?? "");
+          if (code) reason = `builder:${code}`;
         }
-        if (!projectId || !parentThreadId) throw new Error("Supply --project and --parent-thread when no bb thread context is available");
-        const result = await start({ projectId, parentThreadId, args, dryRun }, ctx.signal);
-        return { exitCode: 0, stdout: JSON.stringify(result) };
-      } catch (error) { return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }; }
-    },
-  });
+        // A free-form diagnostic can echo the task or a credential.
+        const firstCode = readBuilderReason(diagnostics.stderr.split("\n", 1)[0] ?? "");
+        record(request.projectId, mode, signal.aborted ? "cancelled" : reason, {
+          parentThreadId: request.parentThreadId, sourceCommit, card: builderCard(request.args),
+          stderr: firstCode ? JSON.stringify({ reasonCode: firstCode }) : null,
+        });
+      }
+      throw error;
+    } finally {
+      if (queues.get(request.projectId) === next) queues.delete(request.projectId);
+    }
+  };
 }

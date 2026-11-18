@@ -16,6 +16,8 @@ vi.mock("../../shell/data.js", () => ({
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
   useBbNavigate: () => ({ toThread: vi.fn() }),
+  useSdk: () => ({}),
+  useSettings: () => ({ values: undefined, isLoading: false }),
 }));
 
 vi.mock("../detail/attachments.js", async (importOriginal) => ({

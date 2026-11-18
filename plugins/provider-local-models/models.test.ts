@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseModels, readModels, usageFor, displayName, effectiveBaseUrl } from './models.ts';
+import { parseModels, readModels, displayName, effectiveBaseUrl } from './models.ts';
 import { startModelsServer } from './test/models-server.ts';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 const sse=(...events:unknown[])=>new Response(events.map(e=>'data: '+(typeof e==='string'?e:JSON.stringify(e))+'\n\n').join(''),{headers:{'content-type':'text/event-stream'}});
 const delta=(content:string)=>({choices:[{delta:{content},finish_reason:null}]});
 
-test('lists installed models with readable names and an unlimited usage window each', async()=>{
+test('lists installed models with readable names', async()=>{
   const server=await startModelsServer();
   try {
     const models=await readModels(server.baseUrl+'/');
@@ -16,12 +16,7 @@ test('lists installed models with readable names and an unlimited usage window e
     assert.equal(models[0].id,'ggml-org/gpt-oss-20b-GGUF:MXFP4');
     assert.equal(models[0].displayName,'gpt-oss-20b (MXFP4)');
     assert.equal(models[0].isDefault,true);
-    const usage=usageFor(models);
-    assert.equal(usage.status,'ok');
-    assert.deepEqual(usage.status==='ok'&&usage.windows,[{label:'gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]);
   } finally {await server.close();}
-  const twoModels=usageFor([{displayName:'Flint (Q4_K_M)'},{displayName:'Qwen3.6-35B-A3B (Q4_K_M)'}]);
-  assert.deepEqual(twoModels.windows,[{label:'Flint, Qwen3.6-35B-A3B\u2063',usedPercent:0,resetsAt:null}]);
   const two={data:[{id:'a/Qwen-GGUF:Q4'},{id:'b/gpt-oss-GGUF:MXFP4'}]};
   assert.deepEqual(parseModels(two,'b/gpt-oss-GGUF:MXFP4').map(m=>m.isDefault),[false,true]);
   assert.deepEqual(parseModels(two,'missing').map(m=>m.isDefault),[true,false]);
@@ -65,7 +60,6 @@ test('Splash preference hides only available variants and keeps Llama fallbacks 
     const models=await readModels(llama.baseUrl+','+splash.baseUrl,'org/Flint:Q4','',true);
     assert.deepEqual(models.map(m=>m.id),['org/Muse:Q4','splash/org/Flint:Q4']);
     assert.equal(models.find(m=>m.isDefault)?.id,'splash/org/Flint:Q4');
-    const usage=usageFor(models);assert.equal(usage.status==='ok'&&usage.windows[0].label,'Muse, Flint\u2063');
     assert.equal((await readModels(llama.baseUrl+','+splash.baseUrl)).length,3);
     const {router}=await import('./router.ts');const client=router(llama.baseUrl+','+splash.baseUrl,'org/Flint:Q4','',true),signal=AbortSignal.timeout(5000);
     assert.deepEqual((await client.status(signal)).models.map(m=>m.id),['org/Muse:Q4','splash/org/Flint:Q4']);

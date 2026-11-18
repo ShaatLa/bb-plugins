@@ -1,24 +1,24 @@
-name: Agent Spawn Gate CI
+name: Spawn Gate CI
 
 on:
   push:
     paths:
-      - "plugins/agent-spawn-gate/**"
-      - ".github/workflows/agent-spawn-gate.yml"
+      - "plugins/spawn-gate/**"
+      - ".github/workflows/spawn-gate.yml"
   pull_request:
     paths:
-      - "plugins/agent-spawn-gate/**"
-      - ".github/workflows/agent-spawn-gate.yml"
+      - "plugins/spawn-gate/**"
+      - ".github/workflows/spawn-gate.yml"
 
 permissions:
   contents: read
 
 jobs:
-  agent-spawn-gate:
+  spawn-gate:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: plugins/agent-spawn-gate
+        working-directory: plugins/spawn-gate
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

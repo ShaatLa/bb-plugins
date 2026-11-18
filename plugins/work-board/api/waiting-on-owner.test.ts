@@ -1,3 +1,4 @@
+import { registerGlobalSettings } from "../global-settings";
 import { afterEach, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
@@ -63,9 +64,21 @@ it("filters waiting tasks before pagination, orders questions first and respects
 it.each([false, true])("upgrades badge settings once (saved=%s), preserving later removal", async saved => {
   const f = setup();
   if (saved) await f.bb.storage.kv.set("navigation-badge:criteria", ["owner"]);
+  await registerGlobalSettings(f.bb, () => {});
   expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: saved ? ["waiting_on_owner"] : ["open", "waiting_on_owner"] });
   await f.harness.callRpc("setNavigationBadgeCriteria", { criteria: ["waiting_on_owner"] });
   expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["waiting_on_owner"] });
+});
+it("moves a stored openThreadsIn of answers to agent-hub at load", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board", settings: { openThreadsIn: "answers" } });
+  hosts.push(host);
+  await registerGlobalSettings(host.bb, () => {});
+  let stored: unknown;
+  const replacement = await host.harness.lifecycle.reload(async (bb) => {
+    stored = (await bb.settings.define({ openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub", "answers"], default: "bb" } }).get()).openThreadsIn;
+  });
+  hosts.push(replacement);
+  expect(stored).toBe("agent-hub");
 });
 it.each(["text", "json"])("warns on question add in %s without preventing creation", async mode => {
   const f = setup();

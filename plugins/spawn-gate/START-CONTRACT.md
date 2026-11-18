@@ -1,11 +1,11 @@
-Agent Spawn Gate start contract v1 (implementation contract)
+Spawn Gate start contract v1 (implementation contract)
 
 Command:
   bb agent-spawn-gate start [--project <projectId>] [--parent-thread <threadId>] [--dry-run] -- <builder args...>
 Project and parent default to the invoking bb CLI context; explicit flags win. Both are required after resolution. Arguments after -- are passed to the configured builder verbatim as argv, never through a shell. No spawn flags are accepted after -- by the plugin: those are builder-specific arguments only.
 
 RPC:
-  plugin: agent-spawn-gate
+  plugin: spawn-gate
   method: start
   input: {projectId:string, parentThreadId:string, args:string[], dryRun?:boolean}
 The same start implementation serves CLI and RPC. The plugin validates the parent belongs to projectId before running the builder. This first start implementation requires the project's Script mode; existing Instruction mode and mint remain supported through their current contract.
@@ -15,6 +15,8 @@ Builder execution:
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
 - stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
 - stdout: exactly one JSON object, UTF-8, maximum 1 MiB. All logs go to stderr. Exit nonzero, invalid JSON, unsupported version, unknown fields or invalid spawn values abort before mint/spawn.
+- On nonzero exit, the last nonempty stderr line may be a JSON object with exactly one field, e.g. `{"reasonCode":"missing_required_sections"}`. Codes match `^[a-z][a-z0-9_]{0,39}$`. Use a fixed code per refusal reason and keep any variable details in preceding stderr lines. The report counts valid codes as `builder:<reasonCode>`, otherwise as `builder_error`. The caller still receives the failure diagnostic.
+- For the refusal journal, the first stderr line may use the same bounded JSON format, even when the builder exits zero. The journal stores only that structured diagnostic. It saves a card reference only when builder arguments contain a valid task key in `--card EXA-1` or `--card=EXA-1`. It discards raw stderr, arguments, stdout and briefs.
 - No mint or bb thread spawn inside the builder.
 
 Builder stdout (strict object; omit optional fields, do not emit null):

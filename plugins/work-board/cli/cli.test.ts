@@ -171,6 +171,20 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("keeps a check's steps with the question and replaces them on update", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Steps", "--prefix", "STP"]);
+    await harness.runCli(["create", "--project", "STP", "--title", "Steps"]);
+    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "STP-1", "--kind", "check", "--prompt", "Does the form save?", "--step", "Open the form", "--step", "Press Save", "--json"]))).question;
+    expect(question.steps).toEqual(["Open the form", "Press Save"]);
+    const kept = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(question.revision), "--prompt", "Does the form save twice?", "--json"]))).question;
+    expect(kept.steps).toEqual(["Open the form", "Press Save"]);
+    const replaced = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(kept.revision), "--step", "Press Save twice", "--json"]))).question;
+    expect(replaced).toMatchObject({ prompt: "Does the form save twice?", steps: ["Press Save twice"] });
+    await harness.dispose();
+  });
+
   it("compacts answered questions and names the full history command", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);
@@ -303,6 +317,27 @@ describe("bb work-board CLI", () => {
       expect(stdout(await update("thr_lead", "--progress", "Working"))).toBe("Updated ATT-1  Card; attached thr_lead");
       expect(JSON.parse(stdout(await update("thr_worker", "--progress", "Helping", "--json")))).not.toHaveProperty("attached");
       expect(await sessions()).toEqual(["thr_lead"]);
+    } finally { await harness.dispose(); }
+  });
+
+  it("reads and changes one project setting at a time", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Config", "--prefix", "CFG"]);
+    const config = async (...args: string[]) => harness.runCli(["config", ...args, "--project", "CFG"]);
+    try {
+      expect(stdout(await config("get", "staleIdleMinutes"))).toBe("staleIdleMinutes=45");
+      expect(stdout(await config("set", "staleIdleMinutes", "60"))).toBe("staleIdleMinutes=60");
+      expect(stdout(await config("set", "git.prWaitIgnoredChecks", "example/ready-check, example/other"))).toBe('git.prWaitIgnoredChecks=["example/ready-check","example/other"]');
+      expect(stdout(await config("set", "git.pollMinutes", "10"))).toBe("git.pollMinutes=10");
+      const all = JSON.parse(stdout(await config("get", "--json"))).values;
+      expect(all).toMatchObject({ staleIdleMinutes: "60", autoArchiveAfterDays: "off", "git.pollMinutes": 10, "git.prWaitIgnoredChecks": ["example/ready-check", "example/other"], "git.enabled": false });
+      // Whole-object Git configuration keeps working beside single keys.
+      expect(JSON.parse(stdout(await harness.runCli(["git-config", "--project", "CFG"]))).config).toMatchObject({ pollMinutes: 10 });
+      for (const args of [["set", "staleIdleMinutes", "7"], ["set", "git.pollMinutes", "0"], ["get", "unknown"], ["set", "name", "x"]]) {
+        expect((await config(...args)).exitCode).toBe(1);
+      }
+      expect((await config("get", "unknown")).stderr).toContain("known: autoArchiveAfterDays");
     } finally { await harness.dispose(); }
   });
 

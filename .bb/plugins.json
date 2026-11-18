@@ -40,8 +40,12 @@
       "source": "./plugins/tokenomos"
     },
     {
+      "name": "spawn-gate",
+      "source": "./plugins/spawn-gate"
+    },
+    {
       "name": "agent-spawn-gate",
-      "source": "./plugins/agent-spawn-gate"
+      "source": "./plugins/spawn-gate"
     },
     {
       "name": "sweep",

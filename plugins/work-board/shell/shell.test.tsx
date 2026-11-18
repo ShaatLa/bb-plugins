@@ -185,6 +185,59 @@ describe("project view preference", () => {
     });
   });
 
+  it("switches projects from the project name in the top bar", async () => {
+    const other = { ...project, id: OTHER_PROJECT_ID, name: "Other Project", prefix: "OTH" };
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: PROJECT_ID },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }), listProjects: () => ({ projects: [project, other] }) }) },
+    );
+    const trigger = await slot.findByRole("button", { name: "Switch project" });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(await slot.findByRole("menuitem", { name: "Other Project" }));
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: OTHER_PROJECT_ID },
+    });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(await slot.findByRole("menuitem", { name: "All tasks" }));
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: "all" },
+    });
+  });
+
+  it("switches from All tasks to a project in the top bar", async () => {
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "all" },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) },
+    );
+    fireEvent.keyDown(await slot.findByRole("button", { name: "Switch project" }), { key: "Enter" });
+    expect(slot.getByRole("menuitem", { name: "All tasks" }).getAttribute("data-disabled")).not.toBeNull();
+    fireEvent.click(slot.getByRole("menuitem", { name: "Tasks Plugin" }));
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: PROJECT_ID },
+    });
+  });
+
+  it("Manage's Back returns to the view it was opened from", async () => {
+    const slot = openProject(PROJECT_ID);
+    await slot.findByRole("button", { name: "Switch project" });
+    slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
+    fireEvent.click(await slot.findByRole("button", { name: "Back" }));
+    // Like the Scheduled clock, it restores the view that was showing.
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: `${PROJECT_ID}?view=list` },
+    });
+  });
+
   it("still toggles when client storage rejects writes", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Storage is disabled", "SecurityError");
@@ -1365,7 +1418,7 @@ describe("tasks app shell", () => {
         rpc: seededRpc({ listLabels: () => ({ labels: [] }) }),
       },
     );
-    await slot.findByText("Projects, labels, agent presets, and folders.");
+    await slot.findByRole("tab", { name: "Labels" });
   });
 
   it("opens quick-create on bare 'c' but not from editable targets or dialogs", async () => {
@@ -1464,7 +1517,7 @@ it("opens label management from the main toolbar settings menu", async () => {
     method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
   });
   slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
-  await slot.findByText("Projects, labels, agent presets, and folders.");
+  await slot.findByRole("tab", { name: "Labels" });
   expect(slot.getByRole("tab", { name: "Labels" }).getAttribute("data-state")).toBe("active");
   expect(await slot.findByText("No labels yet.")).toBeTruthy();
 });

@@ -1,10 +1,10 @@
 import { BbLink } from "../../components/bb-link";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Comment, TaskPullRequest } from "../../shared/contract";
 import { evidenceFlags, evidenceIndex } from "../../structured/evidence";
 import { useMemo, useState } from "react";
 import { usePrLinks } from "../../components/pr-links";
 import { Button } from "@/components/ui/button";
+import { useOpenThread } from "../../components/open-thread";
 
 export function EvidenceSection({
   comments,
@@ -15,7 +15,7 @@ export function EvidenceSection({
   taskId?: string;
   pullRequests?: readonly TaskPullRequest[];
 }) {
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const [visibleCount, setVisibleCount] = useState(15);
   const links = usePrLinks(taskId);
   const index = useMemo(() => evidenceIndex(comments), [comments]);
@@ -93,7 +93,7 @@ export function EvidenceSection({
                         className="underline"
                         onClick={() => {
                           if ("thread" in record)
-                            navigate.toThread(record.thread);
+                            openThread(record.thread);
                         }}
                       >
                         {record.thread}

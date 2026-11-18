@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import type { Project, Task } from "../../shared/contract.js";
 import type { Schedule, ScheduleRun } from "../../shared/scheduled.js";
 import { errorMessage } from "../../shared/errors.js";
@@ -33,6 +32,7 @@ import {
 } from "./lib.js";
 import { OptionPicker } from "./option-picker.js";
 import { ScheduleDialog } from "./schedule-dialog.js";
+import { useOpenThread } from "../../components/open-thread";
 
 const PAGE_SIZE = 25;
 const TAB_LABELS: Record<ScheduledTab, string> = {
@@ -358,7 +358,7 @@ function DismissDialog({ run, onClose, onSubmit }: { run: ScheduleRun; onClose: 
 function RunsList({ attention, projectId, search, projects, onEdit, refreshRef }: ListProps & { attention: boolean }) {
   const pager = usePager();
   const navigation = useTasksNavigation();
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const rpc = useScheduledRpc();
   const query = useScheduledQuery(
     (client) => client.call("listScheduleRuns", { limit: PAGE_SIZE, ...(attention ? { needsAttention: true } : {}), ...(projectId ? { projectId } : {}), ...(search ? { search } : {}), ...(pager.cursor ? { cursor: pager.cursor } : {}) }),
@@ -404,7 +404,7 @@ function RunsList({ attention, projectId, search, projects, onEdit, refreshRef }
                 {run.overlapRunIds.length > 0 ? <OverlapLinks scheduleId={run.scheduleId} runIds={run.overlapRunIds} /> : null}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   {task ? <LinkButton onClick={() => navigation.go({ kind: "task", taskKey: task.key })}>{task.key} · {task.title}</LinkButton> : null}
-                  {run.threadId ? <LinkButton label={`Open thread ${run.threadId}`} onClick={() => navigate.toThread(run.threadId!)}>Open thread</LinkButton> : null}
+                  {run.threadId ? <LinkButton label={`Open thread ${run.threadId}`} onClick={() => openThread(run.threadId!)}>Open thread</LinkButton> : null}
                 </div>
                 {available.retry || available.resolve || available.cancel ? (
                   <div className="flex flex-wrap items-center gap-1.5 pt-0.5">

@@ -59,6 +59,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ScheduledSourceBanner } from "../scheduled/source-banner.js";
+import { useOpenThread } from "../../components/open-thread";
 
 interface DetailViewProps {
   taskKey: string;
@@ -521,6 +522,7 @@ function TaskDetail({
 
   const mentionItems = useMentionItems();
   const navigate = useBbNavigate();
+  const openThread = useOpenThread();
 
   const draft = draftRef.current;
   const descriptionValue =
@@ -625,7 +627,7 @@ function TaskDetail({
             placeholder="Add a description… rich text: headings, lists, code, checkboxes, @mentions"
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
-            onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
 
