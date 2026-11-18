@@ -10,16 +10,16 @@ const question = '[agent-hub] Your last reply asks the owner a question in chat;
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
  let events:any[]=[], seq=0;
- const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
+ const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => !e.late && e.seq>Number(a.afterSeq ?? 0))},send}}});
  const db=host.bb.storage.database(); db.exec(migrations.join('\n'));
  const notifier=createNotifier(host.bb,db);
  const driver=createDriver(host.bb,db,() => {},undefined,async () => (await notifier.settings.get()).handoffWarnings);
  cleanup.push(async () => {await driver.dispose(); await notifier.dispose(); await host.harness.lifecycle.dispose();});
- async function turn(text='Ready for your review.',extra:Record<string,unknown>={originPluginId:'example'},tool?:string,old=false) {
+ async function turn(text='Ready for your review.',extra:Record<string,unknown>={originPluginId:'example'},tool?:string,old=false,late=false) {
   const turnId='turn_example_'+seq, requestId='request_example_'+seq;
-  const e=(type:string,data:object) => ({seq:++seq,type,scope:{turnId},createdAt:old ? 1 : Date.now(),data});
+  const e=(type:string,data:object) => ({seq:++seq,type,scope:{kind:'turn',turnId},createdAt:old ? 1 : Date.now(),data});
   events.push(e('client/turn/requested',{initiator:'user',requestId,input:[{type:'text',text:'Continue'}],...extra}),e('turn/started',{}),e('turn/input/accepted',{clientRequestId:requestId}));
-  if(tool) events.push(e('item/completed',{item:{type:'mcpToolCall',tool,command:tool}}));
+  if(tool) events.push({...e('item/completed',{item:{type:'mcpToolCall',tool,command:tool}}),late});
   if(tool==='agent_hub_report') {await driver.schedule('thr_example'); db.prepare('UPDATE turn_updates SET report=1 WHERE thread_id=? AND turn_id=?').run('thr_example',turnId);}
   events.push(e('item/completed',{item:{type:'agentMessage',text}}),e('turn/completed',{status:'completed'}));
   await driver.schedule('thr_example');
@@ -61,4 +61,7 @@ it('keeps a reply to a warning sent before the rename quiet too', async () => {
  const s=setup(); await s.control();
  await s.turn('Ready for your review.',{originPluginId:'answers',input:[{type:'text',text:handoff.replace('[agent-hub]','[answers]')}]});
  expect(s.send).not.toHaveBeenCalled();
+});
+it.each(['agent_hub_ask','bb work-board question add EXA-1 --kind decision'])('sends no question warning when the turn used %s but ingest missed that event',async tool => {
+ const s=setup(); await s.control(); await s.turn('Which one do you want?',undefined,tool,false,true); expect(s.send).not.toHaveBeenCalled();
 });

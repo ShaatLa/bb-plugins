@@ -36,6 +36,13 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     void result.finally(() => { if (locks.get(id) === result) locks.delete(id); }).catch(() => {});
     return result;
   }
+  // A warning is rare and costly to get wrong: before sending one, read the turn's tool calls again, since ingest once missed one.
+  async function usedChannel(id: string, turn: string, seq: number, channelCommands: string[]) {
+    try {
+      const events = await bb.sdk.threads.events.list({threadId:id,types:['item/completed'],order:'desc',limit:'200',beforeSeq:String(seq),signal});
+      return events.some(e => e.scope?.kind === 'turn' && e.scope.turnId === turn && ['agent_hub_ask','answers_ask','agent_hub_report','answers_report',...channelCommands].some(fragment => { const item = (e.data as {item?:{tool?:string;name?:string;command?:string}}|undefined)?.item; return `${item?.tool ?? ''} ${item?.name ?? ''} ${item?.command ?? ''}`.includes(fragment); }));
+    } catch { return false; }
+  }
   function remove(id: string) {
     const hadItems = !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
     db.transaction(() => {
@@ -77,10 +84,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     const {channelCommands} = await getProjectConfig(bb,projectId);
     let changed = false;
     async function apply(events: Event[]) {
-      const warnings: string[] = [];
-      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);},channelCommands))() || changed;
-      for (const text of warnings) {
+      const warnings: {text:string;turn:string;seq:number}[] = [];
+      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at,turn,seq) => {if (at >= startedAt) warnings.push({text,turn,seq});},channelCommands))() || changed;
+      for (const {text,turn,seq} of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
+        if (await usedChannel(id,turn,seq,channelCommands)) {bb.log.warn(`Agent Hub warning skipped: turn ${turn} used a channel its ingest missed`); continue;}
         try {await bb.sdk.threads.send({threadId:id,originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
         catch (e) {bb.log.warn(`Agent Hub handoff warning: ${String(e)}`);}
       }

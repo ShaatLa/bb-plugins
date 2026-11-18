@@ -63,7 +63,7 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
-export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
+export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number, turn: string, seq: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
  let hidden = 0;
@@ -150,8 +150,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && /^\[(?:agent-hub|answers)\]/.test(update?.question ?? ''); // [answers] is the tag before the rename
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat; ask it with `agent_hub_ask` and end the turn.', e.createdAt ?? 0);
-     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
+     if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat; ask it with `agent_hub_ask` and end the turn.', e.createdAt ?? 0, turn, e.seq);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0, turn, e.seq);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
