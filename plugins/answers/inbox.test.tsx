@@ -14,9 +14,9 @@ import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any; defaultExecutionOptions?: any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any; defaultExecutionOptions?: any; promptHistory?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, defaultExecutionOptions: options.defaultExecutionOptions, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, promptHistory: options.promptHistory, defaultExecutionOptions: options.defaultExecutionOptions, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -1227,4 +1227,17 @@ it('captures touch selections through the debounced selectionchange listener', a
   const { slot, body } = await selectPassage(); fireEvent.keyDown(body, { key: 'Escape' });
   expect(slot.queryByRole('toolbar')).toBeNull(); fireEvent(document, new Event('selectionchange'));
   expect(await slot.findByRole('toolbar', { name: 'Selected passage' })).toBeTruthy();
+});
+
+it('recalls prompt history with Up and restores the current draft with Down', async () => {
+ const promptHistory=vi.fn(async () => [{id:'prompt_example',createdAt:1,input:[{type:'text',text:'Previous prompt',mentions:[]},{type:'localFile',path:'/example.txt',name:'example.txt'}]}]);
+ const {slot,recipients}=setup({promptHistory}); fireEvent.click(await recipients.findByRole('option'));
+ const editor=slot.getByRole('textbox',{name:'Send message'}); editor.focus();
+ fireEvent.keyDown(editor,{key:'ArrowUp'});
+ await waitFor(() => expect(editor.textContent).toBe('Previous prompt'));
+ expect(slot.getByText('example.txt')).toBeTruthy();
+ const selection=window.getSelection()!,range=document.createRange(); range.setStart(editor,0); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
+ fireEvent.keyDown(editor,{key:'ArrowDown'});
+ await waitFor(() => expect(editor.textContent).toBe(''));
+ expect(slot.queryByText('example.txt')).toBeNull(); expect(promptHistory).toHaveBeenCalledWith({threadId:'thr_one',limit:'100'});
 });

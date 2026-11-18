@@ -124,3 +124,5 @@ With a chat open on desktop, its avatar and title, section selector, inline sear
 Failed turns show the provider’s completion error when available and retain Retry. Interrupted turns have a quiet label and leave waiting and Owed, including deferred questions.
 
 The permission picker beside the model uses the thread’s resolved execution options. Choices stay in each thread’s draft and apply to send, steer, drafts and schedules; unknown modes are omitted. Queue edits retain their own request permission.
+
+Focused Answers chats register rebindable Focus composer (Mod+Alt+L), Search conversation (Mod+Alt+F), and Thread actions (Mod+Alt+T) commands. Other panels keep their shortcuts. Up at the start of an empty composer recalls this thread’s prompt history; Up/Down browse it and Down past the newest restores the draft and attachments.

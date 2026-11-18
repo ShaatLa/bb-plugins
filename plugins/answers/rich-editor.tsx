@@ -27,8 +27,9 @@ function position(root: HTMLElement, at: number): [Node, number] {
   }
   return [root, root.childNodes.length];
 }
-export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, disabled, autoFocus, label, placeholder, onBlur, className, editorRef, insertRef, menuAnchor }: {
+export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, disabled, autoFocus, label, placeholder, onBlur, className, editorRef, insertRef, menuAnchor, onHistory }: {
   value: string; onChange(value: string): void; onSend(): void; onCancel?(): void; onPasteFiles(files: File[]): void;
+  onHistory?: (direction: 'up' | 'down') => boolean;
   disabled?: boolean; autoFocus?: boolean; label: string; placeholder: string; onBlur?(): void; className: string; editorRef: React.RefObject<HTMLDivElement | null>; insertRef: React.MutableRefObject<(text: string) => void>; menuAnchor?: React.RefObject<HTMLElement | null>;
 }) {
   const sdk = useSdk(), { threads } = experimental_useSidebarThreads();
@@ -225,6 +226,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : count - 1)) % count); return; }
       if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); if (menu.trigger === '@') pick(choices[active].id); else pickCommand(commandChoices[active]); return; }
     }
+    if (!menu && !context && !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && selection().every(at => at === 0) && onHistory?.(event.key === 'ArrowUp' ? 'up' : 'down')) { event.preventDefault(); return; }
     // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail; event.code keeps it working on any keyboard layout.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.code === 'KeyZ' || (event.code === 'KeyY' && event.ctrlKey && !event.shiftKey))) { event.preventDefault(); travel(event.code === 'KeyZ' && !event.shiftKey); return; }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') { event.preventDefault(); toggleQuote(); return; }

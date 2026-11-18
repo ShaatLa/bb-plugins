@@ -27,12 +27,13 @@ type Props = {
   // The thread is working: like bb, an empty box turns Send into Stop.
   onStop?: () => void;
   poolFirst?: boolean;
+  onHistory?: (direction: 'up' | 'down') => boolean;
   modelPicker?: ExperimentalProviderModelPickerProps;
   permissionPicker?: ExperimentalPermissionModePickerProps;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker, permissionPicker }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker, permissionPicker, onHistory }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
@@ -90,7 +91,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {viewed >= 0 && <ImageLightbox isOpen imageSrc={urlOf(images[viewed]!.path) ?? null} imageAlt={images[viewed]!.name} title={images[viewed]!.name} hasMultipleImages={images.length > 1} previousDisabled={viewed === 0} nextDisabled={viewed === images.length - 1} onClose={() => setViewing(null)} onPrevious={() => view(images[viewed - 1]!.path)} onNext={() => view(images[viewed + 1]!.path)} />}
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
     <div className="px-3.5 pt-1.5 pb-2">
-      <RichEditor insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
+      <RichEditor onHistory={onHistory} insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
       <div data-composer-toolbar className="relative flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1">
           <Button type="button" size="icon" variant="ghost" className="-ml-2 size-8 shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
