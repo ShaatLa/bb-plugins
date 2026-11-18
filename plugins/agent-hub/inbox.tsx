@@ -27,7 +27,7 @@ import { WorkLog, ThreadPlan } from './work-log';
 import { useAgentActivity } from './activity';
 import { deliveryError } from './delivery';
 import { buildReplyMessage } from './reply-message';
-import { Composer, localInput, SendButton } from './composer';
+import { uploadAttachment, Composer, localInput, SendButton } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 import { ComposerThread } from './rich-editor';
@@ -973,10 +973,24 @@ function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { e
   </li>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
-  const rpc = useRpc<AnswersRpcContract>();
+  const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk();
+  const [dragging, setDragging] = useState(false);
   const editors = useRef(new Map<string, Editor>()).current;
   const [pending, setPending] = useState(false);
   const [focusId, setFocusId] = useState<string>();
+  async function dropFiles(files: File[]) {
+    if (!files.length || pending) return;
+    setPending(true); setFeedback('');
+    try {
+      if (!pool.projectId) throw new Error('Attachments need a thread in a project');
+      if (files.length > 10) throw new Error('At most 10 attachments');
+      const attachments: Attachment[] = [];
+      for (const file of files) attachments.push(await uploadAttachment(sdk, pool.projectId, file));
+      const { id } = await rpc.call('poolAdd', { threadId: pool.threadId, quote: '', note: '', attachments });
+      setFocusId(id);
+    } catch (e) { setFeedback(`Not added — ${errorText(e)}`); }
+    finally { setPending(false); }
+  }
   async function addMessage() {
     try { const { id } = await rpc.call('poolAdd', { threadId: pool.threadId, quote: '', note: '' }); setFocusId(id); } catch (e) { setFeedback(`Not added — ${errorText(e)}`); }
   }
@@ -989,7 +1003,7 @@ function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: stri
     } catch (e) { setFeedback(deliveryError(e)); }
     finally { setPending(false); }
   }
-  return <section className="space-y-2 border-b border-border-seam px-3 py-3 last:border-b-0">
+  return <section data-file-drop onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); void dropFiles(Array.from(event.dataTransfer.files)); }} className={`space-y-2 border-b border-border-seam px-3 py-3 last:border-b-0 ${dragging ? 'ring-1 ring-ring' : ''}`}>
     <UrlLink className="block truncate text-sm font-medium hover:underline" href={`${pool.projectId ? `/projects/${pool.projectId}` : ''}/threads/${pool.threadId}`}>{pool.threadTitle ?? 'Untitled thread'}</UrlLink>
     <ul className="space-y-2">{pool.entries.map(entry => <PoolNote key={entry.id} {...{ entry, editors, pending }} projectId={pool.projectId} onSend={(id, options) => { if (!pending) void sendAll(options, id); }} autoFocus={entry.id === focusId} />)}</ul>
     {/* Read and write first, then act: the actions sit under the messages. */}

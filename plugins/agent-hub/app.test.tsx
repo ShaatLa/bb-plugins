@@ -898,3 +898,24 @@ it.each([false,true])('Mark all read visibility follows %s',async showMarkAllRea
 it('hides Mark all read by default',async()=>{
  const {slot}=await setup({getPreferences:()=>({})});pickView(slot,'Unread');expect(slot.queryByRole('button',{name:'Mark all read'})).toBeNull();
 });
+it.each(['header', 'entry'])('drops files onto the pool %s without creating duplicate entries', async target => {
+  const { Pools } = await import('./inbox');
+  const entry = { id: 'pool_example', threadId: item.threadId, quote: '', quoteSeq: null, itemId: null, note: 'Ready', attachments: [], revision: 0, createdAt: 1, updatedAt: 1 };
+  const poolAdd = vi.fn(() => ({ id: 'pool_new' })), poolUpdate = vi.fn(() => ({ revision: 1 }));
+  const file = new File(['data'], 'file.txt', { type: 'text/plain' });
+  const upload = vi.fn(async () => ({ type: 'localFile', path: 'file.txt', name: 'file.txt' }));
+  const slot = renderSlot({ component: Pools }, {}, { rpc: { pools: () => ({ pools: [{ threadId: item.threadId, threadTitle: 'Pool thread', projectId: 'pr_one', entries: [entry] }] }), poolAdd, poolUpdate }, sdk: { projects: { attachments: { upload } } } } as any);
+  const editor = await slot.findByRole('textbox', { name: 'Pool note' });
+  const zone = target === 'entry' ? editor.closest('form')! : slot.getByRole('link', { name: 'Pool thread' });
+  fireEvent.dragOver(zone, { dataTransfer: { types: ['Files'] } });
+  expect(zone.closest('[data-file-drop]')?.className).toContain('ring-ring');
+  fireEvent.drop(zone, { dataTransfer: { files: [file], types: ['Files'] } });
+  await waitFor(() => expect(upload).toHaveBeenCalledWith({ projectId: 'pr_one', clientFile: file, mimeType: 'text/plain' }));
+  if (target === 'entry') {
+    await waitFor(() => expect(poolUpdate).toHaveBeenCalledWith({ id: 'pool_example', note: 'Ready', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }], revision: 0 }), { timeout: 2000 });
+    expect(poolAdd).not.toHaveBeenCalled();
+  } else {
+    await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, quote: '', note: '', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }] }));
+    expect(poolUpdate).not.toHaveBeenCalled();
+  }
+});

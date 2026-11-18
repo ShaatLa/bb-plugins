@@ -8,6 +8,10 @@ import { Button } from './components/ui/button';
 const previews = new Map<string, string>();
 const dropPreview = (path: string) => { const url = previews.get(path); if (url) { URL.revokeObjectURL(url); previews.delete(path); } };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+export async function uploadAttachment(sdk: ReturnType<typeof useSdk>, projectId: string, file: File): Promise<Attachment> {
+  const { type, path, name, mimeType, sizeBytes, sourceProjectId } = await sdk.projects.attachments.upload({ projectId, clientFile: file, ...(file.type ? { mimeType: file.type } : {}) });
+  return { type, path, name, ...(mimeType ? { mimeType } : {}), ...(sizeBytes ? { sizeBytes } : {}), ...(sourceProjectId ? { sourceProjectId } : {}) };
+}
 // datetime-local value (local time) for a moment, and for the next whole hour.
 export const localInput = (at: number) => new Date(at - new Date(at).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 function nextHour() { const at = new Date(Date.now() + 3600e3); at.setMinutes(0, 0, 0); return localInput(at.getTime()); }
@@ -35,6 +39,7 @@ type Props = {
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker, permissionPicker, onHistory }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null);
+  const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
   const urlOf = (path: string) => previews.get(path) ?? savedPreviews[path];
@@ -66,17 +71,16 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     setError(''); setUploading(n => n + files.length);
     for (const file of files) {
       try {
-        const uploaded = await sdk.projects.attachments.upload({ projectId, clientFile: file, ...(file.type ? { mimeType: file.type } : {}) });
+        const uploaded = await uploadAttachment(sdk, projectId, file);
         if (uploaded.type === 'localImage') { dropPreview(uploaded.path); previews.set(uploaded.path, URL.createObjectURL(file)); }
-        const { type, path, name, mimeType, sizeBytes, sourceProjectId } = uploaded;
-        onAttachments(old => [...old, { type, path, name, ...(mimeType ? { mimeType } : {}), ...(sizeBytes ? { sizeBytes } : {}), ...(sourceProjectId ? { sourceProjectId } : {}) }]);
+        onAttachments(old => [...old, uploaded]);
       } catch (e) { setError(`${file.name}: ${errorText(e)}`); }
       finally { setUploading(n => n - 1); }
     }
   }
   const blocked = sendDisabled || pending || uploading > 0 || voiceActive;
   const submit = (options?: SendOptions) => { if (!blocked) onSend(options); };
-  return <form ref={root} className={`group/promptbox relative w-full rounded-xl border border-border bg-background ${className}`} onSubmit={event => event.preventDefault()} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); }}>
+  return <form ref={root} data-file-drop className={`group/promptbox relative w-full rounded-xl border border-border bg-background ${className} ${dragging ? 'ring-1 ring-ring' : ''}`} onSubmit={event => event.preventDefault()} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); setDragging(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={event => { setDragging(false); if (!event.dataTransfer.files.length) return; event.preventDefault(); event.stopPropagation(); void attach(Array.from(event.dataTransfer.files)); }}>
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3.5 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
