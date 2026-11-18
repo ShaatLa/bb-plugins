@@ -126,6 +126,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // bb shows another thread's or a plugin's message the moment the turn takes it; so does the chat, answered at turn end.
    // Child-completion and script wakes keep appearing only with a reply, as bb batches them.
    if (first && (trigger?.kind === 'agent' || trigger?.kind === 'plugin')) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'waiting',?,?,?,?,?,?)`).run(turnUpdateId(threadId,turn),threadId,projectId,trigger.text,e.createdAt ?? now,trigger.kind,trigger.source_id,e.createdAt ?? now,now);
+   // One that joins a turn already under way (a steer, or a second message taken with the first) has no reply of its own; it still shows, read.
+   else if (trigger?.kind === 'agent' || trigger?.kind === 'plugin') hidden += db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answered_at,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|joined|'+d.clientRequestId).digest('hex'),threadId,projectId,trigger.text,e.createdAt ?? now,e.createdAt ?? now,trigger.kind,trigger.source_id,e.createdAt ?? now,now).changes;
    hidden += db.prepare('DELETE FROM request_triggers WHERE thread_id=? AND request_id=?').run(threadId,d.clientRequestId).changes;
    // Accepted while the turn was already producing items: a steer, unseen until the agent's next tool result.
    if ((db.prepare('SELECT busy FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {busy:number}|undefined)?.busy)

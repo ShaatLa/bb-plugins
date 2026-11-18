@@ -125,6 +125,13 @@ describe('updates',()=>{
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:kind==='agent'||kind==='plugin' ? 100 : 77,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
  });
+ it('shows another thread\'s or a plugin\'s message that joins a turn already under way, read, while the owner\'s message keeps the reply',()=>{
+  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] steer')}),accept(6,'s'),req(7,'q',{originPluginId:'example-plugin',input:text('notice')}),accept(8,'q'),message(9),done(10)],'p',100,true,true);
+  expect(updates(db)).toEqual(expect.arrayContaining([expect.objectContaining({status:'answered',question:'[bb message from thread:thr_s] steer',answer:null,trigger_kind:'agent',trigger_source:'thr_s',read_at:100}),expect.objectContaining({status:'answered',question:'notice',trigger_kind:'plugin',trigger_source:'example-plugin',read_at:100})]));
+  expect(updates(db)).toHaveLength(2);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
+ });
  it('shows another thread\'s message when the turn takes it, and keeps it when the turn stops without a reply',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')}),start(),accept()],'p',100,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',question:'[bb message from thread:thr_s] hi',answer:null,trigger_kind:'agent',trigger_source:'thr_s',created_at:100,read_at:100})]);
