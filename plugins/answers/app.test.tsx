@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
-import { useComposer } from '@get-bb/plugin-sdk/app';
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_saveFile: vi.fn(async () => 'started') }));
+import { useComposer, experimental_saveFile } from '@get-bb/plugin-sdk/app';
 import { loadPluginApp, renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 import { itemSchema, type Item } from './contract';
@@ -860,4 +861,14 @@ it('puts blocking questions first in the Questions section',async()=>{
  const normal={...item,id:'ans_n',kind:'for_me',status:'open',question:'Choose?',createdAt:1}, blocking={...normal,id:'ans_b',question:'Blocking?',urgency:'blocking',createdAt:2};
  const slot=await questionsSetup({list:()=>({items:[normal,blocking],nextCursor:null})});
  const text=slot.container.textContent!;expect(text.indexOf('Blocking?')).toBeLessThan(text.indexOf('Choose?'));expect(slot.getByText('Blocking')).toBeTruthy();
+});
+
+it('saves an attachment through the host file API', async () => {
+  const { ItemCard } = await import('./app');
+  const saveFile = vi.mocked(experimental_saveFile); saveFile.mockClear();
+  const slot = renderSlot({ component: () => <ItemCard item={{ ...item, attachments: [{ type: 'localFile', path: 'notes.txt', name: 'notes.txt' }] }} chat /> }, {}, {
+    sdk: { projects: { attachments: { read: async () => ({ bytes: new Uint8Array([65]), mimeType: 'text/plain', sizeBytes: 1 }) } } },
+  });
+  fireEvent.click(slot.getByRole('link', { name: 'notes.txt' }));
+  await waitFor(() => expect(saveFile).toHaveBeenCalledWith({ fileName: 'notes.txt', blob: expect.any(Blob) }));
 });

@@ -78,11 +78,11 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3.5 pt-3">
       {attachments.map(file => <li key={file.path} className="group/file relative flex max-w-[180px] items-center gap-1.5 rounded-lg border border-border-seam bg-surface-recessed py-1 pl-1.5 pr-6 text-xs">
-        {(chip => file.type === 'localImage' ? <button type="button" aria-label={`Open ${file.name}`} className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => view(file.path)}>{chip}</button> : <span className="flex min-w-0 items-center gap-1.5">{chip}</span>)(<>
+        {(chip => file.type === 'localImage' ? <button type="button" aria-label={`Open ${file.name}`} className="answers-hit flex min-w-0 cursor-pointer items-center gap-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => view(file.path)}>{chip}</button> : <span className="flex min-w-0 items-center gap-1.5">{chip}</span>)(<>
           {urlOf(file.path) ? <img src={urlOf(file.path)} alt="" className="size-6 shrink-0 rounded object-cover" /> : <Icon name={file.type === 'localImage' ? 'FileAttachment' : 'File'} aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
           <span className="truncate" title={file.name}>{file.name}</span>
         </>)}
-        <button type="button" aria-label={`Remove ${file.name}`} className="absolute right-1 rounded p-0.5 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => onAttachments(old => old.filter(f => f.path !== file.path))}><Icon name="X" aria-hidden className="size-3" /></button>
+        <button type="button" aria-label={`Remove ${file.name}`} className="answers-hit absolute right-1 rounded p-0.5 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => onAttachments(old => old.filter(f => f.path !== file.path))}><Icon name="X" aria-hidden className="size-3" /></button>
       </li>)}
       {uploading > 0 && <li role="status" className="flex items-center rounded-lg border border-dashed border-border-seam px-2 py-1 text-xs text-muted-foreground">Uploading {uploading}…</li>}
     </ul>}
@@ -125,10 +125,10 @@ export function SendButton({ label, disabled, onSend, onPool, poolFirst = false,
     {menu && <div role="menu" className={`absolute right-0 z-20 w-56 rounded-lg border border-border bg-background p-1 shadow-lg ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
       {later === null ? <>
         {/* Adding to the pool needs no text, so it stays available while sending is blocked. */}
-        {pooling && <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend(); }}><Icon name="ArrowUp" aria-hidden className="size-4 text-muted-foreground" />Send now</button>}
-        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'steer' }); }}><Icon name="CornerDownRight" aria-hidden className="size-4 text-muted-foreground" />Steer</button>
-        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'draft' }); }}><Icon name="EditFile" aria-hidden className="size-4 text-muted-foreground" />Save draft</button>
-        <button type="button" role="menuitem" className={`${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => setLater(nextHour())}><Icon name="TimeSchedule" aria-hidden className="size-4 text-muted-foreground" />Send later…</button>
+        {pooling && <button type="button" role="menuitem" className={`answers-hit ${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend(); }}><Icon name="ArrowUp" aria-hidden className="size-4 text-muted-foreground" />Send now</button>}
+        <button type="button" role="menuitem" className={`answers-hit ${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'steer' }); }}><Icon name="CornerDownRight" aria-hidden className="size-4 text-muted-foreground" />Steer</button>
+        <button type="button" role="menuitem" className={`answers-hit ${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => { close(); onSend({ mode: 'draft' }); }}><Icon name="EditFile" aria-hidden className="size-4 text-muted-foreground" />Save draft</button>
+        <button type="button" role="menuitem" className={`answers-hit ${item} disabled:pointer-events-none disabled:opacity-50`} disabled={disabled} onClick={() => setLater(nextHour())}><Icon name="TimeSchedule" aria-hidden className="size-4 text-muted-foreground" />Send later…</button>
         {onPool && !pooling && <button type="button" role="menuitem" className={item} onClick={() => { close(); onPool(); }}><Icon name="ListEnd" aria-hidden className="size-4 text-muted-foreground" />Add to reply pool</button>}
       </> : <div className="space-y-2 p-1.5">
         <input type="datetime-local" aria-label="Send at" autoFocus className="w-full rounded-md border border-border-seam bg-transparent px-2 py-1 text-sm" value={later} onChange={event => setLater(event.target.value)} />

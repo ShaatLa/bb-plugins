@@ -1,3 +1,4 @@
+import './touch.css';
 import { MessageCopy, messageLink } from './message-copy';
 import { useThreadCommands, commandMention } from './thread-commands';
 import { AnswersContacts } from './contacts';
@@ -7,7 +8,7 @@ import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { definePluginApp, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { answerText, PendingInteractions, QuestionForm, usePendingInteractionRows } from './interactions';
@@ -41,6 +42,7 @@ function attachmentsText(attachments: ItemAttachment[]) {
 function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachment[]; projectId: string | null }) {
   const sdk = useSdk(), [urls, setUrls] = useState<Record<number, string>>({}), [open, setOpen] = useState<number | null>(null);
   const container = useRef<HTMLDivElement>(null);
+  const [saveError, setSaveError] = useState('');
   useEffect(() => {
     let active = true;
     const loaded: string[] = [];
@@ -66,10 +68,12 @@ function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachme
   const download = async (attachment: ItemAttachment) => {
     const owner = attachment.sourceProjectId ?? projectId;
     if (!owner) return;
-    const file = await sdk.projects.attachments.read({ projectId: owner, path: attachment.path });
-    const url = URL.createObjectURL(new Blob([file.bytes as BlobPart], { type: file.mimeType }));
-    const link = document.createElement('a'); link.href = url; link.download = attachment.name ?? attachment.path.split('/').at(-1) ?? 'Attachment'; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setSaveError('');
+    try {
+      const file = await sdk.projects.attachments.read({ projectId: owner, path: attachment.path });
+      const outcome = await experimental_saveFile({ fileName: attachment.name ?? attachment.path.split('/').at(-1) ?? 'Attachment', blob: new Blob([file.bytes as BlobPart], { type: file.mimeType }) });
+      if (outcome === 'failed') setSaveError('Save failed');
+    } catch (cause) { setSaveError(message(cause)); }
   };
   const images = attachments.map((attachment, index) => attachment.type === 'localImage' ? index : -1).filter(index => index >= 0);
   const selected = open === null ? null : attachments[open];
@@ -79,6 +83,7 @@ function ItemAttachments({ attachments, projectId }: { attachments: ItemAttachme
       return attachment.type === 'localImage' ? <button key={index} data-answers-image={index} type="button" aria-label={name} className="overflow-hidden rounded-lg border border-border-seam" onClick={() => setOpen(index)} disabled={!url}>{url ? <img src={url} alt={name} className="max-h-48 max-w-64 object-contain" /> : <span className="block px-3 py-2 text-xs">{name}</span>}</button>
         : <a key={index} href="#" download={name} onClick={event => { event.preventDefault(); void download(attachment); }} className="inline-flex items-center gap-1.5 rounded-lg border border-border-seam px-2.5 py-1.5 text-xs hover:bg-state-hover"><Icon name="File" aria-hidden className="size-4" />{name}</a>;
     })}</div>
+    {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
     {selected && <ImageLightbox isOpen imageSrc={urls[open!] ?? null} imageAlt={selected.name ?? 'Attached image'} title={selected.name ?? selected.path.split('/').at(-1) ?? 'Image'} hasMultipleImages={images.length > 1} previousDisabled={open === images[0]} nextDisabled={open === images.at(-1)} onClose={() => setOpen(null)} onPrevious={() => setOpen(images[images.indexOf(open!) - 1] ?? null)} onNext={() => setOpen(images[images.indexOf(open!) + 1] ?? null)} />}
   </>;
 }
@@ -319,7 +324,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const interimReply = interimShown && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot under the interim reply says the work goes on (where the answer will come); afterwards a clock marks the reply as interim. */}
       {item.status === 'deferred' && robot ? <>{agentBody(item.interim, item.interimSeq)}<span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span></> : <>{/* Under "Answered below" that line already says this reply was not the answer, so the clock would only repeat it; once the
         question is settled (the owner marked it answered) the reply is the last word and nothing is owed. */}{part !== 'question' && !answeredHere && item.status !== 'answered' && <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</>}</div>;
-  return <li ref={card} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={compact ? 'group space-y-1.5 py-2' : chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
+  return <li ref={card} data-pending-title={item.kind === 'for_me' && item.status === 'open' ? item.question : undefined} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={compact ? 'group space-y-1.5 py-2' : chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
     {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
