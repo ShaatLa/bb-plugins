@@ -28,6 +28,7 @@ if a.candidate != 'none':
 print(f'sweep: {a.age} threads, 1 cards checked, 1 actions')
 raise SystemExit(int(a.key != 'none' or a.candidate != 'none'))
 `);
+await writeFile(join(repo,'invalid.py'), `import os\nwith open(os.environ['BB_SWEEP_CANDIDATE_SNAPSHOT'],'w') as candidate:\n candidate.write('invalid JSON')\n`);
 git('add','.');git('commit','-m','fixture');
 const projectId='proj_test', first='thr_first', second='thr_second';
 const config={enabled:true,branch:'main',script:'sweep.py',args:[],manager:first,snapshots:true,intervalMinutes:1,timeoutSeconds:300};
@@ -170,11 +171,32 @@ try {
   const stats=()=>harness.behavior.callRpc('stats',{projectId,days:1});
   const scheduled=()=>harness.behavior.runSchedule('sweep');
   const status=()=>harness.behavior.callRpc('status',{projectId});
+  const refuseCli = async (args, fix) => {
+    const result = await harness.behavior.runCli(args, { projectId });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, fix);
+  };
   await assert.rejects(set('remote',repo));
+  await assert.rejects(harness.behavior.callRpc('environment.write',{bbCli:'relative/bb',runtimePath:''}), error => {
+    assert.equal(error.code, 'invalid_input');
+    assert.match(error.issues[0].message, /absolute path/);
+    return true;
+  });
+  await refuseCli(['run'], /--project <id> explicitly/);
+  await refuseCli(['config','set','branch','main'], /--project <id> explicitly/);
+  await refuseCli(['config','set','branch','main','--project',projectId,'--project','proj_other'], /Pass --project only once/);
+  await refuseCli(['config','set','branch','main','--project',projectId,'--dry-run'], /config get/);
+  assert.equal(await get(), null);
   assert.deepEqual(await set('branch','main'),{branch:'main'});
   assert.deepEqual(await get('branch'),{branch:'main'});
   assert.equal((await status()).config,null);
-  await assert.rejects(set('enabled',true));
+  await assert.rejects(set('enabled',true), /Set branch .* and script/);
+  await harness.behavior.callRpc('configure',{projectId,config:{...config,script:'invalid.py'}});
+  const invalid = await harness.behavior.callRpc('run',{projectId});
+  assert.equal(invalid.exitCode, 2);
+  assert.match(invalid.output, /Write a complete JSON document/);
+  assert.equal((await status()).pending, null);
+  await assert.rejects(harness.behavior.callRpc('seed-state',{projectId,snapshot:'{}'}), /config set enabled false/);
   const repeatedConfig={...config,script:'repeat.py',args:['5','EXA-1','none']};
   await harness.behavior.callRpc('configure',{projectId,config:repeatedConfig});
   await scheduled();

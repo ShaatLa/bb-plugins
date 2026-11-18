@@ -73,17 +73,23 @@ export async function execute(base: string, projectId: string, config: Config & 
     throw new CheckoutRefreshError(`Checkout refresh failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
   }
   const script = await realpath(join(root, config.script)), rel = relative(await realpath(root), script);
-  if (isAbsolute(rel) || rel === '..' || rel.startsWith('../')) throw new Error('Script escapes checkout');
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith('../')) throw new Error('Set script to a path inside the checkout, for example checks/sweep.py. Its symlinks must also resolve inside the checkout.');
   const temp = await mkdtemp(join(base, 'sweep-'));
   try {
     const committed = join(temp, 'committed.json'), candidate = join(temp, 'candidate.json');
     if (previous) await writeFile(committed, previous, { mode: 0o400 });
-    if (bbCli && !isAbsolute(bbCli)) throw new Error('BB CLI path must be absolute');
+    if (bbCli && !isAbsolute(bbCli)) throw new Error('Set bbCli to the absolute path to bb (for example /opt/bin/bb), or clear bbCli to use the server environment.');
     const env = { ...process.env, PATH: [bbCli ? dirname(bbCli) : '', runtimePath || process.env.PATH || ''].filter(Boolean).join(delimiter), ...(bbCli ? { BB_CLI: bbCli } : {}), BB_PROJECT_ID: projectId, BB_THREAD_ID: config.manager, BB_SWEEP_COMMITTED_STATE: committed, BB_SWEEP_CANDIDATE_SNAPSHOT: candidate };
     const args = config.args.map(arg => arg.replaceAll('{manager}', config.manager));
     const result = await command(script.endsWith('.py') ? 'python3' : script, [...(script.endsWith('.py') ? [script] : []), ...args, ...(config.snapshots ? ['--committed-state', committed, '--candidate-snapshot', candidate] : [])], root, signal, config.timeoutSeconds * 1000, env);
     let snapshot: Buffer | null = null;
-    if (config.snapshots && result.code <= 1) { try { snapshot = await readFile(candidate); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; } }
+    if (config.snapshots && result.code <= 1) {
+      snapshot = await readFile(candidate).catch(missingIsNull);
+      if (snapshot) {
+        try { JSON.parse(snapshot.toString('utf8')); }
+        catch (cause) { throw new Error('Write a complete JSON document to --candidate-snapshot, or omit the candidate if nothing needs acknowledgement.', { cause }); }
+      }
+    }
     return { ...result, snapshot };
   } finally { await rm(temp, { recursive: true, force: true }); }
 }

@@ -1,7 +1,7 @@
 import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
 import { sweepHistory } from './history.ts';
@@ -11,6 +11,7 @@ import { reportContents } from './reports.ts';
 import { CheckoutRefreshError, execute } from './runner.ts';
 
 const repositoryUrl = z.string().min(1).max(2000).refine(s => !s.startsWith('-'));
+const bbCliSchema = z.string().refine(path => path === '' || isAbsolute(path), 'Enter the absolute path to bb (for example /opt/bin/bb), or clear bbCli to use the server environment.');
 export const configSchema = z.object({ enabled: z.boolean().default(false), branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/), script: z.string().min(1).max(1000).refine(s => !s.startsWith('/') && !s.split('/').includes('..')), args: z.array(z.string().max(10000)).max(100).default([]), manager: z.string().regex(/^(thr_[a-z0-9]+)?$/).default(''), intervalMinutes: z.number().int().min(1).max(1440).default(10), timeoutSeconds: z.number().int().min(1).max(300).default(300), snapshots: z.boolean().default(false) });
 export type Config = z.infer<typeof configSchema>;
 const projectDraft = configSchema.partial().refine(config => !config.enabled || configSchema.safeParse(config).success, 'Complete the checkout settings before enabling Sweep');
@@ -20,22 +21,30 @@ const configGetInput = input.extend({ key: configKey.optional() });
 const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
 export const contract = defineRpcContract({
   ...overviewContract,
-  'settings.read': { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), hasRepository: z.boolean(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
-  'environment.write': { input: z.object({ bbCli: z.string(), runtimePath: z.string() }).strict(), output: z.unknown() },
-  configure: { input: z.object({ projectId, config: configSchema.extend({ remote: z.string().optional() }).strict().transform(config => configSchema.parse(config)) }).strict(), output: z.unknown() },
-  'config.get': { input: configGetInput, output: z.unknown() },
-  'config.set': { input: configSetInput, output: z.unknown() },
-  'seed-state': { input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Snapshot must be JSON') }).strict(), output: z.object({ seeded: z.literal(true) }) },
-  status: { input, output: z.unknown() },
-  run: { input, output: z.unknown() },
+  'settings.read': { experimental_description: 'Read settings and UI choices. For one project, use config.get.', input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), hasRepository: z.boolean(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
+  'environment.write': { experimental_description: 'Replace both global execution settings (bbCli and runtimePath). Use native plugin config to change one field.', input: z.object({ bbCli: bbCliSchema, runtimePath: z.string() }).strict(), output: z.unknown() },
+  configure: { experimental_description: 'Replace the entire configuration for one project. Use config.set for one field. Changing manager redirects pending reports.', input: z.object({ projectId, config: configSchema.extend({ remote: z.string().optional() }).strict().transform(config => configSchema.parse(config)) }).strict(), output: z.unknown() },
+  'config.get': { experimental_description: 'Read project configuration or only the requested key, for example {"projectId":"proj_example","key":"manager"}.', input: configGetInput, output: z.unknown() },
+  'config.set': { experimental_description: 'Set and return one key, for example {"projectId":"proj_example","key":"manager","value":"thr_example"}. A new manager receives pending reports too.', input: configSetInput, output: z.unknown() },
+  'seed-state': { experimental_description: 'Import committed JSON once for a disabled project with no committed state or pending report. For example {"projectId":"proj_example","snapshot":"{}"}.', input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Pass the contents of the committed JSON file as a string, for example "{}".') }).strict(), output: z.object({ seeded: z.literal(true) }) },
+  status: { experimental_description: 'Read the last scheduled result and any pending report for one project.', input, output: z.unknown() },
+  run: { experimental_description: 'Refresh the checkout and execute the configured script. Sweep does not deliver or acknowledge the result. The script can have side effects.', input, output: z.unknown() },
 });
 type ReportReceipt = { fingerprint: string; manager?: string };
 type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 const maxRefreshBackoffMs = 3600000;
 const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
+const cliHelp = {
+  status: 'bb sweep status [--project <id>] [--json]\nRead the last scheduled run, delivery and pending report. Example: bb sweep status --project proj_example --json',
+  manager: 'bb sweep manager [--project <id>] [--json]\nRead the configured manager ID (or null). Example: bb sweep manager --project proj_example',
+  run: 'bb sweep run --project <id> [--dry-run] [--json]\nRefresh the checkout and execute its configured script. This never changes Sweep status, delivers a report or acknowledges a snapshot. The script can have side effects. Example: bb sweep run --project proj_example --dry-run',
+  config: 'bb sweep config get [<key>] [--project <id>] [--json]\nbb sweep config set <key> <value> --project <id> [--json]\nRequired before enabling: branch (for example main), script (repository-relative, for example checks/sweep.py). Other keys: enabled and snapshots (true/false), args (JSON array of strings), manager (a thread ID or empty), intervalMinutes (1–1440), timeoutSeconds (script timeout, 1–300). Changing manager also redirects pending reports. Set the Git URL in the bb project settings. Example: bb sweep config set args \'["--brief"]\' --project proj_example',
+  stats: 'bb sweep stats [--days <1-30>] [--project <id>] [--json]\nRead scheduled-run statistics for the last 1–30 days (default 1). Example: bb sweep stats --days 7 --project proj_example',
+};
+const cliSummary = 'Read status, manager or stats, edit one project setting, or run a check manually';
 export default async function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
+  const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '', experimental_schema: bbCliSchema }, projects: { type: 'string', label: 'All project settings (legacy JSON replacement)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Pass a JSON object keyed by project ID, or use bb sweep config set <key> <value> --project proj_example to edit one field.') } });
   settings.onChange((next, previous) => {
     if (next.projects !== previous.projects) bb.rpc.experimental_invalidate([projectsTag, managerTag]);
   });
@@ -57,11 +66,11 @@ export default async function plugin(bb: BbPluginApi) {
   const controller = new AbortController(); bb.onDispose(() => controller.abort());
   const busy = new Set<string>();
   async function managerFor(manager: string | undefined) {
-    if (!manager) throw new Error('Manager is unset');
+    if (!manager) throw new Error('Manager is unset. Set the manager field to an available thread ID.');
     const thread = await bb.sdk.threads.get({ threadId: manager });
-    if (!thread || thread.archivedAt || thread.deletedAt) throw new Error('Manager missing, archived or deleted');
-    if (thread.status === 'error' || thread.runtime.displayStatus === 'error') throw new Error('Manager thread failed');
-    if (thread.runtime.displayStatus === 'waiting-for-host') throw new Error('Manager host unreachable');
+    if (!thread || thread.archivedAt || thread.deletedAt) throw new Error('Manager missing, archived or deleted. Set the manager field to an available thread ID.');
+    if (thread.status === 'error' || thread.runtime.displayStatus === 'error') throw new Error('Manager thread failed. Recover the thread or set the manager field to an available thread ID.');
+    if (thread.runtime.displayStatus === 'waiting-for-host') throw new Error('Manager host unreachable. Bring the host online or set the manager field to an available thread ID.');
     return manager;
   }
   async function deliver(id: string, current: State, tickId: string) {
@@ -88,7 +97,7 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const { plugins } = await bb.sdk.plugins.list({ signal: controller.signal });
         const pluginId = ['agent-hub', 'answers'].find(id => plugins.some(plugin => plugin.id === id && plugin.enabled));
-        if (!pluginId) throw new Error('No enabled Agent Hub or Answers plugin');
+        if (!pluginId) throw new Error('No enabled Agent Hub or Answers plugin. Restore manager delivery or enable Agent Hub to receive pending reports.');
         const notice = await bb.sdk.plugins.callRpc({
           pluginId, method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
           input: {
@@ -121,13 +130,13 @@ export default async function plugin(bb: BbPluginApi) {
     })();
   }
   async function tick(id: string, manual = false) {
-    if (busy.has(id)) throw new Error('Sweep already running');
+    if (busy.has(id)) throw new Error('Sweep is already running for this project. Wait for the active check to finish and retry.');
     busy.add(id);
     const current = state(id);
     let config: Config | undefined;
     let historyChanged = false;
     try {
-      config = (await configs())[id]; if (!config) throw new Error('Project not configured');
+      config = (await configs())[id]; if (!config) throw new Error('Set branch and script with bb sweep config set <key> <value> --project <id> before running Sweep.');
       const now = Date.now(), interval = config.intervalMinutes * 60000;
       const timestamp = Math.max(now, (Number(current.tickId?.split(':')[1]) || 0) + 1);
       const tickId = `${id}:${timestamp}`;
@@ -225,9 +234,14 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
   let writes = Promise.resolve();
-  async function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>) {
-    const operation = writes.then(async () => {
-      if (!(await bb.sdk.projects.list()).some(p => p.id === id)) throw new Error('Unknown project');
+  function serializeWrite<T>(write: () => Promise<T>) {
+    const operation = writes.then(write);
+    writes = operation.then(() => {}, () => {});
+    return operation;
+  }
+  function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>) {
+    return serializeWrite(async () => {
+      if (!(await bb.sdk.projects.list()).some(p => p.id === id)) throw new Error('Unknown project. Run bb project list and use an existing project ID.');
       const projects = await drafts();
       const previous = projects[id];
       const config = edit(previous);
@@ -243,8 +257,6 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return config;
     });
-    writes = operation.then(() => {}, () => {});
-    return operation;
   }
   const configure = async ({ projectId, config }: { projectId: string; config: Config }) => {
     await writeConfig(projectId, () => config);
@@ -256,19 +268,31 @@ export default async function plugin(bb: BbPluginApi) {
   };
   const configSet = async ({ projectId, key, value }: z.infer<typeof configSetInput>) => {
     const parsed = configSchema.shape[key].safeParse(value);
-    if (!parsed.success) throw new Error(`Invalid ${key}: ${parsed.error.issues[0].message}`);
+    if (!parsed.success) throw new Error(`Invalid ${key}: ${parsed.error.issues[0].message}. Run bb sweep config --help for accepted values.`);
     const config = await writeConfig(projectId, current => {
       const next = { ...current, [key]: parsed.data };
-      return next.enabled ? configSchema.parse(next) : next;
+      if (!next.enabled) return next;
+      const enabled = configSchema.safeParse(next);
+      if (!enabled.success) throw new Error('Set branch (for example main) and script (for example checks/sweep.py) before enabling Sweep.');
+      return enabled.data;
     });
     return { [key]: config[key] };
   };
+  const seedState = ({ projectId, snapshot }: { projectId: string; snapshot: string }) => serializeWrite(async () => {
+    if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error('Unknown project. Run bb project list and use an existing project ID.');
+    const config = (await configs())[projectId];
+    if (!config) throw new Error('Set branch and script before importing committed state.');
+    if (config.enabled) throw new Error(`Disable Sweep first with bb sweep config set enabled false --project ${projectId}.`);
+    if (busy.has(projectId)) throw new Error('Wait for the active Sweep check to finish before importing committed state.');
+    deliveries.seed(projectId, Buffer.from(snapshot));
+    return { seeded: true as const };
+  });
   bb.rpc.register(contract, {
     'overview.projects': async () => {
       const projects = await configs();
       return (await bb.sdk.projects.list()).flatMap(({ id, name }) => projects[id] ? [{ id, name, enabled: projects[id].enabled }] : []);
     },
-    'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, hasRepository: repositoryUrl.safeParse(p.gitRemoteUrl).success, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'config.get': configGet, 'config.set': configSet, stats: ({ projectId, days }) => history.stats(projectId, days), 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
+    'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, hasRepository: repositoryUrl.safeParse(p.gitRemoteUrl).success, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'config.get': configGet, 'config.set': configSet, stats: ({ projectId, days }) => history.stats(projectId, days), 'seed-state': seedState, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
   const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.
@@ -283,36 +307,61 @@ export default async function plugin(bb: BbPluginApi) {
       }
     } finally { signal.removeEventListener('abort', abort); }
   } });
-  bb.cli.register({ name: 'sweep', summary: 'Read Sweep status, configure a project, report stats, or run manually', async run(argv, ctx) {
+  bb.cli.register({ name: 'sweep', summary: cliSummary, async run(argv, ctx) {
     try {
-      if (!argv.length || argv.includes('--help')) return { exitCode: 0, stdout: 'bb sweep status|manager|run [--project <id>] [--json]\nbb sweep config get [<key>] | config set <key> <value> [--project <id>]\nbb sweep stats [--days <1-30>] [--project <id>]' };
-      let id = ctx.projectId;
       const [command, ...args] = argv;
+      if (!command || command === '--help' || command === '-h') return { exitCode: 0, stdout: `bb sweep <status|manager|run|config|stats>\n${cliSummary}. Run bb sweep <command> --help for usage.\nRun and config set require exactly one --project <id>.` };
+      if (!Object.hasOwn(cliHelp, command)) throw new Error('Run bb sweep --help to choose a command.');
+      const help = cliHelp[command as keyof typeof cliHelp];
+      const advice = `Run bb sweep ${command} --help for usage.`;
+      let id = ctx.projectId;
       const positional: string[] = [];
+      const seen = new Set<string>();
       let days: number | undefined;
       for (let i = 0; i < args.length; i++) {
         const arg = args[i];
-        if (arg === '--project') id = args[++i];
-        else if (arg === '--days' && command === 'stats') days = Number(args[++i]);
-        else if (arg === '--json' || arg === '--dry-run') continue;
-        else if (command === 'config') positional.push(arg);
-        else throw new Error(`Unknown option ${arg}`);
+        if (arg === '--help' || arg === '-h') return { exitCode: 0, stdout: help };
+        if (arg === '--' && command === 'config') { positional.push(...args.slice(i + 1)); break; }
+        if (arg === '--dry-run' && command !== 'run') throw new Error('--dry-run is only valid for bb sweep run. Use bb sweep config get to inspect settings without changing them.');
+        if (arg === '--project' || (arg === '--days' && command === 'stats') || arg === '--json' || arg === '--dry-run') {
+          if (seen.has(arg)) throw new Error(`Pass ${arg} only once. ${advice}`);
+          seen.add(arg);
+          if (arg === '--project' || arg === '--days') {
+            const value = args[++i];
+            if (!value || value.startsWith('--')) throw new Error(`Pass a value after ${arg}. ${advice}`);
+            if (arg === '--project') id = value;
+            else days = Number(value);
+          }
+        } else if (command === 'config' && !arg.startsWith('--')) positional.push(arg);
+        else throw new Error(`Unexpected argument ${arg}. ${advice}`);
       }
-      if (!id) throw new Error('Supply --project <id>'); projectId.parse(id);
+      if (!id || ((command === 'run' || (command === 'config' && positional[0] === 'set')) && !seen.has('--project'))) {
+        throw new Error('Pass --project <id> explicitly, for example --project proj_example. Run bb project list to find the ID.');
+      }
+      if (!projectId.safeParse(id).success) throw new Error('Pass a bb project ID, for example --project proj_example. Run bb project list to find the ID.');
       let result;
       switch (command) {
         case 'status': result = await status(id); break;
         case 'manager': result = { manager: (await configs())[id]?.manager || null }; break;
         case 'run': result = await tick(id, true); break;
-        case 'stats': result = history.stats(id, statsInput.parse({ projectId: id, days }).days); break;
+        case 'stats': {
+          const stats = statsInput.safeParse({ projectId: id, days });
+          if (!stats.success) throw new Error(`Pass an integer from 1 through 30 for --days. ${advice}`);
+          result = history.stats(id, stats.data.days);
+          break;
+        }
         case 'config': {
           const [operation, field, raw] = positional;
           if (operation === 'get' && positional.length <= 2) {
-            result = await configGet(configGetInput.parse({ projectId: id, key: field }));
+            const parsed = configGetInput.safeParse({ projectId: id, key: field });
+            if (!parsed.success) throw new Error(`Unknown Sweep setting ${field}. ${advice}`);
+            result = await configGet(parsed.data);
             break;
           }
-          if (operation !== 'set' || positional.length !== 3) throw new Error('Use config get [<key>] or config set <key> <value>');
-          const key = configKey.parse(field);
+          if (operation !== 'set' || positional.length !== 3) throw new Error(`Use config get [<key>] or config set <key> <value>. ${advice}`);
+          const parsedKey = configKey.safeParse(field);
+          if (!parsedKey.success) throw new Error(`Unknown Sweep setting ${field}. ${advice}`);
+          const key = parsedKey.data;
           let value: unknown = raw;
           if (!configSchema.shape[key].safeParse(raw).success) {
             try { value = JSON.parse(raw); } catch { /* Validation will name the field. */ }
@@ -320,7 +369,6 @@ export default async function plugin(bb: BbPluginApi) {
           result = await configSet(configSetInput.parse({ projectId: id, key, value }));
           break;
         }
-        default: throw new Error('Use status, manager, run, config or stats');
       }
       return { exitCode: 0, stdout: JSON.stringify(result) };
     } catch (e) { return { exitCode: 1, stderr: String(e) }; }

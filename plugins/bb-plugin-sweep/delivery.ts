@@ -17,7 +17,7 @@ export function deliveryStore(db: Database.Database) {
       const result = db.prepare(`INSERT INTO delivery (project, committed) VALUES (?, ?)
         ON CONFLICT(project) DO UPDATE SET committed = excluded.committed
         WHERE delivery.committed IS NULL AND delivery.pending_message IS NULL`).run(project, snapshot);
-      if (!result.changes) throw new Error("Committed state or pending delivery already exists");
+      if (!result.changes) throw new Error("Committed state or a pending report already exists. Skip the import and use the existing state. Check bb sweep status for a pending report.");
     },
     acknowledge(project: string) {
       const result = db.prepare(`UPDATE delivery SET committed = COALESCE(pending_snapshot, committed), pending_message = NULL, pending_snapshot = NULL
