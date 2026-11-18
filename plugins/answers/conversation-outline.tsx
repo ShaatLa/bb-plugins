@@ -6,7 +6,7 @@ import { Button } from './components/ui/button';
 export function ConversationOutline({ threadId, onJump }: { threadId: string; onJump: (seq: number) => void }) {
   const { threads } = experimental_useSidebarThreads();
   // One plain line per entry, as bb's outline reads; another agent's message names its sender instead of the raw header.
-  const line = (preview: string) => { const from = /^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/.exec(preview), sender = from && (threads.find(t => t.id === from[1])?.title ?? 'Another thread'); return (sender ? `${sender}: ` : '') + echoLine(from ? preview.slice(from[0].length) : preview); };
+  const line = (preview: string) => { const from = /^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/.exec(preview), sender = from && (threads.find(t => t.id === from[1])?.title ?? 'Another thread'); const rest = (from ? preview.slice(from[0].length) : preview).replace(/^\[bb system\]\s*/, 'bb: ').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g, (_, id: string) => threads.find(t => t.id === id)?.title ?? 'a thread'); return (sender ? `${sender}: ` : '') + echoLine(rest); };
   const sdk = useSdk(), root = useRef<HTMLDivElement>(null), [open, setOpen] = useState(false), [error, setError] = useState(''), [items, setItems] = useState<Awaited<ReturnType<typeof sdk.threads.conversationOutline>>['items']>([]);
   useEffect(() => {
     if (!open) return;
