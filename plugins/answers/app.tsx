@@ -583,7 +583,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-4 py-2">
       <div data-page-toolbar className="flex items-center gap-1">
-        {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:flex" />
+        {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="mr-1.5 hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:flex" />
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
           // Markup of bb's Preview/Source switch.
           : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', 'chats'], ['Questions', 'questions'], ['Saved', 'saved']] as const).map(([label, key]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={section === key} onClick={() => setSection(key)}>{label}{key === 'questions' && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}

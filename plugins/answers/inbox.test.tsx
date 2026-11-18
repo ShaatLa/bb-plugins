@@ -1306,3 +1306,13 @@ it.each([false,true])('background grouping preference %s changes cards',async gr
  expect(!!slot.container.querySelector('[data-update-group]')).toBe(groupBackgroundUpdates);
  if(!groupBackgroundUpdates) {expect(slot.getByText('First report')).toBeTruthy();expect(slot.getByText('Second report')).toBeTruthy();}
 });
+
+it('restores the thread\'s permission mode too when the owner leaves a handoff', async () => {
+ const {slot,recipients}=setup({defaultExecutionOptions:async()=>({permissionMode:'auto'}),sidebarThreads:{threads:[{id:'thr_one',title:'One',displayTitle:'One',projectId:'pr_one',providerId:'provider_example',status:'idle',activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:false},environment:{id:'env_example'}}],projects:[]},events:{list:async()=>[{data:{execution:{model:'handoff-current',reasoningLevel:'medium'}}}]}});
+ fireEvent.click(await recipients.findByRole('option'));
+ fireEvent.click(await slot.findByRole('button',{name:'handoff-current'}));
+ fireEvent.click(await slot.findByRole('button',{name:'auto'}));
+ expect(await slot.findByRole('button',{name:'full'})).toBeTruthy();
+ fireEvent.click(slot.getByRole('button',{name:'Exit handoff'}));
+ expect(await slot.findByRole('button',{name:'auto'})).toBeTruthy();
+});
