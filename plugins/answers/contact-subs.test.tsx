@@ -68,7 +68,7 @@ it('shows three brightness levels: unread full, working without news in between,
   function Contacts() { return <ContactsList model={useContacts(undefined)} onSelect={() => {}} />; }
   const slot = renderSlot({ component: Contacts }, {}, { rpc: { recipients: () => ({ recipients: rows.map(([threadId, unread]) => ({ threadId, threadTitle: threadId.slice(11), projectId: null, projectName: null, unread, lastAt: 1, preview: '' })) }) }, sidebarThreads: { threads: rows.map(([id, , status]) => ({ ...idle, id, title: id.slice(11), ...(status === 'active' ? { status: 'active', runtimeStatus: 'active', indicator: 'runtime' } : {}) })), projects: [] } } as any);
   const row = async (name: string) => (await slot.findByRole('option', { name: new RegExp(name) })).className.split(' ');
-  expect(await row('unread')).not.toEqual(expect.arrayContaining(['opacity-50'])); expect(await row('unread')).not.toContain('opacity-75');
-  expect(await row('working')).toContain('opacity-75');
+  expect(await row('unread')).not.toEqual(expect.arrayContaining(['opacity-50'])); expect(await row('unread')).not.toContain('opacity-80');
+  expect(await row('working')).toContain('opacity-80');
   expect(await row('idle')).toContain('opacity-50');
 });
