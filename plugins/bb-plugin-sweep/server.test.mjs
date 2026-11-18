@@ -33,8 +33,9 @@ function projectSettings(getRemote = () => repo) {
 }
 let fail=true, health={status:'error'};
 let answersError='Answers offline';
+let answersEnabled=false;
 const sent=[];let pushes=0, attempts=0;
-const {bb,harness}=createFakePluginHost({pluginId:'sweep',sdk:{projects:projectSettings(),threads:{get:async({threadId})=>{if(health===null)return null;if(health instanceof Error)throw health;return makeThreadResponse({id:threadId,projectId:'proj_other',...health});},send:async(request)=>{attempts++;if(fail)throw Error('offline');sent.push(request);}},plugins:{callRpc:async({pluginId,method,input})=>{
+const {bb,harness}=createFakePluginHost({pluginId:'sweep',sdk:{projects:projectSettings(),threads:{get:async({threadId})=>{if(health===null)return null;if(health instanceof Error)throw health;return makeThreadResponse({id:threadId,projectId:'proj_other',...health});},send:async(request)=>{attempts++;if(fail)throw Error('offline');sent.push(request);}},plugins:{list:async()=>({plugins:answersEnabled?[{id:'answers',enabled:true}]:[]}),callRpc:async({pluginId,method,input})=>{
   if (pluginId==='answers') throw Error(answersError);
   assert.equal(pluginId,'push-notifications');assert.equal(method,'notifications.send');
   assert.equal(input.title,'Sweep manager unreachable');pushes++;return {};
@@ -49,7 +50,8 @@ try {
  await harness.behavior.runSchedule('sweep');
  assert.deepEqual(harness.experimental_rpcInvalidations.at(-1), [statsTag(projectId)]);
  let s=await harness.behavior.callRpc('status',{projectId});assert.match(s.pending,/ACTION/);assert.equal(pushes,1);
- assert.equal(attempts,0);assert.match(s.managerError,/failed/);assert.match(s.error,/Answers fallback failed/);
+ assert.equal(attempts,0);assert.match(s.managerError,/failed/);assert.match(s.error,/No enabled Agent Hub or Answers plugin/);
+ answersEnabled=true;
  for (const failure of ['Plugin answers is not installed','RPC answers.notice was not found']) {
    answersError=failure;
    const previousPushes=pushes;
@@ -92,14 +94,17 @@ try {
 }finally{await harness.lifecycle.dispose();}
 
 const noticeInputs = [];
+const noticePlugins = [];
 const notices = new Map();
 let fallbackPushes = 0;
+let agentHubEnabled = false;
 const fallbackHost = createFakePluginHost({pluginId:'sweep', sdk:{
   projects:projectSettings(),
   threads:{get:async()=>makeThreadResponse({status:'error'}),send:async()=>assert.fail('Failed manager must not receive a message')},
-  plugins:{callRpc:async({pluginId,method,input})=>{
+  plugins:{list:async()=>({plugins:[{id:'answers',enabled:true},{id:'agent-hub',enabled:agentHubEnabled}]}),callRpc:async({pluginId,method,input})=>{
     if (pluginId === 'push-notifications') { fallbackPushes++; return {}; }
-    assert.equal(pluginId,'answers');assert.equal(method,'notice');
+    assert.equal(method,'notice');
+    noticePlugins.push(pluginId);
     noticeInputs.push(input);
     if (notices.has(input.tickId)) return { id:notices.get(input.tickId), created:false };
     const id = `notice-${notices.size + 1}`;
@@ -124,18 +129,24 @@ try {
   await harness.behavior.callRpc('configure',{projectId,config});
   await harness.behavior.runSchedule('sweep');
   assert.deepEqual(noticeInputs[1],noticeInputs[0]);assert.equal(fallbackPushes,1);
+  assert.ok(noticePlugins.every(id => id === 'answers'));
   s=await harness.behavior.callRpc('status',{projectId});
   assert.equal(s.pending,null);assert.equal(s.exitCode,0);assert.equal(s.deliveredTo,'answers');
   assert.equal(s.deliveredNoticeId,notices.get(s.deliveredTickId));assert.match(s.fallbackReason,/Manager thread failed/);
+  const noticesBeforeRename = (await harness.behavior.callRpc('stats',{projectId,days:1})).answers;
 
-  // Keep the full output when Markdown escaping would exceed the Answers API limit.
+  // Keep the full output when Markdown escaping would exceed the notice API limit.
   const oldPending = `[sweep] exit 1\nACTION test ${'_*'.repeat(400000)}\n`;
   deliveryStore(bb.storage.database()).stage(projectId,oldPending,null);
+  agentHubEnabled = true;
   await harness.behavior.callRpc('configure',{projectId,config});
   await harness.behavior.runSchedule('sweep');
   assert.match(noticeInputs.at(-1).tickId,/^proj_test:legacy:[a-f0-9]{64}$/);
   assert.equal(noticeInputs.at(-1).markdown,oldPending);
-  assert.equal((await harness.behavior.callRpc('status',{projectId})).pending,null);
+  assert.equal(noticePlugins.at(-1),'agent-hub');
+  s=await harness.behavior.callRpc('status',{projectId});
+  assert.equal(s.pending,null);assert.equal(s.deliveredTo,'agent-hub');
+  assert.equal((await harness.behavior.callRpc('stats',{projectId,days:1})).answers,noticesBeforeRename+1);
 }finally{await fallbackHost.harness.lifecycle.dispose();}
 
 const reports=[];

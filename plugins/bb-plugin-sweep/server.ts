@@ -83,20 +83,25 @@ export default async function plugin(bb: BbPluginApi) {
       current.managerError = String(error);
       // Older pending reports did not carry a tick ID. Derive a stable key for their retries.
       const tickId = header?.[3] ?? `${id}:legacy:${createHash('sha256').update(pending).digest('hex')}`;
-      const notice = await bb.sdk.plugins.callRpc({
-        pluginId: 'answers', method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
-        input: {
-          source: bb.pluginId, tickId, projectId: id, ...(manager ? { threadId: manager } : {}),
-          title: 'Sweep report · Manager unavailable',
-          markdown: Buffer.byteLength(message) <= 1024 * 1024 ? message : pending,
-        },
-      }).catch(cause => {
+      try {
+        const { plugins } = await bb.sdk.plugins.list({ signal: controller.signal });
+        const pluginId = ['agent-hub', 'answers'].find(id => plugins.some(plugin => plugin.id === id && plugin.enabled));
+        if (!pluginId) throw new Error('No enabled Agent Hub or Answers plugin');
+        const notice = await bb.sdk.plugins.callRpc({
+          pluginId, method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
+          input: {
+            source: bb.pluginId, tickId, projectId: id, ...(manager ? { threadId: manager } : {}),
+            title: 'Sweep report · Manager unavailable',
+            markdown: Buffer.byteLength(message) <= 1024 * 1024 ? message : pending,
+          },
+        });
+        current.deliveredTo = pluginId;
+        current.deliveredNoticeId = notice.id;
+        current.fallbackReason = current.managerError;
+      } catch (cause) {
         if (!controller.signal.aborted) history.deliveryFailed(tickId);
-        throw new Error(`Answers fallback failed after ${current.managerError}: ${String(cause)}`, { cause });
-      });
-      current.deliveredTo = 'answers';
-      current.deliveredNoticeId = notice.id;
-      current.fallbackReason = current.managerError;
+        throw new Error(`Notice fallback failed after ${current.managerError}: ${String(cause)}`, { cause });
+      }
     }
     current.deliveredTickId = header?.[3];
     current.delivered = pending; current.deliveredAt = Date.now();
@@ -106,7 +111,7 @@ export default async function plugin(bb: BbPluginApi) {
     else if (header) current.lastReport = { fingerprint: reportContents(code, output).fingerprint, at: current.deliveredAt, manager };
     db.transaction(() => {
       deliveries.acknowledge(id);
-      history.delivered(tickId, current.deliveredTo === 'answers');
+      history.delivered(tickId, current.deliveredNoticeId !== undefined);
       save(id, current);
     })();
   }

@@ -172,7 +172,7 @@ export function SweepOverview({ subPath }: { subPath: string }) {
           <div className="grid gap-3 sm:grid-cols-2">
             <Breakdown title="New items" rows={Object.entries(report.newItems).map(([kind, count]) => [itemLabel(kind), count])} empty="No new items in this period." />
             <Breakdown title="Report delivery" rows={[
-              ['To manager', report.manager], ['To Answers', report.answers],
+              ['To manager', report.manager], ['To Agent Hub or Answers', report.answers],
               ['Suppressed repeats', report.suppressedReports], ['Reminders queued', report.reminderReports],
             ]} />
             <Breakdown title="Scheduled activity" rows={[
