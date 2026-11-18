@@ -4,13 +4,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
-import { historyDays, sweepHistory } from './history.ts';
+import { sweepHistory } from './history.ts';
 import { formatNotification } from './notification.ts';
+import { overviewContract, projectId, statsInput } from './overview-contract.ts';
 import { reportContents } from './reports.ts';
 import { CheckoutRefreshError, execute } from './runner.ts';
 
-const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
-export const configSchema = z.object({ enabled: z.boolean().default(false), remote: z.string().min(1).max(2000).refine(s => !s.startsWith('-')), branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/), script: z.string().min(1).max(1000).refine(s => !s.startsWith('/') && !s.split('/').includes('..')), args: z.array(z.string().max(10000)).max(100).default([]), manager: z.string().regex(/^(thr_[a-z0-9]+)?$/).default(''), intervalMinutes: z.number().int().min(1).max(1440).default(10), timeoutSeconds: z.number().int().min(1).max(300).default(300), snapshots: z.boolean().default(false) }).strict();
+const repositoryUrl = z.string().min(1).max(2000).refine(s => !s.startsWith('-'));
+export const configSchema = z.object({ enabled: z.boolean().default(false), branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/), script: z.string().min(1).max(1000).refine(s => !s.startsWith('/') && !s.split('/').includes('..')), args: z.array(z.string().max(10000)).max(100).default([]), manager: z.string().regex(/^(thr_[a-z0-9]+)?$/).default(''), intervalMinutes: z.number().int().min(1).max(1440).default(10), timeoutSeconds: z.number().int().min(1).max(300).default(300), snapshots: z.boolean().default(false) });
 export type Config = z.infer<typeof configSchema>;
 const projectDraft = configSchema.partial().refine(config => !config.enabled || configSchema.safeParse(config).success, 'Complete the checkout settings before enabling Sweep');
 const projectsSchema = z.record(projectId, projectDraft);
@@ -18,14 +19,13 @@ const input = z.object({ projectId }).strict();
 const configKey = configSchema.keyof();
 const configGetInput = input.extend({ key: configKey.optional() });
 const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
-const statsInput = input.extend({ days: z.number().int().min(1).max(historyDays).default(1) });
 export const contract = defineRpcContract({
-  'settings.read': { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
+  ...overviewContract,
+  'settings.read': { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), hasRepository: z.boolean(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
   'environment.write': { input: z.object({ bbCli: z.string(), runtimePath: z.string() }).strict(), output: z.unknown() },
-  configure: { input: z.object({ projectId, config: configSchema }).strict(), output: z.unknown() },
+  configure: { input: z.object({ projectId, config: configSchema.extend({ remote: z.string().optional() }).strict().transform(config => configSchema.parse(config)) }).strict(), output: z.unknown() },
   'config.get': { input: configGetInput, output: z.unknown() },
   'config.set': { input: configSetInput, output: z.unknown() },
-  stats: { input: statsInput, output: z.unknown() },
   'seed-state': { input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Snapshot must be JSON') }).strict(), output: z.object({ seeded: z.literal(true) }) },
   manager: { input, output: z.object({ manager: z.string().nullable() }) },
   status: { input, output: z.unknown() },
@@ -134,7 +134,15 @@ export default async function plugin(bb: BbPluginApi) {
       const committed = deliveries.read(id)?.committed ?? null;
       let result;
       let refreshFailed = false;
-      try { result = await execute(dirname(db.name), id, config, committed, controller.signal, (await settings.get()).bbCli, (await settings.get()).runtimePath); }
+      try {
+        const project = await bb.sdk.projects.get({ projectId: id }).catch(cause => {
+          throw new CheckoutRefreshError('Could not read the bb project repository settings', { cause });
+        });
+        const remote = repositoryUrl.safeParse(project?.gitRemoteUrl);
+        if (!remote.success) throw new CheckoutRefreshError('Set a valid Git remote URL in the bb project settings');
+        const { bbCli, runtimePath } = await settings.get();
+        result = await execute(dirname(db.name), id, { ...config, remote: remote.data }, committed, controller.signal, bbCli, runtimePath);
+      }
       catch (e) {
         if (controller.signal.aborted) throw e;
         refreshFailed = e instanceof CheckoutRefreshError;
@@ -191,7 +199,7 @@ export default async function plugin(bb: BbPluginApi) {
       await settings.experimental_set({ projects: JSON.stringify(projects) });
       if (!busy.has(id)) {
         const current = state(id);
-        if (previous?.remote !== config.remote || previous?.branch !== config.branch) {
+        if (previous?.branch !== config.branch) {
           current.refreshFailures = 0;
           current.refreshRetryAt = undefined;
         }
@@ -219,7 +227,12 @@ export default async function plugin(bb: BbPluginApi) {
     });
     return { [key]: config[key] };
   };
-  bb.rpc.register(contract, { 'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'config.get': configGet, 'config.set': configSet, stats: ({ projectId, days }) => history.stats(projectId, days), 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
+  bb.rpc.register(contract, {
+    'overview.projects': async () => {
+      const projects = await configs();
+      return (await bb.sdk.projects.list()).flatMap(({ id, name }) => projects[id] ? [{ id, name, enabled: projects[id].enabled }] : []);
+    },
+    'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, hasRepository: repositoryUrl.safeParse(p.gitRemoteUrl).success, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'config.get': configGet, 'config.set': configSet, stats: ({ projectId, days }) => history.stats(projectId, days), 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
   const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.

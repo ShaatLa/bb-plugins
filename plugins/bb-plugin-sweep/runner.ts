@@ -17,7 +17,7 @@ export function command(command: string, args: string[], cwd: string, signal: Ab
     child.on('close', (code, sig) => { clearTimeout(timer); if (failure) reject(failure); else if (code === null) reject(new Error(`${command} killed by ${sig}`)); else resolve({ code, output }); });
   });
 }
-export async function execute(base: string, projectId: string, config: Config, previous: Buffer | null, signal: AbortSignal, bbCli = process.env.BB_CLI ?? '', runtimePath = '') {
+export async function execute(base: string, projectId: string, config: Config & { remote: string }, previous: Buffer | null, signal: AbortSignal, bbCli = process.env.BB_CLI ?? '', runtimePath = '') {
   const root = join(base, 'checkouts', projectId);
   const git = async (args: string[]) => { const result = await command('git', ['-c', 'core.hooksPath=/dev/null', ...args], root, signal, 60000, { ...process.env, GIT_TERMINAL_PROMPT: '0' }); if (result.code) throw new Error(result.output); };
   try {

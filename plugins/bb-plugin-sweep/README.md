@@ -4,10 +4,10 @@ Sweep refreshes a dedicated server-local checkout and runs a repository script o
 
 Set **BB CLI absolute path** to the installed `bb` executable if the server PATH does not include it. Sweep adds its directory to the script PATH and sets BB_CLI. Set **Script PATH** to the normal login PATH when tools such as gh are absent from the server environment. HOME and GitHub authentication variables are inherited without modification.
 
-Settings → Plugins → Sweep provides a project picker and separate controls for manager, interval, repository, branch, script and arguments. Valid edits are saved automatically only for the selected project, using the same SettingsSection, SettingsWithControl, Select and Switch components as bb. Advanced check options hold the timeout and snapshot protocol; Execution environment holds the shared BB executable and one search directory per line. Existing CLI configuration remains compatible. Every project defaults disabled. The underlying configuration map can still be managed through CLI/RPC; example:
+Set the Git remote URL in the bb project's settings. Sweep reads it each time it refreshes the checkout. Settings → Plugins → Sweep lets you pick a project and set its manager, interval, branch, script and arguments. Valid edits are saved automatically for the selected project. Advanced check options hold the timeout and snapshot protocol. Execution environment holds the shared BB executable and one search directory per line. Every project defaults to disabled.
 
 ```json
-{"proj_example":{"enabled":true,"remote":"https://github.com/example/repo.git","branch":"main","script":"checks/sweep.py","args":["--root","{manager}"],"manager":"thr_example","intervalMinutes":10,"timeoutSeconds":300,"snapshots":false}}
+{"proj_example":{"enabled":true,"branch":"main","script":"checks/sweep.py","args":["--root","{manager}"],"manager":"thr_example","intervalMinutes":10,"timeoutSeconds":300,"snapshots":false}}
 ```
 
 `{manager}` in arguments is resolved on each run. The configured manager can be a live thread in another project. Other plugins should resolve it through RPC `manager` with `{projectId}`, returning `{manager: string|null}`. CLI: `bb sweep manager --project <id> --json`.
@@ -16,9 +16,9 @@ Settings → Plugins → Sweep provides a project picker and separate controls f
 
 `bb sweep run --project <id> [--dry-run]` refreshes and runs manually without telling, acknowledging or changing status. Scripts must obey the read-only snapshot protocol themselves; Sweep cannot prevent arbitrary repository code from changing external state.
 
-RPC `configure` takes `{projectId,config}` and updates the same setting. RPC `status`, `manager`, `run` take `{projectId}`. Use `bb plugin rpc call sweep configure --input-file config.json --json`.
+RPC `configure` takes `{projectId,config}` and updates the same setting. Sweep ignores the legacy `remote` field in saved configurations and in `configure` requests. RPC `status`, `manager`, `run` take `{projectId}`. Use `bb plugin rpc call sweep configure --input-file config.json --json`.
 
-For single-field access, use `bb sweep config get [<key>] --project <id>` and `bb sweep config set <key> <value> --project <id>`. Pass string values as shell arguments and arrays as JSON, for example `bb sweep config set args '["--brief"]' --project proj_example`. The equivalent RPCs are `config.get {projectId,key?}` and `config.set {projectId,key,value}`. With a key, they return that field only. To configure a new project this way, set `remote`, `branch` and `script` before enabling it. The native global fields `bbCli` and `runtimePath` can be managed through `bb plugin config sweep`.
+For single-field access, use `bb sweep config get [<key>] --project <id>` and `bb sweep config set <key> <value> --project <id>`. Pass string values as shell arguments and arrays as JSON, for example `bb sweep config set args '["--brief"]' --project proj_example`. The equivalent RPCs are `config.get {projectId,key?}` and `config.set {projectId,key,value}`. With a key, they return that field only. To configure a new project this way, set `branch` and `script` before enabling it. The native global fields `bbCli` and `runtimePath` can be managed through `bb plugin config sweep`.
 
 ## Script acknowledgement protocol
 
@@ -33,6 +33,8 @@ Sweep stores candidate bytes and the full report in one SQLite row before delive
 For new reports, Sweep compares the exit code and substantive output with the last confirmed report. Standard summary counts, structured item order and `idle` or `failed` age counters on action lines do not affect the comparison. Sweep delivers a changed report immediately and sends unchanged reports as reminders at most once an hour. Snapshot candidates that change committed state always require delivery. Consecutive checkout refresh failures double the check interval up to an hour, or the configured interval if it is longer. A successful refresh resets the delay. Pending delivery retries keep the configured interval.
 
 ## Stats
+
+Open **Sweep** in the bb sidebar to see checks, deliveries, new items and failures for the last 24 hours, 7 days or 30 days. Pick a project and change its notification session in the panel's left sidebar. Selecting a session saves the project's manager field immediately.
 
 `bb sweep stats --project <id> --days <1-30>` (default one day) and the `stats {projectId,days?}` RPC report scheduled ticks, executed checks, confirmed deliveries by channel, new distinct items by kind, repeated item sightings, suppressed reports, queued reminders and failures by stage. New items are fingerprints first seen within the requested window. Sweep keeps counters and fingerprints locally for a rolling 30 days. Manual runs do not enter these totals.
 

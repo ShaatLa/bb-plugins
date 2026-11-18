@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
+import { historyDays, type SweepStats } from './overview-contract.ts';
 
 export const dayMs = 86400000;
-export const historyDays = 30;
 
 export function sweepHistory(db: Database.Database) {
   db.exec(`CREATE TABLE IF NOT EXISTS sweep_ticks (
@@ -54,10 +54,11 @@ export function sweepHistory(db: Database.Database) {
     },
     delivered(tick: string, answers: boolean) { delivery.run(Number(!answers), Number(answers), tick); },
     deliveryFailed(tick: string) { failed.run(tick); },
-    stats(projectId: string, days: number) {
+    stats(projectId: string, days: number): SweepStats {
       const since = Date.now() - days * dayMs;
       const byKind = newItems.all(projectId, since) as { kind: string; count: number }[];
-      return { projectId, days, since, ...counts.get(projectId, since) as Record<string, number>, newItems: Object.fromEntries(byKind.map(({ kind, count }) => [kind, count])) };
+      const totals = counts.get(projectId, since) as Omit<SweepStats, 'projectId' | 'days' | 'since' | 'newItems'>;
+      return { projectId, days, since, ...totals, newItems: Object.fromEntries(byKind.map(({ kind, count }) => [kind, count])) };
     },
   };
 }

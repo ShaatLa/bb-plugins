@@ -3,6 +3,7 @@ import { summaryLine } from './reports.ts';
 const sections = { ANSWER: 'Owner answers', ACTION: 'Actions', WAIT: 'Waiting', STATE: 'State changes' };
 const taskKey = '[A-Z][A-Z0-9]{0,9}-\\d+';
 const leadingTask = new RegExp(`^(${taskKey})(?=[:\\s]|$)`);
+const leadingThread = /^(?:@thread:)?(thr_[a-zA-Z0-9_-]+)(?=[:\s]|$)/;
 const answer = new RegExp(`^(${taskKey}) ([\\w-]+): (.*)$`);
 const blocker = new RegExp(`^(${taskKey}): blocker (${taskKey})$`);
 const escapeInline = (text: string) => text.replace(/[\\`*_~\[\]<>|&]/g, '\\$&');
@@ -10,7 +11,10 @@ const taskLink = (key: string) => `[${key}](/plugins/work-board/work-board/task/
 
 function formatReference(text: string) {
   const key = leadingTask.exec(text)?.[1];
-  return key ? taskLink(key) + escapeInline(text.slice(key.length)) : escapeInline(text);
+  if (key) return taskLink(key) + escapeInline(text.slice(key.length));
+  const thread = leadingThread.exec(text);
+  if (thread) return `@thread:${thread[1]}${escapeInline(text.slice(thread[0].length))}`;
+  return escapeInline(text);
 }
 
 function formatItem(kind: string, detail: string) {
@@ -24,7 +28,7 @@ function formatItem(kind: string, detail: string) {
   }
   if (kind === 'ACTION') {
     const match = /^([a-z][a-z0-9-]*)[: ]\s*(\S.*)$/.exec(detail);
-    if (match) return `**${match[1].replaceAll('-', ' ')}** · ${formatReference(match[2])}`;
+    if (match) return `\`${match[1].replaceAll('-', ' ')}\` · ${formatReference(match[2])}`;
   }
   return formatReference(detail);
 }
@@ -38,12 +42,12 @@ function outputBlock(output: string) {
 
 export function formatNotification(status: 'alive' | number, output: string) {
   if (typeof status === 'number' && status >= 2) {
-    const title = `**Sweep · Check failed** (exit ${status})`;
+    const title = `**Sweep** · \`Check failed\` (exit ${status})`;
     return output.trim() ? `${title}\n\n${outputBlock(output.trimEnd())}` : title;
   }
 
   const title = status === 'alive' ? 'No new actions' : status === 1 ? 'Needs attention' : 'Check complete';
-  const blocks = [`**Sweep · ${title}**`];
+  const blocks = [`**Sweep** · \`${title}\``];
   const groups = new Map<string, string[]>();
   const other: string[] = [];
   for (const line of output.split(/\r?\n/)) {
