@@ -117,8 +117,11 @@ export function SendButton({ label, disabled, onSend, onPool, poolFirst = false,
   const pooling = poolFirst && !!onPool;
   const [menu, setMenu] = useState(false), [later, setLater] = useState<string | null>(null), [error, setError] = useState('');
   const close = () => { setMenu(false); setLater(null); setError(''); };
+  const box = useRef<HTMLDivElement>(null);
+  // A tap on plain content does not move focus on phones, so the blur below alone never closes the menu there.
+  useEffect(() => { if (!menu && later === null) return; const outside = (event: PointerEvent) => { if (!box.current?.contains(event.target as Node)) close(); }; document.addEventListener('pointerdown', outside); return () => document.removeEventListener('pointerdown', outside); }, [menu, later !== null]);
   const item = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover';
-  return <div className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
+  return <div ref={box} className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
     {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" onClick={() => onPool!()}><Icon name="ListEnd" aria-hidden /></Button>
       : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onClick={() => onSend()}>{children}</Button>}
     <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled && !onPool} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>

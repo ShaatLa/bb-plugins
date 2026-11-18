@@ -46,10 +46,18 @@ it('renders thread tokens with bb pill presentation', () => {
   expect(box.querySelector('.prompt-mention-pill')).toHaveProperty('textContent', 'Fix login');
   expect(box.querySelector('[data-test-serialized]')).toBeTruthy();
 });
-it('turns a pasted thread URL into a token pill', () => {
+it('turns a pasted thread URL into a token pill, keeping its message anchor', () => {
   const { box, onChange } = editor();
   fireEvent.paste(box, { clipboardData: { files: [], getData: (kind: string) => kind === 'text/plain' ? 'https://bb.example/projects/proj_one/threads/thr_one#msg=2' : '' } });
-  expect(onChange).toHaveBeenCalledWith('@thread:thr_one');
+  expect(onChange).toHaveBeenCalledWith('@thread:thr_one#msg=2');
+});
+it('keeps the message of a pasted message link and drops other query parts', () => {
+  const { box, onChange } = editor();
+  fireEvent.paste(box, { clipboardData: { files: [], getData: (kind: string) => kind === 'text/plain' ? 'https://bb.example/projects/proj_one/threads/thr_one?msg=7' : '' } });
+  expect(onChange).toHaveBeenCalledWith('@thread:thr_one#msg=7');
+  onChange.mockClear();
+  fireEvent.paste(box, { clipboardData: { files: [], getData: (kind: string) => kind === 'text/plain' ? 'https://bb.example/threads/thr_two?tab=info' : '' } });
+  expect(onChange).toHaveBeenCalledWith('@thread:thr_two');
 });
 it('renders a Markdown link as a compact link pill', () => {
   const { box } = editor('[ACM-5](/plugins/work-board/work-board/task/ACM-5)');
@@ -360,4 +368,12 @@ it('keeps bb\'s voice button in the toolbar row: its wrapper fills the toolbar h
 it('lines the attach icon up with the text above it and gives it no background', () => {
   const { slot } = editor();
   expect(slot.getByRole('button', { name: 'Attach files' }).className.split(' ')).toEqual(expect.arrayContaining(['-ml-2', 'hover:bg-transparent']));
+});
+it('closes the send menu on a tap outside it, which moves no focus on phones', () => {
+  const slot = renderSlot({ component: () => <Composer label="Reply" value="Hello" onChange={() => {}} attachments={[]} onAttachments={() => {}} projectId={null} onSend={() => {}} /> }, {});
+  fireEvent.click(slot.getByRole('button', { name:'More send options' }));
+  fireEvent.pointerDown(slot.getByRole('menuitem', { name:'Steer' }));
+  expect(slot.queryByRole('menuitem', { name:'Steer' })).toBeTruthy();
+  fireEvent.pointerDown(document.body);
+  expect(slot.queryByRole('menuitem', { name:'Steer' })).toBeNull();
 });

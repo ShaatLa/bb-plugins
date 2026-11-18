@@ -208,7 +208,8 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         replace((function read(node: Node): string { if (node instanceof Element) { const pill = experimental_readPromptMentionClipboard(node); if (pill) return pill.text; } if (node instanceof Element && node.tagName === 'BR') return '\n'; const content = node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : Array.from(node.childNodes).map(read).join(''); return node instanceof Element && /^(DIV|P)$/.test(node.tagName) && node.nextSibling ? content + '\n' : content; })(doc.body)); return;
       }
     }
-    replace(threadUrl.exec(long.trim()) ? `@thread:${threadUrl.exec(long.trim())![1]}` : long);
+    // A message link keeps its message, so the pill reads "· message" instead of the whole thread.
+    replace((url => url ? `@thread:${url[1]}${(m => m ? `#msg=${m[1]}` : '')(/[?&#]msg=(\d+)/.exec(long))}` : long)(threadUrl.exec(long.trim())));
   }
   // Quotes the selected lines (or the caret's line), or unquotes them when all already are.
   const toggleQuote = () => {

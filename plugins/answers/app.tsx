@@ -467,7 +467,7 @@ const viewOptions: ViewOption[] = [
 
 // User text stays plain (no Markdown reflow); only thread mentions go through bb's renderer to become chips.
 // Thread mentions and Markdown links (the composer stores task chips as links) render through bb as a whole.
-const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9_-]+)(?![\w/])/g;
+const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9_-]+)(?:\?msg=(\d+))?(?![\w/])/g;
 const MENTION = /(@thread:thr_[A-Za-z0-9_-]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
 export function InlineCommentText({ text, prefixes, threadId }: { text: string; prefixes?: string[]; threadId?: string }) {
   const parsed = parseInlineComments(text);
@@ -509,7 +509,7 @@ export function UserText({ text, prefixes, threadId }: { text: string; prefixes?
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
   // A pasted bb thread link reads as that thread's mention pill, as bb's composer turns it into one.
   // HTML comments are hidden markers other plugins embed (e.g. a Work Board task id); Markdown never shows them either.
-  return <>{text.replace(/<!--[\s\S]*?-->\s*/g, '').replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
+  return <>{text.replace(/<!--[\s\S]*?-->\s*/g, '').replace(THREAD_URL, (_, id: string, seq?: string) => `@thread:${id}${seq ? `#msg=${seq}` : ''}`).split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
     : task ? part.split(task).flatMap((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : plain(piece, index === 0 && j === 0)) : plain(part, index === 0))}</>;
 }
 

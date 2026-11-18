@@ -40,6 +40,10 @@ it('uses thread context and preserves plain owner formatting, unknown names and 
   await pills(slot); expect(slot.container.querySelector('[aria-label="command: reload"]')).toBeTruthy();
   expect(slot.container.textContent).toContain('**plain**'); expect(slot.container.querySelector('strong')).toBeNull();
 });
+it('shows a pasted message URL as a message mention, not the whole thread', async () => {
+  const slot = renderSlot({ component:() => <UserText text={'see https://bb.example/projects/proj_example/threads/thr_example?msg=5 now'} /> }, {}, { sdk } as any);
+  await waitFor(() => expect(slot.container.querySelector('[data-testid="bb-markdown"]')?.textContent).toBe('@thread:thr_example#msg=5'));
+});
 it('hides HTML comment markers other plugins embed in message text', async () => {
   const slot = renderSlot({ component:() => <UserText text={'<!-- work-board-task:EXA-1 -->\nPick up the task'} /> }, {}, { sdk } as any);
   await waitFor(() => expect(slot.container.textContent).toBe('Pick up the task'));
