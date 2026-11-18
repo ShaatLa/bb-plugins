@@ -227,7 +227,9 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   Object.assign(navigator, { clipboard: { writeText } });
   const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, questionSeq:7 }], nextCursor:null }), rpc: { save } }); fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Question one');
-  fireEvent.click(slot.getByRole('button', { name:'Copy' })); expect(writeText).toHaveBeenCalledWith('Question one');
+  fireEvent.click(slot.getAllByRole('button', { name:'Copy' })[0]!);
+  await slot.findByRole('button', { name: 'Copied' });
+  expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: 'Question one' });
   fireEvent.click(slot.getByRole('button', { name:'Save to Answers' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
 });

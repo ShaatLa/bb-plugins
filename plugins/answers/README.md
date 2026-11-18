@@ -110,3 +110,5 @@ The Answers side panel has Info, Diff, and Work Board tabs that follow the open 
 The chat’s Owed card lets you jump to, confirm or dismiss older deferred answers; they expire after three days without answer movement.
 
 Owner messages remain plain text: links, Work Board tasks, thread mentions, and known commands or skills after `/` and `$` appear as pills, as in the input field. This also applies to quotes, reply echoes, the queue, and owed answers. The Background updates preview keeps a two-line clamp and preserves thread pills; agent replies and plugin messages use BB Markdown.
+
+Agent and owner messages offer Copy (Markdown) and Copy link beside the message actions, with brief inline clipboard feedback. Links use the native thread route and message sequence when available.

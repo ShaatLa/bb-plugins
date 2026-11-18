@@ -1,3 +1,4 @@
+import { MessageCopy, messageLink } from './message-copy';
 import { useThreadCommands, commandMention } from './thread-commands';
 import { AnswersContacts } from './contacts';
 import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
@@ -270,7 +271,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const [pending, setPending] = useState(false);
   const sending = useRef(false);
   const [feedback, setFeedback] = useState('');
-  const [error, setError] = useState(''), [copied, setCopied] = useState(false), [savedOwn, setSavedOwn] = useState(false);
+  const [error, setError] = useState(''), [savedOwn, setSavedOwn] = useState(false);
   async function act(write: () => Promise<unknown>) {
     setError('');
     try { await write(); } catch (cause) { setError(message(cause)); }
@@ -314,7 +315,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const replyButton = item.kind !== 'saved' && item.kind !== 'update' && !item.threadDeleted && (item.kind !== 'mine' || replyToOwn) && <Button size="sm" {...iconProps('Reply')} disabled={pending || (item.kind === 'for_me' && item.status === 'replied')} aria-expanded={replying} onClick={() => setReplying(!replying)}><Icon name="ArrowTurnBackward" aria-hidden /></Button>;
   const status = item.status === 'waiting' && item.failedAt === null && item.dismissedAt === null ? <span title="Waiting for the answer" className="inline-flex items-center text-muted-foreground"><RobotLoader label="Waiting for the answer" /></span> : item.status;
   const time = <time className="text-xs text-muted-foreground" dateTime={new Date(item.createdAt).toISOString()}>{age}</time>;
-  const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><AgentMarkdown content={content} threadId={item.threadId} /></div>;
+  const agentBody = (content: string, seq: number | null) => <div className={agentText} data-agent-body data-item={item.id} data-seq={seq ?? undefined}><AgentMarkdown content={content} threadId={item.threadId} /><span className="flex items-center gap-0.5 text-muted-foreground opacity-60"><MessageCopy text={content} /><MessageCopy link text={messageLink(item.projectId, item.threadId, seq)} /></span></div>;
   const interimReply = interimShown && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot under the interim reply says the work goes on (where the answer will come); afterwards a clock marks the reply as interim. */}
       {item.status === 'deferred' && robot ? <>{agentBody(item.interim, item.interimSeq)}<span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span></> : <>{/* Under "Answered below" that line already says this reply was not the answer, so the clock would only repeat it; once the
         question is settled (the owner marked it answered) the reply is the last word and nothing is owed. */}{part !== 'question' && !answeredHere && item.status !== 'answered' && <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</>}</div>;
@@ -333,7 +334,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div data-bubble-row className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
       <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={item.question} /></div></div>
-      {time}
+      {time}<span className="flex gap-0.5"><MessageCopy small text={item.question} /><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
     </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
       {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
       {chat && item.trigger?.kind === 'agent' && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={item.question.replace(/^\[bb message from [^\]]*\]\s*/, '')} /></div></div>}
@@ -342,7 +343,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
-        <Button size="sm" {...iconProps(copied ? 'Copied' : 'Copy')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void navigator.clipboard?.writeText(group.map(member => member.question).filter(Boolean).join('\n\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}><Icon name={copied ? 'Check' : 'Copy'} aria-hidden /></Button>
+        <MessageCopy small text={group.map(member => member.question).filter(Boolean).join('\n\n')} />
+        <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />
         {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Answers' : 'Save to Answers')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
         {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
