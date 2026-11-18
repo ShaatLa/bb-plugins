@@ -1088,3 +1088,10 @@ it('shows a sub-session title without a top-level contact', async () => {
   await waitFor(() => expect(slot.container.querySelector('[data-chat-column]')?.textContent).toContain('Child session'));
   expect(slot.queryByText('Untitled thread')).toBeNull();
 });
+it('gives the history back the scroll bar width on the right, so both sides of the chat read the same', async () => {
+  const { slot, recipients } = setup();
+  fireEvent.click(await recipients.findByRole('option'));
+  const history = await slot.findByRole('list', { name:'History' });
+  expect(history.closest<HTMLElement>('[data-chat-column]')!.style.getPropertyValue('--scrollbar')).toMatch(/^\d+px$/);
+  expect(history.className.split(' ')).toEqual(expect.arrayContaining(['pl-4', 'pr-[max(0px,calc(1rem-var(--scrollbar,0px)))]']));
+});
