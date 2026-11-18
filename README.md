@@ -69,7 +69,7 @@ An installation tracking `@main` receives branch changes when you apply an updat
 bb plugin outdated
 bb plugin update antigravity
 bb plugin update work-board
-bb plugin update delivery-dashboard
+bb plugin update ci-dashboard
 ```
 
 Replace `@main` in an installation URL with a full commit SHA to pin an exact revision. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.

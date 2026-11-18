@@ -1,3 +1,8 @@
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { emptyGlobal, emptyRepoState, enabledEvents, syncGlobal } from "./ci-observer";
 import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -212,7 +217,7 @@ test("repeated deployment pages report an error instead of looping or understati
 
 test("real SDK validates settings and RPC, re-reads settings, and aborts on disposal", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
+    pluginId: "ci-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
   });
   try {
     await plugin(bb);
@@ -244,7 +249,7 @@ test("imports GitHub remotes from BB, merges manual repos, and de-duplicates cas
   const projects = [project("p1", "git@github.com:acme/widgets.git"), project("p2", "https://github.com/Acme/Other.git"),
     project("p3", "https://gitlab.com/acme/ignored.git"), project("p4", null)];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "delivery-dashboard", settings: { repository: "acme/WIDGETS, acme/manual\nacme/manual" },
+    pluginId: "ci-dashboard", settings: { repository: "acme/WIDGETS, acme/manual\nacme/manual" },
     sdk: { projects: { list: async () => projects } },
   });
   try {
@@ -579,7 +584,7 @@ test("custom range scopes deployment frequency, CI, created PRs, and commit stat
 });
 
 test("RPC accepts presets and rejects invalid custom dates before making GitHub requests", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false } });
   try {
     await plugin(bb);
     const result = await harness.behavior.callRpc("metrics", { days: 90 });
@@ -594,7 +599,7 @@ test("RPC accepts presets and rejects invalid custom dates before making GitHub 
 });
 
 test("bar interval RPC validates endpoints and requests statistics for just the selected repository", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { token: "private-token" } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", settings: { token: "private-token" } });
   const input = { repository: "acme/widgets", since: "2026-10-19T00:00:00.000Z", until: "2026-10-19T23:59:59.999Z" };
   try {
     await plugin(bb);
@@ -648,7 +653,7 @@ test("loads CI pages in parallel with independent request deadlines", async () =
 
 test("reads persisted snapshots without GitHub and invalidates them on settings changes", async () => {
   let { bb, harness } = createFakePluginHost({
-    pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
+    pluginId: "ci-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
   });
   try {
     await plugin(bb);
@@ -844,7 +849,7 @@ test.each([
 
 test("derives narrower and custom ranges from persisted raw history without downloading history again", async () => {
   let { bb, harness } = createFakePluginHost({
-    pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
+    pluginId: "ci-dashboard", settings: { repository: "acme/widgets", token: "private-token", importBbRepositories: false },
   });
   try {
     await plugin(bb);
@@ -940,7 +945,7 @@ const live = (queuedJobs: object[], handlers: Record<string, (url: URL) => objec
 };
 const queuedJob = { id: 9001, name: "Unit tests", status: "queued", conclusion: null, created_at: "2026-10-20T11:40:00Z", started_at: null, completed_at: null, labels: ["self-hosted"], runner_name: null, runner_group_name: null, steps: [] };
 const signalsHost = (push: (...args: never[]) => unknown = async () => ({ ok: true })) => createFakePluginHost({
-  pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false },
+  pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false },
   sdk: { plugins: { callRpc: push as never } },
 });
 type SignalsResult = { actors: Record<string, string>; repositories: { updatedAt: string | null; error: string | null; signals: { id: string; severity: string; open: boolean }[]; live: { pools: { pool: string; queued: number }[] }; failures: unknown[]; failureCounts: Record<string, number>; backfill: { remaining: number; coveredSince: string | null } }[] };
@@ -1000,7 +1005,7 @@ test("the refusalSteps setting classifies gate refusals as refused and drops the
   });
   live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [[`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [job((index + 1) * 10)] })], [`/repos/acme/widgets/check-runs/${(index + 1) * 10}/annotations`, () => []]]).flat()));
   const run = async (settings: object) => {
-    const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, ...settings } });
+    const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, ...settings } });
     try {
       await plugin(bb);
       await harness.behavior.callRpc("metrics", { days: 7 });
@@ -1243,7 +1248,7 @@ test("a contained range served from fresh history does not rewrite the stored hi
 });
 
 test("the interval popup is answered from stored history inside its coverage and only falls back to GitHub outside it", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false } });
   const input = { repository: "acme/widgets", since: "2026-10-19T00:00:00.000Z", until: "2026-10-19T23:59:59.999Z" };
   try {
     await plugin(bb);
@@ -1302,7 +1307,7 @@ async function signalsPass(harness: ReturnType<typeof signalsHost>["harness"], a
 test("the analysis is recomputed every five minutes even while the backfill keeps storing rows", async () => {
   const job = (id: number) => ({ id, name: "Unit tests", status: "completed", conclusion: "success", created_at: "2026-10-19T12:00:00Z", started_at: "2026-10-19T12:01:00Z", completed_at: "2026-10-19T12:05:00Z", labels: ["self-hosted"], runner_name: "runner-1", runner_group_name: null, steps: [] });
   live([], Object.fromEntries(Array.from({ length: 10 }, (_, index) => [[`/repos/acme/widgets/actions/runs/${index + 1}/attempts/1/jobs`, () => ({ jobs: [job((index + 1) * 10)] })], [`/repos/acme/widgets/check-runs/${(index + 1) * 10}/annotations`, () => []]]).flat()));
-  const { bb, harness } = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, jobBudgetPerHour: 100 } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, jobBudgetPerHour: 100 } });
   const set = vi.spyOn(bb.storage.kv, "set");
   try {
     await plugin(bb);
@@ -1346,7 +1351,7 @@ test("pool-only changes publish the badge numbers but do not rewrite the stored 
 const linkedProject = { id: "proj-1", name: "Widgets", kind: "standard", gitRemoteUrl: "git@github.com:acme/widgets.git", createdAt: 0, updatedAt: 0, sources: [] };
 function problemsHost(linked = true) {
   const spawn = vi.fn(async (_args: unknown) => ({ id: "thr_new" })), send = vi.fn(async (_args: unknown) => ({}));
-  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: linked },
+  const host = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: linked },
     sdk: { projects: { list: async () => [linkedProject] }, threads: { spawn, send } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
   return { ...host, spawn, send };
 }
@@ -1396,7 +1401,7 @@ test("investigate without a thread spawns a session in the linked project with a
     expect(args).toMatchObject({ projectId: "proj-1", title: "Investigate: Runner pool stalled: self-hosted" });
     expect(args.providerId).toBeUndefined(); expect(args.model).toBeUndefined();
     for (const fact of ["Problem: Runner pool stalled: self-hosted (critical)", "What happened:", "Impact:", "- Repository: acme/widgets", "- Pool: self-hosted", "Since: 2026-10-20T11:40:00.000Z",
-      "ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref>", "## Refs", "drill down with ci_dashboard_metrics ref=<ref>: pool:self-hosted", "bb plugin rpc call delivery-dashboard ci", "## Pool stall", "Queued runs:", "Find the root cause and report back.",
+      "ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref>", "## Refs", "drill down with ci_dashboard_metrics ref=<ref>: pool:self-hosted", "bb plugin rpc call ci-dashboard ci", "## Pool stall", "Queued runs:", "Find the root cause and report back.",
       "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks."]) expect(args.prompt).toContain(fact);
     expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating", threadId: "thr_new" });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
@@ -1498,7 +1503,7 @@ function claimsHost(settings: object = {}) {
     if (threadId === "thr_missing") throw new Error("404 thread not found");
     return { id: threadId, archivedAt: threadId === "thr_archived" ? 1 : null };
   });
-  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
+  const host = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
     sdk: { threads: { send, get } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
   return { ...host, send, get };
 }
@@ -1816,7 +1821,7 @@ function ciScenario() {
 function observerHost(settings: object = {}, threadsOverride: object = {}) {
   const send = vi.fn(async (_args: unknown) => ({}));
   const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; archivedAt: number | null }> => ({ id: threadId, archivedAt: null }));
-  const host = createFakePluginHost({ pluginId: "delivery-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
+  const host = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
     sdk: { threads: { send, get, ...threadsOverride } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
   return { ...host, send, get };
 }
@@ -1832,7 +1837,7 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     // Poll N: the three runs are in progress. The thread subscribes and gets its confirmation, no history.
     await signalsPass(harness, 0);
     expect(sentTo(send)).toEqual([expect.stringMatching(/^\*\*CI Dashboard\*\* Subscribed to CI events for acme\/widgets: merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments; quiet window 30 min$/)]);
-    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "queue-if-active", originPluginId: "delivery-dashboard", input: [{ type: "text", mentions: [] }] });
+    expect(send.mock.calls[0][0]).toMatchObject({ threadId: "thr_observer", mode: "queue-if-active", originPluginId: "ci-dashboard", input: [{ type: "text", mentions: [] }] });
     // Poll N+1: they are gone from the live list; the very same loop fetches them, stores their jobs and announces the failures.
     scenario.running = [];
     fetchMock.mockClear();
@@ -2325,4 +2330,110 @@ test("PR subscriptions require repository selection with several repositories", 
     await plugin(bb);
     await expect(harness.behavior.callAgentTool("ci_dashboard_manage", { action: "subscribe_pr", number: 12 }, { threadId: "thr_a" })).rejects.toThrow("Several repositories are configured; pass repository");
   } finally { await harness.lifecycle.dispose(); }
+});
+
+function cutoverScenario() {
+  const scenario = ciScenario(), normal = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("/actions/runs") && url.searchParams.get("status") === "queued") return Response.json({ workflow_runs: [{ ...runMeta(904), status: "queued" }] });
+    if (url.pathname.endsWith("/actions/runs/904/jobs")) return Response.json({ jobs: [{ ...liveRow(904), status: "queued", created_at: "2026-10-20T11:40:00Z", started_at: null }] });
+    return normal(input, options);
+  });
+  return scenario;
+}
+const cutoverError = "CI Dashboard cut-over is being verified; this change is disabled until delivery-dashboard is removed.";
+async function cutoverHost(legacy: boolean, enabled = 0) {
+  const root = mkdtempSync(join(tmpdir(), "ci-verification-"));
+  const hostDb = new DatabaseSync(join(root, "bb.db"));
+  hostDb.exec("CREATE TABLE plugins (id TEXT, enabled INTEGER, removed_at TEXT)");
+  if (legacy) hostDb.prepare("INSERT INTO plugins VALUES ('delivery-dashboard', ?, NULL)").run(enabled);
+  const send = vi.fn(async (_args: unknown) => ({})), push = vi.fn(async () => ({ ok: true }));
+  const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", dataDir: root,
+    settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", observeDeployments: "off" },
+    sdk: { threads: { send } as never, plugins: { callRpc: push as never } } });
+  const observers = emptyGlobal();
+  syncGlobal(observers, ["thr_observer"], enabledEvents({ observeDeployments: "off" }), Date.now() - 3_600_000);
+  const state = {
+    observers, prSubscriptions: [{ repository: "acme/widgets", number: 7, threadId: "thr_example", at: "2026-09-01T00:00:00.000Z" }],
+    "observer:acme/widgets": emptyRepoState(), "incidents:acme/widgets": { open: [], recent: [] },
+    "handled:acme/widgets": { "run:main:1": { state: "investigating", threadId: "thr_observer", by: "agent", at: "2026-09-01T00:00:00.000Z" } },
+    "observer:example/inactive": { preserved: true }, "handled:example/inactive": { preserved: true },
+    "incidents:example/inactive": { preserved: true }, "result:example/inactive": { preserved: true },
+  };
+  if (legacy) await bb.storage.kv.set("migration", { from: "delivery-dashboard", state: "done" });
+  for (const [key, value] of Object.entries(state)) await bb.storage.kv.set(key, value);
+  const dispose = async () => { await harness.lifecycle.dispose(); hostDb.close(); rmSync(root, { recursive: true, force: true }); };
+  return { bb, harness, send, push, state, hostDb, dispose };
+}
+
+test.each([0, 1])("cutover verification preserves migrated KV and refuses mutations with legacy enabled=%s", async enabled => {
+  const scenario = cutoverScenario(), f = await cutoverHost(true, enabled);
+  try {
+    await plugin(f.bb);
+    await signalsPass(f.harness, 0);
+    scenario.running = [];
+    await signalsPass(f.harness);
+    await signalsPass(f.harness);
+    expect(f.send).not.toHaveBeenCalled(); expect(f.push).not.toHaveBeenCalled();
+    expect((f.bb.storage.database().prepare("SELECT COUNT(*) AS n FROM ci_jobs").get() as { n: number }).n).toBeGreaterThan(0);
+    for (const action of ["take", "fix_pending", "release", "dismiss", "subscribe", "unsubscribe", "replace", "subscribe_pr", "unsubscribe_pr"]) {
+      await expect(f.harness.behavior.callAgentTool("ci_dashboard_manage", { action })).rejects.toThrow(cutoverError);
+      await expect(f.harness.behavior.callRpc("manage", { action })).rejects.toThrow(cutoverError);
+    }
+    for (const action of ["dismiss", "restore"]) await expect(f.harness.behavior.callRpc("problemAction", { repository: "acme/widgets", id: "run:main:1", action })).rejects.toThrow(cutoverError);
+    for (const threadId of [undefined, "thr_example"]) await expect(f.harness.behavior.callRpc("investigate", { repository: "acme/widgets", id: "run:main:1", ...(threadId ? { threadId } : {}) })).rejects.toThrow(cutoverError);
+    await expect(f.harness.behavior.callRpc("deployProduction", null)).rejects.toThrow(cutoverError);
+    await expect(f.harness.behavior.callRpc("manage", { action: "list" })).resolves.toMatchObject({ observerThreads: ["thr_observer"] });
+    await expect(f.harness.behavior.callAgentTool("ci_dashboard_manage", { action: "list" })).resolves.toBeTypeOf("string");
+    await expect(f.harness.behavior.callRpc("ci", {})).resolves.toMatchObject({ cutover: "verifying" });
+    expect(JSON.parse(await f.harness.behavior.callAgentTool("ci_dashboard_metrics", {}) as string)).toMatchObject({ cutover: "verifying" });
+    await expect(f.harness.behavior.callRpc("metrics", { days: 7 })).resolves.toMatchObject({ repositories: [{ repository: "acme/widgets" }] });
+    await expect(f.harness.behavior.callRpc("ci", { view: "failures" })).resolves.toMatchObject({ repositories: [{ failures: expect.any(Array) }] });
+    await expect(f.harness.behavior.callRpc("ci", { ref: "job:9011" })).resolves.toBeDefined();
+    for (const event of ["thread.archived", "thread.deleted"] as const) await f.harness.behavior.emitThreadEvent(event, { thread: makeThreadResponse({ id: "thr_observer" }) });
+    await f.harness.behavior.setSettings({ observerThreads: "thr_other" });
+    const refresh = f.harness.behavior.runService("snapshot-refresh");
+    await vi.waitFor(() => expect(f.harness.logEntries.some(row => row.message.startsWith("Storage:"))).toBe(true));
+    refresh.controller.abort(); await refresh.done;
+    for (const [key, value] of Object.entries(f.state)) expect(JSON.stringify(await f.bb.storage.kv.get(key)), key).toBe(JSON.stringify(value));
+    expect(f.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    expect(f.send).not.toHaveBeenCalled(); expect(f.push).not.toHaveBeenCalled();
+    expect(f.harness.logEntries.filter(row => row.message.includes("entering cut-over"))).toHaveLength(1);
+  } finally { await f.dispose(); }
+});
+
+test("cutover GO delivers the pending observer events and incident push once on the next tick", async () => {
+  const scenario = cutoverScenario(), f = await cutoverHost(true);
+  try {
+    await plugin(f.bb);
+    await signalsPass(f.harness, 0);
+    scenario.running = [];
+    await signalsPass(f.harness);
+    await signalsPass(f.harness);
+    expect(f.send).not.toHaveBeenCalled(); expect(f.push).not.toHaveBeenCalled();
+    f.hostDb.exec("DELETE FROM plugins WHERE id = 'delivery-dashboard'");
+    await signalsPass(f.harness);
+    expect(sentTo(f.send).filter(line => line.includes("queue:901:1"))).toHaveLength(1);
+    expect(sentTo(f.send).filter(line => line.includes("queue:902:1"))).toHaveLength(1);
+    expect(f.push).toHaveBeenCalled();
+    const sends = f.send.mock.calls.length, pushes = f.push.mock.calls.length;
+    await signalsPass(f.harness);
+    expect(f.send).toHaveBeenCalledTimes(sends); expect(f.push).toHaveBeenCalledTimes(pushes);
+    expect(await f.harness.behavior.callRpc("ci", {})).not.toHaveProperty("cutover");
+    expect(f.harness.logEntries.filter(row => row.message.includes("leaving cut-over"))).toHaveLength(1);
+  } finally { await f.dispose(); }
+});
+
+test("cutover fresh installation has no verification mode and delivers normally", async () => {
+  const scenario = cutoverScenario(), f = await cutoverHost(false);
+  try {
+    await plugin(f.bb);
+    await signalsPass(f.harness, 0);
+    scenario.running = [];
+    await signalsPass(f.harness);
+    expect(f.send).toHaveBeenCalled(); expect(f.push).toHaveBeenCalled();
+    expect(await f.harness.behavior.callRpc("ci", {})).not.toHaveProperty("cutover");
+    expect(f.harness.logEntries.filter(row => row.message.includes("cut-over verification mode"))).toHaveLength(0);
+  } finally { await f.dispose(); }
 });

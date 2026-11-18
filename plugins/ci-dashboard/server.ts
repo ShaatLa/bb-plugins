@@ -1,7 +1,8 @@
+import { legacyRegistered, migrateId } from "./id-migration";
 import { defaultDraftRules, draftRules, draftNameSchema, draftSettingLabels } from "./draft-deferrals";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { defineRpcContract, type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi, type PluginRpcHandlers, type PluginSettingDescriptors } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { minimumDate, rangeInputSchema, rangeSchema, resolveRange, type RangeInput, type DateRange } from "./date-range";
 import { githubRequest, historicalRecordsSchema, loadMetrics, metricsSchema, repositorySchema, type GitHubRequest, type GitHubResponse, type HistoricalRecords, type Metrics } from "./metrics";
@@ -51,8 +52,7 @@ const actorName = z.string().trim().min(1).max(60);
 // Settings that feed cached GitHub data; the signals settings must not invalidate it.
 const dashboardSettingKeys = ["importBbRepositories", "repository", "draftWorkflow", "draftJob", "draftStep", "token"] as const;
 
-export default function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({
+export const settingDescriptors = {
     importBbRepositories: {
       type: "boolean", label: "Include GitHub repositories from BB projects", default: true,
     },
@@ -100,28 +100,58 @@ export default function plugin(bb: BbPluginApi) {
     actorPrAuthor: { type: "string", label: "Signals: display name for the PR author", default: "PR author", experimental_schema: actorName },
     actorLead: { type: "string", label: "Signals: display name for the lead", default: "Lead", experimental_schema: actorName },
     actorManager: { type: "string", label: "Signals: display name for the manager", default: "Manager", experimental_schema: actorName },
-  });
+  } satisfies PluginSettingDescriptors;
+
+export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define(settingDescriptors);
+  let migrationReason = "CI Dashboard migration is in progress; retry after startup.";
+  let available = false, migrated = false, verifying = false;
+  const verificationError = "CI Dashboard cut-over is being verified; this change is disabled until delivery-dashboard is removed.";
+  function requireChanges() { if (verifying) throw new Error(verificationError); }
+  function checkVerification() {
+    const next = migrated && legacyRegistered(bb.server.experimental_dataDir);
+    if (next !== verifying) {
+      verifying = next;
+      bb.log.info(next ? "CI Dashboard entering cut-over verification mode." : "CI Dashboard leaving cut-over verification mode.");
+    }
+  }
+  const ready = migrateId(bb, settingDescriptors, settings).then(async (reason) => {
+    if (reason) { migrationReason = reason; return; }
+    const marker = await bb.storage.kv.get<{ from?: string; state?: string }>("migration");
+    migrated = marker?.from === "delivery-dashboard" && marker.state === "done";
+    checkVerification();
+    initialize();
+    available = true;
+  }).catch(() => { migrationReason = "CI Dashboard migration failed; reload ci-dashboard to retry."; bb.log.error(migrationReason); });
+  function requireReady() { if (!available) throw new Error(migrationReason); }
   type Values = Awaited<ReturnType<typeof settings.get>>;
   let deploying = false;
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
-  const database = bb.storage.database();
-  bb.storage.migrate(database, [
-    "CREATE TABLE dashboard_snapshots (selection TEXT PRIMARY KEY, configuration TEXT NOT NULL, data TEXT NOT NULL, refreshed_at INTEGER NOT NULL)",
-    "ALTER TABLE dashboard_snapshots ADD COLUMN history TEXT",
-    "CREATE TABLE repository_history (repository TEXT NOT NULL, configuration TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(repository, configuration))",
-    "CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)",
-    "ALTER TABLE github_responses ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE repository_history ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
-    ...jobMigrations,
-  ]);
-  database.prepare("UPDATE github_responses SET last_used_at = checked_at WHERE last_used_at = 0").run();
-  database.prepare("UPDATE repository_history SET last_used_at = ? WHERE last_used_at = 0").run(Date.now());
-  try {
-    // Routine maintenance stays out of the log; only failures are worth a line.
-    purgeDeadResponses(database);
-  } catch { bb.log.warn("Cache purge failed; a later cleanup will retry without interrupting metrics."); }
-  const cachedRequest = createGitHubCache(database);
+  let database: ReturnType<typeof bb.storage.database>;
+  let cachedRequest: ReturnType<typeof createGitHubCache>;
+  let jobStore: ReturnType<typeof createJobStore>;
+  function initialize() {
+    database = bb.storage.database();
+    bb.storage.migrate(database, [
+      "CREATE TABLE dashboard_snapshots (selection TEXT PRIMARY KEY, configuration TEXT NOT NULL, data TEXT NOT NULL, refreshed_at INTEGER NOT NULL)",
+      "ALTER TABLE dashboard_snapshots ADD COLUMN history TEXT",
+      "CREATE TABLE repository_history (repository TEXT NOT NULL, configuration TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(repository, configuration))",
+      "CREATE TABLE github_responses (cache_key TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at INTEGER NOT NULL)",
+      "ALTER TABLE github_responses ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE repository_history ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
+      ...jobMigrations,
+    ]);
+    database.prepare("UPDATE github_responses SET last_used_at = checked_at WHERE last_used_at = 0").run();
+    database.prepare("UPDATE repository_history SET last_used_at = ? WHERE last_used_at = 0").run(Date.now());
+    try {
+      // Routine maintenance stays out of the log; only failures are worth a line.
+      purgeDeadResponses(database);
+    } catch { bb.log.warn("Cache purge failed; a later cleanup will retry without interrupting metrics."); }
+    cachedRequest = createGitHubCache(database);
+    jobStore = createJobStore(database);
+    clean(true);
+  }
   const repositoryPending = new Map<string, Promise<Metrics>>();
   const historySchema = z.object({ metrics: metricsSchema, records: historicalRecordsSchema, coverage: rangeSchema, checkedAt: z.number(), authSource: dashboardSchema.shape.authSource.optional(), projectName: z.string().nullable().optional() });
   type RepositoryHistory = z.infer<typeof historySchema>;
@@ -137,7 +167,8 @@ export default function plugin(bb: BbPluginApi) {
   // When a range older than the 90-day preset was last requested; stored history deeper than that is trimmed after a week without one.
   // Persisted so a restart does not reset the clock; the first run grants a full grace period.
   let lastDeepAt = Date.now(), deepPersisted = 0, deepTouched = false;
-  void bb.storage.kv.get<number>("deep-range-at").then((at) => {
+  void ready.then(() => available ? bb.storage.kv.get<number>("deep-range-at") : undefined).then((at) => {
+    if (!available) return;
     if (typeof at === "number") { deepPersisted = at; if (!deepTouched) lastDeepAt = at; } else { deepPersisted = lastDeepAt; return bb.storage.kv.set("deep-range-at", lastDeepAt); }
   }).catch(() => { /* Without the stored time the in-memory grace period applies. */ });
   function markDeep(range: DateRange) {
@@ -163,7 +194,6 @@ export default function plugin(bb: BbPluginApi) {
     for (const repo of result.repositories) database.prepare("UPDATE repository_history SET last_used_at = ? WHERE repository = ? AND configuration = ?").run(Date.now(), repo.repository, config);
     return result;
   }
-  clean(true);
   function selectionKey(input: RangeInput) {
     const selection = rangeInputSchema.parse(input) ?? { days: 7 };
     return JSON.stringify("days" in selection && selection.days === 1 ? ["calendar-day-v1", selection]
@@ -176,6 +206,7 @@ export default function plugin(bb: BbPluginApi) {
     return createHash("sha256").update(JSON.stringify(["ci-exclude-cancelled-skipped-v1", "review:none", values.repository, values.importBbRepositories, values.token ?? "", ...custom])).digest("hex");
   }
   settings.onChange((next, prev) => {
+    if (!available) return;
     // A changed observer list takes effect now (confirmation to new subscribers) instead of at the next loop; the loop reads fresh settings anyway.
     if (next.observerThreads !== prev.observerThreads) void repositoryNames(next).then((names) => syncObservers(next, names)).catch((error) => logOnce(`CI observer sync failed: ${describe(error)}`));
     // Job rows and incident state never depend on settings; only the cached dashboard data does.
@@ -341,6 +372,8 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.background.service("snapshot-refresh", {
     async start(signal) {
+      await ready;
+      if (!available || signal.aborted) return;
       const stop = () => controller.abort();
       signal.addEventListener("abort", stop, { once: true });
       try {
@@ -372,7 +405,6 @@ export default function plugin(bb: BbPluginApi) {
     analysis?: { key: string; at: number; classified: ClassifiedJob[]; reruns: RerunSummary[]; massCancels: MassCancel[]; queueOnly: Set<number>; samples: TimingSample[]; laneTimings: ReturnType<typeof laneTimings>; summary: ReturnType<typeof summarizeAnalysis> };
     incidents?: Incidents; persisted?: string; resultIds?: string; tracker: ReturnType<typeof createIncidentTracker>; view?: View; signature?: string;
   };
-  const jobStore = createJobStore(database);
   const runtimes = new Map<string, Runtime>();
   const loggedErrors = new Set<string>();
   let nextPrune = 0;
@@ -448,7 +480,7 @@ export default function plugin(bb: BbPluginApi) {
       const next = change(entries);
       const entriesToStore = next.entries.sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
       // Read on every observer pass: write only when something changed.
-      if (JSON.stringify(entriesToStore) !== JSON.stringify(stored ?? [])) await bb.storage.kv.set("prSubscriptions", entriesToStore);
+      if (!verifying && JSON.stringify(entriesToStore) !== JSON.stringify(stored ?? [])) await bb.storage.kv.set("prSubscriptions", entriesToStore);
       return next.result;
     });
     prChain = run.catch(() => {});
@@ -480,6 +512,7 @@ export default function plugin(bb: BbPluginApi) {
   /** Brings subscriptions and event-type start times in line with the settings; new subscribers get the one-line confirmation and no history. */
   function syncObservers(values: Values, repositories: string[]) {
     return serialObserver(async () => {
+      if (verifying) return observerGlobal ?? emptyGlobal();
       if (!observerGlobal) { const stored = globalStateSchema.safeParse(await bb.storage.kv.get("observers")); observerGlobal = stored.success ? stored.data as ObserverGlobal : emptyGlobal(); }
       const before = JSON.stringify(observerGlobal), enabled = enabledEvents(values);
       const added = syncGlobal(observerGlobal, parseObserverThreads(values.observerThreads), enabled, Date.now());
@@ -489,6 +522,7 @@ export default function plugin(bb: BbPluginApi) {
     });
   }
   async function observe(repo: string, rt: Runtime, values: Values, token: string | undefined, opened: Signal[], now: number, signal: AbortSignal, problems: Problems) {
+    if (verifying) return;
     const global = observerGlobal ?? emptyGlobal();
     const subscriptions = (await readPr()).filter((entry) => entry.repository === repo);
     if (!Object.keys(global.threads).length && !subscriptions.length) return;
@@ -648,7 +682,8 @@ export default function plugin(bb: BbPluginApi) {
     }
     // 4. signals and push. Without a successful live poll the stall state is unknown, so incidents are left untouched instead of resolved.
     let opened: Signal[] = [];
-    if (rt.analysis && rt.liveKnown) {
+    // Keep the tracker untouched so GO can still open incidents and deliver their pending pushes.
+    if (!verifying && rt.analysis && rt.liveKnown) {
       try {
         ({ opened } = rt.tracker.update(capOpenSignals(buildSignals({ classified: rt.analysis.classified, reruns: rt.analysis.reruns, massCancels: rt.analysis.massCancels, stalls: rt.stalls, defaultBranch: rt.defaultBranch, repository: repo, now })), now));
         const names = actorNames(values);
@@ -667,17 +702,19 @@ export default function plugin(bb: BbPluginApi) {
     catch (error) { signal.throwIfAborted(); logOnce(`CI observer for ${repo} failed: ${describe(error)}`); }
     // Handled entries of problems that closed are dropped, but only once the source of that kind of problem is known.
     try {
-      const handled = await loadHandled(repo, rt), open = new Set(problems.map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
-      const stale = Object.keys(handled).filter((id) => !open.has(id) && (id.startsWith("run:") ? rt.alerts !== undefined : jobKnown));
-      if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); problems = await problemsOf(repo, rt); }
-      // A claim that outlives claimTimeoutHours with its problem still open is dropped (the claimant stalled or forgot to release).
-      const limit = values.claimTimeoutHours * 3_600_000, titles = new Map(problems.map((problem) => [problem.id, problem.title]));
-      const expired = limit > 0 ? Object.entries(handled).filter(([id, entry]) => entry.state !== "dismissed" && titles.has(id) && now - Date.parse(entry.at) > limit).map(([id]) => id) : [];
-      if (expired.length) {
-        for (const id of expired) delete handled[id];
-        await saveHandled(repo, rt);
-        problems = await problemsOf(repo, rt);
-        for (const id of expired) await echoClaimDropped(values, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
+      if (!verifying) {
+        const handled = await loadHandled(repo, rt), open = new Set(problems.map((problem) => problem.id)), jobKnown = !!rt.analysis && rt.liveKnown;
+        const stale = Object.keys(handled).filter((id) => !open.has(id) && (id.startsWith("run:") ? rt.alerts !== undefined : jobKnown));
+        if (stale.length) { for (const id of stale) delete handled[id]; await saveHandled(repo, rt); problems = await problemsOf(repo, rt); }
+        // A claim that outlives claimTimeoutHours with its problem still open is dropped (the claimant stalled or forgot to release).
+        const limit = values.claimTimeoutHours * 3_600_000, titles = new Map(problems.map((problem) => [problem.id, problem.title]));
+        const expired = limit > 0 ? Object.entries(handled).filter(([id, entry]) => entry.state !== "dismissed" && titles.has(id) && now - Date.parse(entry.at) > limit).map(([id]) => id) : [];
+        if (expired.length) {
+          for (const id of expired) delete handled[id];
+          await saveHandled(repo, rt);
+          problems = await problemsOf(repo, rt);
+          for (const id of expired) await echoClaimDropped(values, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
+        }
       }
     } catch (error) { logOnce(`CI signals handled state for ${repo} not pruned: ${describe(error)}`); }
     // 5. view for the RPC (kept in memory and kv) and a realtime nudge when something visible changed.
@@ -706,7 +743,7 @@ export default function plugin(bb: BbPluginApi) {
     const active = new Set(repositoryList.names.map((name) => name.toLowerCase()));
     try {
       jobStore.pruneRepositories([...active]);
-      for (const prefix of ["result:", "incidents:", "handled:", "observer:"]) for (const key of await bb.storage.kv.list(prefix)) if (!active.has(key.slice(prefix.length).toLowerCase())) await bb.storage.kv.delete(key);
+      if (!verifying) for (const prefix of ["result:", "incidents:", "handled:", "observer:"]) for (const key of await bb.storage.kv.list(prefix)) if (!active.has(key.slice(prefix.length).toLowerCase())) await bb.storage.kv.delete(key);
       for (const repo of runtimes.keys()) if (!active.has(repo.toLowerCase())) runtimes.delete(repo);
       const capped = jobStore.capBytes(jobMaxBytes);
       if (capped.removedDays) logOnce(`CI job data exceeded ${mb(jobMaxBytes)} MB; dropped its ${capped.removedDays} oldest day(s).`);
@@ -720,6 +757,7 @@ export default function plugin(bb: BbPluginApi) {
     } catch { /* Statistics are informational. */ }
   }
   async function signalsPass(signal: AbortSignal) {
+    checkVerification();
     const values = await settings.get();
     const names = await repositoryNames(values);
     if (!names.length) return;
@@ -736,6 +774,8 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.background.service("ci-signals", {
     async start(signal) {
+      await ready;
+      if (!available || signal.aborted) return;
       try {
         while (!signal.aborted) {
           try { await signalsPass(signal); }
@@ -783,6 +823,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     async navigationBadge() { return badgeCounts(await settings.get()); },
     async problemAction({ repository, id, action }) {
+      requireChanges();
       const values = await settings.get();
       const repo = await configuredRepository(repository, values), rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
       if (action === "dismiss") {
@@ -794,6 +835,7 @@ export default function plugin(bb: BbPluginApi) {
       return { handled: rt.handled![id] ?? null };
     },
     async investigate({ repository, id, threadId }) {
+      requireChanges();
       const values = await settings.get();
       const repo = await configuredRepository(repository, values), rt = runtimeFor(repo);
       const problem = (await problemsOf(repo, rt)).find((item) => item.id === id);
@@ -826,6 +868,7 @@ export default function plugin(bb: BbPluginApi) {
       return loadCardDetails(input, token, controller.signal, draftRules(values));
     },
     async deployProduction() {
+      requireChanges();
       if (deploying) throw new Error("A production deployment request is already in progress.");
       deploying = true;
       try {
@@ -909,7 +952,7 @@ export default function plugin(bb: BbPluginApi) {
       return null;
     },
   };
-  bb.rpc.register(rpcContract, handlers);
+  bb.rpc.register(rpcContract, Object.fromEntries(Object.entries(handlers).map(([key, handler]) => [key, (input: never) => { requireReady(); return handler(input); }])) as PluginRpcHandlers<typeof rpcContract>);
   /** ref=...: one small inspection from memory and the local store (no GitHub requests). */
   async function inspectRef(ref: string, repository: string | undefined) {
     const values = await settings.get(), names = await repositoryNames(values);
@@ -930,6 +973,7 @@ export default function plugin(bb: BbPluginApi) {
     } satisfies InspectInput);
   }
   async function readCi(input: CiQuery) {
+    requireReady();
     if (input.ref) return inspectRef(input.ref, input.repository);
     const signalsInput = input.repository ? { repository: input.repository } : null;
     // Lane timings are for agents only: read from the analysis on request instead of riding in every stored and UI view.
@@ -942,7 +986,7 @@ export default function plugin(bb: BbPluginApi) {
     // Signals must never break the run-level summary.
     let signals: SignalsOutput = { repositories: [], actors: actorNames({} as Values) };
     try { signals = await handlers.signals(signalsInput); } catch (error) { logOnce(`CI signals unavailable for summary: ${describe(error)}`); }
-    return ciReport(data, input, refreshSeconds, snapshot !== null, signals);
+    return { ...ciReport(data, input, refreshSeconds, snapshot !== null, signals), ...(verifying ? { cutover: "verifying" as const } : {}) };
   }
   bb.rpc.register(ciRpcContract, { ci: readCi }, {
     experimental_discoverable: true,
@@ -962,6 +1006,8 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Observer threads can be changed by the agents themselves: a new manager session subscribes (or takes over) and unsubscribes when it stops watching.
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, async ({ thread }) => {
+    await ready;
+    if (!available || verifying) return;
     const why = event === "thread.archived" ? "thread archived" : "thread deleted";
     await dropPrThread(thread.id);
     try { await removeObserver(thread.id, why); }
@@ -994,6 +1040,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   const prDescription = "The lead subscribes to its PR with subscribe_pr (number required); unsubscribe_pr cancels. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
   async function manage(input: z.infer<typeof manageInput>, ctx: { threadId: string; signal: AbortSignal }) {
+    if (input.action !== "list") requireChanges();
     if (input.action === "subscribe_pr" || input.action === "unsubscribe_pr") {
       if (!input.number) throw new Error(`action=${input.action} needs number: a PR number.`);
       const values = await settings.get(), names = await repositoryNames(values);
@@ -1013,6 +1060,8 @@ export default function plugin(bb: BbPluginApi) {
     return (PROBLEM_ACTIONS as readonly string[]).includes(input.action) ? manageProblem(input as never, ctx) : manageObservers(input as never, ctx);
   }
   bb.rpc.register(defineRpcContract({ manage: { input: manageInput, output: z.unknown() } }), { manage: async (input) => {
+    requireReady();
+    if (input.action !== "list") requireChanges();
     if (!input.threadId && ["take", "subscribe", "replace", "subscribe_pr", "unsubscribe_pr", "unsubscribe"].includes(input.action)) throw new Error("threadId is required when called over RPC");
     return manage(input, { threadId: input.threadId ?? "", signal: controller.signal });
   } }, { experimental_discoverable: true, experimental_description: "Manage CI observers, PR deployment subscriptions and problem claims." });
@@ -1065,9 +1114,11 @@ export default function plugin(bb: BbPluginApi) {
     parameters: manageInput,
     presentation: { label: { pending: "Updating CI Dashboard", completed: "Updated CI Dashboard" } },
     async execute(input, ctx) {
+      requireReady();
       ctx.signal.throwIfAborted();
       const result = await manage(input, ctx);
       return JSON.stringify(result);
     },
   });
+  await ready;
 }

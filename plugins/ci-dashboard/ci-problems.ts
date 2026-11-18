@@ -258,7 +258,7 @@ export function fitSections(context: ContextSection[], budget: number, lineCap =
 }
 
 /** Plain-text first message for the BB session that investigates one problem. Lists shrink to fit the cap; the instructions never do. */
-export function seedPrompt(repository: string, problem: ProblemLike, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() }), pluginId = "delivery-dashboard") {
+export function seedPrompt(repository: string, problem: ProblemLike, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() }), pluginId = "ci-dashboard") {
   const head = `Investigate a CI problem in ${repository}: ${problem.title}.`;
   const tail = [
     "", "## How to dig further (read-only)",
