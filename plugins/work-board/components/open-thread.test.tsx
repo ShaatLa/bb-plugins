@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useOpenThread } from "./open-thread";
 
 const { toThread, list, settings } = vi.hoisted(() => ({ toThread: vi.fn(), list: vi.fn(), settings: { current: {} as Record<string, string> } }));
@@ -9,6 +9,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useSdk: () => ({ plugins: { list } }),
   useSettings: () => ({ values: settings.current, isLoading: false }),
 }));
+let clock = Date.now();
+// Each test starts past the one-minute cache so it reads its own plugin list.
+beforeEach(() => { clock += 120_000; vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(clock); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 function Open() {
@@ -40,10 +43,30 @@ it("opens the conversation in Answers through a link bb routes, and falls back t
   expect(toThread).not.toHaveBeenCalled();
   expect(document.querySelector("a")).toBeNull();
 
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(Date.now() + 120_000);
+  vi.setSystemTime(clock += 120_000);
   cleanup();
   list.mockResolvedValue({ plugins: [{ id: "answers", enabled: false }] });
   expect(mount()).toEqual([]);
   await waitFor(() => expect(toThread).toHaveBeenCalledWith("thr_example"));
+});
+
+it("prefers Agent Hub, uses Answers while only it is installed, and accepts either stored value", async () => {
+  settings.current = { openThreadsIn: "agent-hub" };
+  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: true }, { id: "agent-hub", enabled: true }] });
+  const both = mount();
+  await waitFor(() => expect(both).toEqual(["/plugins/agent-hub/agent-hub?thread=thr_example"]));
+
+  cleanup();
+  vi.setSystemTime(clock += 120_000);
+  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: true }] });
+  const answersOnly = mount();
+  await waitFor(() => expect(answersOnly).toEqual(["/plugins/answers/answers?thread=thr_example"]));
+
+  cleanup();
+  vi.setSystemTime(clock += 120_000);
+  settings.current = { openThreadsIn: "answers" };
+  list.mockResolvedValue({ plugins: [{ id: "agent-hub", enabled: true }] });
+  const legacy = mount();
+  await waitFor(() => expect(legacy).toEqual(["/plugins/agent-hub/agent-hub?thread=thr_example"]));
+  expect(toThread).not.toHaveBeenCalled();
 });

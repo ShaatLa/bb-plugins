@@ -69,6 +69,17 @@ it.each([false, true])("upgrades badge settings once (saved=%s), preserving late
   await f.harness.callRpc("setNavigationBadgeCriteria", { criteria: ["waiting_on_owner"] });
   expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["waiting_on_owner"] });
 });
+it("moves a stored openThreadsIn of answers to agent-hub at load", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board", settings: { openThreadsIn: "answers" } });
+  hosts.push(host);
+  await registerGlobalSettings(host.bb, () => {});
+  let stored: unknown;
+  const replacement = await host.harness.lifecycle.reload(async (bb) => {
+    stored = (await bb.settings.define({ openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub", "answers"], default: "bb" } }).get()).openThreadsIn;
+  });
+  hosts.push(replacement);
+  expect(stored).toBe("agent-hub");
+});
 it.each(["text", "json"])("warns on question add in %s without preventing creation", async mode => {
   const f = setup();
   for (const [status, progressNote, warn] of [["backlog", null, true], ["todo", null, true], ["todo", "Need access", false], ["in_progress", null, false]] as const) {
