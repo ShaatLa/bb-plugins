@@ -1,4 +1,4 @@
-name: Agent Spawn Gate CI
+name: Spawn Gate CI
 
 on:
   push:
