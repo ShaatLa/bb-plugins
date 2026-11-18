@@ -82,7 +82,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       for (const text of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
         try {await bb.sdk.threads.send({threadId:id,originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
-        catch (e) {bb.log.warn(`Answers handoff warning: ${String(e)}`);}
+        catch (e) {bb.log.warn(`Agent Hub handoff warning: ${String(e)}`);}
       }
     }
     if (!questions) db.transaction(() => {
@@ -162,7 +162,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
           }
           await schedule(id,thread).catch(()=>{});
         }));
-      } catch (e) {bb.log.warn(`Answers reconcile: ${String(e)}`);}
+      } catch (e) {bb.log.warn(`Agent Hub reconcile: ${String(e)}`);}
     }
     // shortcut: discovery covers 1,000 visible recent threads; other threads enter on their next event.
     for (let offset=0;offset<1000 && !signal.aborted;offset+=200) {

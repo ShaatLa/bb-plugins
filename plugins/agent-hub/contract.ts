@@ -76,7 +76,7 @@ export const rpcContract=defineRpcContract({
 });
 export type Item=z.infer<typeof itemSchema>;
 export type View=z.infer<typeof viewSchema>;
-export type AnswersRpcContract=typeof rpcContract;
+export type AgentHubRpcContract=typeof rpcContract;
 
 export type ListInput = z.infer<typeof inputs.list>;
 export type Counts = { unread: number; waiting: number; forMe: number; inbox: number };

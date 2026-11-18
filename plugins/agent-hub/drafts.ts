@@ -4,7 +4,7 @@ export const COMPOSE_KEY = 'bb-plugin-answers:page:compose';
 export const DRAFTS_EVENT = 'answers:drafts';
 const none = new Set<string>();
 let cache: { raw: string | null; ids: Set<string> } = { raw: null, ids: none };
-// Threads whose Answers composer holds unsent text or files; bb's own draft state never sees this composer.
+// Threads whose Agent Hub composer holds unsent text or files; bb's own draft state never sees this composer.
 function snapshot() {
   let raw: string | null = null; try { raw = localStorage.getItem(COMPOSE_KEY); } catch { /* storage unavailable */ }
   if (raw === cache.raw) return cache.ids;

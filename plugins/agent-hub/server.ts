@@ -15,7 +15,7 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers tracks user messages and final replies. For a later answer, call answers_defer; when it arrives, answers_list then answers_resolve. Ask decisions via answers_ask, then end the turn. With no pending question, call answers_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Scripts waking their own thread via bb thread tell start with a [tag].";
+export const INSTRUCTIONS = "Agent Hub tracks user messages and final replies. For a later answer, call answers_defer; when it arrives, answers_list then answers_resolve. Ask decisions via answers_ask, then end the turn. With no pending question, call answers_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Scripts waking their own thread via bb thread tell start with a [tag].";
 const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
 const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
@@ -112,7 +112,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
       FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).get() as Counts;
   }
-  // bb has no "thread read" event, so the badge would keep counting answers already read in bb's chat until the Answers
+  // bb has no "thread read" event, so the badge would keep counting answers already read in bb's chat until the Agent Hub
   // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
   // Agent questions stay: reading the thread in bb does not answer them.
   let bbReadSyncedAt = 0;
@@ -135,7 +135,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       let n = 0;
       for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) if (t.lastReadAt) n += await applyBbRead(t.id,t.lastReadAt);
       if (n) invalidate();
-    } catch (e) { bb.log.warn(`Answers read sync: ${String(e)}`); }
+    } catch (e) { bb.log.warn(`Agent Hub read sync: ${String(e)}`); }
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
@@ -193,13 +193,13 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
-  // Reads made in Answers' UI also clear bb's own unread mark on a thread once nothing there is left unread here,
+  // Reads made in Agent Hub's UI also clear bb's own unread mark on a thread once nothing there is left unread here,
   // and an undo restores it. The CLI path (`bb agent-hub read`) is not a person reading, so it leaves bb alone.
   async function syncBbRead(threadIds: Iterable<string>, read: boolean) {
     for (const threadId of new Set(threadIds)) {
       if (read && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND ${ATTENTION_SQL} LIMIT 1`).get(threadId)) continue;
       try { await (read ? bb.sdk.threads.markRead({threadId}) : bb.sdk.threads.markUnread({threadId})); }
-      catch (e) { bb.log.warn(`Answers read sync: ${String(e)}`); }
+      catch (e) { bb.log.warn(`Agent Hub read sync: ${String(e)}`); }
     }
   }
   const threadsOf = (sql: string, ...params: unknown[]) => (db.prepare(`SELECT DISTINCT thread_id FROM items WHERE ${sql}`).all(...params) as {thread_id:string}[]).map(r=>r.thread_id);
@@ -231,7 +231,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         try {
           await deliver(item.thread_id,buildReplyMessage([{quote:item.question,note}]));
           commit("UPDATE items SET status='replied',answer=?,answer_source='agent',deadline_at=NULL,updated_at=? WHERE id=? AND status='open'",note,Date.now(),item.id);
-        } catch(e) {bb.log.warn(`Answers deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
+        } catch(e) {bb.log.warn(`Agent Hub deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
       }).finally(()=>{deadlinePending.delete(row.id);wakeDue();});
     }
     const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
@@ -307,7 +307,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       try {const result=await bb.sdk.plugins.callRpc({pluginId:'inline-vis',method:'preparePreview',input:{threadId:p.threadId,file:p.file,source:p.source},outputSchema}); const parsed=inlinePreviewSchema.safeParse(result); return parsed.success ? parsed.data : {kind:'error' as const,message:'Unexpected preview'};}
       catch (e) {return {kind:'error' as const,message:(e instanceof Error ? e.message : String(e)).slice(0,500)};}
     },
-    // Tokenomos' cost of a thread and its sub-threads; fail-soft, so Answers works the same without it.
+    // Tokenomos' cost of a thread and its sub-threads; fail-soft, so Agent Hub works the same without it.
     async threadCost(raw:z.infer<typeof inputs.threadCost>) {
       const p=inputs.threadCost.parse(raw);
       try {const result=tokenomosThreads.parse(await bb.sdk.plugins.callRpc({pluginId:'tokenomos',method:'costs.threads',input:{threadIds:[p.threadId],includeDescendants:true},outputSchema:tokenomosThreads})),t=result.threads[0]; if (t) return {available:true,own:t.own,total:t.total,descendantCount:t.descendantCount};}
@@ -374,7 +374,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
-    logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Answers UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
+    logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
     queueStamp(raw:z.infer<typeof inputs.queueStamp>) {return {stamp:queueStamps.get(inputs.queueStamp.parse(raw).threadId) ?? 0};},
     contextStamp(raw:z.infer<typeof inputs.contextStamp>) {return contextStamps.get(inputs.contextStamp.parse(raw).threadId) ?? {stamp:0,compactedAt:null};},
     async markThreadRead(raw:z.infer<typeof inputs.markThreadRead>) {const p=inputs.markThreadRead.parse(raw), result=markRead({all:true,threadId:p.threadId}); await syncBbRead([p.threadId],true); return result;},
@@ -560,7 +560,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     return {counts:counts(),threads:{active:n('SELECT count(*) AS n FROM threads_state')-archived,archived},errors:{total:n('SELECT count(*) AS n FROM threads_state WHERE last_error IS NOT NULL'),latest:(db.prepare('SELECT thread_id AS threadId,substr(last_error,1,200) AS error FROM threads_state WHERE last_error IS NOT NULL ORDER BY rowid DESC LIMIT 10').all())}};
   }});
   // The event payload avoids a metadata lookup for both contacts and sub-sessions.
-  if (!migrationPending) bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
+  if (!migrationPending) bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Agent Hub ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row
   // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
   for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});
@@ -572,8 +572,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     if (!event.inputAccepted && failRequest(db,event.threadId,event.requestId,Date.now(),true,true)) {invalidate(); onAttention();}
   });
   notifier.settings.onChange(next=>{reminderSettingsChanged=true;remindHours=next.remindHours;wakeDue();});
-  void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Answers reminders: ${String(e)}`));
+  void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Agent Hub reminders: ${String(e)}`));
   wakeDue();
-  const startup = (migrationPending ? Promise.resolve() : driver.reconcile()).catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
+  const startup = (migrationPending ? Promise.resolve() : driver.reconcile()).catch(e=>bb.log.warn(`Agent Hub discovery: ${String(e)}`));
   bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
 }

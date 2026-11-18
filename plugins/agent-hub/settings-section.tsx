@@ -13,7 +13,7 @@ function Row({label,description,children}:{label:string;description:string;child
 function Choice({label,value,options,disabled,onChange}:{label:string;value:string;options:[string,string][];disabled:boolean;onChange:(value:string)=>void}) {
  return <Select value={value} disabled={disabled} onValueChange={onChange}><SelectTrigger aria-label={label} className="h-8 w-48"><SelectValue /></SelectTrigger><SelectContent>{options.map(([value,text])=><SelectItem key={value} value={value}>{text}</SelectItem>)}</SelectContent></Select>;
 }
-export function AnswersSettings() {
+export function AgentHubSettings() {
  const query=usePreferences(), rpc=useRpc(), [busy,setBusy]=useState(false), [error,setError]=useState('');
  const p=query.data;
  const [from,setFrom]=useState<string|null>(null), [to,setTo]=useState<string|null>(null);

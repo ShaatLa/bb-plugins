@@ -1,11 +1,11 @@
 import { useQuestionStack } from './question-stack';
-import { AnswersSettings } from './settings-section';
+import { AgentHubSettings } from './settings-section';
 import { usePreferences } from './use-preferences';
 import { registerChatCommands } from './chat-commands';
 import './touch.css';
 import { MessageCopy, messageLink } from './message-copy';
 import { useThreadCommands, commandMention } from './thread-commands';
-import { AnswersContacts } from './contacts';
+import { AgentHubContacts } from './contacts';
 import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
@@ -13,7 +13,7 @@ import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
+import { rpcContract, type AgentHubRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { answerText, PendingInteractions, QuestionForm, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
@@ -100,7 +100,7 @@ export function useSteadyError<E>(error: E | null | undefined, ms = 3000): E | n
   useEffect(() => { if (!failing) { setSteady(false); return; } const timer = setTimeout(() => setSteady(true), ms); return () => clearTimeout(timer); }, [failing, ms]);
   return steady && error ? error : null;
 }
-export function useAnswersBadge() {
+export function useAgentHubBadge() {
   const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
   const count = data ? data.inbox : 0;
   return count ? { count, label: `${count} unread answers and questions for you` } : null;
@@ -140,7 +140,7 @@ export const isUnread = (item: Item) => item.dismissedAt === null && item.readAt
 const SAVED_FLASH = 'bb-plugin-answers:saved-flash';
 const PROJECT_CHOICE = 'bb-plugin-answers:task-project';
 export function useReadUndo() {
-  const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
+  const rpc = useRpc<AgentHubRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const [undo, setUndo] = useState<{ batch: string; count: number } | null>(null), [expired, setExpired] = useState(false);
   useEffect(() => { if (!undo) return; const timer = setTimeout(() => setUndo(null), 8000); return () => clearTimeout(timer); }, [undo]);
   const record = (result: { batch: string | null; count: number }) => { if (result.batch && result.count) { setUndo({ batch: result.batch, count: result.count }); setExpired(false); } };
@@ -236,8 +236,8 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
-  const rpc = useRpc<AnswersRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
-  // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
+  const rpc = useRpc<AgentHubRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
+  // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const editSent = useContext(EditSentContext);
   const group = members?.length ? members : [item], last = group.at(-1)!;
@@ -471,7 +471,7 @@ type ViewOption = { value: View | 'inbox'; label: string; hint: string; icon: Ic
 const viewOptions: ViewOption[] = [
   { value: 'unread', label: 'Unread', hint: 'New answers in this thread', icon: 'Mail' },
   { value: 'waiting', label: 'Awaiting answer', hint: 'Your questions agents have not answered yet', icon: 'Clock' },
-  { value: 'saved', label: 'Saved', hint: 'Answers you saved or pinned', icon: 'Star' },
+  { value: 'saved', label: 'Saved', hint: 'Messages you saved or pinned', icon: 'Star' },
   { value: 'all', label: 'History', hint: 'Every question and answer, searchable', icon: 'LayoutList' },
 ];
 
@@ -536,12 +536,12 @@ function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value
   </div>;
 }
 
-export function AnswersPanel({ threadId }: { threadId?: string }) {
-  return threadId ? <AnswersPanelContent threadId={threadId} /> : <ContactPageProvider><AnswersPanelContent /></ContactPageProvider>;
+export function AgentHubPanel({ threadId }: { threadId?: string }) {
+  return threadId ? <AgentHubPanelContent threadId={threadId} /> : <ContactPageProvider><AgentHubPanelContent /></ContactPageProvider>;
 }
-function AnswersPanelContent({ threadId }: { threadId?: string }) {
+function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const page = useContactPage(), { select: selectContact, activate } = useContactSelection();
-  const rpc = useRpc<AnswersRpcContract>();
+  const rpc = useRpc<AgentHubRpcContract>();
   const { projects, threads } = experimental_useSidebarThreads();
   const [stored, setView] = useStoredState<View | 'inbox'>(threadId ? null : 'bb-plugin-answers:page:view', threadId ? 'unread' : 'inbox');
   // Page sections: Chats, Questions, Saved (messages kept with Save; the thread tab reaches them through its view picker).
@@ -676,7 +676,7 @@ export class CrashGuard extends Component<{ where: string; children: ReactNode }
     const { error } = this.state;
     if (!error) return this.props.children;
     return <div role="alert" className="m-3 space-y-2 rounded-lg border border-border bg-background p-3 text-sm">
-      <p className="font-medium text-destructive">Answers crashed: {error.message}</p>
+      <p className="font-medium text-destructive">Agent Hub crashed: {error.message}</p>
       <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Details</summary><pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap">{error.stack}</pre></details>
       <Button size="sm" variant="ghost" onClick={() => this.setState({ error: null })}>Try again</Button>
     </div>;
@@ -684,17 +684,17 @@ export class CrashGuard extends Component<{ where: string; children: ReactNode }
 }
 const guarded = <P extends object>(where: string, View: (props: P) => ReactNode) => (props: P) => <CrashGuard where={where}><View {...props} /></CrashGuard>;
 
-function AnswersPage() {
+function AgentHubPage() {
   useRememberedPagePanel();
-  return <AnswersPanel />;
+  return <AgentHubPanel />;
 }
 
 export default definePluginApp(app => {
-  app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AnswersSettings});
+  app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AgentHubSettings});
   registerChatCommands(app);
-  app.slots.experimental_threadList({ id: 'agent-hub', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
-  app.slots.navPanel({ id: 'agent-hub', title: 'Agent Hub', icon: 'agent-hub/hub', path: 'agent-hub', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
-  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
+  app.slots.experimental_threadList({ id: 'agent-hub', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AgentHubContacts) });
+  app.slots.navPanel({ id: 'agent-hub', title: 'Agent Hub', icon: 'agent-hub/hub', path: 'agent-hub', component: guarded('page', AgentHubPage), experimental_useBadge: useAgentHubBadge });
+  app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AgentHubPanel) });
   app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });
   app.slots.experimental_tab({ id: 'diff', title: 'Diff', icon: 'FileDiff', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Diff tab"><DiffTab /></CrashGuard> });
   app.slots.experimental_tab({ id: 'work-board', title: 'Work Board', icon: 'ListTodo', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Work Board tab"><WorkBoardTab /></CrashGuard> });
@@ -720,7 +720,7 @@ export default definePluginApp(app => {
     // Message actions have no React hook context; use the public plugin RPC endpoint.
     const response = await fetch('/api/v1/plugins/agent-hub/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     const body = await response.json();
-    if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? `Unable to save to Answers (${response.status})`);
+    if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? `Unable to save to Agent Hub (${response.status})`);
     const result = rpcContract.save.output.parse(body.result);
     const detail = { id: result.id, created: result.created, at: Date.now() };
     localStorage.setItem(SAVED_FLASH, JSON.stringify(detail)); window.dispatchEvent(new CustomEvent('answers:saved', { detail }));

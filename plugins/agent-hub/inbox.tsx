@@ -12,7 +12,7 @@ import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_ProviderIcon as ProviderIcon, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, type ExperimentalProviderModelPickerValue, type ExperimentalPermissionModePickerProps } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
+import { rpcContract, type AgentHubRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
 import { Button } from './components/ui/button';
 import { useStoredState } from './lib/stored-state';
 import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent, type Modifier } from '@dnd-kit/core';
@@ -162,7 +162,7 @@ function SortableRow({ id, lifted = false, children }: { id: string; lifted?: bo
   return <li ref={setNodeRef} data-queue-row={id} data-lifted={lifted || undefined} style={{ transform: DndCSS.Translate.toString(transform), transition }} className={`group/dispatch-row relative border-b border-border/35 px-2.5 py-0.5 ${isDragging ? 'z-20 rounded-lg border border-border bg-background opacity-90 shadow-lift' : lifted ? 'z-20 rounded-lg border border-border bg-background shadow-lift' : ''}`}>{children({ ref: setActivatorNodeRef, props: { ...attributes, ...listeners }, dragging: isDragging })}</li>;
 }
 const OwedCard = memo(function OwedCard({ threadId, newest, working, onJump }: { threadId: string; newest?: Entry; working: boolean; onJump: (id: string) => void }) {
-  const rpc = useRpc<AnswersRpcContract>();
+  const rpc = useRpc<AgentHubRpcContract>();
   const result = useQuery({ contract: rpcContract, method: 'owed', input: { threadId } });
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const [collapsed, setCollapsed] = useStoredState('bb-plugin-answers:page:owed-collapsed', false);
@@ -335,7 +335,7 @@ export function Avatar({ id, title, provider }: { id: string; title: string | nu
 }
 // The page owns search state; desktop header controls portal into its toolbar.
 export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, search: searchProp, onSearch, onChat, toolbarTargets }: { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } }) {
-  const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
+  const rpc = useRpc<AgentHubRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => { const update = () => setDocumentVisible(document.visibilityState !== 'hidden'); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
   // useTabVisible is false outside a panel tab, and this page is not one, so only the document's visibility pauses polling.
@@ -945,7 +945,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
 
 type Editor = { flush: () => Promise<void> };
 function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { entry: PoolEntry; projectId: string | null; editors: Map<string, Editor>; autoFocus?: boolean; pending: boolean; onSend: (id: string, options?: SendOptions) => void }) {
-  const rpc = useRpc<AnswersRpcContract>(), { refresh } = experimental_useRpcRefresh();
+  const rpc = useRpc<AgentHubRpcContract>(), { refresh } = experimental_useRpcRefresh();
   const [note, setNote] = useState(entry.note), [files, setFiles] = useState(entry.attachments), [status, setStatus] = useState('Saved'), [expanded, setExpanded] = useState(false), [clamped, setClamped] = useState(false);
   const quote = useRef<HTMLDivElement>(null);
   const local = useRef({ note: entry.note, files: entry.attachments, saved: entry.note, savedFiles: entry.attachments, revision: entry.revision, flight: null as Promise<void> | null });
@@ -973,7 +973,7 @@ function PoolNote({ entry, projectId, editors, autoFocus, pending, onSend }: { e
   </li>;
 }
 function ReplyPool({ pool, setFeedback }: { pool: Pool; setFeedback: (text: string) => void }) {
-  const rpc = useRpc<AnswersRpcContract>(), sdk = useSdk();
+  const rpc = useRpc<AgentHubRpcContract>(), sdk = useSdk();
   const [dragging, setDragging] = useState(false);
   const editors = useRef(new Map<string, Editor>()).current;
   const [pending, setPending] = useState(false);

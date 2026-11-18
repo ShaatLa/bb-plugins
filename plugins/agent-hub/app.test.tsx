@@ -31,8 +31,8 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const app = await loadPluginApp(() => import('./app'));
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
-  const { AnswersPanel } = await import('./app');
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
+  const { AgentHubPanel } = await import('./app');
+  const slot = renderSlot({ component: () => <AgentHubPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
   pickView(slot, 'History');
   await slot.findByText(overrides.list ? /Quoted passage|What changed\?/ : 'What changed?');
   return { app, slot, list, markRead };
@@ -340,9 +340,9 @@ it.each([false, true])('Send all awaits dirty saves (failure=%s)', async failure
   else { await waitFor(() => expect(poolSend).toHaveBeenCalled()); expect(await slot.findByText('Sent — 1 edited entries were not sent')).toBeTruthy(); }
 });
 it('reads the thread tab oldest first', async () => {
-  const { AnswersPanel } = await import('./app');
+  const { AgentHubPanel } = await import('./app');
   const older = { ...item, id: 'ans_old', question: 'Older question', createdAt: 1 }, newer = { ...item, id: 'ans_new', question: 'Newer question', createdAt: 2 };
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [newer, older], nextCursor: null }) } });
+  const slot = renderSlot({ component: () => <AgentHubPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [newer, older], nextCursor: null }) } });
   await slot.findByText('Newer question');
   const text = slot.getByRole('list', { name: 'Answers' }).textContent!;
   expect(text.indexOf('Older question')).toBeLessThan(text.indexOf('Newer question'));
@@ -583,9 +583,9 @@ it('embeds bb\u2019s chat for the selected conversation and marks it read', asyn
   await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_one' }));
 });
 it('keeps Reply on agent questions in the thread side panel', async () => {
-  const { AnswersPanel } = await import('./app');
+  const { AgentHubPanel } = await import('./app');
   const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'replied' as const, question: 'Pick one?', answer: 'B' }, open = { ...ask, id: 'ans_open', status: 'open' as const, question: 'Still open?', answer: null };
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [open, ask, item], nextCursor: null }) } });
+  const slot = renderSlot({ component: () => <AgentHubPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list: () => ({ items: [open, ask, item], nextCursor: null }) } });
   await slot.findByText('Pick one?');
   expect(slot.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
   expect(slot.queryByText('Still open?')).toBeNull();
@@ -677,17 +677,17 @@ it('reads file attachments only on download', async () => {
 
 const pendingThread = (id: string, title: string) => ({ id, title, displayTitle: title, projectId: 'pr_one', providerId: 'codex', parentThreadId: null, parentNotifications: 'all', archivedAt: null, pinnedAt: null, sectionId: null, isUnread: false, status: 'active', runtimeStatus: 'active', queuedWork: 'none', hasPendingInteraction: true, indicator: 'none', activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, environment: { id: 'env', path: '/x' } });
 const userQuestion = (threadId: string, prompt: string, createdAt: number) => ({ id: `i_${threadId}`, threadId, status: 'pending', createdAt, payload: { kind: 'user_question', questions: [{ id: 'q1', prompt, shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: false, options: [{ value: 'a', label: 'Alpha' }] }] } });
-function renderQuestions(AnswersPanel: (props: { threadId?: string }) => any, threadId?: string) {
+function renderQuestions(AgentHubPanel: (props: { threadId?: string }) => any, threadId?: string) {
   const rows: Record<string, unknown[]> = { thr_a: [userQuestion('thr_a', 'First?', 3)], thr_b: [userQuestion('thr_b', 'Second?', 1)] };
   const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, threadId: 'thr_c', threadTitle: 'Third thread', question: 'Pick one?', answer: null, createdAt: 2 };
   const list = vi.fn(({ view }: { view: string }) => ({ items: view === 'for_me' ? [ask] : [], nextCursor: null }));
   const interactions = vi.fn(({ threadId }: { threadId: string }) => Promise.resolve(rows[threadId] ?? []));
-  return Object.assign(renderSlot({ component: () => <AnswersPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
+  return Object.assign(renderSlot({ component: () => <AgentHubPanel threadId={threadId} /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 1 }) },
     sdk: { threads: { interactions: { list: interactions }, stop: () => Promise.resolve({}) } }, sidebarThreads: { threads: [pendingThread('thr_a', 'Alpha thread'), pendingThread('thr_b', 'Beta thread')], projects: [{ id: 'pr_one', name: 'Project one' }] } } as any), { interactions });
 }
 it('stacks pending questions from every thread, oldest first, and switches back to chats', async () => {
-  const { AnswersPanel } = await import('./app');
-  const slot = renderQuestions(AnswersPanel);
+  const { AgentHubPanel } = await import('./app');
+  const slot = renderQuestions(AgentHubPanel);
   const toggle = slot.getByRole('button', { name: /^Questions/ }), chats = slot.getByRole('button', { name: 'Chats' });
   expect(chats.getAttribute('aria-pressed')).toBe('true');
   expect(await within(toggle).findByLabelText('3 pending')).toBeTruthy();
@@ -708,29 +708,29 @@ it('stacks pending questions from every thread, oldest first, and switches back 
   expect(slot.queryByText('Second?')).toBeNull();
 });
 it('opens a question\'s conversation in Answers: from the Questions section in place, from a ?thread= link on load', async () => {
-  const { AnswersPanel } = await import('./app');
+  const { AgentHubPanel } = await import('./app');
   localStorage.setItem('bb-plugin-answers:page:questions', 'true');
-  const slot = renderQuestions(AnswersPanel);
+  const slot = renderQuestions(AgentHubPanel);
   await slot.findByText('Pick one?');
   fireEvent.click(slot.getAllByRole('link', { name: 'Open thread' })[0]!);
   expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_b"');
   slot.unmount(); localStorage.setItem('bb-plugin-answers:page:questions', 'true');
   window.history.replaceState(null, '', '/plugins/agent-hub/agent-hub?thread=thr_c');
-  const again = renderQuestions(AnswersPanel);
+  const again = renderQuestions(AgentHubPanel);
   expect(await again.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_c"'); expect(window.location.search).toBe('');
 });
 it('keeps the thread tab on its views, without the Questions section', async () => {
-  const { AnswersPanel } = await import('./app');
-  const slot = renderQuestions(AnswersPanel, 'thr_one');
+  const { AgentHubPanel } = await import('./app');
+  const slot = renderQuestions(AgentHubPanel, 'thr_one');
   expect(slot.getByRole('button', { name: /^View:/ })).toBeTruthy();
   expect(slot.queryByRole('button', { name: /^Questions/ })).toBeNull();
 });
 it('opens the Questions section for a stored Asked of you view and shows the empty state', async () => {
   localStorage.setItem('bb-plugin-answers:page:view', JSON.stringify('for_me'));
-  const { AnswersPanel } = await import('./app');
-  const slot = renderSlot({ component: () => <AnswersPanel /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  const { AgentHubPanel } = await import('./app');
+  const slot = renderSlot({ component: () => <AgentHubPanel /> }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
   expect(slot.getByRole('button', { name: 'Questions' }).getAttribute('aria-pressed')).toBe('true');
   expect(await slot.findByText('No questions for you')).toBeTruthy();
 });
@@ -768,9 +768,9 @@ it('marks an item read without re-fetching the list, which the server invalidati
   expect(list.mock.calls.length).toBe(before);
 });
 it('fetches each pending thread once for the Questions section and refetches only the thread it answered', async () => {
-  const { AnswersPanel } = await import('./app');
+  const { AgentHubPanel } = await import('./app');
   localStorage.setItem('bb-plugin-answers:page:questions', 'true');
-  const slot = renderQuestions(AnswersPanel);
+  const slot = renderQuestions(AgentHubPanel);
   await slot.findAllByText('Second?'); await slot.findAllByText('First?');
   expect(slot.interactions).toHaveBeenCalledTimes(2);
   fireEvent.click(within(slot.getAllByRole('region', { name: 'Beta thread' })[0]!).getByRole('button', { name: 'Cancel' }));
@@ -778,9 +778,9 @@ it('fetches each pending thread once for the Questions section and refetches onl
   expect(slot.interactions).toHaveBeenLastCalledWith({ threadId: 'thr_b' });
 });
 it('stops refetching an older thread-tab page once it has loaded', async () => {
-  const { AnswersPanel } = await import('./app');
+  const { AgentHubPanel } = await import('./app');
   const list = vi.fn((input: any) => input.cursor ? { items: [], nextCursor: null } : { items: [item], nextCursor: '1|ans_older' });
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  const slot = renderSlot({ component: () => <AgentHubPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
   await slot.findByText('What changed?');
   fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
   await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '1|ans_older' })));
@@ -812,7 +812,7 @@ it('catches a UI crash, shows its message and logs it to the plugin server', asy
   try {
     const Boom = () => { throw new Error('bad attachment'); };
     const view = render(<CrashGuard where="page"><Boom /></CrashGuard>);
-    expect(view.getByRole('alert').textContent).toContain('Answers crashed: bad attachment');
+    expect(view.getByRole('alert').textContent).toContain('Agent Hub crashed: bad attachment');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/v1/plugins/agent-hub/rpc/logClientError'); expect(JSON.parse(String(init.body))).toMatchObject({ where: 'page', message: 'bad attachment' });
   } finally { vi.unstubAllGlobals(); quiet.mockRestore(); }

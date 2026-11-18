@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot, loadPluginApp } from '@get-bb/plugin-sdk/testing/app';
-import { AnswersSettings } from './settings-section';
+import { AgentHubSettings } from './settings-section';
 import { preferencesSchema } from './preferences';
 afterEach(cleanup);
 Element.prototype.scrollIntoView=()=>{};
@@ -11,10 +11,10 @@ Element.prototype.setPointerCapture=()=>{};
 Element.prototype.releasePointerCapture=()=>{};
 it('registers Answers and renders preferences with validated time fields and reset',async()=>{
  const app=await loadPluginApp(()=>import('./app'));
- expect(app.settingsSections.find(s=>s.title==='Agent Hub')?.component).toBe(AnswersSettings);
+ expect(app.settingsSections.find(s=>s.title==='Agent Hub')?.component).toBe(AgentHubSettings);
  let prefs=preferencesSchema.parse({quietHours:'22:00-08:00',groupByProject:true,projectOrder:'proj_example',remindHours:7});
  const update=vi.fn((patch:unknown)=>prefs={...prefs,...patch as object});
- const slot=renderSlot({component:AnswersSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
+ const slot=renderSlot({component:AgentHubSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
  await slot.findByText('Notifications');
  for(const name of ['Chat','Contacts','Agents']) expect(slot.getByText(name)).toBeTruthy();
  expect(slot.queryByText('proj_example')).toBeNull();
@@ -32,7 +32,7 @@ it('registers Answers and renders preferences with validated time fields and res
 });
 it('stores the five chat preferences from their controls',async()=>{
  const prefs=preferencesSchema.parse({});const update=vi.fn((patch:unknown)=>({...prefs,...patch as object}));
- const slot=renderSlot({component:AnswersSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
+ const slot=renderSlot({component:AgentHubSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
  await slot.findByText('Chat');
  for(const [label,key,value] of [['Show "Mark all read"','showMarkAllRead',true],['Group background updates','groupBackgroundUpdates',false],['Actions on selected text','selectionActions',false]] as const){
  const control=slot.getByRole('switch',{name:label});

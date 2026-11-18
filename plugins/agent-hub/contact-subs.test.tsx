@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { beginContactDrag } from './open-chat';
-import { AnswersContacts, ContactsList, useContacts } from './contacts';
+import { AgentHubContacts, ContactsList, useContacts } from './contacts';
 import { COMPOSE_KEY } from './drafts';
 const navigate = vi.hoisted(() => ({ toThread: vi.fn(), toPluginPanel: vi.fn() }));
 vi.mock('./open-chat', async original => ({ ...await original<typeof import('./open-chat')>(), beginContactDrag: vi.fn() }));
@@ -15,7 +15,7 @@ function setup(open = false, sidebar = false, selected = parent) {
   if (open) localStorage.setItem(stored, JSON.stringify([parent]));
   const onSelect = vi.fn(), onNavigate = vi.fn(), markThreadRead = vi.fn(() => ({ batch: null, count: 1 }));
   function Contacts() { return <ContactsList model={useContacts(selected)} selected={selected} onSelect={onSelect} onNavigate={onNavigate} />; }
-  const slot = renderSlot({ component: sidebar ? AnswersContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent }], projects: [] } } as any);
+  const slot = renderSlot({ component: sidebar ? AgentHubContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent }], projects: [] } } as any);
   return { slot, onSelect, onNavigate, markThreadRead };
 }
 it('toggles and stores sub-sessions only through a separate chevron button', async () => {

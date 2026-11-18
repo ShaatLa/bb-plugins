@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState, type ComponentProps } from 'reac
 import { useFlip } from './flip';
 import { useDraftThreads } from './drafts';
 import { useRpc, useBbNavigate, experimental_useSidebarNavigation, experimental_useSidebarNavigationSplit, experimental_useSidebarThreadSplit, experimental_useSidebarThreads, experimental_useProviders, experimental_useRpcQuery as useQuery, experimental_Icon as Icon, experimental_ProviderIcon as ProviderIcon, experimental_ThreadActionsContextMenu as ThreadActionsContextMenu, experimental_THREAD_ACTION_GROUPS as THREAD_ACTION_GROUPS, experimental_copyToClipboard as copyToClipboard, experimental_ThreadStatusGlyph as ThreadStatusGlyph, experimental_resolveThreadStatus as resolveThreadStatus, type PluginThreadListProps } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AnswersRpcContract } from './contract';
+import { rpcContract, type AgentHubRpcContract } from './contract';
 import { useStoredState } from './lib/stored-state';
 import { Avatar, ago } from './inbox';
 import { useSteadyError } from './app';
@@ -12,7 +12,7 @@ import { EmptyState } from './empty';
 import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 export function useContacts(selected: string | undefined) {
-  const rpc = useRpc<AnswersRpcContract>(), sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
+  const rpc = useRpc<AgentHubRpcContract>(), sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
   const providers = experimental_useProviders().providers;
   const bbReadKey = sidebarThreads.filter(t => !t.isUnread).map(t => t.id).join(' '), firstBbRead = useRef(true);
   const [error, setError] = useState('');
@@ -45,7 +45,7 @@ export function useContacts(selected: string | undefined) {
   const liveTitles = new Map(sidebarThreads.flatMap(t => t.title ? [[t.id, t.title] as const] : []));
   const recipients = settledRecipients && { ...settledRecipients, recipients: settledRecipients.recipients.map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle })) };
   // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
-  // to read it, so Answers keeps its order in plugin settings; projects missing from it follow in bb's project order.
+  // to read it, so Agent Hub keeps its order in plugin settings; projects missing from it follow in bb's project order.
   const prefs = usePreferences().data, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
   for (const r of recipients?.recipients ?? []) { const key = byProject ? r.projectId ?? '' : null; grouped.set(key, [...(grouped.get(key) ?? []), r]); }
   const saved = String(prefs?.projectOrder ?? ''), [projectOrder, setProjectOrder] = useState<string[] | null>(null);
@@ -70,7 +70,7 @@ function ContactRow({ threadId, split, ...props }: ComponentProps<'button'> & { 
   return <button {...props} {...(split ? splitProps : {})} />;
 }
 export function ContactsList({ model, selected, activeThreadId, onSelect, onBulkRead, onNavigate }: { model: ReturnType<typeof useContacts>; selected?: string; activeThreadId?: string | null; onSelect: (id: string) => void; onBulkRead?: (result: { batch: string | null; count: number }) => void; onNavigate?: () => void }) {
-  const rpc = useRpc<AnswersRpcContract>();
+  const rpc = useRpc<AgentHubRpcContract>();
   const { sidebarThreads, providers, recipients, recipientsError, statusOf, subTally, subTree, openSubs, setOpenSubs, groups, order, drag, setDrag, moveProject, error, setError } = model;
   const list = useRef<HTMLDivElement>(null); useFlip(list);
   return (    <div ref={list} role="listbox" aria-label="Recipients" className="relative flex min-h-0 flex-1 flex-col space-y-0.5 overflow-auto p-2 [&>*]:shrink-0">
@@ -103,7 +103,7 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
             </ContactRow>
           </ThreadActionsContextMenu></li>; })}</ul>}</Fragment>; })}</div>; })}</div> );
 }
-export function AnswersContacts({ activeThreadId, onNavigate }: PluginThreadListProps) {
+export function AgentHubContacts({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const selected = useSelectedContact(), navigate = useBbNavigate(), model = useContacts(selected);
   useEffect(mountSidebarContacts, []);
   return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} activeThreadId={activeThreadId} selected={selected ?? activeThreadId ?? undefined} onNavigate={onNavigate} onSelect={id => { const mounted = selectContact(id); if (!mounted && window.location.pathname !== '/plugins/agent-hub/agent-hub') navigate.toPluginPanel('agent-hub', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;

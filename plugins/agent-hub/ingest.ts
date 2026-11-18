@@ -11,7 +11,7 @@ export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archiv
 export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0))";
 export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
-// quoted phrases, that does not name the channel it was asked through (a card, Answers). A short one ("Хотите?") keeps the
+// quoted phrases, that does not name the channel it was asked through (a card, Agent Hub). A short one ("Хотите?") keeps the
 // sentence before it for context; table rows only list.
 const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers|in agent hub|via agent hub|в agent hub|через agent hub/i;
 export function chatQuestion(text: string): string | null {
@@ -96,7 +96,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    const attachments = (Array.isArray(d.input) ? d.input : []).filter((x:any) => (x.type === 'localImage' || x.type === 'localFile') && typeof x.path === 'string').map((x:any) => ({type:x.type,path:x.path,...(x.name ? {name:x.name} : {}),...(x.mimeType ? {mimeType:x.mimeType} : {}),...(x.sizeBytes != null ? {sizeBytes:x.sizeBytes} : {}),...(x.hostId ? {hostId:x.hostId} : {}),...(x.sourceProjectId ? {sourceProjectId:x.sourceProjectId} : {})}));
    const mention = d.input?.find((x:any) => x.type === 'text')?.mentions?.[0];
    const command = mention?.resource?.kind === 'command' && (mention.start === 0 || mention.range?.start === 0) && (mention.end === text.length || mention.range?.end === text.length);
-   // Messages other plugins send are noise; the owner's own words sent through Answers (Reply, pool, quote popup) still count.
+   // Messages other plugins send are noise; the owner's own words sent through Agent Hub (Reply, pool, quote popup) still count.
    // bb records a script's `bb thread tell` into its own thread as the user's; such scripts start the text with a [tag].
    const tag = SCRIPT_TAG.exec(text)?.[1] ?? null;
    if (!tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || ['agent-hub','answers'].includes(d.originPluginId)) && (text || attachments.length > 0) && !command) {

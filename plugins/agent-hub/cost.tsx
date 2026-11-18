@@ -1,7 +1,7 @@
 import { RollingText } from './rolling-text';
 import { useEffect, useState } from 'react';
 import { useRpc } from '@get-bb/plugin-sdk/app';
-import type { AnswersRpcContract, Cost } from './contract';
+import type { AgentHubRpcContract, Cost } from './contract';
 import { openAppRoute } from './lib/app-route';
 
 type ThreadCost = { own: Cost; total: Cost; descendantCount: number };
@@ -17,7 +17,7 @@ export function money(c: Cost) {
 
 /** Tokenomos' cost of the open chat's session and its sub-sessions: read on open and when a turn ends, at most once per 10 s. */
 export function useThreadCost(threadId: string | null | undefined, working: boolean) {
-  const rpc = useRpc<AnswersRpcContract>(), [cost, setCost] = useState(() => ({ threadId, value: threadId ? known.get(threadId) ?? null : null }));
+  const rpc = useRpc<AgentHubRpcContract>(), [cost, setCost] = useState(() => ({ threadId, value: threadId ? known.get(threadId) ?? null : null }));
   useEffect(() => {
     if (!threadId) return;
     setCost({ threadId, value: known.get(threadId) ?? null });

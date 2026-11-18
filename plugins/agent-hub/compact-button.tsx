@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { experimental_Icon as Icon, useSdk } from '@get-bb/plugin-sdk/app';
 import { Button } from './components/ui/button';
 
-// Idle Compact's header action ("Compact") only reaches bb's own thread header, so Answers calls its RPCs when that plugin
+// Idle Compact's header action ("Compact") only reaches bb's own thread header, so Agent Hub calls its RPCs when that plugin
 // is installed, enabled and running: `compact { threadId }` from 0.3.0; `queue`, `cancelQueuedCompact` and `compactState` from 0.4.0.
 const PLUGIN = 'idle-compact';
 type Plugin = { id: string; version: string; enabled: boolean; status: string };

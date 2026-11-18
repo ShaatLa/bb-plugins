@@ -1,7 +1,7 @@
 import { mentionsForText } from './mentions';
 import { useEffect, useRef, useState } from 'react';
 import { experimental_Icon as Icon, Markdown, experimental_useAppPanel, experimental_useSidebarThreads, useComposer, useRpc, useSdk } from '@get-bb/plugin-sdk/app';
-import type { AnswersRpcContract, SendOptions } from './contract';
+import type { AgentHubRpcContract, SendOptions } from './contract';
 import { Composer } from './composer';
 import { Button } from './components/ui/button';
 
@@ -21,7 +21,7 @@ export function ChatComment() {
 }
 function CommentPopup({ request, close }: { request: CommentRequest; close: () => void }) {
   const sdk = useSdk(), { threads } = experimental_useSidebarThreads(), [pending, setPending] = useState(false);
-  const rpc = useRpc<AnswersRpcContract>(), panel = experimental_useAppPanel();
+  const rpc = useRpc<AgentHubRpcContract>(), panel = experimental_useAppPanel();
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const popup = useRef<HTMLDivElement>(null);
