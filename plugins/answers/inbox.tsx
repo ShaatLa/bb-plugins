@@ -1,5 +1,6 @@
 import { bindChatCommands } from './chat-commands';
 import { ThreadHeader } from './thread-header';
+import { COMPOSE_KEY, DRAFTS_EVENT } from './drafts';
 import { QuestionStack } from './question-stack';
 import { ContactsList, useContacts } from './contacts';
 import { useContactSelection } from './open-chat';
@@ -35,7 +36,6 @@ const SCROLL_KEY = 'bb-plugin-answers:page:scroll';
 type Scroll = { top: number; depth: number; anchor?: string; offset?: number; bottom?: true };
 // Where each conversation was left, so switching chats or screens returns to it. The old one-thread format is dropped.
 function readScrolls(): Record<string, Scroll> { try { const value = JSON.parse(localStorage.getItem(SCROLL_KEY) ?? '{}'); return value && typeof value === 'object' && !('threadId' in value) ? value : {}; } catch { return {}; } }
-const COMPOSE_KEY = 'bb-plugin-answers:page:compose';
 type HistoryInput = Awaited<ReturnType<ReturnType<typeof useSdk>['threads']['promptHistory']>>[number]['input'];
 type ComposeDraft = { text: string; files: Attachment[]; historyInput?: HistoryInput; execution?: ExperimentalProviderModelPickerValue; permissionMode?: ExperimentalPermissionModePickerProps['value'] };
 function composeDrafts(): Record<string, ComposeDraft> { try { return JSON.parse(localStorage.getItem(COMPOSE_KEY) ?? '{}'); } catch { return {}; } }
@@ -395,7 +395,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   useEffect(() => { onChat?.(!!selected); }, [selected, onChat]);
   const [drafts] = useState(composeDrafts), draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollPending = useRef<({ threadId: string } & Scroll) | null>(null);
   // Empty drafts are dropped and only the 50 most recently edited threads kept (key order is edit order, see updateCompose).
-  const saveDrafts = () => { clearTimeout(draftTimer.current); const ids = Object.keys(drafts), kept = ids.filter(id => drafts[id]?.text.trim() || drafts[id]?.files.length || drafts[id]?.execution).slice(-50); for (const id of ids) if (!kept.includes(id)) delete drafts[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); } catch { /* storage unavailable */ } };
+  const saveDrafts = () => { clearTimeout(draftTimer.current); const ids = Object.keys(drafts), kept = ids.filter(id => drafts[id]?.text.trim() || drafts[id]?.files.length || drafts[id]?.execution).slice(-50); for (const id of ids) if (!kept.includes(id)) delete drafts[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); window.dispatchEvent(new Event(DRAFTS_EVENT)); } catch { /* storage unavailable */ } };
   const saveScroll = () => { clearTimeout(scrollTimer.current); scrollTimer.current = undefined; if (scrollPending.current) { const { threadId, ...at } = scrollPending.current, all = readScrolls(); delete all[threadId]; all[threadId] = at; try { localStorage.setItem(SCROLL_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-50)))); } catch { /* storage unavailable */ } scrollPending.current = null; } };
   useEffect(() => () => { saveDrafts(); saveScroll(); }, []);
   // A jump still looking for its message belongs to the chat it was asked in.

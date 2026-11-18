@@ -4,6 +4,7 @@ import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { beginContactDrag } from './open-chat';
 import { AnswersContacts, ContactsList, useContacts } from './contacts';
+import { COMPOSE_KEY } from './drafts';
 const navigate = vi.hoisted(() => ({ toThread: vi.fn(), toPluginPanel: vi.fn() }));
 vi.mock('./open-chat', async original => ({ ...await original<typeof import('./open-chat')>(), beginContactDrag: vi.fn() }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), useBbNavigate: () => navigate, experimental_useSidebarNavigation: () => ({items:[{id:'answers/answers',action:{kind:'open-plugin-panel',pluginId:'answers',panelId:'answers'}}]}), experimental_useSidebarNavigationSplit: (_id:string, options?:{onDragStart?:()=>void}) => ({isAvailable:true,splitProps:{onPointerDown:()=>options?.onDragStart?.()}}), experimental_useSidebarThreadSplit: (id: string) => ({ splitProps: { 'data-thread-split': id, draggable: true } }) }));
@@ -71,4 +72,15 @@ it('shows three brightness levels: unread full, working without news in between,
   expect(await row('unread')).not.toEqual(expect.arrayContaining(['opacity-50'])); expect(await row('unread')).not.toContain('opacity-80');
   expect(await row('working')).toContain('opacity-80');
   expect(await row('idle')).toContain('opacity-50');
+});
+it('shows bb\'s draft pencil instead of the time or spinner while the Answers composer holds unsent text', async () => {
+  localStorage.setItem(COMPOSE_KEY, JSON.stringify({ thr_example_draft: { text: 'half typed', files: [] }, thr_example_busy: { text: 'more', files: [] }, thr_example_empty: { text: '  ', files: [] } }));
+  const rows = [['thr_example_draft', 'idle'], ['thr_example_busy', 'active'], ['thr_example_empty', 'idle']] as const;
+  function Contacts() { return <ContactsList model={useContacts(undefined)} onSelect={() => {}} />; }
+  const slot = renderSlot({ component: Contacts }, {}, { rpc: { recipients: () => ({ recipients: rows.map(([threadId]) => ({ threadId, threadTitle: threadId.slice(12), projectId: null, projectName: null, unread: 0, lastAt: 1, preview: '' })) }) }, sidebarThreads: { threads: rows.map(([id, status]) => ({ ...idle, id, title: id.slice(12), ...(status === 'active' ? { status: 'active', runtimeStatus: 'active', indicator: 'runtime' } : {}) })), projects: [] } } as any);
+  const glyph = async (name: string) => (await slot.findByRole('option', { name: new RegExp(name) })).querySelector('[data-thread-status-glyph]')?.getAttribute('data-thread-status-glyph');
+  expect(await glyph('draft')).toBe('draft');
+  expect(await glyph('busy')).toBe('working-draft');
+  expect(await glyph('empty')).toBeUndefined();
+  localStorage.removeItem(COMPOSE_KEY);
 });
