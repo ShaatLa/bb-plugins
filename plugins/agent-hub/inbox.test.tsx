@@ -62,7 +62,7 @@ it('sends through browser SDK without originPluginId and passes draft submission
   const editor = await slot.findByRole('textbox', { name:'Send message' });
   change(editor, { target:{ value:'Hello' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   await waitFor(() => expect(send).toHaveBeenCalledOnce());
-  expect(send.mock.calls[0]![0]).toMatchObject({ threadId:'thr_one', pluginSubmission:{ pluginId:'answers', data:{ kind:'draft' } } });
+  expect(send.mock.calls[0]![0]).toMatchObject({ threadId:'thr_one', pluginSubmission:{ pluginId:'agent-hub', data:{ kind:'draft' } } });
   expect(send.mock.calls[0]![0]).not.toHaveProperty('originPluginId');
 });
 it('keeps a failed draft and edits made during a pending send', async () => {
@@ -363,9 +363,9 @@ it('shows the message a plugin sent as bb does: a user bubble with all of its te
   expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')).toBeNull();
 });
 it('names the plugin above its message and drops the plugin\'s own leading tag', async () => {
-  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'[answers] Call `answers_report` now.', questionSeq:null, answer:'Done', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'answers', sourceTitle:null } };
+  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'[answers] Call `answers_report` now.', questionSeq:null, answer:'Done', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'agent-hub', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), // The brand list is cached per module, so it also carries the brand a later test reads.
-    plugins: { list: async () => ({ plugins:[{ id:'answers', name:'Answers', icon:'MessageQuestion' }, { id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } });
+    plugins: { list: async () => ({ plugins:[{ id:'agent-hub', name:'Answers', icon:'MessageQuestion' }, { id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } });
   fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-sender]')?.textContent).toBe('Answers'));
   expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]')?.textContent).toBe('Call `answers_report` now.');

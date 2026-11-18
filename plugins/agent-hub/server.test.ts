@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 const cleanup: (()=>Promise<void>)[]=[];
 afterEach(async()=>{for (const dispose of cleanup.splice(0)) await dispose(); vi.useRealTimers();});
 function setup(send = vi.fn(async (_args:unknown)=>({ok:true as const,delivery:'sent' as const})), list:(args:any)=>Promise<any[]> = async()=>[]) {
- const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list,get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
+ const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{list,get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
  plugin(host.bb); cleanup.push(()=>host.harness.lifecycle.dispose());
  return {...host,db:host.bb.storage.database(),send};
 }
@@ -490,12 +490,12 @@ describe('reply pools and inbox',()=>{
   await call('quoteReply',{threadId:'t',quote:'q',text:'b',send:{mode:'draft'}});
   await call('quoteReply',{threadId:'t',quote:'q',text:'c',send:{mode:'queue',sendAt:at}});
   const args=send.mock.calls.map(c=>c[0] as any);
-  expect(args.map(a=>[a.mode,a.pluginSubmission,a.sendAt])).toEqual([['steer-if-active',undefined,undefined],['queue-if-active',{pluginId:'answers',data:{kind:'draft'}},undefined],['queue-if-active',undefined,at]]);
+  expect(args.map(a=>[a.mode,a.pluginSubmission,a.sendAt])).toEqual([['steer-if-active',undefined,undefined],['queue-if-active',{pluginId:'agent-hub',data:{kind:'draft'}},undefined],['queue-if-active',undefined,at]]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'d',send:{mode:'queue',sendAt:Date.now()-1}})).rejects.toThrow('passed');
   const hook=harness.inspection.registrations.hooks['message.dispatch']!;
   const ctx=(submission:unknown,queued:unknown[]=[])=>({experimental_submission:submission,queuedMessages:queued}) as any;
-  expect(await hook(ctx({pluginId:'answers',data:{kind:'draft'}}))).toEqual({action:'wait',reason:'Draft'});
-  expect(await hook(ctx(null,[{waitingOn:{kind:'plugin',pluginId:'answers'}}]))).toEqual({action:'wait',reason:'Draft'});
+  expect(await hook(ctx({pluginId:'agent-hub',data:{kind:'draft'}}))).toEqual({action:'wait',reason:'Draft'});
+  expect(await hook(ctx(null,[{waitingOn:{kind:'plugin',pluginId:'agent-hub'}}]))).toEqual({action:'wait',reason:'Draft'});
   expect(await hook(ctx({pluginId:'drafts',data:{kind:'draft'}}))).toEqual({action:'proceed'});
   expect(await hook(ctx(null))).toEqual({action:'proceed'});
  });
@@ -544,7 +544,7 @@ describe('reply pools and inbox',()=>{
 
 describe('ingestion driver',()=>{
  function driverSetup() {
-  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
+  const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
   const db=host.bb.storage.database(); db.exec(migrations.join("\n")); const invalidate=vi.fn();
   const driver=createDriver(host.bb,db,invalidate);
   cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
@@ -574,7 +574,7 @@ describe('ingestion driver',()=>{
   expect(db.prepare('SELECT notify_state FROM items ORDER BY question_seq').all()).toEqual([{notify_state:0},{notify_state:1}]);
  });
  it('tells the open chat to reread its context ring when bb reports context usage, and only then',async()=>{
-  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
+  const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
   const db=host.bb.storage.database(); db.exec(migrations.join("\n")); const onContext=vi.fn();
   const driver=createDriver(host.bb,db,()=>{},onContext);
   cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
@@ -778,7 +778,7 @@ describe('0.3 server attention',()=>{
   expect(vi.getTimerCount()).toBe(0);
  });
  it('consumes overdue snoozes at startup',async()=>{
-  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list:async()=>[]}}});
+  const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{list:async()=>[]}}});
   const db=host.bb.storage.database(); host.bb.storage.migrate(db,migrations); seed(db);
   db.prepare('UPDATE items SET snoozed_until=1,read_at=2').run();
   plugin(host.bb); cleanup.push(()=>host.harness.lifecycle.dispose());

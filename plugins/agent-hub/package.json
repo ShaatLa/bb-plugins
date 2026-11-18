@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-answers",
+  "name": "bb-plugin-agent-hub",
   "version": "0.3.233",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,10 @@
     "name": "Agent Hub",
     "description": "Chats, questions and saved messages with your agents in one place.",
     "branding": {
-      "icon": "MessageQuestion"
+      "icon": "./assets/icon.svg",
+      "experimental_icons": {
+        "hub": "./assets/icon.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx"
@@ -68,6 +71,8 @@
     "selection.ts",
     "open-chat.ts",
     "chat-tabs.tsx",
-    "tab-contracts.ts"
+    "tab-contracts.ts",
+    "assets",
+    "migration.ts"
   ]
 }

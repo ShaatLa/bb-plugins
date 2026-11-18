@@ -10,7 +10,7 @@ const question = '[answers] Your last reply asks the owner a question in chat; a
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
  let events:any[]=[], seq=0;
- const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
+ const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
  const db=host.bb.storage.database(); db.exec(migrations.join('\n'));
  const notifier=createNotifier(host.bb,db);
  const driver=createDriver(host.bb,db,() => {},undefined,async () => (await notifier.settings.get()).handoffWarnings);
@@ -24,7 +24,7 @@ function setup() {
   events.push(e('item/completed',{item:{type:'agentMessage',text}}),e('turn/completed',{status:'completed'}));
   await driver.schedule('thr_example');
  }
- async function control() {await turn(); expect(send).toHaveBeenCalledExactlyOnceWith({threadId:'thr_example',originPluginId:'answers',mode:'queue-if-active',input:[{type:'text',text:handoff,mentions:[]}]}); send.mockClear();}
+ async function control() {await turn(); expect(send).toHaveBeenCalledExactlyOnceWith({threadId:'thr_example',originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text:handoff,mentions:[]}]}); send.mockClear();}
  return {...host,db,send,driver,turn,control,notifier};
 }
 it.each([{originPluginId:'example'}, {senderThreadId:'thr_sender'}, {initiator:'agent',input:[{type:'text',text:'[example] Continue'}]}, {input:[{type:'text',text:'[example] Continue'}]}])('warns once for live handoff trigger %j, including first discovery',async trigger => {
@@ -36,12 +36,12 @@ it.each([{}, {originPluginId:'example'}])('warns about a chat question for trigg
 it.each(['answers_ask','bb work-board question add EXA-1 --kind decision'])('honors explicit question channel %s',async tool => {const s=setup(); await s.control(); await s.turn('Shall I continue?',undefined,tool); expect(s.send).not.toHaveBeenCalled();});
 it.each(['Ready for your review.','Shall I continue?'])('keeps warning replies quiet without looping: %s',async text => {
  const s=setup(); await s.control(); s.db.prepare('UPDATE items SET read_at=1,notify_state=0').run();
- await s.turn(text,{originPluginId:'answers',input:[{type:'text',text:handoff}]});
+ await s.turn(text,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]});
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL OR notify_state<>0').get()).toEqual({n:0});
 });
 it('allows an explicit report from a warning reply',async () => {
  const s=setup(); await s.control(); s.db.prepare('UPDATE items SET read_at=1,notify_state=0').run();
- await s.turn(undefined,{originPluginId:'answers',input:[{type:'text',text:handoff}]},'answers_report');
+ await s.turn(undefined,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]},'answers_report');
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL AND notify_state=1').get()).toEqual({n:1});
 });
 it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does not warn for %s',async mode => {

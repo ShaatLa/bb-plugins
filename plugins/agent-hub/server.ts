@@ -1,3 +1,4 @@
+import { needsMigration, migrateAnswers, migrationStatus } from './migration';
 import { createConfig } from './config';
 import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
@@ -40,6 +41,13 @@ const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
 export default function plugin(bb: BbPluginApi) {
+  if (!needsMigration(bb)) return start(bb, null);
+  return migrateAnswers(bb).then(() => start(bb, null), error => {
+    bb.log.error(`Agent Hub migration failed; will retry next start: ${String(error)}`);
+    return start(bb, String(error));
+  });
+}
+function start(bb: BbPluginApi, migrationError: string | null) {
   const db = bb.storage.database();
   bb.storage.migrate(db,migrations);
   // Leading call goes out at once; calls inside the next 150 ms collapse into one trailing invalidate, so bursts cause one client refetch.
@@ -183,7 +191,7 @@ export default function plugin(bb: BbPluginApi) {
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
   // Reads made in Answers' UI also clear bb's own unread mark on a thread once nothing there is left unread here,
-  // and an undo restores it. The CLI path (`bb answers read`) is not a person reading, so it leaves bb alone.
+  // and an undo restores it. The CLI path (`bb agent-hub read`) is not a person reading, so it leaves bb alone.
   async function syncBbRead(threadIds: Iterable<string>, read: boolean) {
     for (const threadId of new Set(threadIds)) {
       if (read && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND ${ATTENTION_SQL} LIMIT 1`).get(threadId)) continue;
@@ -541,7 +549,7 @@ export default function plugin(bb: BbPluginApi) {
     });
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
-  registerCli(bb,{config,list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
+  registerCli(bb,{config,list,markRead,db,migrationStatus:()=>migrationStatus(bb,db,migrationError),status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   // The event payload avoids a metadata lookup for both contacts and sub-sessions.
   bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row

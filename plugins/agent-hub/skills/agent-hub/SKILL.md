@@ -1,5 +1,5 @@
 ---
-name: answers
+name: agent-hub
 description: Track user questions, later answers, non-blocking questions for the user, and saved chat messages.
 ---
 
@@ -16,10 +16,10 @@ With `handoffWarnings` enabled (default), a live top-level completion that misse
 
 CLI:
 
-- `bb answers list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]`
-- `bb answers read <ids...> | --all [--thread ID]`
-- `bb answers status`
-- `bb answers digest [--since 24h|7d|ISO-date] [--json]`
+- `bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]`
+- `bb agent-hub read <ids...> | --all [--thread ID]`
+- `bb agent-hub status`
+- `bb agent-hub digest [--since 24h|7d|ISO-date] [--json]`
 
 Statuses: `mine` items are `waiting`, `deferred`, or `answered`; `for_me` items are `open` or `replied`; `update` items (the final message of a top-level turn that answered nothing of the user's: a child finished, another thread or a plugin wrote) are `answered`; saved items have status `saved`. Consecutive `update` items that ask nothing collapse into one "N background updates" group in the conversation, carry no unread state and are never pushed; an update that ends a phrase with `?` (outside code, links and quotes) or hands work to the user ("EXA-1 готова к вашей проверке", "ready for your review") has `asks: true` and stays a separate, pushed message — so end a message with a question only when you need the user's answer.
 
@@ -32,9 +32,11 @@ Reply pools: the user collects quotes from answers (Add to reply pool in the sen
 Channel detection is project-specific: `channelCommands` defaults to `["work-board question add"]`. Commands containing any configured fragment count as an explicit question channel; `answers_ask` always counts. Threads without a project use the default. This detection does not prescribe where agents must ask questions.
 
 ```sh
-bb answers config get [<key>] [--project <id>] [--json]
-bb answers config set <key> <value> [--project <id>] [--json]
+bb agent-hub config get [<key>] [--project <id>] [--json]
+bb agent-hub config set <key> <value> [--project <id>] [--json]
 ```
 
 Omit `--project` for global preferences; include it for project settings (currently only `channelCommands`, CLI/RPC only). With no key, `get` lists that scope; with a key it returns only its value. `set` returns the stored value.
 RPC: `config.get {projectId?, key?}`, `config.set {projectId?, key, value}`. Existing whole-object preference RPCs remain available. Global changes use the settings page’s validation and live-change path. Unknown keys list valid keys. Booleans and numbers accept JSON literals; selects and quiet hours accept strings. `channelCommands` accepts a JSON array of non-empty strings (including `[]` to disable extra channels) or a comma-separated list.
+
+The CLI command is `bb agent-hub`.

@@ -81,7 +81,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);},channelCommands))() || changed;
       for (const text of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
-        try {await bb.sdk.threads.send({threadId:id,originPluginId:'answers',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
+        try {await bb.sdk.threads.send({threadId:id,originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
         catch (e) {bb.log.warn(`Answers handoff warning: ${String(e)}`);}
       }
     }

@@ -79,7 +79,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   if ((showLast || (keep !== null && tail?.group.at(-1)?.id === keep)) && tail?.updates) entries.splice(-1, 1, tail.group.length > 2 ? { group: tail.group.slice(0, -1), updates: true } : { group: tail.group.slice(0, -1) }, { group: tail.group.slice(-1) });
   return { entries, orphans };
 }
-const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'answers' }, availability: 'fixed' as const };
+const poolsTab = { id: 'pools', context: { kind: 'nav-panel' as const, panelId: 'agent-hub' }, availability: 'fixed' as const };
 type Draft = { threadId: string; projectId?: string | null; itemId: string; quote: string; quoteSeq?: number; top: number; above?: number; left: number; width: number };
 
 // Each page follows the freshly returned cursor of its predecessor; depth lives above the chain.
@@ -528,9 +528,9 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
         const token=`@thread:${threadId}`, prefix=`Continue from ${token}\n\n`;
         const first=input[0]?.type==='text' ? input[0] : undefined;
         const handoffInput: HistoryInput=[{ type:'text', text:prefix+(first?.text ?? ''), mentions:[{start:14,end:14+token.length,resource:{kind:'thread',threadId,projectId:openThread.projectId,label:openThread.displayTitle ?? openThread.title ?? 'Untitled thread'}}, ...(first?.mentions ?? []).map(mention=>({...mention,start:mention.start+prefix.length,end:mention.end+prefix.length}))] }, ...input.slice(first ? 1 : 0)];
-        const created=await sdk.threads.spawn({ projectId:openThread.projectId, environment:{type:'reuse',environmentId:openThread.environment.id}, ...composeExecution, ...(composePermission ? {permissionMode:composePermission} : {}), input:handoffInput, ...(options?.sendAt ? {sendAt:options.sendAt} : {}), ...(options?.mode==='draft' ? {pluginSubmission:{pluginId:'answers',data:{kind:'draft'}}} : {}) });
+        const created=await sdk.threads.spawn({ projectId:openThread.projectId, environment:{type:'reuse',environmentId:openThread.environment.id}, ...composeExecution, ...(composePermission ? {permissionMode:composePermission} : {}), input:handoffInput, ...(options?.sendAt ? {sendAt:options.sendAt} : {}), ...(options?.mode==='draft' ? {pluginSubmission:{pluginId:'agent-hub',data:{kind:'draft'}}} : {}) });
         newThreadId=created.id;
-      } else result = await sdk.threads.send({ threadId, ...(composePermission ? { permissionMode: composePermission } : {}), ...(composeExecution ? { model: composeExecution.model, reasoningLevel: composeExecution.reasoningLevel, serviceTier: composeExecution.serviceTier } : {}), mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'answers', data: { kind: 'draft' } } } : {}) });
+      } else result = await sdk.threads.send({ threadId, ...(composePermission ? { permissionMode: composePermission } : {}), ...(composeExecution ? { model: composeExecution.model, reasoningLevel: composeExecution.reasoningLevel, serviceTier: composeExecution.serviceTier } : {}), mode: options?.mode === 'steer' ? 'steer-if-active' : 'queue-if-active', input, ...(options?.sendAt ? { sendAt: options.sendAt } : {}), ...(options?.mode === 'draft' ? { pluginSubmission: { pluginId: 'agent-hub', data: { kind: 'draft' } } } : {}) });
       // A queued message lives in the queue card until bb delivers it, as in bb's own chat; a bubble would show it twice.
       if (result?.ok && result.delivery === 'queued') { setOptimistic(old => old.filter(b => b.id !== optimisticId)); setQueueVersion(n => n + 1); }
       const cleared:ComposeDraft={text:'',files:[],...(handoff ? {} : sent.execution ? {execution:sent.execution} : {}),...(sent.permissionMode ? {permissionMode:sent.permissionMode} : {})};

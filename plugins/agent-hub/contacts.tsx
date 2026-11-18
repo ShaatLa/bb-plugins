@@ -64,7 +64,7 @@ export function useContacts(selected: string | undefined) {
   return { sidebar, sidebarThreads, providers, recipients, recipientsError, descendants, statusOf, ownWorking, subTally, subTree, openSubs, setOpenSubs, groups, order, drag, setDrag, moveProject, error, setError };
 }
 function ContactRow({ threadId, split, ...props }: ComponentProps<'button'> & { threadId: string; split: boolean }) {
-  const item = experimental_useSidebarNavigation().items.find(item => item.action.kind === 'open-plugin-panel' && item.action.pluginId === 'answers' && item.action.panelId === 'answers');
+  const item = experimental_useSidebarNavigation().items.find(item => item.action.kind === 'open-plugin-panel' && item.action.pluginId === 'agent-hub' && item.action.panelId === 'agent-hub');
   const navigation = experimental_useSidebarNavigationSplit(item?.id ?? '', { onDragStart: () => beginContactDrag(threadId) });
   const thread = experimental_useSidebarThreadSplit(threadId), splitProps = item && navigation.isAvailable ? navigation.splitProps : thread.splitProps;
   return <button {...props} {...(split ? splitProps : {})} />;
@@ -106,5 +106,5 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
 export function AnswersContacts({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const selected = useSelectedContact(), navigate = useBbNavigate(), model = useContacts(selected);
   useEffect(mountSidebarContacts, []);
-  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} activeThreadId={activeThreadId} selected={selected ?? activeThreadId ?? undefined} onNavigate={onNavigate} onSelect={id => { const mounted = selectContact(id); if (!mounted && window.location.pathname !== '/plugins/answers/answers') navigate.toPluginPanel('answers', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
+  return <div className="flex h-full min-h-0 flex-col"><ContactsList model={model} activeThreadId={activeThreadId} selected={selected ?? activeThreadId ?? undefined} onNavigate={onNavigate} onSelect={id => { const mounted = selectContact(id); if (!mounted && window.location.pathname !== '/plugins/agent-hub/agent-hub') navigate.toPluginPanel('agent-hub', { subPath: `?thread=${encodeURIComponent(id)}` }); }} /></div>;
 }

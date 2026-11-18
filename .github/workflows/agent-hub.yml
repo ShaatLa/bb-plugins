@@ -1,24 +1,24 @@
-name: Answers CI
+name: Agent Hub CI
 
 on:
   push:
     paths:
-      - "plugins/answers/**"
-      - ".github/workflows/answers.yml"
+      - "plugins/agent-hub/**"
+      - ".github/workflows/agent-hub.yml"
   pull_request:
     paths:
-      - "plugins/answers/**"
-      - ".github/workflows/answers.yml"
+      - "plugins/agent-hub/**"
+      - ".github/workflows/agent-hub.yml"
 
 permissions:
   contents: read
 
 jobs:
-  answers:
+  agent-hub:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: plugins/answers
+        working-directory: plugins/agent-hub
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

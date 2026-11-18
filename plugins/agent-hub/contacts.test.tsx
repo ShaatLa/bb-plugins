@@ -8,17 +8,17 @@ const rpc = { recipients: () => ({ recipients: rows }), list: () => ({ items: []
 const props = { activeThreadId: null, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate: vi.fn() };
 it('registers contacts, highlights the bb route and opens the Answers conversation', async () => {
   const app = await loadPluginApp(() => import('./app'));
-  expect(app.threadLists[0]).toMatchObject({ id: 'answers', title: 'Agent Hub contacts' });
+  expect(app.threadLists[0]).toMatchObject({ id: 'agent-hub', title: 'Agent Hub contacts' });
   const onNavigate = vi.fn(), slot = renderSlot(app.threadLists[0]!, { ...props, activeThreadId: 'thr_two', onNavigate }, { rpc });
   const list = within(await slot.findByRole('listbox', { name: 'Recipients' }));
   expect((await list.findByRole('option', { name: /two/ })).getAttribute('aria-selected')).toBe('true');
   fireEvent.click(list.getByRole('option', { name: /one/ }));
   expect(JSON.parse(localStorage.getItem('bb-plugin-answers:page:selected')!)).toBe('thr_one');
-  expect(slot.inspection.navigateCalls).toContainEqual({ method: 'toPluginPanel', path: 'answers', options: { subPath: '?thread=thr_one' } });
+  expect(slot.inspection.navigateCalls).toContainEqual({ method: 'toPluginPanel', path: 'agent-hub', options: { subPath: '?thread=thr_one' } });
   expect(onNavigate).toHaveBeenCalledOnce();
 });
 it('selects in place from Questions and then changes the mounted conversation', async () => {
-  history.replaceState(null, '', '/plugins/answers/answers');
+  history.replaceState(null, '', '/plugins/agent-hub/agent-hub');
   localStorage.setItem('bb-plugin-answers:page:questions', 'true');
   const app = await loadPluginApp(() => import('./app'));
   const page = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc, sdk: { threads: { queuedMessages: { list: async () => [] }, context: async () => ({ usage: null }) } } });

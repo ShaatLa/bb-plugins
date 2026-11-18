@@ -623,7 +623,7 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
 // A thread's open agent questions, oldest first, in bb's collapsible card for the stack above a composer (bb's thread chat
 // and the Inbox conversation). Same items as the Questions section, so an answer anywhere closes them everywhere.
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
-export const answersThreadHref = (threadId: string) => `/plugins/answers/answers?thread=${encodeURIComponent(threadId)}`;
+export const answersThreadHref = (threadId: string) => `/plugins/agent-hub/agent-hub?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
@@ -668,7 +668,7 @@ export class CrashGuard extends Component<{ where: string; children: ReactNode }
   static getDerivedStateFromError(error: Error) { return { error }; }
   componentDidCatch(error: Error, info: ErrorInfo) {
     const body = { where: this.props.where, message: String(error?.message ?? error).slice(0, 2000), stack: `${error?.stack ?? ''}\n${info.componentStack ?? ''}`.slice(0, 8000) };
-    void fetch('/api/v1/plugins/answers/rpc/logClientError', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+    void fetch('/api/v1/plugins/agent-hub/rpc/logClientError', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
   }
   render() {
     const { error } = this.state;
@@ -690,16 +690,16 @@ function AnswersPage() {
 export default definePluginApp(app => {
   app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AnswersSettings});
   registerChatCommands(app);
-  app.slots.experimental_threadList({ id: 'answers', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
-  app.slots.navPanel({ id: 'answers', title: 'Agent Hub', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
+  app.slots.experimental_threadList({ id: 'agent-hub', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
+  app.slots.navPanel({ id: 'agent-hub', title: 'Agent Hub', icon: 'agent-hub/hub', path: 'agent-hub', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
-  app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });
-  app.slots.experimental_tab({ id: 'diff', title: 'Diff', icon: 'FileDiff', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Diff tab"><DiffTab /></CrashGuard> });
-  app.slots.experimental_tab({ id: 'work-board', title: 'Work Board', icon: 'ListTodo', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Work Board tab"><WorkBoardTab /></CrashGuard> });
-  app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="pools"><Pools /></CrashGuard> });
+  app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });
+  app.slots.experimental_tab({ id: 'diff', title: 'Diff', icon: 'FileDiff', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Diff tab"><DiffTab /></CrashGuard> });
+  app.slots.experimental_tab({ id: 'work-board', title: 'Work Board', icon: 'ListTodo', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Work Board tab"><WorkBoardTab /></CrashGuard> });
+  app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="pools"><Pools /></CrashGuard> });
   app.slots.messageAction({ id: 'pool', title: 'Add to reply pool', icon: 'ListEnd', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.poolAdd.input.parse({ threadId, quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq });
-    const response = await fetch('/api/v1/plugins/answers/rpc/poolAdd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    const response = await fetch('/api/v1/plugins/agent-hub/rpc/poolAdd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     const body = await response.json();
     if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? 'Unable to add to reply pool');
     rpcContract.poolAdd.output.parse(body.result);
@@ -716,7 +716,7 @@ export default definePluginApp(app => {
   app.slots.messageAction({ id: 'save', title: 'Save to Agent Hub', icon: 'Star', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
     // Message actions have no React hook context; use the public plugin RPC endpoint.
-    const response = await fetch('/api/v1/plugins/answers/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    const response = await fetch('/api/v1/plugins/agent-hub/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     const body = await response.json();
     if (!response.ok || body?.ok !== true) throw new Error(body?.error?.message ?? `Unable to save to Answers (${response.status})`);
     const result = rpcContract.save.output.parse(body.result);

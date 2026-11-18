@@ -20,7 +20,7 @@ it('hides and restores the contacts column and resize handle only on wide screen
   await waitFor(() => expect(localStorage.getItem(key)).toBe('false'));
 });
 it('remembers hidden contacts across remounts and still accepts sidebar selections', async () => {
-  history.replaceState(null, '', '/plugins/answers/answers');
+  history.replaceState(null, '', '/plugins/agent-hub/agent-hub');
   const app = await loadPluginApp(() => import('./app'));
   const first = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc, sdk });
   fireEvent.click(first.getByRole('button', { name: 'Hide contacts' }));
@@ -33,7 +33,7 @@ it('remembers hidden contacts across remounts and still accepts sidebar selectio
   expect(page.container.querySelector('[data-contacts-column]')!.classList.contains('min-[640px]:hidden')).toBe(true);
 });
 it('drops the page column and its toggle while bb shows our list', async () => {
-  history.replaceState(null, '', '/plugins/answers/answers');
+  history.replaceState(null, '', '/plugins/agent-hub/agent-hub');
   const app = await loadPluginApp(() => import('./app'));
   const page = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc, sdk });
   const column = () => page.container.querySelector('[data-contacts-column]')!;

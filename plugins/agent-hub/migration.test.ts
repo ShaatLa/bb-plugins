@@ -1,0 +1,61 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { createFakePluginHost } from '@get-bb/plugin-sdk/testing';
+import { migrateAnswers, migrationStatus } from './migration';
+import { migrations } from './schema';
+import plugin from './server';
+const cleanups: (() => unknown)[] = [];
+afterEach(async () => { for (const f of cleanups.splice(0).reverse()) await f(); });
+function setup() {
+ const dir = mkdtempSync(join(tmpdir(), 'agent-hub-'));
+ cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+ mkdirSync(join(dir, 'plugins/answers/secrets'), { recursive: true });
+ const host = createFakePluginHost({ pluginId: 'agent-hub', dataDir: dir });
+ cleanups.push(() => host.harness.lifecycle.dispose());
+ const old = new Database(join(dir, 'plugins/answers/data.db')); old.pragma('journal_mode=WAL');
+ cleanups.push(() => old.close()); host.bb.storage.migrate(old, migrations);
+ old.prepare("INSERT INTO items(id,kind,thread_id,status,question,created_at,updated_at) VALUES ('ans_example','mine','thr_example','waiting','Example',1,1)").run();
+ old.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('thr_example',42,1)").run();
+ const core = new Database(join(dir, 'bb.db'));
+ core.exec('CREATE TABLE plugin_kv(plugin_id TEXT,key TEXT,value TEXT); CREATE TABLE plugin_settings(plugin_id TEXT,key TEXT,value TEXT)');
+ core.prepare('INSERT INTO plugin_kv VALUES (?,?,?)').run('answers', 'preferences', JSON.stringify({ notify: 'all' }));
+ core.prepare('INSERT INTO plugin_kv VALUES (?,?,?)').run('answers', 'config:project:proj_example', JSON.stringify({ channelCommands: ['example ask'] })); core.close();
+ return { dir, host, old };
+}
+it('backs up WAL with an open writer, cursors and kv once without changing old data', async () => {
+ const { dir, host, old } = setup();
+ writeFileSync(join(dir, 'plugins/answers/secrets/example'), 'example-value');
+ const before = readFileSync(join(dir, 'plugins/answers/data.db'));
+ old.exec('BEGIN IMMEDIATE'); old.prepare('UPDATE threads_state SET last_seq=43').run();
+ await migrateAnswers(host.bb); old.exec('ROLLBACK');
+ const db = new Database(join(dir, 'plugins/agent-hub/data.db')); cleanups.push(() => db.close());
+ expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({ last_seq: 42 });
+ expect(readFileSync(join(dir, 'plugins/answers/data.db'))).toEqual(before);
+ expect(await host.bb.storage.kv.get('preferences')).toMatchObject({ notify: 'all' });
+ expect(await host.bb.storage.kv.get('config:project:proj_example')).toEqual({ channelCommands: ['example ask'] });
+ const status = migrationStatus(host.bb, db, null);
+ expect(status).toMatchObject({ ran: true, oldItemCount: 1, newItemCount: 1, matchingItemIds: ['ans_example'], secrets: ['example'] });
+ await host.bb.storage.kv.set('preferences', { notify: 'off' }); await migrateAnswers(host.bb);
+ expect(await host.bb.storage.kv.get('preferences')).toEqual({ notify: 'off' });
+ expect(migrationStatus(host.bb, db, null).completedAt).toBe(status.completedAt);
+});
+it('rolls back a failure, leaves an empty usable store and retries', async () => {
+ const { dir, host } = setup();
+ const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+ const spy = vi.spyOn(host.bb.storage.kv, 'set').mockImplementation(async (key, value) => { if (key.startsWith('config:')) throw new Error('example failure'); await set(key, value); });
+ await expect(migrateAnswers(host.bb)).rejects.toThrow('example failure');
+ expect(await host.bb.storage.kv.get('preferences')).toBeUndefined(); spy.mockRestore();
+ const empty = new Database(join(dir, 'plugins/agent-hub/data.db')); host.bb.storage.migrate(empty, migrations);
+ expect(empty.prepare('SELECT count(*) n FROM items').get()).toEqual({ n: 0 }); empty.close(); await migrateAnswers(host.bb);
+ const db = new Database(join(dir, 'plugins/agent-hub/data.db')); cleanups.push(() => db.close());
+ expect(migrationStatus(host.bb, db, null).ran).toBe(true);
+});
+it('registers migration status under the main CLI', async () => {
+ const host = createFakePluginHost({ pluginId: 'agent-hub' }); cleanups.push(() => host.harness.lifecycle.dispose()); await plugin(host.bb);
+ expect(host.harness.registrations.cli?.name).toBe('agent-hub');
+ const result = await host.harness.behavior.runCli(['migration','status','--json']);
+ expect(result.exitCode).toBe(0); expect(JSON.parse(result.stdout)).toMatchObject({ran:false,completedAt:null,kvKeys:[],secrets:[],error:null,newItemCount:0});
+});

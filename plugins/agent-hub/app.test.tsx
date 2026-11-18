@@ -106,7 +106,7 @@ describe('Answers app', () => {
   });
   it('registers navigation, thread tab and message action and renders the inbox', async () => {
     const { app, slot, list } = await setup();
-    expect(app.navPanels[0]).toMatchObject({ title: 'Agent Hub', icon: 'MessageQuestion' });
+    expect(app.navPanels[0]).toMatchObject({ title: 'Agent Hub', icon: 'agent-hub/hub' });
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
     expect(app.messageActions.find(action => action.id === 'save')).toMatchObject({ title: 'Save to Agent Hub' });
     expect(slot.getByText('The answer')).toBeTruthy();
@@ -178,7 +178,7 @@ it('saves selected message text using its message sequence', async () => {
   const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'ans_saved', created:true } }) }));
   vi.stubGlobal('fetch', fetch);
   await app.messageActions.find(action => action.id === 'save')!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full message', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected text', composer: null, experimental_panel: experimental_makePanelController() });
-  expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));
+  expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/agent-hub/rpc/save', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, seq: 20, role: 'assistant', text: 'Selected text' }) }));
 });
 
 const recipient = { threadId: item.threadId, threadTitle: 'Recipient', projectId: item.projectId, projectName: 'Project', unread: 1, lastAt: Date.now(), preview: 'Preview' };
@@ -360,7 +360,7 @@ it('adds selected chat text to the thread pool and opens My questions', async ()
   const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: { id: 'pool_added' } }) }));
   vi.stubGlobal('fetch', fetch); const openTab = vi.fn(() => true);
   await app.messageActions.find(action => action.id === 'pool')!.run({ threadId: item.threadId, message: { id: 'msg_one', threadId: item.threadId, role: 'assistant', text: 'Full', sourceSeqEnd: 25, experimental_messageSeq: 20 }, selectedText: 'Selected', composer: null, experimental_panel: experimental_makePanelController({ openTab }) });
-  expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/answers/rpc/poolAdd', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, quote: 'Selected', quoteSeq: 20 }) }));
+  expect(fetch).toHaveBeenCalledWith('/api/v1/plugins/agent-hub/rpc/poolAdd', expect.objectContaining({ body: JSON.stringify({ threadId: item.threadId, quote: 'Selected', quoteSeq: 20 }) }));
   expect(openTab).toHaveBeenCalledWith({ tab: { id: 'my-questions', context: { kind: 'thread' }, availability: 'fixed' } });
 });
 it('sends a chat comment as a quoted message to the thread and cancels on Esc', async () => {
@@ -697,7 +697,7 @@ it('stacks pending questions from every thread, oldest first, and switches back 
   await slot.findAllByText('Second?'); await slot.findAllByText('First?'); await slot.findByText('Pick one?');
   const cards = slot.getAllByRole('region').filter(node => node.className.includes('shadow-lift'));
   expect(cards.map(card => card.getAttribute('aria-label'))).toEqual(['Beta thread', 'Third thread', 'Alpha thread']);
-  expect(within(cards[0]!).getByRole('link', { name: 'Open thread' }).getAttribute('href')).toBe('/plugins/answers/answers?thread=thr_b');
+  expect(within(cards[0]!).getByRole('link', { name: 'Open thread' }).getAttribute('href')).toBe('/plugins/agent-hub/agent-hub?thread=thr_b');
   expect(within(cards[0]!).getByText(/Project one/)).toBeTruthy();
   expect(within(cards[0]!).getByTitle('codex')).toBeTruthy();
   expect(within(cards[1]!).getByRole('button', { name: 'Reply' })).toBeTruthy();
@@ -716,7 +716,7 @@ it('opens a question\'s conversation in Answers: from the Questions section in p
   expect(await slot.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_b"');
   slot.unmount(); localStorage.setItem('bb-plugin-answers:page:questions', 'true');
-  window.history.replaceState(null, '', '/plugins/answers/answers?thread=thr_c');
+  window.history.replaceState(null, '', '/plugins/agent-hub/agent-hub?thread=thr_c');
   const again = renderQuestions(AnswersPanel);
   expect(await again.findByRole('listbox', { name: 'Recipients' })).toBeTruthy();
   expect(localStorage.getItem('bb-plugin-answers:page:selected')).toBe('"thr_c"'); expect(window.location.search).toBe('');
@@ -814,7 +814,7 @@ it('catches a UI crash, shows its message and logs it to the plugin server', asy
     const view = render(<CrashGuard where="page"><Boom /></CrashGuard>);
     expect(view.getByRole('alert').textContent).toContain('Answers crashed: bad attachment');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/v1/plugins/answers/rpc/logClientError'); expect(JSON.parse(String(init.body))).toMatchObject({ where: 'page', message: 'bad attachment' });
+    expect(url).toBe('/api/v1/plugins/agent-hub/rpc/logClientError'); expect(JSON.parse(String(init.body))).toMatchObject({ where: 'page', message: 'bad attachment' });
   } finally { vi.unstubAllGlobals(); quiet.mockRestore(); }
 });
 

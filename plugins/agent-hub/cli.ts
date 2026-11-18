@@ -9,11 +9,13 @@ type Api = {
   list(input: ListInput): Promise<ListResult>;
   markRead(input: z.infer<typeof inputs.markRead>): {ok:true;count?:number};
   status(): unknown;
+  migrationStatus(): unknown;
   db: Database.Database;
 };
 export function registerCli(bb: BbPluginApi, api: Api) {
   const thread={type:'string',description:'Filter by thread'} as const;
-  bb.cli.register(defineCli({name:'answers',summary:'Questions, answers and saved messages',commands:{
+  bb.cli.register(defineCli({name:'agent-hub',summary:'Questions, answers and saved messages',commands:{
+    'migration status':cliCommand({summary:'Report first-start migration',options:{json:{type:'boolean',description:'Return JSON'}},run(){return {exitCode:0,stdout:JSON.stringify(api.migrationStatus())};}}),
     config:cliCommand({summary:'Read or change one scoped setting',positionals:[{name:'action',description:'get or set',required:true},{name:'key',description:'Setting key',required:false},{name:'value',description:'Setting value',required:false}],options:{project:{type:'string',description:'Project id (omit for global preferences)'},json:{type:'boolean',description:'Return JSON'}},async run(i){
       const {action,key,value}=i.positionals,projectId=i.options.project;
       if (action!=='get' && action!=='set') throw new Error('Use config get [<key>] or config set <key> <value>');

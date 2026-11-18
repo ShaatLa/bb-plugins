@@ -3,7 +3,7 @@ import { createFakePluginHost } from '@get-bb/plugin-sdk/testing';
 import { createPreferences } from './settings';
 import { PREFERENCES_KEY } from './preferences';
 it('migrates all legacy preferences once and preserves later writes on reload',async()=>{
- const h=createFakePluginHost({pluginId:'answers',settings:{notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'}});
+ const h=createFakePluginHost({pluginId:'agent-hub',settings:{notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'}});
  const store=createPreferences(h.bb);
  expect(await store.get()).toMatchObject({notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'});
  await store.experimental_set({notify:'off',remindHours:1});
@@ -12,7 +12,7 @@ it('migrates all legacy preferences once and preserves later writes on reload',a
  await h.harness.lifecycle.dispose();
 });
 it('serializes patches, notifies readers and rejects invalid quiet hours',async()=>{
- const h=createFakePluginHost({pluginId:'answers'}),store=createPreferences(h.bb),seen:unknown[]=[];
+ const h=createFakePluginHost({pluginId:'agent-hub'}),store=createPreferences(h.bb),seen:unknown[]=[];
  store.onChange(p=>seen.push(p));
  await Promise.all([store.experimental_set({notify:'off'}),store.experimental_set({quietHours:'22:00-08:00',remindHours:6,handoffWarnings:false})]);
  expect(await store.get()).toMatchObject({notify:'off',quietHours:'22:00-08:00',remindHours:6,handoffWarnings:false});
@@ -21,7 +21,7 @@ it('serializes patches, notifies readers and rejects invalid quiet hours',async(
  await h.harness.lifecycle.dispose();
 });
 it('adds chat defaults to existing preferences without replacing their values',async()=>{
- const h=createFakePluginHost({pluginId:'answers'});
+ const h=createFakePluginHost({pluginId:'agent-hub'});
  await h.bb.storage.kv.set(PREFERENCES_KEY,{notify:'off',projectOrder:'proj_example'});
  expect(await createPreferences(h.bb).get()).toMatchObject({notify:'off',projectOrder:'proj_example',showMarkAllRead:false,workingAnimation:'desktop',touchEnter:'newline',groupBackgroundUpdates:true,selectionActions:true});
  await h.harness.lifecycle.dispose();

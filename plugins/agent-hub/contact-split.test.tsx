@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, within, waitFor } from '@testing-libra
 import { useOpenChat } from './open-chat';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
 const split = vi.hoisted(() => ({ available: true, ids: [] as string[] }));
-const item = { id: 'answers/answers', label: 'Answers', icon: { kind: 'plugin', pluginId: 'answers', icon: null }, action: { kind: 'open-plugin-panel', pluginId: 'answers', panelId: 'answers' }, pluginId: 'answers', isDisabled: false, isVisible: true, isLoading: false, shortcut: null, badge: null };
+const item = { id: 'answers/answers', label: 'Answers', icon: { kind: 'plugin', pluginId: 'agent-hub', icon: null }, action: { kind: 'open-plugin-panel', pluginId: 'agent-hub', panelId: 'agent-hub' }, pluginId: 'agent-hub', isDisabled: false, isVisible: true, isLoading: false, shortcut: null, badge: null };
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useSidebarNavigation: () => ({ items: [item] }), experimental_useSidebarNavigationSplit: (id: string, options?: { onDragStart?: () => void }) => { split.ids.push(id); return { isAvailable: split.available, splitProps: { onPointerDown: () => options?.onDragStart?.() } }; }, experimental_useSidebarThreadSplit: () => ({ splitProps: { 'data-thread-split': true } }) }));
 afterEach(() => { cleanup(); localStorage.clear(); history.replaceState(null, '', '/'); split.available = true; split.ids = []; vi.useRealTimers(); });
 const rows = ['one', 'two'].map(id => ({ threadId: `thr_${id}`, threadTitle: id, projectId: null, projectName: null, unread: 0, lastAt: 1, preview: id }));
@@ -22,7 +22,7 @@ it('uses the navigation item shape and consumes a drag before a link or saved se
   const { sidebar, page } = await setup();
   console.info('Answers navigation item:', item);
   localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify('thr_one'));
-  history.replaceState(null, '', '/plugins/answers/answers?thread=thr_one');
+  history.replaceState(null, '', '/plugins/agent-hub/agent-hub?thread=thr_one');
   fireEvent.pointerDown(within(sidebar.container).getByRole('option', { name: /two/ }));
   const next = page();
   await waitFor(() => expect(selected(next, 'two')).toBe('true'));

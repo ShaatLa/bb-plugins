@@ -1,6 +1,6 @@
 # Agent Hub
 
-Plugin id `answers` (formerly named Answers); its agent tools keep the `answers_*` names.
+Plugin id `agent-hub` (formerly named Answers); its agent tools keep the `answers_*` names.
 
 Open Full transcript from the conversation toolbar or an expanded work step. It embeds bb’s ThreadChat for the selected thread; Back to Agent Hub restores the mounted feed and its scroll position. Transcript sends inherit the thread’s permission mode.
 
@@ -45,11 +45,11 @@ The **Agent Hub contacts** list replaces the thread list in the BB sidebar with 
 ## CLI and Installation
 
 ```sh
-bb answers list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
-bb answers read <ids...> | --all [--thread ID]
-bb answers status
-bb answers digest [--since 24h|7d|ISO-date] [--json]
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
+bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
+bb agent-hub read <ids...> | --all [--thread ID]
+bb agent-hub status
+bb agent-hub digest [--since 24h|7d|ISO-date] [--json]
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
 ```
 
 ## Limitations
@@ -113,7 +113,7 @@ The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, a
 
 The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Delivery requires the Push Notifications plugin.
 
-`bb answers digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb answers digest --since 24h`.
+`bb agent-hub digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb agent-hub digest --since 24h`.
 
 The Agent Hub side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board lists linked tasks and opens them in-app. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
 
@@ -148,9 +148,15 @@ Chat also controls **Show "Mark all read"** (off by default), **Working animatio
 Channel detection is project-specific: `channelCommands` defaults to `["work-board question add"]`. Commands containing any configured fragment count as an explicit question channel; `answers_ask` always counts. Threads without a project use the default. This detection does not prescribe where agents must ask questions.
 
 ```sh
-bb answers config get [<key>] [--project <id>] [--json]
-bb answers config set <key> <value> [--project <id>] [--json]
+bb agent-hub config get [<key>] [--project <id>] [--json]
+bb agent-hub config set <key> <value> [--project <id>] [--json]
 ```
 
 Omit `--project` for global preferences; include it for project settings (currently only `channelCommands`, CLI/RPC only). With no key, `get` lists that scope; with a key it returns only its value. `set` returns the stored value.
 RPC: `config.get {projectId?, key?}`, `config.set {projectId?, key, value}`. Existing whole-object preference RPCs remain available. Global changes use the settings page’s validation and live-change path. Unknown keys list valid keys. Booleans and numbers accept JSON literals; selects and quiet hours accept strings. `channelCommands` accepts a JSON array of non-empty strings (including `[]` to disable extra channels) or a comma-separated list.
+
+The CLI command is `bb agent-hub`.
+
+First start reads the old `plugins/answers/data.db` with SQLite online backup before ingestion starts, including all cursors. KV (`preferences`, `config:project:*`) and legacy settings are read from the host's `bb.db` in read-only mode; legacy settings become preferences. Secret files, if present, are copied with mode 0600. Old data stays in place for rollback. A completion record in the new database prevents another migration. Failures roll back copied KV and secrets and retry on the next start; a populated new database is never overwritten.
+
+`bb agent-hub migration status --json` returns `{ran, completedAt, kvKeys, secrets, error, oldItemCount, newItemCount, matchingItemIds}`. Counts are current; matching IDs sample up to twenty new rows. `completedAt` is an ISO timestamp or null; a missing old database has a null count.

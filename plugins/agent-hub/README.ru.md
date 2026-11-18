@@ -45,11 +45,11 @@ bb записывает `bb thread tell`, которым скрипт будит
 ## CLI и установка
 
 ```sh
-bb answers list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
-bb answers read <ids...> | --all [--thread ID]
-bb answers status
-bb answers digest [--since 24h|7d|ISO-дата] [--json]
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
+bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
+bb agent-hub read <ids...> | --all [--thread ID]
+bb agent-hub status
+bb agent-hub digest [--since 24h|7d|ISO-дата] [--json]
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
 ```
 
 ## Ограничения
@@ -102,7 +102,7 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin an
 
 Настройка `notify`: `off` — выкл., `asked` — вопросы агента к вам, `questions` — также ответы на ваши сообщения с вопросительным знаком, `all` — все подходящие события. По умолчанию `asked`: bb уже уведомляет о завершённых ходах, поэтому ответы отдельно не отправляются. `quietHours` задаёт местный интервал `HH:MM-HH:MM`; события за него сводятся в одно уведомление после окончания интервала. Для доставки нужен плагин Push Notifications.
 
-`bb answers digest` выводит новые ответы за последние 24 часа, ожидающие вопросы и вопросы агента к вам. `--since 7d` или ISO-дата меняют период новых ответов, `--json` даёт JSON. Например, в плагине Automations можно создать ежедневное задание агента с командой `bb answers digest --since 24h`.
+`bb agent-hub digest` выводит новые ответы за последние 24 часа, ожидающие вопросы и вопросы агента к вам. `--since 7d` или ISO-дата меняют период новых ответов, `--json` даёт JSON. Например, в плагине Automations можно создать ежедневное задание агента с командой `bb agent-hub digest --since 24h`.
 
 В боковой панели Agent Hub есть вкладки Info, Diff и Work Board, которые привязаны к открытому чату. Info отображает окружение, ветку, коммиты и изменённые файлы. Diff сравнивает незафиксированные изменения или правки в ветках, а отметки о просмотре сохраняются через Git-плагин bb. Work Board выводит список связанных задач и открывает их прямо в приложении. Вкладки доступны только для чтения, пока они видны, и обновляются после завершения хода в чате; для недоступных интеграций отображается пустое состояние или ошибка.
 
@@ -137,9 +137,15 @@ Copy link находится в меню More для сообщений аген
 Распознавание каналов задаётся для проекта: `channelCommands` по умолчанию равно `["work-board question add"]`. Команда, содержащая любой фрагмент списка, считается вопросом через канал; `answers_ask` учитывается всегда. Для тредов без проекта используется значение по умолчанию. Это распознавание не задаёт агентам правил выбора канала.
 
 ```sh
-bb answers config get [<key>] [--project <id>] [--json]
-bb answers config set <key> <value> [--project <id>] [--json]
+bb agent-hub config get [<key>] [--project <id>] [--json]
+bb agent-hub config set <key> <value> [--project <id>] [--json]
 ```
 
 Без `--project` команды читают и меняют глобальные preferences; с ним — настройки проекта (сейчас только `channelCommands`, без поля на странице настроек). Без ключа `get` возвращает все значения выбранной области, с ключом — только его значение; `set` возвращает сохранённое значение.
 RPC: `config.get {projectId?, key?}`, `config.set {projectId?, key, value}`. Existing whole-object preference RPCs remain available. Global changes use the settings page’s validation and live-change path. Unknown keys list valid keys. Booleans and numbers accept JSON literals; selects and quiet hours accept strings. `channelCommands` accepts a JSON array of non-empty strings (including `[]` to disable extra channels) or a comma-separated list.
+
+The CLI command is `bb agent-hub`.
+
+First start reads the old `plugins/answers/data.db` with SQLite online backup before ingestion starts, including all cursors. KV (`preferences`, `config:project:*`) and legacy settings are read from the host's `bb.db` in read-only mode; legacy settings become preferences. Secret files, if present, are copied with mode 0600. Old data stays in place for rollback. A completion record in the new database prevents another migration. Failures roll back copied KV and secrets and retry on the next start; a populated new database is never overwritten.
+
+`bb agent-hub migration status --json` returns `{ran, completedAt, kvKeys, secrets, error, oldItemCount, newItemCount, matchingItemIds}`. Counts are current; matching IDs sample up to twenty new rows. `completedAt` is an ISO timestamp or null; a missing old database has a null count.

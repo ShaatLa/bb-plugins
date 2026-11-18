@@ -99,7 +99,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // Messages other plugins send are noise; the owner's own words sent through Answers (Reply, pool, quote popup) still count.
    // bb records a script's `bb thread tell` into its own thread as the user's; such scripts start the text with a [tag].
    const tag = SCRIPT_TAG.exec(text)?.[1] ?? null;
-   if (!tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && (text || attachments.length > 0) && !command) {
+   if (!tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || ['agent-hub','answers'].includes(d.originPluginId)) && (text || attachments.length > 0) && !command) {
     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
    } else if (d.requestId) {
     // Remember what else can start a turn, so its final message can reach the owner as an update.
@@ -145,7 +145,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
     // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
-    const warningTriggered = update?.source_id === 'answers' && update.question.startsWith('[answers]');
+    const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && !!update?.question.startsWith('[answers]');
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
      if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.', e.createdAt ?? 0);

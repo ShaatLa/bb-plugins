@@ -13,10 +13,10 @@ it('shows API-equivalent dollars, marks estimates, and falls back to tokens', ()
 });
 
 it('opens Tokenomos on click, leaving modified clicks alone', () => {
-  window.history.replaceState(null, '', '/plugins/answers/answers');
+  window.history.replaceState(null, '', '/plugins/agent-hub/agent-hub');
   const moved = vi.fn(); window.addEventListener('popstate', moved);
   const view = render(<ThreadCostLabel cost={{ own: cost(0.8), total: cost(1.24), descendantCount: 3 }} />), label = view.getByRole('button', { name: /This session: \$0\.80/ });
-  fireEvent.click(label, { metaKey: true }); expect(window.location.pathname).toBe('/plugins/answers/answers');
+  fireEvent.click(label, { metaKey: true }); expect(window.location.pathname).toBe('/plugins/agent-hub/agent-hub');
   fireEvent.click(label); expect(window.location.pathname).toBe('/plugins/tokenomos/tokenomos'); expect(moved).toHaveBeenCalledOnce();
   window.removeEventListener('popstate', moved);
 });
