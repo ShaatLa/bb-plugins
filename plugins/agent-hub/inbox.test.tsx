@@ -997,6 +997,16 @@ it('keeps a newly revealed history row mounted on subsequent renders', () => {
   expect(slot.container.querySelector('[data-history-ids="ans_reveal"]')).toBe(row);
 });
 
+it('does not slide in a switched chat\'s rows while the previous chat\'s rows are still shown at mount', () => {
+  const onJump = () => {}, slid = (slot: ReturnType<typeof renderSlot>) => slot.container.querySelectorAll('.starting\\:translate-y-full').length;
+  const old = { group: [{ ...base, kind: 'update' as const, id: 'ans_old' }] }, mine = (id: string) => ({ group: [{ ...base, kind: 'update' as const, id, threadId: 'thr_two' }] });
+  const slot = renderSlot({ component: History }, { threadId: 'thr_two', groups: [old], flash: null, markId: null, settled: true, onJump });
+  slot.rerender(<History threadId="thr_two" groups={[mine('ans_a'), mine('ans_b')]} flash={null} markId={null} settled onJump={onJump} />);
+  expect(slid(slot)).toBe(0);
+  slot.rerender(<History threadId="thr_two" groups={[mine('ans_a'), mine('ans_b'), mine('ans_c')]} flash={null} markId={null} settled onJump={onJump} />);
+  expect(slid(slot)).toBe(1);
+});
+
 it('ignores identical page deliveries without dropping other pages', () => {
   const page = { items: [base], nextCursor: 'older' }, older = { items: [], nextCursor: null };
   const old = { threadId: 'thr_one', pages: [page, older] };
