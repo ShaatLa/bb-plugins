@@ -1,9 +1,9 @@
 ---
 name: agent-spawn-gate
-description: Follow Agent Spawn Gate project workflows and mint one-use child-start admissions.
+description: Follow Spawn Gate project workflows and mint one-use child-start admissions.
 ---
 
-Settings → Installed plugins → Agent Spawn Gate selects a Script or Instruction
+Settings → Installed plugins → Spawn Gate selects a Script or Instruction
 workflow independently for each bb project. Follow the configured workflow
 before creating child sessions. Live project instructions specify the steps.
 

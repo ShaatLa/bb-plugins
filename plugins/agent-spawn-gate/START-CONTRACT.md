@@ -1,4 +1,4 @@
-Agent Spawn Gate start contract v1 (implementation contract)
+Spawn Gate start contract v1 (implementation contract)
 
 Command:
   bb agent-spawn-gate start [--project <projectId>] [--parent-thread <threadId>] [--dry-run] -- <builder args...>

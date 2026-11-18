@@ -1,4 +1,4 @@
-# Agent Spawn Gate 0.6.3
+# Spawn Gate
 
 Persistent per-project launch workflows for new agent sessions. The core
 `message.dispatch` hook enforces a one-use admission before any provider runs.
@@ -6,7 +6,7 @@ Install entry, package directory and plugin ID: **agent-spawn-gate**.
 
 ## Settings
 
-Open **Settings → Installed plugins → Agent Spawn Gate**. Select a project in
+Open **Settings → Installed plugins → Spawn Gate**. Select a project in
 the dropdown. Every project offers the same settings:
 
 - **Enable spawn gate:** require admission for new agent and CLI starts.
