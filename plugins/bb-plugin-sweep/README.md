@@ -34,6 +34,8 @@ Sweep compares structured output with the last confirmed report. A new action, n
 
 ## Stats
 
+For a Work Board `stale-status` shadow pilot, use the read-only `attention.observations` RPC with `{"projectId":"proj_example","since":0,"limit":25}` and pass `nextCursor` to read the next page. Observations record card keys and resolved immutable IDs, gaps, and whether Sweep staged and accepted delivery of the report. Retries update the original report's receipt. Manual runs are excluded. A row with issues is incomplete evidence. Shadow collection leaves the normal notification route and snapshot acknowledgement unchanged.
+
 Open **Sweep** from the bb navigation rail. Use the controls above the statistics to pick a project or change its notification session. Selecting a session saves the project's manager field immediately. The statistics cover checks, deliveries, new items and failures for the last 24 hours, 7 days or 30 days. The dashboard updates after scheduled runs and when Sweep project settings change.
 
 `bb sweep stats --project <id> --days <1-30>` (default one day) and the `stats {projectId,days?}` RPC report scheduled ticks, executed checks, confirmed deliveries by channel, new distinct items by kind, repeated item sightings, suppressed reports and failures by stage. The `answers` counter includes notices delivered to either plugin. The `reminderReports` counter preserves historical totals. New items are fingerprints first seen within the requested window. Sweep keeps counters and fingerprints locally for a rolling 30 days. Manual runs do not enter these totals.

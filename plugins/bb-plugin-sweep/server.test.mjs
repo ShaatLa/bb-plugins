@@ -11,7 +11,7 @@ import { managerTag, projectsTag, statsTag } from './overview-contract.ts';
 const repo = await mkdtemp(join(tmpdir(), 'sweep-test-'));
 const git = (...args) => execFileSync('git', args, {cwd:repo, stdio:'ignore'});
 git('init','-b','main');git('config','user.email','test@example.com');git('config','user.name','Test');
-await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.ArgumentParser()\np.add_argument('--committed-state');p.add_argument('--candidate-snapshot')\na=p.parse_args()\nif a.committed_state and os.path.exists(a.committed_state):\n print('sweep: 2 threads, 3 cards checked, 0 actions');raise SystemExit(0)\nprint('ANSWER EXA-1 q1: «Пример *ответа*»')\nprint('ACTION stale-status EXA-2: in_progress')\nprint('WAIT EXA-3: blocker EXA-4')\nprint('sweep: 2 threads, 3 cards checked, 2 actions')\nif a.candidate_snapshot: open(a.candidate_snapshot,'w').write('{"seen":true}')\nraise SystemExit(1)\n`);
+await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.ArgumentParser()\np.add_argument('--committed-state');p.add_argument('--candidate-snapshot')\na=p.parse_args()\nif a.committed_state and os.path.exists(a.committed_state):\n print('sweep: 2 threads, 3 cards checked, 0 actions');raise SystemExit(0)\nprint('ANSWER EXA-1 q1: «Пример *ответа*»')\nprint('ACTION stale-status EXA-2: in_progress, board flags no_active_thread')\nprint('WAIT EXA-3: blocker EXA-4')\nprint('sweep: 2 threads, 3 cards checked, 2 actions')\nif a.candidate_snapshot: open(a.candidate_snapshot,'w').write('{"seen":true}')\nraise SystemExit(1)\n`);
 await writeFile(join(repo,'repeat.py'), `import argparse,json
 p=argparse.ArgumentParser()
 p.add_argument('age');p.add_argument('key');p.add_argument('candidate')
@@ -85,7 +85,7 @@ try {
    '**Owner answers**',
    '- [EXA-1](/plugins/work-board/work-board/task/EXA-1) — «Пример \\*ответа\\*» · `q1`',
    '**Actions**',
-   '- `stale status` · [EXA-2](/plugins/work-board/work-board/task/EXA-2): in\\_progress',
+   '- `stale status` · [EXA-2](/plugins/work-board/work-board/task/EXA-2): in\\_progress, board flags no\\_active\\_thread',
    '**Waiting**',
    '- [EXA-3](/plugins/work-board/work-board/task/EXA-3) — blocked by [EXA-4](/plugins/work-board/work-board/task/EXA-4)',
  ].join('\n\n'));
@@ -176,6 +176,68 @@ for (const [origin, merges] of [['sweep', true], ['someone-else', false]]) {
     } else assert.match(sentRequests[0].input[0].text,/^\[bb message from plugin:sweep\]/);
   } finally { await mergeHost.harness.lifecycle.dispose(); }
 }
+
+// In shadow, a later retry must acknowledge the original report's findings, not the retry tick's findings.
+let shadowUnavailable = false;
+let shadowSendFails = true;
+let shadowDeliveries = 0;
+let shadowKeyKnown = true;
+const shadowHost = createFakePluginHost({pluginId:'sweep',sdk:{
+  projects:projectSettings(),
+  threads:{get:async()=>makeThreadResponse(),send:async()=>{
+    if (shadowSendFails) throw new Error('offline');
+    return {delivery:'queued',queuedMessage:{id:`queue_example_${++shadowDeliveries}`}};
+  }},
+  plugins:{list:async()=>({plugins:[]}),callRpc:async({pluginId,method,input})=>{
+    if (pluginId === 'push-notifications') return {};
+    assert.equal(pluginId,'work-board');
+    if (method === 'attention.modes') {
+      if (shadowUnavailable) throw new Error('Work Board unavailable');
+      return {projectId,trackerId:'tracker_example',kinds:{'stale-status':{effective:{mode:'shadow',generation:1}}}};
+    }
+    assert.equal(method,'attention.resolveKeys');
+    assert.deepEqual(input,{projectId,keys:['EXA-2']});
+    return shadowKeyKnown ? {resolved:{'EXA-2':'task_example'},unknown:[]} : {resolved:{},unknown:['EXA-2']};
+  }},
+}});
+try {
+  const {bb,harness} = shadowHost;
+  await plugin(bb);
+  const rpc = (method, input) => harness.behavior.callRpc(method,input);
+  const observations = input => rpc('attention.observations',{projectId,since:0,...input});
+  await rpc('configure',{projectId,config});
+  await rpc('run',{projectId});
+  assert.deepEqual((await observations()).observations,[]);
+  await harness.behavior.runSchedule('sweep');
+  const [staged] = (await observations()).observations;
+  assert.deepEqual(staged.findings,[{taskKey:'EXA-2',taskId:'task_example',signal:'no_active_thread'}]);
+  assert.deepEqual([staged.trackerId,staged.generation],['tracker_example',1]);
+  assert.ok(staged.scanStartedAt <= staged.at && staged.at <= staged.stagedAt);
+  assert.ok(staged.stagedAt);
+  assert.equal(staged.receipt,null);
+
+  shadowSendFails = false;
+  shadowUnavailable = true;
+  await rpc('config.set',{projectId,key:'manager',value:first});
+  await harness.behavior.runSchedule('sweep');
+  const page = await observations({limit:1});
+  assert.equal(page.observations[0].tickId,staged.tickId);
+  assert.ok(page.observations[0].acceptedAt);
+  assert.deepEqual(page.observations[0].receipt,{mode:'queued',id:'queue_example_1',destination:first});
+  const following = await observations({cursor:page.nextCursor});
+  assert.equal(following.observations.length,1);
+  assert.deepEqual(following.observations[0].issues,['mode-unavailable']);
+  assert.deepEqual(following.observations[0].findings,[]);
+  assert.deepEqual(following.observations[0].receipt,{mode:'queued',id:'queue_example_2',destination:first});
+
+  shadowUnavailable = false;
+  shadowKeyKnown = false;
+  await rpc('config.set',{projectId,key:'snapshots',value:false});
+  await harness.behavior.runSchedule('sweep');
+  const unresolved = (await observations()).observations.at(-1);
+  assert.deepEqual(unresolved.issues,['unresolved-task-key']);
+  assert.deepEqual(unresolved.findings,[{taskKey:'EXA-2',taskId:null,signal:'no_active_thread'}]);
+} finally { await shadowHost.harness.lifecycle.dispose(); }
 
 const reports=[];
 let projectRemote=repo;

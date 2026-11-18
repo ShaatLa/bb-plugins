@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { attentionObservations, attentionStore, type ShadowRun } from './attention.ts';
 import { deliveryStore } from './delivery.ts';
 import { sendOrAppend } from './queued-notice.ts';
 import { sweepHistory } from './history.ts';
@@ -22,6 +23,7 @@ const configGetInput = input.extend({ key: configKey.optional() });
 const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
 export const contract = defineRpcContract({
   ...overviewContract,
+  'attention.observations': attentionObservations,
   'settings.read': { experimental_description: 'Read settings and UI choices. For one project, use config.get.', input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), hasRepository: z.boolean(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
   'environment.write': { experimental_description: 'Replace both global execution settings (bbCli and runtimePath). Use native plugin config to change one field.', input: z.object({ bbCli: bbCliSchema, runtimePath: z.string() }).strict(), output: z.unknown() },
   configure: { experimental_description: 'Replace the entire configuration for one project. Use config.set for one field. Changing manager redirects pending reports.', input: z.object({ projectId, config: configSchema.extend({ remote: z.string().optional() }).strict().transform(config => configSchema.parse(config)) }).strict(), output: z.unknown() },
@@ -32,7 +34,7 @@ export const contract = defineRpcContract({
   run: { experimental_description: 'Refresh the checkout and execute the configured script. Sweep does not deliver or acknowledge the result. The script can have side effects.', input, output: z.unknown() },
 });
 type ReportReceipt = { fingerprint: string; manager?: string };
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; attentionShadow?: ShadowRun; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 const maxRefreshBackoffMs = 3600000;
 const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
@@ -65,6 +67,7 @@ export default async function plugin(bb: BbPluginApi) {
   const save = (id: string, value: State) => db.prepare('INSERT INTO status VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value').run(id, JSON.stringify(value));
   const status = async (id: string) => { const config = (await configs())[id] ?? null, current = state(id); return { projectId: id, config, ...current, nextRun: config?.enabled ? current.nextRun ?? Date.now() : null, pending: deliveries.read(id)?.pending_message ?? null }; };
   const controller = new AbortController(); bb.onDispose(() => controller.abort());
+  const attention = attentionStore(db, bb, controller.signal);
   const busy = new Set<string>();
   async function managerFor(manager: string | undefined) {
     if (!manager) throw new Error('Manager is unset. Set the manager field to an available thread ID.');
@@ -83,9 +86,10 @@ export default async function plugin(bb: BbPluginApi) {
     const output = header ? pending.slice(header[0].length) : pending;
     const message = header ? formatNotification(heartbeat ? 'alive' : code, output) : pending;
     const manager = (await configs())[id]?.manager;
+    let receipt: Parameters<typeof attention.accept>[2];
     try {
       const threadId = await managerFor(manager);
-      await sendOrAppend(bb, { threadId, text: message });
+      receipt = { ...await sendOrAppend(bb, { threadId, text: message }), destination: threadId };
       current.deliveredTo = threadId;
       current.deliveredNoticeId = undefined;
       current.fallbackReason = undefined;
@@ -110,13 +114,15 @@ export default async function plugin(bb: BbPluginApi) {
         current.deliveredTo = pluginId;
         current.deliveredNoticeId = notice.id;
         current.fallbackReason = current.managerError;
+        receipt = { mode: 'notice', destination: pluginId, id: notice.id };
       } catch (cause) {
         if (!controller.signal.aborted) history.deliveryFailed(tickId);
         throw new Error(`Notice fallback failed after ${current.managerError}: ${String(cause)}`, { cause });
       }
     }
     current.deliveredTickId = header?.[3];
-    current.delivered = pending; current.deliveredAt = Date.now();
+    const acceptedAt = Date.now();
+    current.delivered = pending; current.deliveredAt = acceptedAt;
     current.error = code >= 2 ? output : null;
     current.alertError = null;
     if (header && !heartbeat) {
@@ -126,6 +132,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     db.transaction(() => {
       deliveries.acknowledge(id);
+      if (current.deliveredTickId) attention.accept(current.deliveredTickId, acceptedAt, receipt);
       history.delivered(tickId, current.deliveredNoticeId !== undefined);
       save(id, current);
     })();
@@ -136,6 +143,9 @@ export default async function plugin(bb: BbPluginApi) {
     const current = state(id);
     let config: Config | undefined;
     let historyChanged = false;
+    let shadowTick: { id: string; mode: ShadowRun } | undefined;
+    const shadowIssues: string[] = [];
+    let observationRecorded = false;
     try {
       config = (await configs())[id]; if (!config) throw new Error('Set branch and script with bb sweep config set <key> <value> --project <id> before running Sweep.');
       const now = Date.now(), interval = config.intervalMinutes * 60000;
@@ -160,14 +170,24 @@ export default async function plugin(bb: BbPluginApi) {
         current.nextRun = now + interval;
         db.transaction(() => { history.start(id, tickId, now); save(id, current); })();
         historyChanged = true;
+        const shadow = await attention.shadowMode(id);
+        controller.signal.throwIfAborted();
+        if (shadow !== undefined) current.attentionShadow = shadow ?? undefined;
+        if (current.attentionShadow) {
+          shadowTick = { id: tickId, mode: current.attentionShadow };
+          if (shadow === undefined) shadowIssues.push('mode-unavailable');
+        }
+        attention.prune(now);
         await deliver(id, current, tickId);
         if (current.refreshRetryAt && current.refreshRetryAt > Date.now()) {
+          if (shadowTick) attention.gap(id, shadowTick.id, shadowTick.mode, [...shadowIssues, 'refresh-backoff']);
           current.nextRun = current.refreshRetryAt;
           save(id, current);
           return status(id);
         }
       }
       const committed = deliveries.read(id)?.committed ?? null;
+      const scanStartedAt = Date.now();
       let result;
       let refreshFailed = false;
       try {
@@ -185,6 +205,12 @@ export default async function plugin(bb: BbPluginApi) {
         result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null };
       }
       if (manual) return { exitCode: result.code, output: result.output, manual: true };
+      if (shadowTick) {
+        if (result.code >= 2) attention.gap(id, shadowTick.id, shadowTick.mode, [...shadowIssues, refreshFailed ? 'refresh-failed' : 'script-failed']);
+        else await attention.observe(id, shadowTick.id, shadowTick.mode, scanStartedAt, result.output, shadowIssues);
+        observationRecorded = true;
+        controller.signal.throwIfAborted();
+      }
       current.exitCode = result.code;
       current.refreshFailures = refreshFailed ? (current.refreshFailures ?? 0) + 1 : 0;
       current.refreshRetryAt = refreshFailed
@@ -213,6 +239,7 @@ export default async function plugin(bb: BbPluginApi) {
         const message = `[sweep] exit ${result.code} tick=${tickId}\n${output}`;
         db.transaction(() => {
           deliveries.stage(id, message, result.snapshot);
+          if (shadowTick) attention.stage(shadowTick.id, Date.now());
           save(id, current);
         })();
         await deliver(id, current, tickId);
@@ -224,6 +251,7 @@ export default async function plugin(bb: BbPluginApi) {
       return await status(id);
     } catch (e) {
       if (!manual && !controller.signal.aborted) {
+        if (shadowTick && !observationRecorded) attention.gap(id, shadowTick.id, shadowTick.mode, [...shadowIssues, 'tick-interrupted']);
         current.error = String(e); save(id, current);
         try { await bb.sdk.plugins.callRpc({ pluginId: 'push-notifications', method: 'notifications.send', input: { title: 'Sweep manager unreachable', body: `${id}: ${String(e)}` }, outputSchema: z.unknown() }); }
         catch (alert) { current.alertError = String(alert); save(id, current); bb.log.error(`Sweep push failed: ${String(alert)}`); }
@@ -289,6 +317,7 @@ export default async function plugin(bb: BbPluginApi) {
     return { seeded: true as const };
   });
   bb.rpc.register(contract, {
+    'attention.observations': attention.read,
     'overview.projects': async () => {
       const projects = await configs();
       return (await bb.sdk.projects.list()).flatMap(({ id, name }) => projects[id] ? [{ id, name, enabled: projects[id].enabled }] : []);
