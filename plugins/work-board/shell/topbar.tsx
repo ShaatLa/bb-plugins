@@ -249,7 +249,7 @@ export function TasksTopbar({
               <button
                 type="button"
                 aria-label="Switch project"
-                className="flex min-w-0 max-w-full items-center gap-2 -mx-1.5 rounded-md px-1.5 py-0.5 hover:bg-state-hover"
+                className="flex min-w-0 max-w-full items-center gap-2 rounded-md px-1.5 py-0.5 hover:bg-state-hover"
               >
                 {project ? (
                   <span
