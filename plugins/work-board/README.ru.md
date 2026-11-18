@@ -46,10 +46,8 @@ CLI: `bb work-board storage status --json`, `storage clean --json`, `storage opt
 bb work-board project show EXA --json
 bb work-board project update EXA --auto-archive 14 --stale-idle 60
 bb work-board project update EXA --auto-archive off --stale-idle off
-bb work-board project update EXA --question-link-host localhost --question-link-host 127.0.0.1
 ```
 
-**Question link hosts** (`questionLinkHosts`, Settings → Archiving and activity) ограничивает хосты, на которые могут вести ссылки в вопросах владельцу. Если список задан, `question add` и `question update` отклоняют текст вопроса, вариант или причину рекомендации со ссылкой `http(s)` на другой хост; относительные ссылки, например на задачу, проходят. `--any-question-link-host` очищает список. Настройка проверяется только при записи через CLI, вопросы, изменённые в интерфейсе, не проверяются.
 
 Исходный код: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Установите эту запись коллекции командой `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` после отключения встроенного Tasks и завершения любого импорта данных, описанного ниже. Существующие локальные установки Work Board можно зарегистрировать заново командой `bb plugin install /path/to/collection --plugin work-board`, сохранив тот же идентификатор плагина и данные.
 

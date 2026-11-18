@@ -53,10 +53,8 @@ Existing projects inherit the former plugin-wide archive interval and idle thres
 bb work-board project show EXA --json
 bb work-board project update EXA --auto-archive 14 --stale-idle 60
 bb work-board project update EXA --auto-archive off --stale-idle off
-bb work-board project update EXA --question-link-host localhost --question-link-host 127.0.0.1
 ```
 
-**Question link hosts** (`questionLinkHosts`, Settings → Archiving and activity) limits which hosts links in owner questions may point to. When the list is set, `question add` and `question update` refuse a prompt, option or recommendation reason with an `http(s)` link to another host; relative links such as task links pass. `--any-question-link-host` clears the list. The setting is checked only for CLI writes, not for questions edited in the UI.
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 

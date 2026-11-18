@@ -7,7 +7,7 @@ import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, questionLinkHostsSchema, boardPreferencesSchema } from "./project-settings";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -309,7 +309,6 @@ export const projectSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
-    questionLinkHosts: questionLinkHostsSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -574,7 +573,6 @@ const updateProjectInputSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
-    questionLinkHosts: questionLinkHostsSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -587,7 +585,6 @@ const updateProjectInputSchema = z
       input.autoArchiveAfterDays !== undefined ||
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
-      input.questionLinkHosts !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||

@@ -454,6 +454,8 @@ const MIGRATIONS = [
       throw new Error("Foreign key check failed during executor removal");
   },
   `ALTER TABLE projects ADD COLUMN question_link_hosts TEXT;`,
+  // 0.43.0 shipped question link hosts and 0.43.1 withdrew them; the column goes with the setting.
+  `ALTER TABLE projects DROP COLUMN question_link_hosts;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

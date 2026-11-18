@@ -301,29 +301,6 @@ describe("bb work-board CLI", () => {
     } finally { await harness.dispose(); }
   });
 
-  it("refuses question links outside the project's question link hosts", async () => {
-    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
-    await plugin(bb);
-    await harness.runCli(["project", "create", "--name", "Hosts", "--prefix", "HST"]);
-    await harness.runCli(["create", "--project", "HST", "--title", "Card"]);
-    const ask = (prompt: string, ...args: string[]) => harness.runCli(["question", "add", "HST-1", "--kind", "check", "--prompt", prompt, ...args]);
-    try {
-      expect((await ask("See https://abc.getbb.app/x")).exitCode).toBe(0);
-      expect(JSON.parse(stdout(await harness.runCli(["project", "update", "HST", "--question-link-host", "LOCALHOST", "--question-link-host", "127.0.0.1", "--json"]))).project.questionLinkHosts).toEqual(["localhost", "127.0.0.1"]);
-      const refused = await ask("See https://abc.getbb.app/x");
-      expect(refused.exitCode).toBe(1);
-      expect(refused.stderr).toContain("outside this project's question link hosts (localhost, 127.0.0.1)");
-      expect((await ask("Compare", "--option", "Look at https://abc.getbb.app/y")).exitCode).toBe(1);
-      expect((await ask("See http://localhost:5173/a and the card /plugins/work-board/work-board/task/HST-1")).exitCode).toBe(0);
-      const question = JSON.parse(stdout(await ask("Open http://127.0.0.1:4000/", "--json"))).question;
-      const revise = await harness.runCli(["question", "update", "HST-1", "--question", question.id, "--revision", String(question.revision), "--prompt", "Open https://abc.getbb.app/"]);
-      expect(revise.exitCode).toBe(1);
-      expect(revise.stderr).toContain("question link hosts");
-      expect(JSON.parse(stdout(await harness.runCli(["project", "update", "HST", "--any-question-link-host", "--json"]))).project.questionLinkHosts).toEqual([]);
-      expect((await ask("See https://abc.getbb.app/x")).exitCode).toBe(0);
-    } finally { await harness.dispose(); }
-  });
-
   it("lists the caller's open children with their cards and state notes", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

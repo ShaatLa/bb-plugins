@@ -354,7 +354,7 @@ Owner rules for questions (2026-11-13; the owner found a 3,600-character accepta
 3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
-`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question. When the project sets question link hosts (`project.questionLinkHosts`, `project update --question-link-host HOST`), `question add` and `question update` refuse any `http(s)` link to another host; use the allowed host, such as the local server address.
+`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
 
 The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
 

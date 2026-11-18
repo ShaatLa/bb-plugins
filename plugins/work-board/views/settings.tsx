@@ -404,7 +404,6 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
     autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
     statusNotifications?: z.infer<typeof statusNotificationsSchema>;
-    questionLinkHosts?: string[];
   }) => {
     setBusy(true);
     setError(null);
@@ -463,16 +462,6 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
-      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        Question link hosts
-        <Input key={(project.questionLinkHosts ?? []).join(",")} defaultValue={(project.questionLinkHosts ?? []).join(", ")} disabled={busy}
-          aria-label="Question link hosts" placeholder="Any host" className="h-8 w-48"
-          onBlur={(event) => {
-            const hosts = event.currentTarget.value.split(/[\s,]+/).filter(Boolean);
-            if (hosts.join(",") !== (project.questionLinkHosts ?? []).join(",")) void save({ questionLinkHosts: hosts });
-          }} />
-      </label>
-      <p className="text-xs text-muted-foreground">Comma-separated, e.g. localhost, 127.0.0.1. Agents cannot ask the owner a question that links to any other host. Empty allows any host.</p>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
