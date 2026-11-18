@@ -11,7 +11,7 @@ import { createCodexSource } from './codex';
 import type { ThreadInfo, Batch } from './files';
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, 'fixtures', name), 'utf8');
-const id = '01a1d157-0ade-75d1-8e8f-0f548a9da5c4';
+const id = '01a10000-0000-7000-8000-000000000001';
 let dir: string, db: Database.Database, store: ReturnType<typeof createStore>;
 const thread = (providerThreadId: string, extra: Partial<ThreadInfo> = {}): ThreadInfo => ({ threadId: 'thread', providerThreadId, providerThreadIds:[providerThreadId], provider: 'claude-code', projectId: 'project', createdAt: 0, isFork: false, cwd: null, ...extra });
 const apply = (b: Batch) => db.transaction(() => { store.applyRows(b.rows); b.commit(); })();

@@ -3,7 +3,7 @@ import type { SummaryOutput } from "./types";
 import { bucketLabel, bucketTitle, providerName, totalTokens, type By, type Metric, type Shown } from "./format";
 import type { T } from "./i18n";
 
-/** Chart slots map to the host tokens --chart-1..5. Slot 5 collects everything else. */
+/** Chart slots 1..5 (colors.ts); slot 1 is Claude, slot 2 Codex. Slot 5 collects everything else. */
 export const OTHER_SLOT = 5;
 const PROVIDER_SLOT: Record<string, number> = { "claude-code": 1, codex: 2, "local-models": 3, antigravity: 4 };
 

@@ -43,6 +43,22 @@ describe("costUsd — Haiku 5.5 long-context", () => {
   });
 });
 
+describe("costUsd — OpenAI gpt-6.2", () => {
+  const c = { freshIn: 1_000_000, cacheRead: 1_000_000, cacheWriteShort: 0, cacheWriteLong: 0, output: 1_000_000 };
+
+  test("astra: standard 48.40, long 76.80, ultrafast at the 3x promo 145.20, flex unpriced", () => {
+    expect(costUsd(c, "gpt-6.2-astra", "standard", 1)).toBeCloseTo(48.40, 6);
+    expect(costUsd(c, "gpt-6.2-astra", "standard", 2)).toBeCloseTo(76.80, 6);
+    expect(costUsd(c, "gpt-6.2-astra", "ultrafast", 0)).toBeCloseTo(145.20, 6);
+    expect(costUsd(c, "gpt-6.2-astra", "flex", 0)).toBeNull();
+  });
+
+  test("sol: standard 12.10, fast 24.20", () => {
+    expect(costUsd(c, "gpt-6.2-sol", "standard", 0)).toBeCloseTo(12.10, 6);
+    expect(costUsd(c, "gpt-6.2-sol", "fast", 0)).toBeCloseTo(24.20, 6);
+  });
+});
+
 describe("costUsd — OpenAI gpt-6.1-sol", () => {
   const c = {
     freshIn: 1_000_000,

@@ -6,13 +6,13 @@ providers' usage limits, estimates savings from compaction and from local
 models, charts spend over four ranges, and gives Work Board and Answers optional
 per-task and per-session totals.
 
-Status: revision 4, after Codex review rounds 1 (thr_vxuunxng35, 16
-findings), 2 (thr_ff2d3349i8, 9) and 3 (thr_2kcz4tyan5, 6 + 2 simplifications),
+Status: revision 4, after Codex review rounds 1 (16
+findings), 2 (9) and 3 (6 + 2 simplifications),
 all addressed below. Facts were checked against bb 0.49.0 (`start-server.js`,
 builtin provider bridges), Plugin SDK 0.6.132 typings, the owner's `~/.bb/bb.db`
 (read-only), real Claude Code and Codex transcripts, OpenAI's pricing page, the
 claude-api skill price table (cached 2026-11-03), and replies from the Answers,
-Work Board, Idle Compact, Local models and Manager threads (2026-11-15).
+Work Board, Idle Compact and Local models plugin threads (2026-11-15).
 
 ## 1. Verified facts that shape the design
 
@@ -46,7 +46,7 @@ Work Board, Idle Compact, Local models and Manager threads (2026-11-15).
   `contextCompaction` items. Context size: `contextWindowUsage.usedTokens`.
   A manual `threads.compact` runs as its own turn; an automatic provider
   compaction can happen inside an ordinary turn.
-- Antigravity: no usage or context events in bb. thr_gmerajvzbr found that
+- Antigravity: no usage or context events in bb. The Antigravity plugin thread found that
   agy 1.5.9 stream-json `step_update.usage` (DONE) gives per-step tokens and
   added RPC `usage.list` to the antigravity plugin (§6.5, not yet deployed).
   local-models: `contextWindowUsage` only, plus RPC `usage.list` (§6.3).
@@ -292,7 +292,7 @@ incremental_vacuum`. `thread_tokens`, `compactions`, `compaction_effect`,
 
 ### 3.6 Compaction savings (estimate, tokens stored, priced at read)
 
-At ingest, each `thread/compacted` event is its own compaction C (id = event id; a turn can hold several, e.g. thr_wr7z5gy6db turn da3d91030d-t9 has two, 18 min apart). `before` = the last `context_last` before C's event sequence (and after the previous compaction of T), `after` = the first snapshot after C; skip if either is missing; `Δ = before − after`. While C is T's latest compaction, every new main-conversation (`conv = ""`) usage row of T updates `compaction_effect(C, model, tier, band)`: `calls_hit` when the previous main call of T used the same model and the gap ≤ TTL (`promptCacheTtlMs` of the latest usage event, else 1 h Claude / 30 min OpenAI), else `calls_miss` (a model switch is a miss: caches are model-scoped); the first such call sets `first_gap_hit`. Subagent and native-child rows count in totals but never in compaction effects. Overhead: rows inside C's turn and before the first call after C count as `overhead_*` only when the turn is compaction-only — its accepted request input is the standalone builtin `/compact` command (manual `threads.compact` dispatches exactly that; WP4 builds the fixture from the real `/compact` turns thr_wr7z5gy6db daa6b08a7b-t1 and thr_2sivhbkntb da416ee912-t1) and at least one usage row of that turn lies between its `turn/started` and C. Otherwise, including manual compactions whose summary call leaves no usage row (the daa6b08a7b-t1 transcript has a `compact_boundary` 257,112 → 16,287 but no usage-bearing row in the turn), `own_cost_known = 0`.
+At ingest, each `thread/compacted` event is its own compaction C (id = event id; a turn can hold several, e.g. two 18 min apart). `before` = the last `context_last` before C's event sequence (and after the previous compaction of T), `after` = the first snapshot after C; skip if either is missing; `Δ = before − after`. While C is T's latest compaction, every new main-conversation (`conv = ""`) usage row of T updates `compaction_effect(C, model, tier, band)`: `calls_hit` when the previous main call of T used the same model and the gap ≤ TTL (`promptCacheTtlMs` of the latest usage event, else 1 h Claude / 30 min OpenAI), else `calls_miss` (a model switch is a miss: caches are model-scoped); the first such call sets `first_gap_hit`. Subagent and native-child rows count in totals but never in compaction effects. Overhead: rows inside C's turn and before the first call after C count as `overhead_*` only when the turn is compaction-only — its accepted request input is the standalone builtin `/compact` command (manual `threads.compact` dispatches exactly that; WP4 builds the fixture from the real `/compact` turns thr_wr7z5gy6db daa6b08a7b-t1 and thr_2sivhbkntb da416ee912-t1) and at least one usage row of that turn lies between its `turn/started` and C. Otherwise, including manual compactions whose summary call leaves no usage row (the daa6b08a7b-t1 transcript has a `compact_boundary` 257,112 → 16,287 but no usage-bearing row in the turn), `own_cost_known = 0`.
 
 Read-time estimate, priced with current prices and per model: `gross = Δ × (calls_hit × read + calls_miss × writeLong)` with rates of each effect row's model, tier and band. A call whose counterfactual prompt (`promptTokens + Δ`) falls in a different band is counted in `calls_cross` instead and left out of the money estimate (its whole request would be priced at another rate); tokens saved still include it, and the money figure is marked "partial" when `calls_cross > 0`; `rewrite = first_gap_hit ? after × (writeLong − read) : 0` (the summary prefix must be written once where the old prefix would have been read); `net = gross − rewrite − overhead` (negative values are shown, not clamped). When `own_cost_known = 0`, show `net` labelled "excluding the compaction cost itself". Counterfactual assumptions in a tooltip: same calls and models, context grows identically, no extra forced compaction. Idle Compact entries (`compactions.list`) match C by thread and `at` ±2 min → `origin = idle-compact`. The estimate is the same before and after raw retention expires (test).
 
@@ -490,7 +490,7 @@ reasoningTokens|null, durationMs, ttftMs|null }], nextCursor|null }`. Page until
 entries resolve `providerThreadId` via `provider_session`; unresolved wait in
 `ext_pending` 24 h, then move to local calls. `tool`/`cli` entries count to the calling thread.
 
-### 6.5 Consumed: Antigravity (built in thr_gmerajvzbr's worktree, deploy pending)
+### 6.5 Consumed: Antigravity (built in the Antigravity plugin's worktree, deploy pending)
 
 Plugin `antigravity`, RPC `usage.list`, same paging and cursor rules as §6.3.
 `Entry = { id ("<ACP session>:<native conversation>:<step>"), ts, source:
@@ -575,9 +575,9 @@ Key acceptance checks:
 - Compaction savings rest on a stated counterfactual; shown with "~" and its
   assumptions.
 
-## 10. Early overspend warnings (owner-approved 2026-11-15, revision 2 after review thr_cmq7rpi3es)
+## 10. Early overspend warnings (owner-approved 2026-11-15, revision 2 after review)
 
-Source: Manager's ANV-781 investigation (thr_ukkbq8m5iq): Sonnet sessions ×2.5/week (main driver), cache reads of large contexts 57–73% of units, wakes after >1 h idle 6.6% (44 of 56 daily misses were messages from other threads), no-work notification turns 5.8% (fixed by the owner), Codex xhigh share 13%→35%.
+Source: a usage investigation across the owner's threads: Sonnet sessions ×2.5/week (main driver), cache reads of large contexts 57–73% of units, wakes after >1 h idle 6.6% (44 of 56 daily misses were messages from other threads), no-work notification turns 5.8% (fixed by the owner), Codex xhigh share 13%→35%.
 Live check (last 24 h): latest-call context ≥ 300k in 23 threads carrying 51% of all cache reads; ≥ 400k in 9 threads (35%); 200k flags 47 threads (noise).
 Constraint: plugin agent instructions apply only when a provider session is constructed and changing them busts the prompt cache, so they cannot carry live hints.
 
@@ -600,10 +600,10 @@ Returns `null` when nothing eligible is retained (reported as "unknown", distinc
 - RPC `wakeCost { threadId }`, CLI `bb tokenomos wake-cost <threadId> [--json]` → `{ threadId, provider, model, contextTokens | null, lastCallAt | null, idleMinutes | null, ttlMinutes, ttlSource: "observed" | "assumed", cacheLikelyExpired: boolean | null, coldCostUsd | null, warmCostUsd | null }`.
 - TTL: observed when the last eligible Claude call wrote a single cache kind (long → 60, short → 5), or when a bb `promptCacheTtlMs` was persisted with its event time and provider session id and both match the selected call (same session, event at or after the call); else assumed (Claude 60, OpenAI 30); rows without a provider-session id fail closed to assumed; `cacheLikelyExpired` only when idle > TTL, labelled an estimate when assumed.
 - `coldCostUsd`: Claude = context × the write rate of the observed kind (long if unknown); OpenAI = context × fresh-input rate (OpenAI bills cold prompt tokens as input). `warmCostUsd` = context × cache-read rate.
-- Skill rule (skills/tokenomos/SKILL.md): before sending work to a thread idle longer than its TTL, run `wake-cost`; if `cacheLikelyExpired` and `coldCostUsd` > $0.50, prefer a fresh child thread. The integrator sends the rule to the Manager thread (other projects' instructions are not edited by Tokenomos).
+- Skill rule (skills/tokenomos/SKILL.md): before sending work to a thread idle longer than its TTL, run `wake-cost`; if `cacheLikelyExpired` and `coldCostUsd` > $0.50, prefer a fresh child thread. The integrator passes the rule to the owner's coordinating thread (other projects' instructions are not edited by Tokenomos).
 
 ### 10.3 Growth anomaly (daily, passive only) — DEFERRED by the owner (2026-11-15): ships separately after 10.0–10.2
-- Setting: `growthAlertRatio` (1.1–10, default 1.5). No messages to threads: any `threads.send` can start a paid turn (SDK: a send to an idle thread is `start-turn`), so the result is shown on the page and in `status` only. The Manager or owner reads it there (or via `bb tokenomos status`).
+- Setting: `growthAlertRatio` (1.1–10, default 1.5). No messages to threads: any `threads.send` can start a paid turn (SDK: a send to an idle thread is `start-turn`), so the result is shown on the page and in `status` only. The owner or a coordinating agent reads it there (or via `bb tokenomos status`).
 - Report day = the last complete local day. `growth_report(day PK, state: pending|computed|expired, payload, updated_at)`; the daily schedule (07:30) and the scheduler (after each batch) process pending days of the last 48 h; older pending days expire.
 - Exact daily table: `daily_exact(day, provider, model_key, calls, fresh_tokens)` PK over the first three, updated inside `applyRows` (and `deleteContribution`) only for rows from per-call sources (`claude-file`, `codex-file`, `local-log`, `agy-log`) without RECOVERED/BACKFILLED flags; kept for rollup retention. When the table is introduced it is initialised in the same migration from retained `usage_raw` rows under the same filter, and `daily_exact_since` (the first local day fully inside raw retention at that moment, or the first complete day after a fresh install) is stored; reports require all 8 days ≥ `daily_exact_since`. bb-events rows (fallback, recovered or backfilled aggregates) never enter it, so the anomaly metric cannot see a multi-day gap lumped into one hour.
 - Reports are evaluated only by the daily schedule and by the scheduler at the end of a pass when no flush is in flight.
