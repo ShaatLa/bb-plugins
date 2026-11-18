@@ -12,7 +12,7 @@ As a safety net, a turn that answers while sub-sessions it started itself are st
 
 When handing work to the owner (ready for review, decisions awaiting them), call `answers_report` in that turn. Also use it for a completed result the owner awaits when no question is pending. Ask questions through `answers_ask` or the Work Board card, then end the turn.
 
-With `handoffWarnings` enabled (default), a live top-level completion that misses the matching explicit channel receives an `[answers]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `answers_report` or `answers_ask`. Existing handoff guessing and **Asked in chat** filing remain as a safety net.
+With `handoffWarnings` enabled (default), a live top-level completion that misses the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `answers_report` or `answers_ask`. Existing handoff guessing and **Asked in chat** filing remain as a safety net.
 
 CLI:
 

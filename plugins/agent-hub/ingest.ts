@@ -145,11 +145,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
     // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
-    const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && !!update?.question.startsWith('[answers]');
+    const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && /^\[(?:agent-hub|answers)\]/.test(update?.question ?? ''); // [answers] is the tag before the rename
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.', e.createdAt ?? 0);
-     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[answers] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
+     if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.', e.createdAt ?? 0);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.

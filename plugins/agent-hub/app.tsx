@@ -347,7 +347,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
       {/* bb gives a plugin's message no sender line; here it names the plugin, and its leading [tag] (how a plugin marks its own notes) is left out. */}
       {sender && <span data-plugin-sender className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"><PluginIcon pluginId={sender.id} icon={sender.icon} className="size-3.5 shrink-0" />{sender.name}</span>}
-      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={sender ? item.question.replace(new RegExp(`^\\[(?:${[sender.id, sender.name].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\]\\s*`, 'i'), '') : item.question} /></div></div>
+      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={sender ? item.question.replace(new RegExp(`^\\[(?:${[sender.id, sender.name, ...(sender.id === 'agent-hub' ? ['answers'] : [])].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\]\\s*`, 'i'), '') : item.question} /></div></div>
       {time}<span className="flex gap-0.5"><MessageCopy small text={item.question} /><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
     </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
       {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
