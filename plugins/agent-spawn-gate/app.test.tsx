@@ -88,7 +88,7 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   const report = vi.fn(({ projectId, from, to }) => ({
     from, to, coverageStartedAt: "2025-01-01T12:00:00.000Z",
     projects: [{
-      projectId, name: projectId === "proj_sample" ? "Sample" : "Other", starts: 4, dryRuns: 2, blockedStarts: 1,
+      projectId, name: projectId === "proj_sample" ? "Sample" : "Other", starts: projectId === "proj_sample" ? 4 : 6, dryRuns: 2, blockedStarts: 1,
       refusals: projectId === "proj_sample" ? [{ operation: "dispatch", reason: "missing_admission", count: 1 }] : [],
     }],
   }));
@@ -112,7 +112,9 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_sample", from: initial.to, to: initial.to });
   await choose("Project", "Other");
   expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_other", from: initial.to, to: initial.to });
-  expect(await slot.findByText("No refusals recorded in this period.")).toBeTruthy();
+  await slot.findByText("6");
+  expect(slot.queryByRole("table", { name: "Refusals by reason" })).toBeNull();
+  expect(slot.queryByText("No refusals recorded in this period.")).toBeNull();
   expect(slot.getByRole("heading", { name: "Spawn Gate" }).parentElement?.contains(slot.getByRole("switch"))).toBe(true);
   write.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { fireEvent.click(slot.getByRole("switch")); });

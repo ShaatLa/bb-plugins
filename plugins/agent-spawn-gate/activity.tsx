@@ -63,7 +63,7 @@ export function GateActivity({ projectId, days, onDaysChange }: { projectId: str
           </Card>
         )}
       </dl>
-      {project.refusals.length ? <div className="overflow-x-auto">
+      {project.refusals.length > 0 && <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <caption className="pb-2 text-left font-medium">Refusals by reason</caption>
           <thead className="text-muted-foreground">
@@ -75,7 +75,7 @@ export function GateActivity({ projectId, days, onDaysChange }: { projectId: str
             <td className="py-2 text-right tabular-nums">{row.count}</td>
           </tr>)}</tbody>
         </table>
-      </div> : <p className="text-sm text-muted-foreground">No refusals recorded in this period.</p>}
+      </div>}
     </>}
   </section>;
 }
