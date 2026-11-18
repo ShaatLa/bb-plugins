@@ -619,7 +619,7 @@ describe("delegation seed prompt", () => {
 
       ## Report-back contract
 
-      You are working on task TASK-1. Activity for this dispatch is tracked automatically; no activity start/stop commands are required. Use the bb work-board CLI: comment substantive updates (bb work-board comment TASK-1 --body ...), attach result artifacts, set status when done (bb work-board update TASK-1 --status in_review) or explain blockage in a comment. Your thread is already attached to the task.
+      You are working on task TASK-1; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update TASK-1 --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment TASK-1 --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add TASK-1 --kind decision|check (steps in --step), not in a comment. When done, move the task to review (bb work-board update TASK-1 --status in_review).
 
       ## Preset instructions
 
@@ -630,6 +630,8 @@ describe("delegation seed prompt", () => {
       Run the backend gates.
       "
     `);
+    const noReview = buildSeedPrompt({ task, project: { ...project, statuses: [{ id: "todo", name: "Todo" }, { id: "shipped", name: "Shipped" }] }, subtasks: [], attachments: [], recentComments: [], presetInstructions: "" });
+    expect(noReview).toContain("When done, move the task to the status that means review or done (bb work-board update TASK-1 --status <id>; ids: todo, shipped).");
   });
 
   it("parents the spawned thread only when the caller thread is given", async () => {

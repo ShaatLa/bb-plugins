@@ -3,7 +3,7 @@ import { createDependencyStore } from "../dependencies/store";
 import type { DependencyTask } from "../shared/contract";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
-import { statusLabel } from "../shared/statuses.js";
+import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createStructuredStore } from "../structured/store";
@@ -108,6 +108,15 @@ function formatComments(comments: readonly Comment[]): string {
     .join("\n\n");
 }
 
+function reportBackContract(key: string, project: Project): string {
+  const statuses = project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES;
+  // Projects may rename or drop In Review; name the ids they actually have.
+  const done = statuses.some((status) => status.id === "in_review")
+    ? `move the task to review (bb work-board update ${key} --status in_review)`
+    : `move the task to the status that means review or done (bb work-board update ${key} --status <id>; ids: ${statuses.map((status) => status.id).join(", ")})`;
+  return `You are working on task ${key}; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update ${key} --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment ${key} --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add ${key} --kind decision|check (steps in --step), not in a comment. When done, ${done}.`;
+}
+
 export function buildSeedPrompt(input: SeedPromptInput): string {
   const sections = [
     `${dispatchMarker(input.task.id)}\n# ${input.task.key} · ${input.task.title}`,
@@ -139,7 +148,7 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
       : []),
     markdownSection(
       "Report-back contract",
-      `You are working on task ${input.task.key}. Activity for this dispatch is tracked automatically; no activity start/stop commands are required. Use the bb work-board CLI: comment substantive updates (bb work-board comment ${input.task.key} --body ...), attach result artifacts, set status when done (bb work-board update ${input.task.key} --status in_review) or explain blockage in a comment. Your thread is already attached to the task.`,
+      reportBackContract(input.task.key, input.project),
     ),
   ];
 
