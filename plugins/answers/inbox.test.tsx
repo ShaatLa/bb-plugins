@@ -7,16 +7,16 @@ const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(
 const cards = vi.hoisted(() => ({ renders: 0 }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any; defaultExecutionOptions?: any; promptHistory?: any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any; defaultExecutionOptions?: any; promptHistory?: any; spawn?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, promptHistory: options.promptHistory, defaultExecutionOptions: options.defaultExecutionOptions, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, spawn: options.spawn, promptHistory: options.promptHistory, defaultExecutionOptions: options.defaultExecutionOptions, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -1109,7 +1109,7 @@ it.each(['send', 'steer', 'draft', 'schedule'])('keeps model choices per thread 
   fireEvent.click((await recipients.findAllByRole('option'))[0]);
   const picker = await slot.findByRole('button', { name: 'model-current' });
   expect(picker.closest('[data-composer-toolbar]')).toBeTruthy();
-  expect(picker.getAttribute('data-provider-change')).toBe('false');
+  expect(picker.getAttribute('data-provider-change')).toBe('true');
   expect(JSON.parse(picker.getAttribute('data-routing')!)).toEqual({ kind: 'environment', environmentId: 'env_example' });
   fireEvent.click(await slot.findByRole('button', { name:'auto' }));
   fireEvent.click(picker);
@@ -1240,4 +1240,20 @@ it('recalls prompt history with Up and restores the current draft with Down', as
  fireEvent.keyDown(editor,{key:'ArrowDown'});
  await waitFor(() => expect(editor.textContent).toBe(''));
  expect(slot.queryByText('example.txt')).toBeNull(); expect(promptHistory).toHaveBeenCalledWith({threadId:'thr_one',limit:'100'});
+});
+
+it('hands off to a new thread with source metadata and selects it; cancel restores the provider', async () => {
+ const spawn=vi.fn(async()=>({id:'thr_new_example'}));
+ const {slot,recipients,send}=setup({spawn,sidebarThreads:{threads:[{id:'thr_one',title:'One',displayTitle:'One',projectId:'pr_one',providerId:'provider_example',status:'idle',activity:{workflows:0,backgroundAgents:0,backgroundCommands:0,planMode:false},environment:{id:'env_example'}}],projects:[]},events:{list:async()=>[{data:{execution:{model:'handoff-current',reasoningLevel:'medium'}}}]}});
+ fireEvent.click(await recipients.findByRole('option'));
+ fireEvent.click(await slot.findByRole('button',{name:'handoff-current'}));
+ expect(await slot.findByText('Handoff to new thread')).toBeTruthy();
+ fireEvent.click(slot.getByRole('button',{name:'Exit handoff'}));
+ expect(slot.queryByText('Handoff to new thread')).toBeNull();
+ fireEvent.click(await slot.findByRole('button',{name:'handoff-current'}));
+ change(slot.getByRole('textbox',{name:'Send message'}),{target:{value:'Continue the work'}});
+ fireEvent.click(slot.getByRole('button',{name:'Send message'}));
+ await waitFor(()=>expect(spawn).toHaveBeenCalledWith(expect.objectContaining({projectId:'pr_one',environment:{type:'reuse',environmentId:'env_example'},providerId:'provider_other',model:'model-chosen',reasoningLevel:'high',serviceTier:'priority',input:[{type:'text',text:'Continue from @thread:thr_one\n\nContinue the work',mentions:[{start:14,end:29,resource:{kind:'thread',threadId:'thr_one',projectId:'pr_one',label:'One'}}]}]})));
+ expect(send).not.toHaveBeenCalled();
+ await waitFor(()=>expect(localStorage.getItem('bb-plugin-answers:page:selected')).toContain('thr_new_example'));
 });

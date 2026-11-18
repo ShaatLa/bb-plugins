@@ -682,8 +682,8 @@ function AnswersPage() {
 }
 
 export default definePluginApp(app => {
-  app.slots.experimental_threadList({ id: 'answers', title: 'Answers contacts', description: 'Open your Answers conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
   registerChatCommands(app);
+  app.slots.experimental_threadList({ id: 'answers', title: 'Answers contacts', description: 'Open your Answers conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
   app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
   app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });

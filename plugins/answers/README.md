@@ -126,3 +126,5 @@ Failed turns show the provider’s completion error when available and retain Re
 The permission picker beside the model uses the thread’s resolved execution options. Choices stay in each thread’s draft and apply to send, steer, drafts and schedules; unknown modes are omitted. Queue edits retain their own request permission.
 
 Focused Answers chats register rebindable Focus composer (Mod+Alt+L), Search conversation (Mod+Alt+F), and Thread actions (Mod+Alt+T) commands. Other panels keep their shortcuts. Up at the start of an empty composer recalls this thread’s prompt history; Up/Down browse it and Down past the newest restores the draft and attachments.
+
+Changing provider prepares a Handoff to new thread. Exit handoff restores the source provider. The next send creates and selects a thread in the same project and environment, using the selected provider/model and a `Continue from @thread:<source-id>` mention followed by a blank line and your message. The source thread is unchanged.
