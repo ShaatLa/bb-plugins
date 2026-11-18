@@ -3,6 +3,7 @@ import { experimental_useRpcQuery as useQuery, UrlLink, useBbNavigate, useRpc, u
 import type { contract } from './server';
 import { overviewContract } from './overview-contract';
 import { Button } from './components/ui/button';
+import { Icon } from './components/ui/icon';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 
 export const overviewPath = 'overview';
@@ -133,8 +134,10 @@ export function SweepOverview({ subPath }: { subPath: string }) {
             </div>
             <Button size="sm" variant="outline" disabled={stats.isFetching} onClick={stats.refetch}>Refresh</Button>
           </>}
-          <Button asChild size="sm" variant="ghost">
-            <UrlLink href="/settings/plugins/sweep">Plugin settings</UrlLink>
+          <Button asChild size="icon" variant="ghost" className="size-8">
+            <UrlLink href="/settings/plugins/sweep" aria-label="Plugin settings" title="Plugin settings">
+              <Icon name="Settings" aria-hidden />
+            </UrlLink>
           </Button>
         </div>
       </header>
