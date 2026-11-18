@@ -1,5 +1,7 @@
 # Answers
 
+The @ menu searches workspace files and folders in the selected thread’s environment after a short debounce (up to eight paths and eight threads). Selecting a path inserts a native workspace mention pill and sends its typed metadata.
+
 English | [Русский](README.ru.md)
 
 Answers solves a simple problem: answers to your questions get lost among agent messages in active threads.

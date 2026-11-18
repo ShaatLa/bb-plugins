@@ -1,3 +1,4 @@
+import { mentionsForText } from './mentions';
 import { useState } from 'react';
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
@@ -376,4 +377,22 @@ it('closes the send menu on a tap outside it, which moves no focus on phones', (
   expect(slot.queryByRole('menuitem', { name:'Steer' })).toBeTruthy();
   fireEvent.pointerDown(document.body);
   expect(slot.queryByRole('menuitem', { name:'Steer' })).toBeNull();
+});
+
+it('debounces bounded workspace file and folder mentions in the selected environment', async () => {
+  const paths = vi.fn(async (_args: any) => ({ paths: Array.from({length: 12}, (_,i) => ({kind: i === 0 ? 'directory' : 'file', path: i === 0 ? 'src' : `src/file${i}.ts`, name: `file${i}`, score: 1, positions: []})), truncated: true }));
+  const onChange = vi.fn();
+  const slot = renderSlot({ component: () => <ComposerThread.Provider value="thr_example"><Composer label="Reply" value="" onChange={onChange} attachments={[]} onAttachments={() => {}} projectId="proj_example" onSend={() => {}} /></ComposerThread.Provider> }, {}, { sdk: { threads: { get: async () => ({projectId:'proj_example', environmentId:'env_example'}) }, projects: {paths} } } as any);
+  const box = slot.getByRole('textbox', {name:'Reply'}) as HTMLElement;
+  box.dataset.testValue='@src'; fireEvent.input(box);
+  expect(paths).not.toHaveBeenCalled();
+  const list = await slot.findByRole('listbox', {name:'Files and folders'});
+  expect(within(list).getAllByRole('option')).toHaveLength(8);
+  expect(paths.mock.calls[0]?.[0]).toMatchObject({projectId:'proj_example', environmentId:'env_example', query:'src', limit:'8', includeDirectories:'true', includeFiles:'true'});
+  fireEvent.click(within(list).getByRole('option', {name:'src/file1.ts'}));
+  expect(onChange).toHaveBeenLastCalledWith('@src/file1.ts ');
+  expect(mentionsForText('@src/file1.ts ')[0]?.resource).toMatchObject({kind:'path', source:'workspace', entryKind:'file', path:'src/file1.ts'});
+  box.dataset.testValue='@src'; fireEvent.input(box);
+  fireEvent.click(within(await slot.findByRole('listbox', {name:'Files and folders'})).getByRole('option', {name:'src'}));
+  expect(mentionsForText('@src ')[0]?.resource).toMatchObject({kind:'path', entryKind:'directory', path:'src'});
 });

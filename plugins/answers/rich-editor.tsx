@@ -38,7 +38,19 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const task = taskKeyRegex(workBoard?.projects.map(p => p.prefix) ?? []);
   const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
   const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string; trigger: string } | null>(null), [active, setActive] = useState(0);
-  const commands = useThreadCommands(useContext(ComposerThread));
+  const composerThread = useContext(ComposerThread), commands = useThreadCommands(composerThread);
+  const [paths, setPaths] = useState<Awaited<ReturnType<typeof sdk.projects.paths>>['paths']>([]);
+  useEffect(() => {
+    setPaths([]);
+    if (!composerThread || menu?.trigger !== '@') return;
+    let live = true; const controller = new AbortController();
+    const timer = setTimeout(() => { void (async () => {
+      const thread = await sdk.threads.get({ threadId: composerThread, signal: controller.signal });
+      const result = await sdk.projects.paths({ projectId: thread.projectId, ...(thread.environmentId ? { environmentId: thread.environmentId } : thread.host?.id ? { hostId: thread.host.id } : {}), query: menu.query, includeFiles: 'true', includeDirectories: 'true', limit: '8', signal: controller.signal });
+      if (live) setPaths(result.paths.slice(0, 8));
+    })().catch(() => {}); }, 200);
+    return () => { live = false; clearTimeout(timer); controller.abort(); };
+  }, [sdk, composerThread, menu?.trigger, menu?.query]);
   // A known command typed after its trigger ("/optimize", "$optimize") shows as bb's command pill; the text stays as typed.
   const commandSpans = useMemo(() => {
     if (!commands.length) return [];
@@ -161,7 +173,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     updateMenu(next, a + insert.length);
   };
   const updateMenu = (text: string, at: number) => {
-    const before = text.slice(0, at).match(/(?:^|\s)([@/$])([^\s@/$]*)$/);
+    const before = text.slice(0, at).match(/(?:^|\s)([@/$])([^\s@$]*)$/);
     setMenu(before ? { start: at - before[2].length - 1, query: before[2], trigger: before[1] } : null); setActive(0);
   };
   insertRef.current = text => { replace(text); editorRef.current?.focus(); };
@@ -172,10 +184,15 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const ranked = menu && menu.trigger !== '@' ? commands.filter(c => c.name.toLowerCase().includes(query)).sort((a, b) => Number(!a.name.toLowerCase().startsWith(query)) - Number(!b.name.toLowerCase().startsWith(query))) : [];
   const commandGroups = ([['skill', 'Skills'], ['command', 'Commands']] as const).map(([source, label]) => ({ label, items: ranked.filter(c => c.source === source).slice(0, 100) })).filter(group => group.items.length);
   const commandChoices = commandGroups.flatMap(group => group.items);
-  const count = menu?.trigger === '@' ? choices.length : commandChoices.length;
+  const count = menu?.trigger === '@' ? choices.length + paths.length : commandChoices.length;
   const pick = (id: string) => { if (menu) replace(`@thread:${id} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus(); };
+  const pickPath = (path: (typeof paths)[number]) => {
+    const text = `@${path.path}`;
+    rememberMention(text, { kind: 'path', source: 'workspace', entryKind: path.kind, path: path.path, label: path.path });
+    if (menu) replace(`${text} `, menu.start, selection()[1]); setMenu(null); editorRef.current?.focus();
+  };
   // Menus float above the whole composer box at its width, as bb's do, instead of covering the box from inside it.
-  const [menuAt, setMenuAt] = useState<React.CSSProperties | null>(null), menuOpen = !!menu && (choices.length > 0 || commandChoices.length > 0), listRef = useRef<HTMLDivElement>(null);
+  const [menuAt, setMenuAt] = useState<React.CSSProperties | null>(null), menuOpen = !!menu && (choices.length > 0 || paths.length > 0 || commandChoices.length > 0), listRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!menuOpen) { setMenuAt(null); return; }
     const place = () => { const r = (menuAnchor?.current ?? editorRef.current?.parentElement)?.getBoundingClientRect(); if (r) setMenuAt({ left: r.left, width: r.width, bottom: window.innerHeight - r.top + 6 }); };
@@ -224,7 +241,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     if (context && event.key === 'Escape') { event.preventDefault(); setContext(null); return; }
     if (menu && count) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : count - 1)) % count); return; }
-      if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); if (menu.trigger === '@') pick(choices[active].id); else pickCommand(commandChoices[active]); return; }
+      if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); if (menu.trigger === '@') { if (active < choices.length) pick(choices[active].id); else pickPath(paths[active - choices.length]); } else pickCommand(commandChoices[active]); return; }
     }
     if (!menu && !context && !event.nativeEvent.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && selection().every(at => at === 0) && onHistory?.(event.key === 'ArrowUp' ? 'up' : 'down')) { event.preventDefault(); return; }
     // Cmd/Ctrl+Shift+9, the quote shortcut of Slack and Gmail; event.code keeps it working on any keyboard layout.
@@ -262,7 +279,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
         ? <button key={entry[0]} type="button" role="menuitem" disabled={entry[3] === true} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover disabled:pointer-events-none disabled:opacity-50" onMouseDown={event => event.preventDefault()} onClick={() => { setContext(null); entry[2](); }}>{entry[0]}<span className="text-xs text-muted-foreground">{entry[1]}</span></button>
         : <div key={`sep${i}`} role="separator" className="my-1 h-px bg-border" />)}
     </div>, document.body)}
-    {menu && choices.length > 0 && floating(<div role="listbox" aria-label="Threads">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>)}
+    {menu?.trigger === '@' && count > 0 && floating(<>{choices.length > 0 && <div role="listbox" aria-label="Threads">{choices.map((thread,i) => <button type="button" key={thread.id} role="option" aria-selected={i===active} className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pick(thread.id)}><ThreadTitleText title={thread.displayTitle} /></button>)}</div>}{paths.length > 0 && <div role="listbox" aria-label="Files and folders"><div className="px-2 py-1 text-xs text-muted-foreground">Files and folders</div>{paths.map((path,i) => <button type="button" key={path.path} role="option" aria-selected={i + choices.length === active} className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i + choices.length === active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onClick={() => pickPath(path)}><Icon name={path.kind === 'directory' ? 'Folder' : 'File'} aria-hidden className="size-3.5 shrink-0" /><span className="truncate">{path.path}</span></button>)}</div>}</>)}
     {menu && commandChoices.length > 0 && floating(<div role="listbox" aria-label="Commands and skills">{commandGroups.map(group => <div key={group.label} role="group" aria-label={group.label}><div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{group.label}</div>{group.items.map(command => { const i = commandChoices.indexOf(command); return <button type="button" key={`${command.source}:${command.name}`} role="option" aria-selected={i===active} className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover ${i===active ? 'bg-state-active' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => pickCommand(command)}>{command.source === 'skill' ? <Icon name="Zap" aria-hidden className="size-3.5 shrink-0 text-muted-foreground" /> : <PromptMentionIcon mention={commandMention(command, menu.trigger as '/' | '$')} className="size-3.5 shrink-0 text-muted-foreground" />}<span className="shrink-0 text-foreground">{command.name}</span>{command.description && <span className="min-w-0 truncate text-muted-foreground">{command.description}</span>}</button>; })}</div>)}</div>)}
   </div>;
 }
