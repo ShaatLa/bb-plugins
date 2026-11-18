@@ -16,9 +16,11 @@ With `handoffWarnings` enabled (default), a live top-level completion that misse
 
 CLI:
 
-- `bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]`
+- `bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--project ID] [--query TEXT] [--limit 1-50] [--cursor C] [--json]`
+- `bb agent-hub get ID [--json]`
 - `bb agent-hub read <ids...> | --all [--thread ID]`
-- `bb agent-hub status`
+- `bb agent-hub status [--thread ID]`
+- Read in small portions: `list` returns 20 items per page (`--limit`, `--cursor` from `More:`), `get ID` shows one item in full.
 - `bb agent-hub digest [--since 24h|7d|ISO-date] [--json]`
 
 Statuses: `mine` items are `waiting`, `deferred`, or `answered`; `for_me` items are `open` or `replied`; `update` items (the final message of a top-level turn that answered nothing of the user's: a child finished, another thread or a plugin wrote) are `answered`; saved items have status `saved`. Consecutive `update` items that ask nothing collapse into one "N background updates" group in the conversation, carry no unread state and are never pushed; an update that ends a phrase with `?` (outside code, links and quotes) or hands work to the user ("EXA-1 готова к вашей проверке", "ready for your review") has `asks: true` and stays a separate, pushed message — so end a message with a question only when you need the user's answer.

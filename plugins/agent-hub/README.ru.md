@@ -45,9 +45,10 @@ bb записывает `bb thread tell`, которым скрипт будит
 ## CLI и установка
 
 ```sh
-bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
+bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--project ID] [--query TEXT] [--limit 1-50] [--cursor C] [--json]
+bb agent-hub get ID [--json]
 bb agent-hub read <ids...> | --all [--thread ID]
-bb agent-hub status
+bb agent-hub status [--thread ID]
 bb agent-hub digest [--since 24h|7d|ISO-дата] [--json]
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
 ```
@@ -103,6 +104,8 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ag
 Настройка `notify`: `off` — выкл., `asked` — вопросы агента к вам, `questions` — также ответы на ваши сообщения с вопросительным знаком, `all` — все подходящие события. По умолчанию `asked`: bb уже уведомляет о завершённых ходах, поэтому ответы отдельно не отправляются. `quietHours` задаёт местный интервал `HH:MM-HH:MM`; события за него сводятся в одно уведомление после окончания интервала. Для доставки нужен плагин Push Notifications.
 
 `bb agent-hub digest` выводит новые ответы за последние 24 часа, ожидающие вопросы и вопросы агента к вам. `--since 7d` или ISO-дата меняют период новых ответов, `--json` даёт JSON. Например, в плагине Automations можно создать ежедневное задание агента с командой `bb agent-hub digest --since 24h`.
+
+`bb agent-hub list` возвращает одну страницу, по умолчанию 20 записей (`--limit` до 50); в текстовом выводе каждая запись сокращена до строки, а при наличии следующей страницы в конце стоит `More: --cursor C`. `bb agent-hub get ID` выводит одну запись целиком. `bb agent-hub status` показывает счётчики, число активных и архивных тредов под наблюдением и 10 последних ошибок приёма; `--thread ID` — один тред.
 
 В боковой панели Agent Hub есть вкладки Info, Diff и Work Board, которые привязаны к открытому чату. Info отображает окружение, ветку, коммиты и изменённые файлы. Diff сравнивает незафиксированные изменения или правки в ветках, а отметки о просмотре сохраняются через Git-плагин bb. Work Board выводит список связанных задач и открывает их прямо в приложении. Вкладки доступны только для чтения, пока они видны, и обновляются после завершения хода в чате; для недоступных интеграций отображается пустое состояние или ошибка.
 

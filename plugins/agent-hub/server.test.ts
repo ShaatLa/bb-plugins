@@ -271,7 +271,17 @@ describe('server',()=>{
   const list=await harness.behavior.runCli(['list','--json']); expect(list.exitCode).toBe(0); expect(JSON.parse(list.stdout).items).toHaveLength(1);
   expect((await harness.behavior.runCli(['read','ans_one'])).exitCode).toBe(0);
   expect((await harness.behavior.runCli(['read','--all','--thread','t'])).exitCode).toBe(0);
-  expect((await harness.behavior.runCli(['status'])).stdout).toContain('trackedThreads');
+  const status=JSON.parse((await harness.behavior.runCli(['status'])).stdout); expect(status.threads).toEqual({active:expect.any(Number),archived:0}); expect(status.errors).toEqual({total:0,latest:[]});
+  expect(JSON.parse((await harness.behavior.runCli(['status','--thread','t'])).stdout)).toMatchObject({threadId:'t',archived:false,items:1});
+ });
+ it('pages the CLI list and shows one item in full',async()=>{
+  const {harness,db}=setup(); for (const id of ['ans_a','ans_b','ans_c']) seed(db,id,'mine'); db.prepare("UPDATE items SET status='answered', answer='full answer'").run();
+  const first=await harness.behavior.runCli(['list','--limit','2']); const lines=first.stdout.split('\n');
+  expect(lines).toHaveLength(3); const cursor=lines[2].replace('More: --cursor ','');
+  const rest=await harness.behavior.runCli(['list','--limit','2','--cursor',cursor]); expect(rest.stdout.split('\n')).toHaveLength(1);
+  const one=await harness.behavior.runCli(['get','ans_b']); expect(one.stdout).toContain('--- answer\nfull answer');
+  expect(JSON.parse((await harness.behavior.runCli(['get','ans_b','--json'])).stdout)).toMatchObject({id:'ans_b',answer:'full answer'});
+  expect((await harness.behavior.runCli(['get','ans_missing'])).exitCode).not.toBe(0);
  });
 });
 

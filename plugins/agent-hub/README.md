@@ -45,9 +45,10 @@ The **Agent Hub contacts** list replaces the thread list in the BB sidebar with 
 ## CLI and Installation
 
 ```sh
-bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--json]
+bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--project ID] [--query TEXT] [--limit 1-50] [--cursor C] [--json]
+bb agent-hub get ID [--json]
 bb agent-hub read <ids...> | --all [--thread ID]
-bb agent-hub status
+bb agent-hub status [--thread ID]
 bb agent-hub digest [--since 24h|7d|ISO-date] [--json]
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
 ```
@@ -114,6 +115,8 @@ The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, a
 The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Delivery requires the Push Notifications plugin.
 
 `bb agent-hub digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb agent-hub digest --since 24h`.
+
+`bb agent-hub list` returns one page, 20 items by default (`--limit` up to 50); its text output truncates each item to one line and ends with `More: --cursor C` when there is a next page. `bb agent-hub get ID` prints one item in full. `bb agent-hub status` shows counts, active and archived tracked threads, and the 10 latest ingestion errors; `--thread ID` shows one thread.
 
 The Agent Hub side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board lists linked tasks and opens them in-app. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
 

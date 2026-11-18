@@ -553,7 +553,12 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     });
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
-  registerCli(bb,{config,list,markRead,db,migrationStatus:()=>migrationStatus(bb,db,migrationError),status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
+  registerCli(bb,{config,list,markRead,db,migrationStatus:()=>migrationStatus(bb,db,migrationError),status:(threadId?:string)=>{
+    if (threadId) {const row=db.prepare('SELECT last_seq AS lastSeq,last_error AS lastError FROM threads_state WHERE thread_id=?').get(threadId) as {lastSeq:number;lastError:string|null}|undefined; return {threadId,tracked:!!row,archived:!!db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId),...row,items:(db.prepare('SELECT count(*) AS n FROM items WHERE thread_id=?').get(threadId) as {n:number}).n};}
+    const n=(sql:string)=>(db.prepare(sql).get() as {n:number}).n, archived=n('SELECT count(*) AS n FROM threads_state WHERE thread_id IN (SELECT thread_id FROM archived_threads)');
+    // Errors are capped so the output stays small; --thread shows one in full.
+    return {counts:counts(),threads:{active:n('SELECT count(*) AS n FROM threads_state')-archived,archived},errors:{total:n('SELECT count(*) AS n FROM threads_state WHERE last_error IS NOT NULL'),latest:(db.prepare('SELECT thread_id AS threadId,substr(last_error,1,200) AS error FROM threads_state WHERE last_error IS NOT NULL ORDER BY rowid DESC LIMIT 10').all())}};
+  }});
   // The event payload avoids a metadata lookup for both contacts and sub-sessions.
   if (!migrationPending) bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row
