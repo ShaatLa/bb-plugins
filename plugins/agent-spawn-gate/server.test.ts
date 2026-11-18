@@ -162,6 +162,9 @@ it("retains aggregated admission refusals across reloads and filters by UTC date
   vi.setSystemTime(new Date("2025-01-02T00:01:00Z"));
   expect((await h.check({ input: { text: "Review.\nagent-admission v1 token=invalid" } })).action).toBe("reject");
   expect((await h.check({ project: { id: "proj_other" } })).action).toBe("proceed");
+  expect(h.harness.inspection.experimental_rpcInvalidations).toEqual(
+    Array.from({ length: 3 }, () => [`report:${PROJECT}`, "report"]),
+  );
   await h.reload();
   const report = (input: unknown) => h.harness.behavior.callRpc("report", input);
   const first = await report({ from: "2025-01-01", to: "2025-01-01", projectId: PROJECT });

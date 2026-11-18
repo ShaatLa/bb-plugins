@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { defineRpcContract, type BbPluginApi, type MessageDispatchHookContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { registerGateCli } from "./cli";
-import { createMetrics, reportInput, reportOutput } from "./metrics";
+import { createMetrics, reportContract } from "./metrics";
 import { createStart, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -21,7 +21,7 @@ export const rpcContract = defineRpcContract({
   "config.get": { input: configGetInput, output: projectValues.partial() },
   "config.set": { input: configSetInput, output: projectValues.partial() },
   start: { input: startInput, output: startOutput },
-  report: { input: reportInput, output: reportOutput },
+  ...reportContract,
   mint: {
     input: z.object({ projectId: z.string().regex(/^proj_[a-z0-9]+$/), parentThreadId: z.string().regex(/^thr_[a-z0-9]+$/), brief: z.string().min(1).max(1_000_000) }).strict(),
     output: z.object({ token: z.string(), expiresAt: z.number(), prompt: z.string() }).strict(),

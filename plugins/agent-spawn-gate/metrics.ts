@@ -1,10 +1,10 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const operation = z.enum(["start", "dry-run", "dispatch"]);
 type Operation = z.infer<typeof operation>;
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
-export const reportInput = z.object({
+const reportInput = z.object({
   projectId: projectId.optional(),
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
@@ -17,11 +17,16 @@ const projectReport = z.object({
   blockedStarts: z.number(),
   refusals: z.array(z.object({ operation, reason: z.string(), count: z.number() })),
 });
-export const reportOutput = z.object({
+const reportOutput = z.object({
   from: z.iso.date(),
   to: z.iso.date(),
   coverageStartedAt: z.iso.datetime(),
   projects: z.array(projectReport),
+});
+
+const reportTag = (projectId?: string) => projectId ? `report:${projectId}` : "report";
+export const reportContract = defineRpcContract({
+  report: { input: reportInput, output: reportOutput, tags: ({ projectId }) => [reportTag(projectId)] },
 });
 
 type ProjectReport = z.infer<typeof projectReport>;
@@ -52,7 +57,9 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
       increment.run(new Date().toISOString().slice(0, 10), projectId, operation, reason);
     } catch {
       bb.log.warn("Could not record a gate metric");
+      return;
     }
+    bb.rpc.experimental_invalidate([reportTag(projectId), reportTag()]);
   };
   const report = async (raw: z.input<typeof reportInput>) => {
     const { projectId, from: requestedFrom, to = new Date().toISOString().slice(0, 10) } = reportInput.parse(raw);

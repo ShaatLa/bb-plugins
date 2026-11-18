@@ -1,57 +1,28 @@
-import { useEffect, useState } from "react";
-import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { z } from "zod";
-import { Button } from "./components/ui/button";
+import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
 import { Card } from "./components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
-import type { reportOutput } from "./metrics";
-import type { rpcContract } from "./server";
+import { reportContract } from "./metrics";
 
-type Report = z.output<typeof reportOutput>;
 const operationLabels = { start: "Start", "dry-run": "Dry run", dispatch: "Admission" };
 
 export function GateActivity({ projectId, days, onDaysChange }: { projectId: string; days: string; onDaysChange: (days: string) => void }) {
-  const rpc = useRpc<typeof rpcContract>();
-  const [refresh, setRefresh] = useState(0);
-  const [report, setReport] = useState<Report | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    const to = new Date().toISOString().slice(0, 10);
-    const from = new Date(Date.parse(to) - (Number(days) - 1) * 86_400_000).toISOString().slice(0, 10);
-    rpc.call("report", { projectId, from, to }).then(result => {
-      if (active) setReport(result);
-    }, error => {
-      if (active) setError(error instanceof Error ? error.message : String(error));
-    });
-    return () => { active = false; };
-  }, [rpc, projectId, days, refresh]);
-
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.parse(to) - (Number(days) - 1) * 86_400_000).toISOString().slice(0, 10);
+  const { data: report, error } = useQuery({ contract: reportContract, method: "report", input: { projectId, from, to } });
   const project = report?.projects[0];
   return <section aria-label="Gate activity" className="space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h2 className="text-base font-semibold">Activity</h2>
-      <div className="flex flex-wrap items-center gap-2">
-        <Select value={days} onValueChange={next => {
-          setReport(null);
-          setError("");
-          onDaysChange(next);
-        }}>
-          <SelectTrigger aria-label="Period" className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="1">Today</SelectItem>
-            <SelectItem value="7">Last 7 days</SelectItem>
-            <SelectItem value="30">Last 30 days</SelectItem>
-          </SelectContent>
-        </Select>
-        <Button variant="outline" size="sm" onClick={() => {
-          setReport(null);
-          setError("");
-          setRefresh(current => current + 1);
-        }}>Refresh</Button>
-      </div>
+      <Select value={days} onValueChange={onDaysChange}>
+        <SelectTrigger aria-label="Period" className="w-36"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="1">Today</SelectItem>
+          <SelectItem value="7">Last 7 days</SelectItem>
+          <SelectItem value="30">Last 30 days</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
-    {error && <p role="alert" className="text-sm text-destructive">Could not load activity: {error}</p>}
+    {error && <p role="alert" className="text-sm text-destructive">Could not load activity: {error.message}</p>}
     {!report && !error && <p role="status" className="text-sm text-muted-foreground">Loading activity…</p>}
     {project && report && <>
       <p className="text-sm text-muted-foreground">{report.from} – {report.to} UTC</p>

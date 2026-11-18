@@ -85,10 +85,11 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
     { id: "proj_sample", name: "Sample", values: { ...defaults, method: "script" } },
     { id: "proj_other", name: "Other", values: { ...defaults } },
   ];
+  let sampleStarts = 4;
   const report = vi.fn(({ projectId, from, to }) => ({
     from, to, coverageStartedAt: "2025-01-01T12:00:00.000Z",
     projects: [{
-      projectId, name: projectId === "proj_sample" ? "Sample" : "Other", starts: projectId === "proj_sample" ? 4 : 6, dryRuns: 2, blockedStarts: 1,
+      projectId, name: projectId === "proj_sample" ? "Sample" : "Other", starts: projectId === "proj_sample" ? sampleStarts : 6, dryRuns: 2, blockedStarts: 1,
       refusals: projectId === "proj_sample" ? [{ operation: "dispatch", reason: "missing_admission", count: 1 }] : [],
     }],
   }));
@@ -102,6 +103,12 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   const initial = report.mock.calls[0]![0];
   expect(initial.projectId).toBe("proj_sample");
   expect(Date.parse(initial.to) - Date.parse(initial.from)).toBe(6 * 86_400_000);
+  expect(slot.queryByRole("button", { name: "Refresh" })).toBeNull();
+  sampleStarts = 5;
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(["report:proj_other", "report"]); });
+  expect(report).toHaveBeenCalledTimes(1);
+  await act(async () => { await slot.behavior.experimental_invalidateRpc(["report:proj_sample", "report"]); });
+  expect(await slot.findByText("5")).toBeTruthy();
 
   async function choose(label: string, optionName: string) {
     fireEvent.keyDown(slot.getByRole("combobox", { name: label }), { key: "Enter" });
