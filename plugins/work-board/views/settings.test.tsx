@@ -360,7 +360,7 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
     );
     fireEvent.keyDown(moveBacklog, { key: "Escape" });
     expect(
-      settings.getAllByRole("textbox")[0]?.getAttribute("aria-label"),
+      settings.getAllByRole("textbox", { name: /^Status name/ })[0]?.getAttribute("aria-label"),
     ).toBe("Status name backlog");
     fireEvent.keyDown(moveBacklog, { key: " " });
     fireEvent.keyDown(moveBacklog, { key: "ArrowDown" });

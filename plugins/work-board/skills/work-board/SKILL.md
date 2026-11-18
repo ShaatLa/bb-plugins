@@ -354,7 +354,7 @@ Owner rules for questions (2026-11-13; the owner found a 3,600-character accepta
 3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
-`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
+`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question. When the project sets question link hosts (`project.questionLinkHosts`, `project update --question-link-host HOST`), `question add` and `question update` refuse any `http(s)` link to another host; use the allowed host, such as the local server address.
 
 The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
 
@@ -446,11 +446,11 @@ By default every child turn wakes its parent, so status pings burn the parent's 
 - Spawn children with `bb thread spawn --parent-self --parent-notifications stuck` when you read their result from the task (evidence, comments) instead of waiting on each turn. `stuck` still wakes you when a child fails, is interrupted, or is blocked on an approval or question.
 - With `stuck`, the child reports only what the parent must act on, and always through the card:
   - progress → `bb work-board update KEY --progress "..."` (replaces the card's Current state; wakes nobody);
-  - ready for review/merge, a question for the parent, or a blocker → `bb work-board report KEY --kind ready|question|blocker --body "..."` (or `--body-file <path>`). It saves a comment on the card led by the kind and wakes your own parent thread (`queue-if-active`; reports to a busy parent merge into one queued message). It fails when your thread has no parent; if it says the parent could not be woken, the report is saved and you tell the parent yourself.
+  - ready for review/merge, a question for the parent, or a blocker → `bb work-board report KEY --kind ready|question|blocker --body "..."` (or `--body-file <path>`). It wakes your own parent thread (`queue-if-active`; reports to a busy parent merge into one queued message) and is not written to the card log. If you are the card's session, it also replaces Current state, led by the kind, and attaches your thread when it is not attached yet. If your parent is already attached to the card, you are a helper: only the parent is woken. It fails when your thread has no parent; if it says the parent could not be woken, Current state is saved and you tell the parent yourself.
   - Never `bb thread tell` your parent for these, and never send progress pings such as "still waiting on CI".
 - Reviewers and QA record verdicts as task evidence, not as chat messages.
 - Parents read state from the board instead of polling children: `bb work-board children` lists your open child threads, the cards each is linked to and each open card's Current state note (`--all` adds Done/Canceled cards, `--json` for full notes, `--thread <id>` for another parent); `bb work-board show KEY --json` and evidence for one card.
-- Link every working thread to its task with `bb work-board attach KEY`.
+- Link every working thread to its task with `bb work-board attach KEY`. A child thread's first `report` or `update --progress` on a card attaches it automatically unless its parent already holds the card.
 - `bb work-board dispatch KEY --preset NAME` parents the new thread to the invoking thread (`BB_THREAD_ID`). Add `--parent-notifications auto|stuck|off` to set which child turns wake you, or `--no-parent` to start it outside your hierarchy. `--thread` never re-parents an existing thread. Dispatch from the UI has no parent.
 
 Evidence records automatically stamp the invoking thread as `recordedByThread`; `--thread` identifies the reviewer. `show --json` exposes advisory `evidenceFlags` for self-review and stale approvals; these flags never block writes.

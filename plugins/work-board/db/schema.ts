@@ -453,6 +453,7 @@ const MIGRATIONS = [
     if (db.prepare("PRAGMA foreign_key_check").all().length)
       throw new Error("Foreign key check failed during executor removal");
   },
+  `ALTER TABLE projects ADD COLUMN question_link_hosts TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

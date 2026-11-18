@@ -53,7 +53,10 @@ Existing projects inherit the former plugin-wide archive interval and idle thres
 bb work-board project show EXA --json
 bb work-board project update EXA --auto-archive 14 --stale-idle 60
 bb work-board project update EXA --auto-archive off --stale-idle off
+bb work-board project update EXA --question-link-host localhost --question-link-host 127.0.0.1
 ```
+
+**Question link hosts** (`questionLinkHosts`, Settings → Archiving and activity) limits which hosts links in owner questions may point to. When the list is set, `question add` and `question update` refuse a prompt, option or recommendation reason with an `http(s)` link to another host; relative links such as task links pass. `--any-question-link-host` clears the list. The setting is checked only for CLI writes, not for questions edited in the UI.
 
 Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 
@@ -642,7 +645,9 @@ The card header includes a **Copy task link** button next to the key, which copi
 
 ### Reports to the parent thread (0.40.0)
 
-`bb work-board report KEY --kind ready|question|blocker (--body <markdown> | --body-file <path>)` is how a child session tells its parent what the parent must act on. It must run inside a bb thread. The report is saved on the card as an agent comment whose first line is the kind (**READY**, **QUESTION**, **BLOCKER**). Then the caller's own `parentThreadId` is woken with `queue-if-active`, and the message starts with `KEY · KIND`. If the parent is busy and its last queued message is a Work Board notice, the report is appended to it instead of queued separately. A thread without a parent, or with an archived parent, gets an error and nothing is saved. If waking fails, the comment stays (`notifiedCount` 0) and the command exits 1 with a hint to tell the parent manually. Progress is not a report kind: `update KEY --progress` replaces the card's state note and wakes nobody.
+`bb work-board report KEY --kind ready|question|blocker (--body <markdown> | --body-file <path>)` is how a child session tells its parent what the parent must act on. It must run inside a bb thread. The report does not go to the card log; the log keeps evidence, owner decisions and system records. The caller's own `parentThreadId` is woken with `queue-if-active`, and the message starts with `KEY · KIND`. If the parent is busy and its last queued message is a Work Board notice, the report is appended to it instead of queued separately. When the caller is the card's session, the report (led by **READY**, **QUESTION** or **BLOCKER**) also replaces the card's Current state; a report over 4 KB is cut there and ends with a pointer to the parent thread. A helper, meaning a thread whose parent is already attached to the card, only wakes that parent and leaves Current state alone. A thread without a parent, or with an archived parent, gets an error and nothing is saved. If waking fails, Current state stays replaced and the command exits 1 with a hint to tell the parent manually. Progress is not a report kind: `update KEY --progress` replaces the card's state note and wakes nobody.
+
+A session that took its card by message is not attached by the title scan. Its first `report`, or its first `update --progress`, attaches it to the card when the thread has a parent, is not attached yet and is not a helper. Top-level threads such as a manager and helpers are never attached this way; other updates never attach.
 
 ### Children's state notes (0.41.0)
 

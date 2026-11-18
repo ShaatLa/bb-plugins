@@ -3,6 +3,8 @@ import { z } from "zod";
 export const autoArchiveAfterDaysSchema = z.enum(["off", "3", "7", "14", "30"]);
 export const staleIdleThresholdSchema = z.enum(["off", "30", "45", "60", "120"]);
 export const statusNotificationsSchema = z.enum(["off", "all", "done"]);
+// Hosts that links in owner questions may point to; empty allows any host.
+export const questionLinkHostsSchema = z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9.:[\]-]{1,253}$/, "Use a bare host name such as localhost")).max(20);
 export const boardPreferencesSchema = z.object({
   defaultScreen: z.enum(["last-project-board", "last-project-list", "all", "active"]),
 }).strict();

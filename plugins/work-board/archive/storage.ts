@@ -187,7 +187,7 @@ function dbRow(value: object): Row {
   return Object.fromEntries(
     Object.entries(value).map(([key, value]) => [
       key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
-      key === "statuses" || key === "workflowPolicy"
+      key === "statuses" || key === "workflowPolicy" || key === "questionLinkHosts"
         ? JSON.stringify(value)
         : typeof value === "boolean"
           ? Number(value)

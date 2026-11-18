@@ -1,7 +1,7 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, questionLinkHostsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -82,6 +82,7 @@ interface ProjectRow {
   auto_archive_after_days: string | null;
   stale_idle_minutes: string | null;
   status_notifications: string | null;
+  question_link_hosts: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -389,6 +390,7 @@ function projectFromRow(row: ProjectRow): Project {
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
+    questionLinkHosts: questionLinkHostsSchema.parse(JSON.parse(row.question_link_hosts ?? "[]")),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -767,12 +769,12 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, question_link_hosts = ?
       WHERE id = ?
     `,
       ).run(
@@ -794,6 +796,7 @@ export function createTasksStore(db: PluginDatabase) {
         autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
+        JSON.stringify(questionLinkHostsSchema.parse(input.questionLinkHosts ?? current.questionLinkHosts ?? [])),
         id,
       );
       return requireProject(id);

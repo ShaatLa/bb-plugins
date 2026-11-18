@@ -21,6 +21,7 @@ import { z } from "zod";
 import {
   createComment,
   REPORT_KINDS,
+  cardRole,
   reportToParent,
   childrenCards,
   publishProjectsChanged,
@@ -872,6 +873,31 @@ export function registerTasksCli(
   status: PluginStatus,
 ): void {
   const domain = registerHandlers(bb, store);
+  // A session that took its card by message is never attached by title; its first report or state note attaches it.
+  const attachCardSession = async (taskId: string, threadId: string): Promise<{ attached: boolean; warnings: string[] }> => {
+    try {
+      const role = await cardRole(bb, store, taskId, threadId);
+      if (!role.parentThreadId || role.attached || role.helper) return { attached: false, warnings: [] };
+      await delegationHandlers(bb, store).taskThreadsAttach({ taskId, threadId });
+      return { attached: true, warnings: [] };
+    } catch (error) {
+      return { attached: false, warnings: [`Could not attach ${threadId} to the card: ${errorMessage(error)}; run bb work-board attach KEY`] };
+    }
+  };
+  // Owner-facing links must open where the owner looks; a project may restrict them to known hosts.
+  const assertQuestionLinkHosts = (projectId: string, texts: readonly (string | null | undefined)[]) => {
+    const allowed = store.tasks.getProject(projectId)?.questionLinkHosts ?? [];
+    if (!allowed.length) return;
+    for (const text of texts)
+      for (const [url] of (text ?? "").matchAll(/https?:\/\/[^\s<>()[\]"'`]+/gi)) {
+        let host: string;
+        try { host = new URL(url).hostname.toLowerCase(); } catch { host = url; }
+        if (!allowed.includes(host))
+          throw new CliError(`Link ${url} is outside this project's question link hosts (${allowed.join(", ")})`, {
+            hint: "Give the owner a link on an allowed host, e.g. the local server address instead of a shared one",
+          });
+      }
+  };
   const templateReadCommands = Object.fromEntries(
     (["list", "show", "delete"] as const).map((action) => [
       `template ${action}`,
@@ -1246,6 +1272,7 @@ export function registerTasksCli(
                 throw new CliError(
                   "--recommendation-reason requires --recommend",
                 );
+              assertQuestionLinkHosts(task.projectId, [input.options.prompt, ...optionLabels, input.options["recommendation-reason"]]);
               const result = await domain.createQuestion(
                 tasksRpcContract.createQuestion.input.parse({
                   taskId: task.id,
@@ -1511,6 +1538,7 @@ export function registerTasksCli(
                     : undefined,
                 }));
               }
+              assertQuestionLinkHosts(task.projectId, [update.prompt, ...update.options.flatMap((option) => [option.label, option.recommendationReason])]);
               const result = await domain.updateQuestion(update);
               return input.options.json
                 ? JSON.stringify(result)
@@ -1881,6 +1909,8 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
+            "question-link-host": { type: "string", repeatable: true, description: "Only allow links to this host in owner questions; repeat for several, replaces the list" },
+            "any-question-link-host": { type: "boolean", description: "Allow question links to any host (clears the list)" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -1942,12 +1972,15 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
+              if (input.options["any-question-link-host"] && input.options["question-link-host"].length)
+                throw new CliError("Use --question-link-host or --any-question-link-host, not both");
               const changes = {
                 workflowPolicy,
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
                 statusNotifications: input.options["status-notifications"],
+                questionLinkHosts: input.options["any-question-link-host"] ? [] : input.options["question-link-host"].length ? input.options["question-link-host"] : undefined,
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -1966,6 +1999,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
                 changes.statusNotifications === undefined &&
+                changes.questionLinkHosts === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -1988,6 +2022,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
                 changes.statusNotifications !== undefined ||
+                changes.questionLinkHosts !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -2011,6 +2046,7 @@ export function registerTasksCli(
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
                   statusNotifications: updateInput?.statusNotifications,
+                  questionLinkHosts: updateInput?.questionLinkHosts,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -3083,11 +3119,14 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ),
               );
               const updated = unwrapTask(result);
+              const attach = progressNote != null && ctx.threadId ? await attachCardSession(updated.id, ctx.threadId) : { attached: false, warnings: [] };
               return input.options.json
                 ? JSON.stringify({
                     task: updated,
+                    ...(attach.attached ? { attached: true } : {}),
+                    ...(attach.warnings.length ? { warnings: attach.warnings } : {}),
                   })
-                : `Updated ${updated.key}  ${updated.title}`;
+                : { exitCode: 0, stdout: `Updated ${updated.key}  ${updated.title}${attach.attached ? `; attached ${ctx.threadId}` : ""}`, stderr: attach.warnings.join("\n") };
             });
           },
         }),
@@ -3400,16 +3439,16 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 threadId,
                 kind: input.options.kind,
                 body,
-                authorName: taskAuthor({ ...ctx, threadId }),
               });
+              const attach = await attachCardSession(task.id, threadId);
               if (!result.notified)
                 throw new CliError(
-                  `Saved ${input.options.kind} report on ${task.key} (${result.comment.id}), but could not wake parent ${result.parentThreadId}`,
+                  `${result.stateUpdated ? `Saved the ${input.options.kind} report as Current state of ${task.key}` : `Did not save the ${input.options.kind} report`}, but could not wake parent ${result.parentThreadId}`,
                   { hint: `Tell it yourself: bb thread tell ${result.parentThreadId}` },
                 );
               return input.options.json
-                ? JSON.stringify(result)
-                : `Reported ${input.options.kind} on ${task.key} to @thread:${result.parentThreadId}  ${result.comment.id}`;
+                ? JSON.stringify({ ...result, ...attach })
+                : { exitCode: 0, stdout: `Reported ${input.options.kind} on ${task.key} to @thread:${result.parentThreadId}${result.stateUpdated ? "; Current state replaced" : ""}`, stderr: attach.warnings.join("\n") };
             });
           },
         }),
