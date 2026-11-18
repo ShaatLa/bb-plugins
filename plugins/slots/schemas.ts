@@ -12,7 +12,7 @@ export const parseObserverEvents = (value: string): ObserverEvent[] => [...new S
 export const inputs = {
   settingsRead: z.object({}).strict(),
   settingsWrite: z.object({ values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])).optional(), unset: z.array(z.enum(SETTING_KEYS)).optional() }).strict(),
-  config: z.object({ operation: z.enum(["show", "set", "unset"]).default("show"), key: z.enum(SETTING_KEYS).optional(), value: z.union([z.number(), z.string()]).optional() }).strict(),
+  config: z.object({ operation: z.enum(["show", "get", "set", "unset"]).default("show"), key: z.enum(SETTING_KEYS).optional(), value: z.union([z.number(), z.string()]).optional() }).strict(),
   observer: z.object({ threadId: id.optional(), self: z.boolean().optional(), toThreadId: id.optional(), clear: z.boolean().optional(), events: observerEventsSchema.optional() }).strict().refine(p => Number(!!p.self) + Number(!!p.toThreadId) + Number(!!p.clear) <= 1 && (!p.self || !!p.threadId), "Choose self, target thread or clear; self requires a caller"),
   request: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), wait: z.literal(false).optional(), timeoutMs: time.optional() }).strict(),
   acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional() }).strict(),

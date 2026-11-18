@@ -392,9 +392,12 @@ it("config CLI and tool share validation, unset explicit keys, and preserve conf
   expect((await h.harness.behavior.runCli(["config", "set", "loadMax", "19"])).exitCode).toBe(1);
   expect((await h.harness.behavior.runCli(["config", "set", "portFrom", "42000"])).exitCode).toBe(1);
   expect((await h.harness.behavior.runCli(["config", "set", "unknown", "1"])).exitCode).toBe(1);
-  expect((await h.harness.behavior.runCli(["config", "unset", "heavyCapacity", "--json"])).stdout).toContain('"setKeys":[]');
+  expect((await h.harness.behavior.runCli(["config", "unset", "heavyCapacity", "--json"])).stdout).toContain('"set":false');
+  expect((await h.harness.behavior.runCli(["config", "get", "loadMax"])).stdout.trim()).toBe(`loadMax = ${(await h.view()).hostSettings.local.loadMax}`);
   const response = await h.harness.behavior.callAgentTool("slots_config", { operation: "set", key: "loadMax", value: 12 });
-  expect(JSON.parse(response as string)).toMatchObject({ ok: true, data: { values: { loadMax: 12 }, setKeys: ["loadMax"] } });
+  expect(JSON.parse(response as string)).toEqual({ ok: true, data: { key: "loadMax", value: 12, default: expect.any(Number), max: expect.any(Number), set: true } });
+  expect(await h.invoke("config", { operation: "get", key: "grantMode" })).toEqual({ ok: true, data: { key: "grantMode", value: "auto", default: "auto", set: false } });
+  expect(await h.invoke("config", { operation: "show" })).toMatchObject({ ok: true, data: { values: { loadMax: 12 }, setKeys: ["loadMax"] } });
   vi.spyOn(h.runtime.store, "saveConfig").mockRejectedValueOnce(new Error("disk full"));
   expect(await h.invoke("settingsWrite", { values: { loadMax: 10 } })).toMatchObject({ ok: false });
   expect((await h.view()).hostSettings.local.loadMax).toBe(12);
@@ -501,7 +504,7 @@ it("validates watch settings, machine defaults/clamp, and preserves explicit 0.3
   for (const values of invalid) await expect(h.configure(values)).rejects.toThrow();
   await h.configure({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
   expect(JSON.parse(await readFile(join(h.path, "config.json"), "utf8")).values).toMatchObject({ watchPolicy: "off", watchWindowSeconds: 60, idleLeaseMinutes: 10 });
-  expect((await h.invoke("config", {operation:"unset",key:"watchCores"}))).toMatchObject({ok:true,data:{values:{watchCores:1}}});
+  expect((await h.invoke("config", {operation:"unset",key:"watchCores"}))).toMatchObject({ok:true,data:{key:"watchCores",value:1,set:false}});
   expect((await h.harness.behavior.runCli(["status","--json"])).stdout).toContain('"average10m"');
 });
 it("restores 0.3.x leases/config without watch fields and keeps the original config file", async () => {

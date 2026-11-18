@@ -3,7 +3,7 @@ import * as os from "node:os";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView } from "./contract.js";
+import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
 import { apply, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
@@ -84,6 +84,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     settings = await getSettings();
     if (initialized) await transition({ type: "restored" });
     bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() });
+  }
+  function settingView(key: SettingKey): SettingView {
+    const view = formView();
+    return { key, value: view.values[key], default: defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
   }
   function formView(): SettingsFormView {
     return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
@@ -231,7 +235,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         let patch: Partial<SettingValues> = p.values ?? {};
         let unset: SettingKey[] = p.unset ?? [];
         if (method === "config") {
-          if (p.operation === "show") return { ok: true, data: formView() };
+          // With a key, config reads and returns only that setting to keep agent output small.
+          if (p.operation === "show" || p.operation === "get") return { ok: true, data: p.key ? settingView(p.key) : formView() };
           if (!p.key || (p.operation === "set" && p.value === undefined)) throw new Error("Config set needs key and value; unset needs a key");
           if (p.operation === "unset") unset = [p.key];
           else patch = { [p.key]: typeof defaults[p.key as SettingKey] === "number" && typeof p.value === "string" ? Number(p.value) : p.value };
@@ -244,7 +249,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
           const target = settings.observerThreadId ? await lookup(settings.observerThreadId) : null;
           await transition({ type: "observer", hostId: localHostId, previousThreadId, previousEvents, title: target?.title ?? settings.observerThreadId });
         }
-        return { ok: true, data: formView() };
+        return { ok: true, data: method === "config" ? settingView(p.key) : formView() };
       }
       if (method === "observer") {
         const target = p.clear ? null : p.self ? p.threadId : p.toThreadId ?? settings.observerThreadId;
