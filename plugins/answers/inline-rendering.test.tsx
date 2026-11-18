@@ -92,5 +92,5 @@ it('gives an open background updates group the side inset the chat list has, for
   fireEvent.click(slot.getByRole('button', { name:/2 background updates/ }));
   const list = slot.container.querySelector('[data-update-group] ul')!;
   expect(list.querySelector('[data-plugin-message]')).toBeTruthy();
-  expect(list.className.split(' ')).toContain('px-2');
+  expect(list.className.split(' ')).toEqual(expect.arrayContaining(['px-2', '@container']));
 });

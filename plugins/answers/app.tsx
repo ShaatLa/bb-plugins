@@ -217,8 +217,8 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
         <time className="shrink-0" dateTime={new Date(at).toISOString()}>{age === 'now' ? 'Just now' : `${age} ago`}</time><span className="flex-1" />
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
-      {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background px-2">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
-        {/* bb's queue-card collapse bar: a long open group can be closed from its end, folding toward its header. */}
+      {open ? <><ul className="@container divide-y divide-border-seam border-t border-border-hairline bg-background px-2">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
+        {/* bb's queue-card collapse bar: a long open group can be closed from its end, folding toward its header. */}{/* The list is a query container so bb's wide tables, which break out up to 100cqw - 2rem, stay inside the card. */}
         <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { anchor.current = row.current?.getBoundingClientRect().bottom ?? null; setOpen(false); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words"><UserText threadId={last.threadId} text={previewText} /></span></p>}
     </div>
   </li>;
