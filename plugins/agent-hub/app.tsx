@@ -583,8 +583,8 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
     {/* Left edge on the chat text column (the history list pl-4 plus its rows px-2), so the avatar lines up with the messages. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-6 pr-4">
-      <div data-page-toolbar className="flex items-center gap-1">
-        {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="mr-1.5 hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:flex" />
+      <div data-page-toolbar className="flex min-h-8 items-center gap-1">
+        {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="mr-1.5 hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:[&:not(:empty)]:flex" />
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
           // Markup of bb's Preview/Source switch.
           : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', 'chats'], ['Questions', 'questions'], ['Saved', 'saved']] as const).map(([label, key]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={section === key} onClick={() => setSection(key)}>{label}{key === 'questions' && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
