@@ -47,6 +47,16 @@ describe('Answers app', () => {
     expect(slot.queryByText(/resolved by plugin/)).toBeNull();
   });
 
+  it('a question card in the chat has no link out to the chat it is in, and More lets the owner skip it without replying', async () => {
+    const { ItemCard } = await import('./app');
+    const setDismissed = vi.fn(() => ({ ok: true }));
+    const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null };
+    const slot = renderSlot({ component: () => <ul><ItemCard item={ask} chat compact /></ul> }, {}, { rpc: { setDismissed } } as any);
+    expect(slot.queryByRole('link', { name: 'Open in chat' })).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name: 'More' })); fireEvent.click(slot.getByRole('menuitem', { name: 'Won’t reply' }));
+    await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_ask', dismissed: true }));
+  });
+
   it('names the dismiss action per item and hides it where it does nothing', async () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));

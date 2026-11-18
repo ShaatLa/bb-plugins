@@ -1,6 +1,7 @@
 import { useQuestionStack } from './question-stack';
 import { UserText } from './app';
 import { ComposerThread } from './rich-editor';
+import { useStoredState } from './lib/stored-state';
 import { useEffect, useRef, useState } from 'react';
 import { experimental_Icon as Icon, experimental_useQuestionFormHost, experimental_useRpcRefresh, UrlLink, useBbNavigate, useSdk } from '@get-bb/plugin-sdk/app';
 import { YOUR_CALL } from './contract';
@@ -68,19 +69,22 @@ function QuestionCard({ stacked, ...props }: { stacked: boolean; questions: Ques
 // Without onCancel (an Agent Hub question) there is nothing to cancel, so the form has no Cancel; hidePrompt when the card already shows it.
 export function QuestionForm({ threadId, questions, onSubmit, onCancel, hidePrompt = false, requireAny = false }: { threadId?: string; questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel?: () => Promise<void>; hidePrompt?: boolean; requireAny?: boolean }) {
   const host = experimental_useQuestionFormHost();
-  const [index, setIndex] = useState(0), [answers, setAnswers] = useState<Record<string, Draft>>({}), [busy, setBusy] = useState(false);
+  // The typed answer outlives a plugin reload or a switch away; shortcut: drafts of questions answered elsewhere stay in storage, prune them if it grows.
+  const draftKey = `bb-plugin-answers:question-draft:${threadId ?? ''}:${questions.map(q => `${q.id}|${q.prompt}`).join('\n')}`;
+  const [stored, setAnswers] = useStoredState<Record<string, Draft> | null>(draftKey, null), answers = stored ?? {};
+  const [index, setIndex] = useState(0), [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null), question = questions[index];
   const draft = (q: Question): Draft => answers[q.id] ?? { selected: [], other: !(q.options?.length), text: '' };
   const current = question && draft(question);
   const valid = (!requireAny || questions.some(q => draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim())) && questions.every(q => !q.required || draft(q).selected.length > 0 || draft(q).other && !!draft(q).text.trim());
-  function update(q: Question, change: Partial<Draft>) { setAnswers(old => ({ ...old, [q.id]: { ...(old[q.id] ?? { selected: [], other: !(q.options?.length), text: '' }), ...change } })); }
+  function update(q: Question, change: Partial<Draft>) { setAnswers(old => ({ ...old, [q.id]: { ...(old?.[q.id] ?? { selected: [], other: !(q.options?.length), text: '' }), ...change } })); }
   async function submit() {
     if (busy) return;
     if (index < questions.length - 1) { setIndex(index + 1); return; }
     if (!valid) return;
     const value: Record<string, Answer> = {};
     for (const q of questions) { const a = draft(q); if (!q.required && !a.selected.length && !(a.other && a.text.trim())) continue; value[q.id] = { selected: a.other && !q.multiSelect ? [] : a.selected, ...(a.other && a.text.trim() ? { freeText: a.text.trim() } : {}) }; }
-    setBusy(true); try { await onSubmit(value); } finally { setBusy(false); }
+    setBusy(true); try { await onSubmit(value); setAnswers(null); try { localStorage.removeItem(draftKey); } catch { /* storage unavailable */ } } finally { setBusy(false); }
   }
   async function cancel() { if (busy || !onCancel) return; setBusy(true); try { await onCancel(); } finally { setBusy(false); } }
   function choice(n: number) {
