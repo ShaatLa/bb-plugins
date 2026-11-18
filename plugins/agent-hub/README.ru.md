@@ -149,3 +149,5 @@ The CLI command is `bb agent-hub`.
 First start reads the old `plugins/answers/data.db` with SQLite online backup before ingestion starts, including all cursors. KV (`preferences`, `config:project:*`) and legacy settings are read from the host's `bb.db` in read-only mode; legacy settings become preferences. Secret files, if present, are copied with mode 0600. Old data stays in place for rollback. A completion record in the new database prevents another migration. Failures roll back copied KV and secrets and retry on the next start; a populated new database is never overwritten.
 
 `bb agent-hub migration status --json` returns `{ran, completedAt, kvKeys, secrets, error, oldItemCount, newItemCount, matchingItemIds}`. Counts are current; matching IDs sample up to twenty new rows. `completedAt` is an ISO timestamp or null; a missing old database has a null count.
+
+The question card header toggles the pending stack, keeping the header and count visible. Collapse is remembered per thread; tall stacks start collapsed on phones.

@@ -1,3 +1,4 @@
+import { useQuestionStack } from './question-stack';
 import { AnswersSettings } from './settings-section';
 import { usePreferences } from './use-preferences';
 import { registerChatCommands } from './chat-commands';
@@ -625,11 +626,11 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
 export const answersThreadHref = (threadId: string) => `/plugins/agent-hub/agent-hub?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
+  const stack = useQuestionStack();
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
-  // Open from the start (bb's CollapsibleStackCard always starts collapsed and hid them); header as "Active child threads".
-  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
+  const card = <section aria-label="Questions for you"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle} className="answers-hit flex min-h-9 w-full text-left items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span><Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden className="size-3.5" /></button><ul hidden={stack?.collapsed} aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
 // bb shows its own blocking question forms in its chat; this banner adds only the agents' open questions.

@@ -1,3 +1,4 @@
+import { useQuestionStack } from './question-stack';
 import { UserText } from './app';
 import { ComposerThread } from './rich-editor';
 import { useEffect, useRef, useState } from 'react';
@@ -59,7 +60,9 @@ export function PendingInteractions({ threadId, projectId, pending, status, stac
 
 type Draft = { selected: string[]; other: boolean; text: string };
 function QuestionCard({ stacked, ...props }: { stacked: boolean; questions: Question[]; onSubmit: (answers: Record<string, Answer>) => Promise<void>; onCancel: () => Promise<void> }) {
-  const [expanded, setExpanded] = useState(true), label = props.questions.length === 1 ? 'Question' : `${props.questions.length} questions`;
+  const stack = useQuestionStack(), [ownExpanded, setOwnExpanded] = useState(true);
+  const expanded = stack ? !stack.collapsed : ownExpanded, setExpanded = (value: boolean) => stack ? stack.toggle() : setOwnExpanded(value);
+  const label = props.questions.length === 1 ? 'Question' : `${props.questions.length} questions`;
   return <section data-pending-question-card aria-label={label} data-expanded={expanded || undefined} className={`@container flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-surface-recessed text-xs text-muted-foreground ${stacked ? '' : 'mb-2 rounded-lg border border-border'}`}><div className={`flex min-h-9 shrink-0 items-center gap-2 pl-3 pr-1.5 ${expanded ? 'border-b border-border-hairline py-1.5' : 'py-1'}`}><span aria-hidden className="size-2 shrink-0 rounded-full bg-attention ring-[3px] ring-surface-attention" /><button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)} className="flex min-h-7 min-w-0 flex-1 items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span className="min-w-0 text-xs font-medium text-foreground">{label}</span></button><button type="button" aria-label={expanded ? 'Hide details' : 'Show details'} onClick={() => setExpanded(!expanded)} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground"><Icon name="ChevronDown" className={`size-3.5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} aria-hidden /></button></div><div hidden={!expanded} className="min-h-0 max-h-[min(32rem,50dvh)] touch-pan-y overflow-y-auto overscroll-contain px-3 pb-3 pt-2.5"><QuestionForm {...props} /></div></section>;
 }
 // Without onCancel (an Answers question) there is nothing to cancel, so the form has no Cancel; hidePrompt when the card already shows it.
@@ -107,10 +110,11 @@ export function QuestionForm({ threadId, questions, onSubmit, onCancel, hideProm
 
 type ApprovalRow = Extract<Row, { payload: { kind: 'approval' } }>;
 function ApprovalForm({ row, onDecide }: { row: ApprovalRow; onDecide: (decision: 'allow_once' | 'allow_for_session' | 'deny') => Promise<void> }) {
+  const stack = useQuestionStack();
   const [busy, setBusy] = useState(false), subject = row.payload.subject;
   const title = row.payload.reason ?? (subject.kind === 'plan' ? 'Approve plan?' : subject.kind === 'command' ? subject.command : subject.kind === 'file_change' ? 'Do you want to make these changes?' : subject.kind === 'permission_grant' ? 'Do you want to grant this permission?' : subject.presentation.title ?? subject.presentation.label.pending);
   async function decide(decision: 'allow_once' | 'allow_for_session' | 'deny') { setBusy(true); try { await onDecide(decision); } finally { setBusy(false); } }
-  return <div data-approval-banner className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><div className="text-muted-foreground">Approval needed</div><p className="font-medium text-foreground">{title}</p>{subject.kind === 'plan' ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-card px-3 py-2">{subject.plan}</pre> : subject.kind === 'command' ? <p className="mt-2 break-all text-muted-foreground">Command: {subject.command}</p> : subject.kind === 'file_change' ? <p className="mt-2 text-muted-foreground">Write root: {subject.writeScope}</p> : subject.kind === 'permission_grant' ? <p className="mt-2 text-muted-foreground">Tool: {subject.toolName}</p> : <p className="mt-2 text-muted-foreground">{subject.presentation.detail}</p>}<div className="mt-3 flex flex-wrap gap-2">{row.payload.availableDecisions.map(decision => <Button key={decision} size="sm" variant={decision === 'allow_once' ? 'default' : decision === 'deny' ? 'ghost' : 'outline'} disabled={busy} onClick={() => void decide(decision)}>{subject.kind === 'plan' ? decision === 'deny' ? 'Keep planning' : 'Approve plan' : decision === 'allow_once' ? 'Allow once' : decision === 'allow_for_session' ? 'Allow for session' : 'Deny'}</Button>)}</div></div>;
+  return <div data-approval-banner className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><div className="text-muted-foreground"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle}>Approval needed <Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden /></button></div><div hidden={stack?.collapsed}><p className="font-medium text-foreground">{title}</p>{subject.kind === 'plan' ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-card px-3 py-2">{subject.plan}</pre> : subject.kind === 'command' ? <p className="mt-2 break-all text-muted-foreground">Command: {subject.command}</p> : subject.kind === 'file_change' ? <p className="mt-2 text-muted-foreground">Write root: {subject.writeScope}</p> : subject.kind === 'permission_grant' ? <p className="mt-2 text-muted-foreground">Tool: {subject.toolName}</p> : <p className="mt-2 text-muted-foreground">{subject.presentation.detail}</p>}<div className="mt-3 flex flex-wrap gap-2">{row.payload.availableDecisions.map(decision => <Button key={decision} size="sm" variant={decision === 'allow_once' ? 'default' : decision === 'deny' ? 'ghost' : 'outline'} disabled={busy} onClick={() => void decide(decision)}>{subject.kind === 'plan' ? decision === 'deny' ? 'Keep planning' : 'Approve plan' : decision === 'allow_once' ? 'Allow once' : decision === 'allow_for_session' ? 'Allow for session' : 'Deny'}</Button>)}</div></div></div>;
 }
 
 // Codex relays MCP elicitations (Computer Use app access, MCP tool approvals, forms, links) as its own interaction kind,
@@ -119,6 +123,7 @@ const CODEX_ELICITATION = 'provider-codex/mcp-elicitation';
 type Scope = 'session' | 'always';
 type Elicitation = { serverName?: string; message?: string; kind?: string; scopes?: Scope[]; warning?: string | null; riskLevel?: string; app?: { name?: string; iconDataUrl?: string | null }; toolName?: string | null; toolDescription?: string | null; params?: { label: string; value: string }[]; omittedParamCount?: number; url?: string };
 function ElicitationCard({ title, data, href, onRespond }: { title: string; data: unknown; href: string; onRespond: (value: { action: 'accept' | 'decline'; persist?: Scope }) => Promise<void> }) {
+  const stack = useQuestionStack();
   const navigate = useBbNavigate(), [busy, setBusy] = useState(false);
   const e = (data && typeof data === 'object' ? data : {}) as Elicitation, scopes = Array.isArray(e.scopes) ? e.scopes : [];
   async function answer(value: { action: 'accept' | 'decline'; persist?: Scope }) { setBusy(true); try { await onRespond(value); } finally { setBusy(false); } }
@@ -128,7 +133,7 @@ function ElicitationCard({ title, data, href, onRespond }: { title: string; data
     ...(scopes.includes('session') ? [['Allow for this session', { action: 'accept', persist: 'session' }] as [string, { action: 'accept'; persist: Scope }]] : []),
     ...(scopes.includes('always') ? [['Always allow', { action: 'accept', persist: 'always' }] as [string, { action: 'accept'; persist: Scope }]] : []),
   ] : [];
-  return <div data-approval-banner className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><div className="text-muted-foreground">Approval needed{e.serverName ? ` · ${e.serverName}` : ''}</div>
+  return <div data-approval-banner className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><div className="text-muted-foreground"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle}>Approval needed{e.serverName ? ` · ${e.serverName}` : ''} <Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden /></button></div><div hidden={stack?.collapsed}>
     <p className="flex items-center gap-1.5 font-medium text-foreground">{e.app?.iconDataUrl && <img src={e.app.iconDataUrl} alt="" className="size-4" />}{e.kind === 'computer_use' && e.app?.name ? `Allow Computer Use to use ${e.app.name}?` : e.kind === 'tool_approval' && e.toolName ? `Allow ${e.toolName}?` : title}</p>
     {e.message && <p className="mt-1 whitespace-pre-wrap text-muted-foreground"><UserText text={e.message} /></p>}
     {e.warning && <p className={`mt-1 ${e.riskLevel === 'high' ? 'text-destructive' : 'text-muted-foreground'}`}><UserText text={e.warning} /></p>}
@@ -140,5 +145,5 @@ function ElicitationCard({ title, data, href, onRespond }: { title: string; data
       {e.kind === 'url' && e.url && <Button size="sm" disabled={busy} onClick={() => { if (navigate.openUrl(e.url!)) void answer({ action: 'accept' }); }}>Open link</Button>}
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void answer({ action: 'decline' })}>Decline</Button>
       {(e.kind === 'form' || !allows.length && e.kind !== 'url') && <UrlLink href={href}>Open in chat to answer</UrlLink>}
-    </div></div>;
+    </div></div></div>;
 }
