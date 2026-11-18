@@ -1,3 +1,5 @@
+import { summaryLine } from './reports.ts';
+
 const sections = { ANSWER: 'Owner answers', ACTION: 'Actions', WAIT: 'Waiting', STATE: 'State changes' };
 const taskKey = '[A-Z][A-Z0-9]{0,9}-\\d+';
 const leadingTask = new RegExp(`^(${taskKey})(?=[:\\s]|$)`);
@@ -45,7 +47,7 @@ export function formatNotification(status: 'alive' | number, output: string) {
   const groups = new Map<string, string[]>();
   const other: string[] = [];
   for (const line of output.split(/\r?\n/)) {
-    const summary = /^sweep: (\d+) threads, (\d+) cards checked, (\d+) actions$/.exec(line);
+    const summary = summaryLine.exec(line);
     if (summary) {
       blocks[0] += ` · ${summary[3]} to review · ${summary[1]} threads · ${summary[2]} cards checked`;
       continue;

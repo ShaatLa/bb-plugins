@@ -18,15 +18,23 @@ Settings → Plugins → Sweep provides a project picker and separate controls f
 
 RPC `configure` takes `{projectId,config}` and updates the same setting. RPC `status`, `manager`, `run` take `{projectId}`. Use `bb plugin rpc call sweep configure --input-file config.json --json`.
 
+For single-field access, use `bb sweep config get [<key>] --project <id>` and `bb sweep config set <key> <value> --project <id>`. Pass string values as shell arguments and arrays as JSON, for example `bb sweep config set args '["--brief"]' --project proj_example`. The equivalent RPCs are `config.get {projectId,key?}` and `config.set {projectId,key,value}`. With a key, they return that field only. To configure a new project this way, set `remote`, `branch` and `script` before enabling it. The native global fields `bbCli` and `runtimePath` can be managed through `bb plugin config sweep`.
+
 ## Script acknowledgement protocol
 
 Without `snapshots`, stdout and stderr plus exit code are sufficient: 0 quiet, 1 ACTION, 2 or higher failure. A crash, refresh error or timeout becomes exit 2. When the manager is unavailable or the manager send fails, Sweep tries to send the full report as an informational card in the owner's Answers inbox via `answers.notice`. Answers is optional. If the plugin or RPC is unavailable, or the call fails, Sweep keeps the report pending for retry and sends a push alert.
 
 Reports use BB Markdown. Lines starting with `ANSWER`, `ACTION`, `WAIT` or `STATE` are grouped into sections with Work Board links where a task key is available. Other output and failure diagnostics appear as plain text in a code block. If formatting exceeds the Answers size limit, Sweep sends the original full report. `pending` and `delivered` in status retain the original script report and tick ID.
 
-With `snapshots:true`, Sweep adds `--committed-state <path> --candidate-snapshot <path>`. The committed file may not exist initially. The script reads it, prints **every item requiring acknowledgement**, and writes a complete replacement candidate file. It never writes committed state. Both paths are also available as BB_SWEEP_COMMITTED_STATE and BB_SWEEP_CANDIDATE_SNAPSHOT. Candidates on exit 0 or 1 are accepted; failure candidates are ignored. Every candidate is delivered with full output even on exit 0. Scripts should omit the candidate when nothing needs acknowledgement.
+With `snapshots:true`, Sweep adds `--committed-state <path> --candidate-snapshot <path>`. The committed file may not exist initially. The script reads it, prints **every item requiring acknowledgement**, and writes a complete replacement candidate file. It never writes committed state. Both paths are also available as BB_SWEEP_COMMITTED_STATE and BB_SWEEP_CANDIDATE_SNAPSHOT. Candidates on exit 0 or 1 are accepted. Sweep delivers any candidate that changes committed state with full output even on exit 0. Failure candidates are ignored. Scripts should omit the candidate when nothing needs acknowledgement.
 
 Sweep stores candidate bytes and the full report in one SQLite row before delivery. It retries the pending report before running the next check and promotes the candidate only after the manager accepts the message or Answers confirms the notice is durable. Answers deduplicates retries by tick ID. A crash between manager delivery and acknowledgement may duplicate that message. Changing manager redirects pending messages as well as new results. Manual runs never stage or acknowledge candidates.
+
+For new reports, Sweep compares the exit code and substantive output with the last confirmed report. Standard summary counts, structured item order and `idle` or `failed` age counters on action lines do not affect the comparison. Sweep delivers a changed report immediately and sends unchanged reports as reminders at most once an hour. Snapshot candidates that change committed state always require delivery. Consecutive checkout refresh failures double the check interval up to an hour, or the configured interval if it is longer. A successful refresh resets the delay. Pending delivery retries keep the configured interval.
+
+## Stats
+
+`bb sweep stats --project <id> --days <1-30>` (default one day) and the `stats {projectId,days?}` RPC report scheduled ticks, executed checks, confirmed deliveries by channel, new distinct items by kind, repeated item sightings, suppressed reports, queued reminders and failures by stage. New items are fingerprints first seen within the requested window. Sweep keeps counters and fingerprints locally for a rolling 30 days. Manual runs do not enter these totals.
 
 ## Integration follow-ups
 

@@ -11,6 +11,18 @@ const repo = await mkdtemp(join(tmpdir(), 'sweep-test-'));
 const git = (...args) => execFileSync('git', args, {cwd:repo, stdio:'ignore'});
 git('init','-b','main');git('config','user.email','test@example.com');git('config','user.name','Test');
 await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.ArgumentParser()\np.add_argument('--committed-state');p.add_argument('--candidate-snapshot')\na=p.parse_args()\nif a.committed_state and os.path.exists(a.committed_state):\n print('sweep: 2 threads, 3 cards checked, 0 actions');raise SystemExit(0)\nprint('ANSWER EXA-1 q1: «Пример *ответа*»')\nprint('ACTION stale-status EXA-2: in_progress')\nprint('WAIT EXA-3: blocker EXA-4')\nprint('sweep: 2 threads, 3 cards checked, 2 actions')\nif a.candidate_snapshot: open(a.candidate_snapshot,'w').write('{"seen":true}')\nraise SystemExit(1)\n`);
+await writeFile(join(repo,'repeat.py'), `import argparse,json
+p=argparse.ArgumentParser()
+p.add_argument('age');p.add_argument('key');p.add_argument('candidate')
+p.add_argument('--committed-state');p.add_argument('--candidate-snapshot')
+a=p.parse_args()
+print(f'ACTION idle-no-link {a.key}: idle {a.age} min')
+if a.candidate != 'none':
+ print('ANSWER EXA-4 q1: Example answer')
+ with open(a.candidate_snapshot,'w') as f: json.dump({'value':a.candidate},f)
+print(f'sweep: {a.age} threads, 1 cards checked, 1 actions')
+raise SystemExit(1)
+`);
 git('add','.');git('commit','-m','fixture');
 const projectId='proj_test', first='thr_first', second='thr_second';
 const config={enabled:true,remote:repo,branch:'main',script:'sweep.py',args:[],manager:first,snapshots:true,intervalMinutes:1};
@@ -114,7 +126,67 @@ try {
   assert.match(noticeInputs.at(-1).tickId,/^proj_test:legacy:[a-f0-9]{64}$/);
   assert.equal(noticeInputs.at(-1).markdown,oldPending);
   assert.equal((await harness.behavior.callRpc('status',{projectId})).pending,null);
-}finally{await fallbackHost.harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
+}finally{await fallbackHost.harness.lifecycle.dispose();}
+
+const reports=[];
+const repeatHost=createFakePluginHost({pluginId:'sweep',sdk:{
+  projects:{list:async()=>[{id:projectId,name:'Test'}]},
+  threads:{get:async()=>makeThreadResponse(),send:async request=>{reports.push(request.input[0].text);}},
+}});
+const realNow=Date.now;
+let time=realNow();
+Date.now=()=>time;
+try {
+  const {bb,harness}=repeatHost;
+  await plugin(bb);
+  const get=key=>harness.behavior.callRpc('config.get',{projectId,key});
+  const set=(key,value)=>harness.behavior.callRpc('config.set',{projectId,key,value});
+  const stats=()=>harness.behavior.callRpc('stats',{projectId,days:1});
+  const scheduled=()=>harness.behavior.runSchedule('sweep');
+  const status=()=>harness.behavior.callRpc('status',{projectId});
+  assert.deepEqual(await set('remote',repo),{remote:repo});
+  assert.deepEqual(await get('remote'),{remote:repo});
+  assert.equal((await status()).config,null);
+  await assert.rejects(set('enabled',true));
+  const repeatedConfig={...config,script:'repeat.py',args:['5','EXA-1','none']};
+  await harness.behavior.callRpc('configure',{projectId,config:repeatedConfig});
+  await scheduled();
+  time+=60000;
+  const newArgs=['11','EXA-1','none'];
+  await Promise.all([set('args',newArgs),set('timeoutSeconds',30)]);
+  assert.deepEqual(await get(),{...repeatedConfig,args:newArgs,timeoutSeconds:30});
+  const cli=await harness.behavior.runCli(['config','get','args','--project',projectId]);
+  assert.equal(cli.exitCode,0);assert.deepEqual(JSON.parse(cli.stdout),{args:newArgs});
+  await scheduled();
+  assert.equal(reports.length,1);assert.equal((await stats()).suppressedReports,1);
+  time+=3600000;
+  await scheduled();assert.equal(reports.length,2);assert.equal((await stats()).reminderReports,1);
+
+  const change=await harness.behavior.runCli(['config','set','args','["11","EXA-2","none"]','--project',projectId]);
+  assert.equal(change.exitCode,0);assert.deepEqual(JSON.parse(change.stdout),{args:['11','EXA-2','none']});
+  await scheduled();assert.equal(reports.length,3);
+  await set('args',['11','EXA-2','one']);await scheduled();
+  await set('args',['11','EXA-2','two']);await scheduled();
+  assert.equal(reports.length,5);
+  assert.equal(deliveryStore(bb.storage.database()).read(projectId).committed.toString(),'{"value": "two"}');
+
+  await set('remote',join(repo,'missing'));await scheduled();
+  assert.equal((await status()).nextRun,time+60000);assert.equal(reports.length,6);
+  time+=60000;await scheduled();
+  assert.equal((await status()).nextRun,time+120000);assert.equal(reports.length,6);
+  time+=60000;await scheduled();assert.equal((await stats()).ticks,8);
+  const beforeManual=await stats();
+  assert.equal((await harness.behavior.callRpc('run',{projectId})).exitCode,2);
+  assert.deepEqual(await stats(),beforeManual);
+  await set('remote',repo);await set('args',['11','EXA-2','none']);await scheduled();
+  assert.equal((await status()).refreshFailures,0);
+  const results=await stats();
+  assert.equal(results.ticks,9);assert.equal(results.executed,9);assert.equal(results.deliveries,7);
+  assert.equal(results.refreshFailures,2);assert.equal(results.suppressedReports,2);
+  assert.equal(results.repeats,6);assert.deepEqual(results.newItems,{'ACTION idle-no-link':2,ANSWER:1});
+  const statsCli=await harness.behavior.runCli(['stats','--project',projectId,'--days','1']);
+  assert.equal(statsCli.exitCode,0);assert.deepEqual(JSON.parse(statsCli.stdout),results);
+}finally{Date.now=realNow;await repeatHost.harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
 
 assert.equal(formatNotification(0, 'STATE owner-answers: reopened q1\n'), '**Sweep · Check complete**\n\n**State changes**\n\n- owner-answers: reopened q1');
 assert.equal(formatNotification(2, 'ERROR checkout failed\n```\n  indented detail\n'), '**Sweep · Check failed** (exit 2)\n\n````text\nERROR checkout failed\n```\n  indented detail\n````');
