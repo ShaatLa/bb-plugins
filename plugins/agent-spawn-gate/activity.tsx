@@ -1,6 +1,7 @@
 import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
 import { Card } from "./components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
+import { SettingsSection, SettingsWithControl } from "./components/ui/settings-section";
 import { reportContract } from "./metrics";
 
 const operationLabels = { start: "Start", "dry-run": "Dry run", dispatch: "Admission" };
@@ -11,17 +12,18 @@ export function GateActivity({ projectId, days, onDaysChange }: { projectId: str
   const { data: report, error } = useQuery({ contract: reportContract, method: "report", input: { projectId, from, to } });
   const project = report?.projects[0];
   return <section aria-label="Gate activity" className="space-y-3">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h2 className="text-base font-semibold">Activity</h2>
-      <Select value={days} onValueChange={onDaysChange}>
-        <SelectTrigger aria-label="Period" className="w-auto"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="1">Today</SelectItem>
-          <SelectItem value="7">Last 7 days</SelectItem>
-          <SelectItem value="30">Last 30 days</SelectItem>
-        </SelectContent>
-      </Select>
-    </div>
+    <SettingsSection title="Activity">
+      <SettingsWithControl label="Period">
+        <Select value={days} onValueChange={onDaysChange}>
+          <SelectTrigger aria-label="Period" className="w-36 max-w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="1">Today</SelectItem>
+            <SelectItem value="7">Last 7 days</SelectItem>
+            <SelectItem value="30">Last 30 days</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingsWithControl>
+    </SettingsSection>
     {error && <p role="alert" className="text-sm text-destructive">Could not load activity: {error.message}</p>}
     {!report && !error && <p role="status" className="text-sm text-muted-foreground">Loading activity…</p>}
     {project && report && <>

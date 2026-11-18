@@ -83,7 +83,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const project = projects?.find(p => p.id === selected);
   const projectSelect = project && projects && (
     <Select value={selected} onValueChange={setSelected} disabled={projects.length === 1}>
-      <SelectTrigger aria-label="Project" className={showActivity ? "w-auto max-w-48" : "w-36 max-w-full"}>
+      <SelectTrigger aria-label="Project" className="w-36 max-w-full">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
@@ -105,20 +105,14 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
       }}
     />
   );
-  const header = showActivity ? <header className="flex flex-wrap items-center justify-between gap-3">
+  const header = showActivity && <header className="flex items-center justify-between gap-3">
     <h1 className="text-xl font-semibold">Spawn Gate</h1>
-    <div className="flex flex-wrap items-center gap-3">
-      {projectSelect}
-      {gateSwitch && <label className="flex items-center gap-2 text-sm">Gate {gateSwitch}</label>}
-      <Button asChild variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground">
-        <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
-          <Icon name="Settings" />
-        </UrlLink>
-      </Button>
-    </div>
-  </header> : project && <SettingsSection title="Project">
-    <SettingsWithControl label="Project">{projectSelect}</SettingsWithControl>
-  </SettingsSection>;
+    <Button asChild variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground">
+      <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
+        <Icon name="Settings" />
+      </UrlLink>
+    </Button>
+  </header>;
 
   if (!project) return <div className="space-y-5">
     {header}
@@ -126,6 +120,10 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   </div>;
   return <div className="space-y-5">
     {header}
+    <SettingsSection title="Project" bodyClassName="space-y-5">
+      <SettingsWithControl label="Project">{projectSelect}</SettingsWithControl>
+      {showActivity && <SettingsWithControl label="Enable Spawn Gate">{gateSwitch}</SettingsWithControl>}
+    </SettingsSection>
     <p role="alert" className="text-xs text-destructive empty:hidden">{saveError}</p>
     {showActivity ? <>
       <GateActivity key={selected} projectId={selected} days={days} onDaysChange={setDays} />

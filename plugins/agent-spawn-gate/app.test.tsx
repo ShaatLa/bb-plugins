@@ -124,7 +124,8 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   await slot.findByText("6");
   expect(slot.queryByRole("table", { name: "Refusals by reason" })).toBeNull();
   expect(slot.queryByText("No refusals recorded in this period.")).toBeNull();
-  expect(slot.getByRole("heading", { name: "Spawn Gate" }).parentElement?.contains(slot.getByRole("switch"))).toBe(true);
+  expect(slot.getByRole("switch").closest("section")?.getAttribute("data-settings-anchor")).toBe("Project");
+  expect(slot.getByRole("combobox", { name: "Period" }).closest("section")?.getAttribute("data-settings-anchor")).toBe("Activity");
   write.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { fireEvent.click(slot.getByRole("switch")); });
   expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("false");
