@@ -94,3 +94,8 @@ it('gives an open background updates group the side inset the chat list has, for
   expect(list.querySelector('[data-bubble-row] [data-plugin-message]')).toBeTruthy();
   expect(list.className.split(' ')).toEqual(expect.arrayContaining(['px-2', '[&_[data-bubble-row]]:mr-2', '@container']));
 });
+it('gives every field on the Answers page 16px text on touch screens, so iOS does not zoom in on focus', async () => {
+  const { AnswersPanel } = await import('./app');
+  const slot = renderSlot({ component:AnswersPanel }, {}, { sdk, rpc:{ recipients:() => ({ recipients:[] }), list:() => ({ items:[], nextCursor:null }), counts:() => ({ unread:0, waiting:0, forMe:0, inbox:0 }) } } as any);
+  expect(slot.container.querySelector('section')!.className).toContain('[@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]');
+});

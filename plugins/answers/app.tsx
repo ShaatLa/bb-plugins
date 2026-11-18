@@ -558,7 +558,8 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   const inSidebar = useSidebarContacts();
   const [chatSearch, setChatSearch] = useState(false), [chatOpen, setChatOpen] = useState(false);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
-  return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background">
+  // iOS zooms into a focused field under 16px; bb's phone text-sm is 15px, so every field here reads 16px on touch screens.
+  return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-4 py-2">
       <div className="flex items-center gap-1">
