@@ -19,3 +19,7 @@ it('shows each entry as one plain line and names another agent as the sender', a
   fireEvent.click(slot.getByRole('button',{name:'Thread table of contents'}));
   for (const name of ['Plan for the week','my reply','Manager: Review done','bb: Manager completed:']) expect(await slot.findByRole('button',{name})).toBeTruthy();
 });
+it('names the outline button in a hover tooltip', () => {
+  const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump:()=>{}},{sdk:{threads:{conversationOutline:vi.fn()}}} as any);
+  expect(slot.getByRole('button',{name:'Thread table of contents'}).getAttribute('title')).toBe('Table of contents');
+});
