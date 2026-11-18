@@ -29,9 +29,11 @@ export const contract = defineRpcContract({
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; lastReport?: { fingerprint: string; at: number; manager?: string } };
+type ReportReceipt = { fingerprint: string; manager?: string };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
-const reminderMs = 3600000;
+const maxRefreshBackoffMs = 3600000;
+const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   settings.onChange((next, previous) => {
@@ -65,7 +67,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function deliver(id: string, current: State, tickId: string) {
     const pending = deliveries.read(id)?.pending_message;
     if (!pending) return;
-    const header = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/.exec(pending);
+    const header = reportHeader.exec(pending);
     const heartbeat = header?.[1] === 'alive';
     const code = Number(header?.[2]);
     const output = header ? pending.slice(header[0].length) : pending;
@@ -107,8 +109,11 @@ export default async function plugin(bb: BbPluginApi) {
     current.delivered = pending; current.deliveredAt = Date.now();
     current.error = code >= 2 ? output : null;
     current.alertError = null;
-    if (heartbeat) current.heartbeatAt = current.deliveredAt;
-    else if (header) current.lastReport = { fingerprint: reportContents(code, output).fingerprint, at: current.deliveredAt, manager };
+    if (header && !heartbeat) {
+      const { fingerprint, changes } = reportContents(code, output);
+      if (code >= 2) current.lastFailure = { fingerprint, manager };
+      else current.lastReport = { fingerprint, changes, at: current.deliveredAt, manager };
+    }
     db.transaction(() => {
       deliveries.acknowledge(id);
       history.delivered(tickId, current.deliveredNoticeId !== undefined);
@@ -127,6 +132,19 @@ export default async function plugin(bb: BbPluginApi) {
       const timestamp = Math.max(now, (Number(current.tickId?.split(':')[1]) || 0) + 1);
       const tickId = `${id}:${timestamp}`;
       if (!manual) {
+        if (current.lastReport && !current.lastReport.changes && current.delivered) {
+          const previous = reportHeader.exec(current.delivered);
+          if (previous?.[2] !== undefined) {
+            const code = Number(previous[2]);
+            if (code >= 2) {
+              const { fingerprint, manager } = current.lastReport;
+              current.lastFailure ??= { fingerprint, manager };
+              current.lastReport = undefined;
+            } else {
+              current.lastReport.changes = reportContents(code, current.delivered.slice(previous[0].length)).changes;
+            }
+          }
+        }
         current.tickId = tickId;
         current.lastRun = now;
         current.nextRun = now + interval;
@@ -160,28 +178,35 @@ export default async function plugin(bb: BbPluginApi) {
       current.exitCode = result.code;
       current.refreshFailures = refreshFailed ? (current.refreshFailures ?? 0) + 1 : 0;
       current.refreshRetryAt = refreshFailed
-        ? Date.now() + Math.min(interval * 2 ** Math.min(current.refreshFailures - 1, 6), Math.max(interval, reminderMs))
+        ? Date.now() + Math.min(interval * 2 ** Math.min(current.refreshFailures - 1, 6), Math.max(interval, maxRefreshBackoffMs))
         : undefined;
       const report = reportContents(result.code, result.output);
       history.result(id, tickId, now, report.items, refreshFailed ? 'refresh' : result.code >= 2 ? 'script' : undefined);
-      const actionable = result.code !== 0 || result.snapshot !== null;
       const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
       const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes('ANSWER');
-      const lastReport = current.lastReport;
-      const repeated = actionable && !candidateChanged && !answerWithoutCandidate
-        && lastReport?.fingerprint === report.fingerprint && lastReport.manager === config.manager;
-      const suppressed = repeated && lastReport && Date.now() - lastReport.at < reminderMs;
-      const heartbeat = !actionable && (!current.heartbeatAt || Date.now() - current.heartbeatAt >= reminderMs);
-      if (suppressed) history.disposition(tickId, 'suppress');
-      else if (actionable || heartbeat) {
-        const message = actionable ? `[sweep] exit ${result.code} tick=${tickId}\n${result.output}` : `[sweep] alive tick=${tickId}\n${result.output.split('\n').find(s => s.startsWith('sweep:')) ?? ''}`;
+      const lastReport = current.lastReport?.manager === config.manager ? current.lastReport : undefined;
+      const previous = lastReport?.changes;
+      const sameLegacyReport = !previous && lastReport?.fingerprint === report.fingerprint;
+      const waitingChanged = result.code < 2 && !sameLegacyReport &&
+        report.changes.waiting !== (previous?.waiting ?? '');
+      const knownItems = new Set(previous?.noteworthy);
+      const newItem = !sameLegacyReport && report.changes.noteworthy.some(id => !knownItems.has(id));
+      const lastFailure = current.lastFailure;
+      const changedFailure = lastFailure?.manager !== config.manager || lastFailure?.fingerprint !== report.fingerprint;
+      const changedDiagnostic = result.code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
+      const notify = result.code >= 2 ? changedFailure :
+        waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic;
+      if (result.code < 2) current.lastFailure = undefined;
+      if (notify) {
+        const output = waitingChanged && !report.changes.waiting
+          ? `${result.output.trimEnd()}\nSTATE Waiting list is clear.\n` : result.output;
+        const message = `[sweep] exit ${result.code} tick=${tickId}\n${output}`;
         db.transaction(() => {
-          if (repeated) history.disposition(tickId, 'remind');
           deliveries.stage(id, message, result.snapshot);
           save(id, current);
         })();
         await deliver(id, current, tickId);
-      }
+      } else if (result.code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
       if (current.refreshRetryAt) current.nextRun = current.refreshRetryAt;
       current.error = result.code >= 2 ? result.output : null;
       current.alertError = null;

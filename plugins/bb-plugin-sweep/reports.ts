@@ -16,8 +16,20 @@ export function reportContents(exitCode: number, output: string) {
     const [, tag, detail] = entry;
     const subtype = tag === 'ACTION' && /^[a-z][a-z0-9-]*(?=[: ]|$)/.exec(detail)?.[0];
     const kind = subtype ? `${tag} ${subtype}` : tag;
-    const stable = tag === 'ACTION' ? detail.replace(/\b(idle |failed )\d+(?= min\b)/g, '$1#') : detail;
+    let stable = tag === 'ACTION'
+      ? detail.replace(/\b(idle |failed |no active session for |no session for )\d+(?= min\b)/g, '$1#')
+      : detail;
+    if (subtype === 'provider-idle') stable = stable.replace(/\b\d+(?=%| h\b)/g, '#');
     items.set(hash(JSON.stringify([tag, stable])), kind);
   }
-  return { items, fingerprint: hash(JSON.stringify([exitCode, [...items.keys()].sort(), diagnostics])) };
+  const noteworthy: string[] = [], waiting: string[] = [];
+  for (const [id, kind] of items) {
+    if (kind === 'ANSWER' || kind.startsWith('ACTION')) noteworthy.push(id);
+    if (kind === 'WAIT') waiting.push(id);
+  }
+  return {
+    items,
+    fingerprint: hash(JSON.stringify([exitCode, [...items.keys()].sort(), diagnostics])),
+    changes: { noteworthy, waiting: waiting.length ? hash(JSON.stringify(waiting.sort())) : '' },
+  };
 }

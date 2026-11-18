@@ -15,14 +15,18 @@ await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.Argu
 await writeFile(join(repo,'repeat.py'), `import argparse,json
 p=argparse.ArgumentParser()
 p.add_argument('age');p.add_argument('key');p.add_argument('candidate')
+p.add_argument('--waits', nargs='*', default=[])
 p.add_argument('--committed-state');p.add_argument('--candidate-snapshot')
 a=p.parse_args()
-print(f'ACTION idle-no-link {a.key}: idle {a.age} min')
+if a.key != 'none':
+ print(f'ACTION idle-no-link {a.key}: idle {a.age} min')
+for key in a.waits: print(f'WAIT {key}: blocker EXA-9')
 if a.candidate != 'none':
  print('ANSWER EXA-4 q1: Example answer')
- with open(a.candidate_snapshot,'w') as f: json.dump({'value':a.candidate},f)
+ if a.candidate != 'uncommitted':
+  with open(a.candidate_snapshot,'w') as f: json.dump({'value':a.candidate},f)
 print(f'sweep: {a.age} threads, 1 cards checked, 1 actions')
-raise SystemExit(1)
+raise SystemExit(int(a.key != 'none' or a.candidate != 'none'))
 `);
 git('add','.');git('commit','-m','fixture');
 const projectId='proj_test', first='thr_first', second='thr_second';
@@ -84,12 +88,12 @@ try {
    '**Waiting**',
    '- [EXA-3](/plugins/work-board/work-board/task/EXA-3) — blocked by [EXA-4](/plugins/work-board/work-board/task/EXA-4)',
  ].join('\n\n'));
- s=await harness.behavior.callRpc('status',{projectId});assert.equal(s.pending,null);assert.equal(s.managerError,null);assert.equal(s.exitCode,0);assert.ok(s.lastRun);assert.equal(s.deliveredTo,second);assert.ok(s.deliveredTickId);assert.ok(s.nextRun);assert.match(s.delivered,/alive/);
+ s=await harness.behavior.callRpc('status',{projectId});assert.equal(s.pending,null);assert.equal(s.managerError,null);assert.equal(s.exitCode,0);assert.ok(s.lastRun);assert.equal(s.deliveredTo,second);assert.ok(s.deliveredTickId);assert.ok(s.nextRun);assert.match(s.delivered,/STATE Waiting list is clear/);
  assert.equal(s.deliveredTickId,s.tickId);
  const count=sent.length;
  Date.now=()=>original()+240000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count);
- Date.now=()=>original()+3800000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count+1);
- assert.equal(sent.at(-1).input[0].text, '**Sweep** · `No new actions` · 0 to review · 2 threads · 3 cards checked');
+ Date.now=()=>original()+3800000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count);
+ assert.match(sent.at(-1).input[0].text, /Waiting list is clear/);
  console.log('Sweep retry, redirect, manual-state and status checks passed');
 }finally{await harness.lifecycle.dispose();}
 
@@ -174,6 +178,10 @@ try {
   const repeatedConfig={...config,script:'repeat.py',args:['5','EXA-1','none']};
   await harness.behavior.callRpc('configure',{projectId,config:repeatedConfig});
   await scheduled();
+  const db = bb.storage.database();
+  const legacyState = JSON.parse(db.prepare('SELECT value FROM status WHERE id = ?').get(projectId).value);
+  delete legacyState.lastReport.changes;
+  db.prepare('UPDATE status SET value = ? WHERE id = ?').run(JSON.stringify(legacyState),projectId);
   time+=60000;
   const newArgs=['11','EXA-1','none'];
   await Promise.all([set('args',newArgs),set('timeoutSeconds',30)]);
@@ -183,21 +191,21 @@ try {
   await scheduled();
   assert.equal(reports.length,1);assert.equal((await stats()).suppressedReports,1);
   time+=3600000;
-  await scheduled();assert.equal(reports.length,2);assert.equal((await stats()).reminderReports,1);
+  await scheduled();assert.equal(reports.length,1);assert.equal((await stats()).reminderReports,0);
 
   const change=await harness.behavior.runCli(['config','set','args','["11","EXA-2","none"]','--project',projectId]);
   assert.equal(change.exitCode,0);assert.deepEqual(JSON.parse(change.stdout),{args:['11','EXA-2','none']});
-  await scheduled();assert.equal(reports.length,3);
+  await scheduled();assert.equal(reports.length,2);
   await set('args',['11','EXA-2','one']);await scheduled();
   await set('args',['11','EXA-2','two']);await scheduled();
-  assert.equal(reports.length,5);
+  assert.equal(reports.length,4);
   assert.equal(deliveryStore(bb.storage.database()).read(projectId).committed.toString(),'{"value": "two"}');
 
   projectRemote=join(repo,'missing');
   time+=60000;await scheduled();
-  assert.equal((await status()).nextRun,time+60000);assert.equal(reports.length,6);
+  assert.equal((await status()).nextRun,time+60000);assert.equal(reports.length,5);
   time+=60000;await scheduled();
-  assert.equal((await status()).nextRun,time+120000);assert.equal(reports.length,6);
+  assert.equal((await status()).nextRun,time+120000);assert.equal(reports.length,5);
   time+=60000;await scheduled();assert.equal((await stats()).ticks,8);
   const beforeManual=await stats();
   const invalidationsBeforeManual=harness.experimental_rpcInvalidations.length;
@@ -211,11 +219,32 @@ try {
   time+=60000;await scheduled();
   assert.equal((await status()).refreshFailures,0);
   const results=await stats();
-  assert.equal(results.ticks,9);assert.equal(results.executed,9);assert.equal(results.deliveries,7);
-  assert.equal(results.refreshFailures,2);assert.equal(results.suppressedReports,2);
+  assert.equal(results.ticks,9);assert.equal(results.executed,9);assert.equal(results.deliveries,5);
+  assert.equal(results.refreshFailures,2);assert.equal(results.suppressedReports,4);
   assert.equal(results.repeats,6);assert.deepEqual(results.newItems,{'ACTION idle-no-link':2,ANSWER:1});
   const statsCli=await harness.behavior.runCli(['stats','--project',projectId,'--days','1']);
   assert.equal(statsCli.exitCode,0);assert.deepEqual(JSON.parse(statsCli.stdout),results);
+
+  const waits = async (...items) => {
+    await set('args',['11','none','none', ...(items.length ? ['--waits', ...items] : [])]);
+    await scheduled();
+  };
+  await waits();assert.equal(reports.length,5); // Removing a finding alone is quiet.
+  await waits('EXA-5');assert.equal(reports.length,6);
+  assert.equal((await status()).exitCode,0);assert.match(reports.at(-1), /\*\*Waiting\*\*/);
+  await waits('EXA-5','EXA-6');assert.equal(reports.length,7);
+  time+=3600000;
+  await waits('EXA-6','EXA-5');assert.equal(reports.length,7);
+  await waits('EXA-6');assert.equal(reports.length,8);
+  assert.doesNotMatch(reports.at(-1), /EXA-5/);
+  await waits();assert.equal(reports.length,9);assert.match(reports.at(-1), /Waiting list is clear/);
+  await waits();assert.equal(reports.length,9);
+  for (let i=0; i<2; i++) {
+    await set('args',['11','none','uncommitted']);
+    await scheduled();
+  }
+  assert.equal(reports.length,11);
+  assert.equal(deliveryStore(db).read(projectId).committed.toString(),'{"value": "two"}');
 }finally{Date.now=realNow;await repeatHost.harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
 
 assert.equal(formatNotification(0, 'STATE owner-answers: reopened q1\n'), '**Sweep** · `Check complete`\n\n**State changes**\n\n- owner-answers: reopened q1');

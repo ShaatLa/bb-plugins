@@ -24,7 +24,7 @@ export function sweepHistory(db: Database.Database) {
   const seen = db.prepare('INSERT OR IGNORE INTO sweep_items VALUES (?, ?, ?, ?, ?)');
   const repeat = db.prepare('UPDATE sweep_items SET last_at = ? WHERE project = ? AND fingerprint = ?');
   const result = db.prepare('UPDATE sweep_ticks SET executed = 1, repeated = ?, refresh_failed = ?, script_failed = ? WHERE tick = ?');
-  const disposition = db.prepare('UPDATE sweep_ticks SET suppressed = ?, reminder = ? WHERE tick = ?');
+  const suppress = db.prepare('UPDATE sweep_ticks SET suppressed = 1 WHERE tick = ?');
   const delivery = db.prepare('UPDATE sweep_ticks SET manager = manager + ?, answers = answers + ? WHERE tick = ?');
   const failed = db.prepare('UPDATE sweep_ticks SET delivery_failed = 1 WHERE tick = ?');
   const counts = db.prepare(`SELECT count(*) AS ticks, coalesce(sum(executed),0) AS executed,
@@ -49,9 +49,7 @@ export function sweepHistory(db: Database.Database) {
       }
       result.run(repeats, Number(failure === 'refresh'), Number(failure === 'script'), tick);
     }),
-    disposition(tick: string, kind: 'suppress' | 'remind') {
-      disposition.run(Number(kind === 'suppress'), Number(kind === 'remind'), tick);
-    },
+    suppress(tick: string) { suppress.run(tick); },
     delivered(tick: string, answers: boolean) { delivery.run(Number(!answers), Number(answers), tick); },
     deliveryFailed(tick: string) { failed.run(tick); },
     stats(projectId: string, days: number): SweepStats {

@@ -173,7 +173,7 @@ export function SweepOverview({ subPath }: { subPath: string }) {
             <Breakdown title="New items" rows={Object.entries(report.newItems).map(([kind, count]) => [itemLabel(kind), count])} empty="No new items in this period." />
             <Breakdown title="Report delivery" rows={[
               ['To manager', report.manager], ['To Agent Hub or Answers', report.answers],
-              ['Suppressed repeats', report.suppressedReports], ['Reminders queued', report.reminderReports],
+              ['Suppressed repeats', report.suppressedReports],
             ]} />
             <Breakdown title="Scheduled activity" rows={[
               ['Scheduled ticks', report.ticks], ['Checkout failures', report.refreshFailures],

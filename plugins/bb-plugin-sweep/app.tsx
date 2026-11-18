@@ -56,7 +56,7 @@ function ProjectSettings({ projectId, initial, hasRepository, threads, onSave }:
   }, [value, projectId, onSave]);
   return <form ref={form} className="space-y-6" onSubmit={e => e.preventDefault()}>
     <SettingsSection bodyClassName="space-y-5" title="Scheduled checks">
-      <SettingsWithControl label="Enable scheduled checks" description="Send results to the manager and a heartbeat once an hour."><Switch aria-label="Enable scheduled checks" checked={value.enabled} onCheckedChange={enabled => update({ enabled })} /></SettingsWithControl>
+      <SettingsWithControl label="Enable scheduled checks" description="Notify the manager about new findings or changes to Waiting."><Switch aria-label="Enable scheduled checks" checked={value.enabled} onCheckedChange={enabled => update({ enabled })} /></SettingsWithControl>
       <Field label="Manager" hint="The thread that receives check results.">
         <Select value={value.manager || 'none'} onValueChange={manager => update({ manager: manager === 'none' ? '' : manager })}>
           <SelectTrigger aria-label="Manager" className={controlWidth}><SelectValue placeholder="Choose a manager thread" /></SelectTrigger>
