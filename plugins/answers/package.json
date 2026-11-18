@@ -8,8 +8,8 @@
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Answers",
-    "description": "Track questions, answers and saved messages.",
+    "name": "Agent Hub",
+    "description": "Chats, questions and saved messages with your agents in one place.",
     "branding": {
       "icon": "MessageQuestion"
     },

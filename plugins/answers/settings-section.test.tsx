@@ -11,7 +11,7 @@ Element.prototype.setPointerCapture=()=>{};
 Element.prototype.releasePointerCapture=()=>{};
 it('registers Answers and renders preferences with validated time fields and reset',async()=>{
  const app=await loadPluginApp(()=>import('./app'));
- expect(app.settingsSections.find(s=>s.title==='Answers')?.component).toBe(AnswersSettings);
+ expect(app.settingsSections.find(s=>s.title==='Agent Hub')?.component).toBe(AnswersSettings);
  let prefs=preferencesSchema.parse({quietHours:'22:00-08:00',groupByProject:true,projectOrder:'proj_example',remindHours:7});
  const update=vi.fn((patch:unknown)=>prefs={...prefs,...patch as object});
  const slot=renderSlot({component:AnswersSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});

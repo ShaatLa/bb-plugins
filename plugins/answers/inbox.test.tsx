@@ -232,7 +232,7 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   fireEvent.click(slot.getAllByRole('button', { name:'Copy' })[0]!);
   await slot.findByRole('button', { name: 'Copied' });
   expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: 'Question one' });
-  fireEvent.click(slot.getByRole('button', { name:'Save to Answers' }));
+  fireEvent.click(slot.getByRole('button', { name:'Save to Agent Hub' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
 });
 it('edits a sent message as bb does: Edit opens "Editing message" in the composer and submits through threads.editMessage', async () => {
@@ -1276,7 +1276,7 @@ it('opens the selected full transcript and returns to the mounted feed at its sc
   fireEvent.click(slot.getByRole('button', {name:'Full transcript'}));
   expect(slot.getByRole('region', {name:'Full transcript'}).querySelector('[data-thread-chat]')?.getAttribute('data-thread-chat')).toBe('thr_one');
   expect(scroller.getAttribute('aria-hidden')).toBe('true');
-  fireEvent.click(slot.getByRole('button', {name:'Back to Answers'}));
+  fireEvent.click(slot.getByRole('button', {name:'Back to Agent Hub'}));
   await waitFor(() => expect(scroller.scrollTop).toBe(123));
   expect(slot.getByRole('list', {name:'History'})).toBe(feed);
   expect(slot.queryByRole('region', {name:'Full transcript'})).toBeNull();

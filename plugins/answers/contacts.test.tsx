@@ -8,7 +8,7 @@ const rpc = { recipients: () => ({ recipients: rows }), list: () => ({ items: []
 const props = { activeThreadId: null, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate: vi.fn() };
 it('registers contacts, highlights the bb route and opens the Answers conversation', async () => {
   const app = await loadPluginApp(() => import('./app'));
-  expect(app.threadLists[0]).toMatchObject({ id: 'answers', title: 'Answers contacts' });
+  expect(app.threadLists[0]).toMatchObject({ id: 'answers', title: 'Agent Hub contacts' });
   const onNavigate = vi.fn(), slot = renderSlot(app.threadLists[0]!, { ...props, activeThreadId: 'thr_two', onNavigate }, { rpc });
   const list = within(await slot.findByRole('listbox', { name: 'Recipients' }));
   expect((await list.findByRole('option', { name: /two/ })).getAttribute('aria-selected')).toBe('true');

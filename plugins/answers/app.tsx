@@ -32,7 +32,7 @@ const emptyCopy: Record<View, [IconName, string, string]> = {
   waiting: ['Clock', 'Nothing waiting', 'Questions still waiting for an answer show up here.'],
   for_me: ['MessageQuestion', 'No questions for you', 'When an agent asks you something, it shows up here.'],
   pinned: ['Pin', 'Nothing pinned', 'Pin an answer to keep it at hand.'],
-  saved: ['Star', 'Nothing saved', 'Use “Save to Answers” on any chat message to keep it here.'],
+  saved: ['Star', 'Nothing saved', 'Use “Save to Agent Hub” on any chat message to keep it here.'],
   all: ['MessageQuestion', 'No answers yet', 'Your questions and the agents’ answers show up here.'],
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -340,7 +340,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Answers" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
+      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div data-bubble-row className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
@@ -358,7 +358,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         <MessageCopy small text={group.map(member => member.question).filter(Boolean).join('\n\n')} />
         <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />
-        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Answers' : 'Save to Answers')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
+        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
         {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
     </div>}
@@ -568,7 +568,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
-  useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Answers' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);
+  useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Agent Hub' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);
   const list = view === 'saved' || view === 'all';
   // Search and the project filter only help once there is more than one saved message to look through.
   const savedPeek = useQuery({ contract: rpcContract, method: 'list', input: { view: 'saved', limit: 2 }, enabled: view === 'saved' });
@@ -615,7 +615,7 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
     const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, title = thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
     return <section key={entry.key} aria-label={title} className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
       <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={answersThreadHref(entry.threadId)} className="shrink-0 text-xs" onClick={event => { event.preventDefault(); onOpen(entry.threadId); }}>Open thread</UrlLink></header>
-      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Answers', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked shared={rows[entry.threadId]} onAnswered={rowId => settle(entry.threadId, rowId)} />}
+      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Agent Hub', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked shared={rows[entry.threadId]} onAnswered={rowId => settle(entry.threadId, rowId)} />}
     </section>;
   })}</div></div>;
 }
@@ -629,7 +629,7 @@ export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?:
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
   // Open from the start (bb's CollapsibleStackCard always starts collapsed and hid them); header as "Active child threads".
-  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Answers' }} />)}</ul></section>;
+  const card = <section aria-label="Questions for you"><div className="flex min-h-9 items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span></div><ul aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
 // bb shows its own blocking question forms in its chat; this banner adds only the agents' open questions.
@@ -688,10 +688,10 @@ function AnswersPage() {
 }
 
 export default definePluginApp(app => {
-  app.slots.settingsSection({id:'settings',title:'Answers',description:'Notifications, conversations and agent warnings.',component:AnswersSettings});
+  app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AnswersSettings});
   registerChatCommands(app);
-  app.slots.experimental_threadList({ id: 'answers', title: 'Answers contacts', description: 'Open your Answers conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
-  app.slots.navPanel({ id: 'answers', title: 'Answers', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
+  app.slots.experimental_threadList({ id: 'answers', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AnswersContacts) });
+  app.slots.navPanel({ id: 'answers', title: 'Agent Hub', icon: 'MessageQuestion', path: 'answers', component: guarded('page', AnswersPage), experimental_useBadge: useAnswersBadge });
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AnswersPanel) });
   app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });
   app.slots.experimental_tab({ id: 'diff', title: 'Diff', icon: 'FileDiff', context: { kind: 'nav-panel', panelId: 'answers' }, availability: 'fixed', component: () => <CrashGuard where="Diff tab"><DiffTab /></CrashGuard> });
@@ -713,7 +713,7 @@ export default definePluginApp(app => {
     const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
     window.dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: { quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq, threadId: message.threadId, composer, top: rect?.bottom ?? window.innerHeight / 2, left: rect?.left ?? window.innerWidth / 2 } }));
   } });
-  app.slots.messageAction({ id: 'save', title: 'Save to Answers', icon: 'Star', async run({ threadId, message, selectedText, experimental_panel }) {
+  app.slots.messageAction({ id: 'save', title: 'Save to Agent Hub', icon: 'Star', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.save.input.parse({ threadId, seq: message.experimental_messageSeq, role: message.role, text: selectedText ?? message.text });
     // Message actions have no React hook context; use the public plugin RPC endpoint.
     const response = await fetch('/api/v1/plugins/answers/rpc/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });

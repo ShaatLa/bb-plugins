@@ -106,9 +106,9 @@ describe('Answers app', () => {
   });
   it('registers navigation, thread tab and message action and renders the inbox', async () => {
     const { app, slot, list } = await setup();
-    expect(app.navPanels[0]).toMatchObject({ title: 'Answers', icon: 'MessageQuestion' });
+    expect(app.navPanels[0]).toMatchObject({ title: 'Agent Hub', icon: 'MessageQuestion' });
     expect(app.tabs[0]).toMatchObject({ title: 'My questions', context: { kind: 'thread' }, availability: 'fixed' });
-    expect(app.messageActions.find(action => action.id === 'save')).toMatchObject({ title: 'Save to Answers' });
+    expect(app.messageActions.find(action => action.id === 'save')).toMatchObject({ title: 'Save to Agent Hub' });
     expect(slot.getByText('The answer')).toBeTruthy();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', threadId: 'thr_one', limit: 50 }));
     pickView(slot, 'Awaiting answer');
