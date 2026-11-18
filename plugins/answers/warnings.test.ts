@@ -6,11 +6,11 @@ import { migrations } from './schema';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {for (const f of cleanup.splice(0)) await f();});
 const handoff = '[answers] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.';
-const question = '[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` (or on the Work Board card) and end the turn.';
+const question = '[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.';
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
  let events:any[]=[], seq=0;
- const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
+ const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
  const db=host.bb.storage.database(); db.exec(migrations.join('\n'));
  const notifier=createNotifier(host.bb,db);
  const driver=createDriver(host.bb,db,() => {},undefined,async () => (await notifier.settings.get()).handoffWarnings);
@@ -50,4 +50,10 @@ it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does n
  if(mode==='archived') {s.db.prepare('INSERT INTO archived_threads VALUES (?)').run('thr_example'); s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,archivedAt:1}));}
  if(mode==='disabled') await s.notifier.settings.experimental_set({handoffWarnings:false});
  await s.turn(undefined,mode==='owner-handoff' ? {} : undefined,undefined,mode==='backfill'); expect(s.send).not.toHaveBeenCalled();
+});
+
+it.each([['bb work-board question add EXA-1',true],['example-tracker ask',false],['answers_ask',false]])('uses project channel fragments for %s',async (tool,warn) => {
+ const s=setup(); await s.bb.storage.kv.set('config:project:proj_example',{channelCommands:['example-tracker ask']});
+ await s.control(); await s.turn('Shall I continue?',undefined,tool);
+ expect(s.send.mock.calls.length).toBe(warn ? 1 : 0);
 });

@@ -28,3 +28,5 @@ Where the user sees things (name these places when you point the user to them; t
 A script or background process that wakes its own thread with `bb thread tell` must start the text with a `[tag]` (a letter first, 3–60 characters, then a space), e.g. `[merge-queue watcher] …`; bb records such messages as the user's, and without the tag Answers treats them as the user's questions.
 
 Reply pools: the user collects quotes from answers (Add to reply pool in the send menu of the quote and comment popups) and sends them as one message. Quote limit: 20,000 characters; note: 8,000; combined pool message: 32,000. On uncertain delivery, check the thread before retrying; never auto-resend.
+
+Channel detection is project-specific: `channelCommands` defaults to `["work-board question add"]`. Commands containing any configured fragment count as an explicit question channel; `answers_ask` always counts. Threads without a project use the default. This detection does not prescribe where agents must ask questions.

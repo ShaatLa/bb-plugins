@@ -1,3 +1,4 @@
+import { projectSchema } from './project-config';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
@@ -62,7 +63,7 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
-export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number) => void): boolean {
+export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
  let hidden = 0;
@@ -132,8 +133,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   } else if (e.type === 'item/completed' && turn && d.item && !d.item.parentToolCallId && d.item.type !== 'agentMessage') {
    // Any other top-level item: the turn is busy, and a tool result after a steer means the agent's next step sees it.
    hidden += db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=? AND busy=0').run(threadId,turn).changes;
-   // Asked through a channel this turn: answers_ask, or a Work Board card question (bb work-board question add).
-   if (/answers_ask|work-board question add/.test(`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`)) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
+   // Explicit channels suppress the chat-question fallback.
+   if (['answers_ask',...channelCommands].some(fragment => (`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`).includes(fragment))) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
    if (d.item.type !== 'reasoning') hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
    hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
@@ -147,7 +148,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const warningTriggered = update?.source_id === 'answers' && update.question.startsWith('[answers]');
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` (or on the Work Board card) and end the turn.', e.createdAt ?? 0);
+     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.', e.createdAt ?? 0);
      else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[answers] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);

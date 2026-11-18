@@ -13,7 +13,7 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers tracks user messages and final replies. For a later answer, call answers_defer; when it arrives, answers_list then answers_resolve. Ask decisions via answers_ask, then end the turn. With no pending question, call answers_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Work Board decisions, checks, acceptance and design reviews go on the task (bb work-board question add KEY), never answers_ask or chat. Scripts waking their own thread via bb thread tell start with a [tag].";
+export const INSTRUCTIONS = "Answers tracks user messages and final replies. For a later answer, call answers_defer; when it arrives, answers_list then answers_resolve. Ask decisions via answers_ask, then end the turn. With no pending question, call answers_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Scripts waking their own thread via bb thread tell start with a [tag].";
 const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
 const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());

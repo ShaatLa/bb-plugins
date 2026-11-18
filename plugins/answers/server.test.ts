@@ -964,3 +964,5 @@ it('jumps directly to a stored sequence and pages newer history only on demand',
   expect(newer.newerCursor).toBe('8|ans_example_8');
   expect(db.prepare('SELECT count(*) n FROM items WHERE read_at IS NOT NULL').get()).toEqual({n:0});
 });
+
+it('keeps Work Board rules out of Answers instructions',()=>{expect(INSTRUCTIONS).not.toMatch(/Work Board|work-board/);});

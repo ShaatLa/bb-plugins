@@ -1,3 +1,4 @@
+import { getProjectConfig } from './project-config';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
 import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
@@ -73,10 +74,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     let thread: Thread;
     try { thread = listed ?? await bb.sdk.threads.get({threadId:id,signal}); projectId = thread.projectId; questions = !thread.parentThreadId; }
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
+    const {channelCommands} = await getProjectConfig(bb,projectId);
     let changed = false;
     async function apply(events: Event[]) {
       const warnings: string[] = [];
-      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);}))() || changed;
+      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);},channelCommands))() || changed;
       for (const text of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
         try {await bb.sdk.threads.send({threadId:id,originPluginId:'answers',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
