@@ -171,6 +171,20 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("keeps a check's steps with the question and replaces them on update", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Steps", "--prefix", "STP"]);
+    await harness.runCli(["create", "--project", "STP", "--title", "Steps"]);
+    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "STP-1", "--kind", "check", "--prompt", "Does the form save?", "--step", "Open the form", "--step", "Press Save", "--json"]))).question;
+    expect(question.steps).toEqual(["Open the form", "Press Save"]);
+    const kept = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(question.revision), "--prompt", "Does the form save twice?", "--json"]))).question;
+    expect(kept.steps).toEqual(["Open the form", "Press Save"]);
+    const replaced = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(kept.revision), "--step", "Press Save twice", "--json"]))).question;
+    expect(replaced).toMatchObject({ prompt: "Does the form save twice?", steps: ["Press Save twice"] });
+    await harness.dispose();
+  });
+
   it("compacts answered questions and names the full history command", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

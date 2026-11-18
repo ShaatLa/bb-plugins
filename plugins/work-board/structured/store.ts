@@ -162,6 +162,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         kind: input.kind ?? "decision",
         askedByThread: input.askedByThread ?? null,
         prompt: input.prompt,
+        steps: input.steps ?? [],
         mode: input.mode,
         allowOther: true,
         options: (input.kind === "check" && !input.options.length ? ["Confirmed", "Problem found"] : input.options).map((option) => ({
@@ -305,6 +306,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         }));
         const content = {
           prompt: input.prompt.trim(),
+          steps: input.steps?.map((step) => step.trim()) ?? current.steps,
           mode: input.mode,
           options,
           allowOther: true,

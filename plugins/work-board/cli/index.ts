@@ -1238,7 +1238,7 @@ export function registerTasksCli(
           ],
         ),
         "question add": cliCommand({
-          summary: "Ask the owner one decision or one check (short, one link; details go in a comment)",
+          summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
@@ -1246,6 +1246,11 @@ export function registerTasksCli(
               type: "string",
               required: true,
               description: "One or two short sentences, at most one link; evidence and history go in a task comment",
+            },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10)",
             },
             option: {
               type: "string",
@@ -1299,6 +1304,7 @@ export function registerTasksCli(
                   kind: input.options.kind ?? "decision",
                   askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
+                  steps: input.options.step,
                   options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
                       ? {
@@ -1316,7 +1322,7 @@ export function registerTasksCli(
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
                   ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
                 ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
-                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1448,6 +1454,11 @@ export function registerTasksCli(
               type: "string",
               description: "Replacement question text",
             },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps)",
+            },
             mode: {
               type: "enum",
               values: ["single", "multiple"],
@@ -1520,6 +1531,7 @@ export function registerTasksCli(
                 questionId: current.id,
                 revision: input.options.revision,
                 prompt: input.options.prompt ?? current.prompt,
+                ...(input.options.step.length ? { steps: input.options.step } : {}),
                 mode: input.options.mode ?? current.mode,
                 options,
                 reopen: input.options.reopen,

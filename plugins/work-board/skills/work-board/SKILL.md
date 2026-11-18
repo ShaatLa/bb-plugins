@@ -351,7 +351,7 @@ Use a decision when you cannot proceed without a choice, or a check when you kno
 Owner rules for questions (2026-11-13; the owner found a 3,600-character acceptance question unreadable):
 1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
 2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link.
-3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
+3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
@@ -360,7 +360,7 @@ The owner can withdraw a saved answer. You then get a notification "Answer withd
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
-bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
 ```
 
 Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.

@@ -475,8 +475,10 @@ Use a decision when you cannot proceed without a choice, or a check when you kno
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
-bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
 ```
+
+Repeat `--step` to give a check its "How to check" steps: the card lists them, numbered, between the question and the answers, so the owner does not look for them in comments. `question update --step …` replaces the steps; without `--step` it keeps them.
 
 Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
 

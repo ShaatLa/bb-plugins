@@ -209,6 +209,15 @@ describe("question and evidence UI", () => {
     expect(slot.navigateCalls).toContainEqual(expect.objectContaining({ method: "openUrl", url: "http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark" }));
   });
 
+  it("lists a check's steps between the question and its answers", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the form save?", steps: ["Open the form", "Press Save"], mode: "single", options: [] });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const group = await slot.findByRole("group", { name: "Does the form save?" });
+    const steps = within(group).getByRole("list", { name: "How to check" });
+    expect(within(steps).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Open the form", "Press Save"]);
+  });
+
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
     const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,

@@ -423,8 +423,10 @@ bb work-board delegate PROD-1 --preset "GPT-5.6 · high"
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
-bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
 ```
+
+Повторяйте `--step`, чтобы дать проверке шаги «Как проверить»: карточка показывает их нумерованным списком между вопросом и вариантами ответа, и владельцу не нужно искать их в комментариях. `question update --step …` заменяет шаги, без `--step` они сохраняются.
 
 Оба типа поддерживают варианты ответов и свободный текст. Для decision необходимо указать хотя бы один вариант. Если варианты не заданы, check по умолчанию принимает значения Confirmed и Problem found; явные варианты переопределяют эти параметры. Тип Multiple choice допускает выбор нескольких вариантов. Тип — это просто метка, он не меняет процесс обработки ответов. Ответ отправляется в поток агента, задавшего вопрос (queue-if-active); для старых вопросов используется привязанный поток или последний комментатор-агент.
 

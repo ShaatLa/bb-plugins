@@ -185,6 +185,8 @@ const questionStateSchema = z
     kind: z.enum(["decision", "check"]).default("decision"),
     askedByThread: evidenceThreadSchema.nullable().default(null),
     prompt: nonBlankStringSchema.max(10_000),
+    /** "How to check": short ordered steps shown under the prompt. */
+    steps: z.array(nonBlankStringSchema.max(500)).max(10).default([]),
     mode: z.enum(["single", "multiple"]),
     options: z
       .array(questionOptionInputSchema.extend({ id: idSchema }))
@@ -837,6 +839,7 @@ export const tasksRpcContract = {
         kind: z.enum(["decision", "check"]).default("decision"),
         askedByThread: evidenceThreadSchema.nullable().default(null),
         prompt: nonBlankStringSchema.max(10_000),
+        steps: z.array(nonBlankStringSchema.max(500)).max(10).optional(),
         mode: z.enum(["single", "multiple"]).default("single"),
         allowOther: z.boolean().optional(),
         options: z
@@ -877,6 +880,8 @@ export const tasksRpcContract = {
         questionId: idSchema,
         revision: z.number().int().positive(),
         prompt: nonBlankStringSchema.max(10_000),
+        /** Omitted keeps the current steps; [] clears them. */
+        steps: z.array(nonBlankStringSchema.max(500)).max(10).optional(),
         mode: z.enum(["single", "multiple"]),
         options: z
           .array(questionOptionInputSchema.extend({ id: idSchema.optional() }))
