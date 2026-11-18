@@ -1153,7 +1153,7 @@ async function selectPassage(options: Parameters<typeof setup>[0] = {}) {
 it('shows selection actions without opening a dialog or moving focus', async () => {
   const before = document.activeElement, { slot } = await selectPassage();
   expect(slot.getByRole('toolbar', { name: 'Selected passage' })).toBeTruthy();
-  for (const name of ['Add to chat', 'Add to reply pool', 'Comment', 'Save to Answers']) expect(within(slot.getByRole('toolbar')).getByRole('button', { name })).toBeTruthy();
+  for (const name of ['Add to chat', 'Add to reply pool', 'Comment', 'Save']) expect(within(slot.getByRole('toolbar')).getByRole('button', { name })).toBeTruthy();
   expect(slot.queryByRole('dialog', { name: 'Quote reply' })).toBeNull(); expect(document.activeElement).toBe(before);
 });
 it('opens the selected quote only on Comment', async () => {
@@ -1167,13 +1167,13 @@ it('adds a selection directly to the pool with its source', async () => {
 });
 it('saves the selected assistant passage', async () => {
   const save = vi.fn(() => ({ ok: true })); const { slot } = await selectPassage({ rpc: { save } });
-  fireEvent.click(within(slot.getByRole('toolbar')).getByRole('button', { name: 'Save to Answers' }));
+  fireEvent.click(within(slot.getByRole('toolbar')).getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith({ threadId: 'thr_one', seq: 2, role: 'assistant', text: 'Answer one' }));
   expect((await slot.findByRole('status')).textContent).toBe('Saved');
 });
 it('hides selection Save without a sequence', async () => {
   const { slot, body } = await selectPassage(); delete body.dataset.seq; fireEvent.mouseUp(body);
-  expect(within(slot.getByRole('toolbar')).queryByRole('button', { name: 'Save to Answers' })).toBeNull();
+  expect(within(slot.getByRole('toolbar')).queryByRole('button', { name: 'Save' })).toBeNull();
 });
 it('appends a Markdown quote to the existing thread draft and focuses it', async () => {
   const { slot, body } = await selectPassage(); const editor = slot.getByRole('textbox', { name: 'Send message' });
