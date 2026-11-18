@@ -260,6 +260,11 @@ describe('reply pools and inbox',()=>{
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_w','update','t','waiting','[bb message from thread:thr_c] **Review** done',1,'agent','thr_c',1,1)").run();
   expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review done');
  });
+ it('cleans contact previews with full thread ids, links, emphasis and sender headers',async()=>{
+  const {harness,db}=setup(undefined,async (args:any)=>(args?.threadIds ?? []).map((id:string)=>makeThreadResponse({id,projectId:'p',title:id==='thr_manager-one' ? 'Manager' : 'Worker'})));
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_inline','update','t','waiting',?,1,'agent','thr_manager-one',1,1)").run('[bb message from thread:thr_manager-one] **Review** [docs](https://example.com) @thread:thr_worker_two#msg=4 /optimize');
+  expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review docs @Worker /optimize');
+ });
  it('counts an update as unread in contacts and views, never as waiting or saved, and refuses replies to it',async()=>{
   const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,answer_seq,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_u','update','t','answered','[bb system] done','Report',5,'system','thr_c',1,1)").run();

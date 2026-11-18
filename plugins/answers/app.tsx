@@ -1,3 +1,4 @@
+import { useThreadCommands, commandMention } from './thread-commands';
 import { AnswersContacts } from './contacts';
 import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
@@ -187,7 +188,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   const key = items[0]!.id, [open, setOpenState] = useState(() => openGroups().includes(key)), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
-  const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it; the earlier
   // updates open above the latest, like older messages in a chat.
   // Opening shows the latest update whole: its end just above the composer, or its start under the chat's header when it
@@ -214,7 +215,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
         {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words">{previewText}</span></p>}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="block truncate"><UserText threadId={last.threadId} text={previewText} /></span></p>}
     </div>
   </li>;
 }
@@ -228,7 +229,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
   // files), without time or buttons; a click goes to the question.
-  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground").replace("py-2.5", "py-1.5")} flex cursor-pointer items-center gap-1.5 text-left hover:text-foreground`} onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate [&_a]:pointer-events-none"><UserText text={echoLine(member.question)} prefixes={workBoard?.projects.map(p => p.prefix)} /></span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
+  const echo = (member: Item) => <button key={`echo-${member.id}`} type="button" title="Go to the question" className={`${userBubble.replace("text-foreground", "text-muted-foreground").replace("py-2.5", "py-1.5")} flex cursor-pointer items-center gap-1.5 text-left hover:text-foreground`} onClick={() => onJump?.(member.id)}><Icon name="ArrowTurnBackward" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate [&_a]:pointer-events-none"><UserText threadId={member.threadId} text={echoLine(member.question)} prefixes={workBoard?.projects.map(p => p.prefix)} /></span>{member.attachments.length > 0 && <span className="shrink-0">· {attachmentsText(member.attachments)}</span>}</button>;
   const [menu, setMenu] = useState<'main' | 'snooze' | 'task' | 'robot' | null>(null), moreButton = useRef<HTMLButtonElement>(null), menuBox = useRef<HTMLDivElement>(null), robotButton = useRef<HTMLButtonElement>(null);
   // The menu is portaled out of scrolling, clipping cards (Questions, the stack above the composer), so it follows its button.
   const [menuAt, setMenuAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
@@ -336,7 +337,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {chat && item.trigger?.kind === 'agent' && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={item.question.replace(/^\[bb message from [^\]]*\]\s*/, '')} /></div></div>}
     </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
-      {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
+      {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         <Button size="sm" {...iconProps(copied ? 'Copied' : 'Copy')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void navigator.clipboard?.writeText(group.map(member => member.question).filter(Boolean).join('\n\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}><Icon name={copied ? 'Check' : 'Copy'} aria-hidden /></Button>
@@ -358,7 +359,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {part !== 'question' && item.answer && <>{/* An agent's question carries its asking turn, but the owner's reply has no work behind it. */}{chat && item.turnId && item.kind !== 'for_me' && <div className="px-2"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} sourceSeqEnd={item.answerSeq} startedAt={item.createdAt} completedAt={item.answeredAt ?? item.updatedAt} answerSeq={item.answerSeq} /></div>}{item.kind !== 'for_me' ? agentBody(item.answer, item.answerSeq)
       /* The owner's reply goes into the chat as their own message (the question quoted), so the conversation shows that one
          bubble; elsewhere it stands under the question on the owner's side, as bb draws the owner's messages. */
-      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
+      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText threadId={item.threadId} text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
     {!answeredHere && <>{interimReply}</>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.failedAt !== null && <div className="flex items-center gap-2 px-2 text-xs text-destructive">Turn failed <Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('retryTurn', { id: last.id }))}>Retry</Button></div>}
@@ -387,7 +388,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
-    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
+    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
       {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {replying && <ComposerThread.Provider value={item.threadId}><div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div></ComposerThread.Provider>}
     {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
@@ -455,16 +456,16 @@ const viewOptions: ViewOption[] = [
 
 // User text stays plain (no Markdown reflow); only thread mentions go through bb's renderer to become chips.
 // Thread mentions and Markdown links (the composer stores task chips as links) render through bb as a whole.
-const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9]+)(?![\w/])/g;
-const MENTION = /(@thread:thr_[A-Za-z0-9]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
-export function InlineCommentText({ text, prefixes }: { text: string; prefixes?: string[] }) {
+const THREAD_URL = /\bhttps?:\/\/[^\s/]+(?:\/projects\/[\w-]+)?\/threads\/(thr_[A-Za-z0-9_-]+)(?![\w/])/g;
+const MENTION = /(@thread:thr_[A-Za-z0-9_-]+(?:#msg=\d+)?|\[[^\]\n]+\]\([^)\s]+\))/;
+export function InlineCommentText({ text, prefixes, threadId }: { text: string; prefixes?: string[]; threadId?: string }) {
   const parsed = parseInlineComments(text);
   return <div className="space-y-2">{parsed.comments.map((entry, index) => <div key={index}>
-    {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3">{entry.passage}</div></div>}
-    {entry.comment && <div>{entry.comment}</div>}
+    {entry.passage && <div className="border-l-2 border-border-seam pl-2 text-muted-foreground"><div className="line-clamp-3"><UserText text={entry.passage} prefixes={prefixes} threadId={threadId} /></div></div>}
+    {entry.comment && <div><UserText text={entry.comment} prefixes={prefixes} threadId={threadId} /></div>}
   </div>)}{quoteSegments(parsed.text).map((part, index) => part.quote
-    ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><Markdown content={part.text} /></div></div>
-    : <div key={`t${index}`}><UserText text={part.text} prefixes={prefixes} /></div>)}</div>;
+    ? <div key={`q${index}`} className="border-l-2 border-border-seam pl-2 text-muted-foreground [&_p]:m-0"><div className="line-clamp-3"><UserText text={part.text} prefixes={prefixes} threadId={threadId} /></div></div>
+    : <div key={`t${index}`}><UserText text={part.text} prefixes={prefixes} threadId={threadId} /></div>)}</div>;
 }
 // One line for a question's echo: the owner's own words (before any quote they replied to, or their inline comment), without
 // block and emphasis marks; mentions, links and task keys stay for UserText to draw as in the full bubble.
@@ -483,13 +484,21 @@ export function quoteSegments(text: string) {
   return parts.map(part => ({ ...part, text: part.text.trim() })).filter(part => part.text);
 }
 
-export function UserText({ text, prefixes = [] }: { text: string; prefixes?: string[] }) {
+export function UserText({ text, prefixes, threadId }: { text: string; prefixes?: string[]; threadId?: string }) {
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
-  const task = taskKeyRegex(prefixes);
+  const contextThread = useContext(ComposerThread), commands = useThreadCommands(threadId ?? contextThread);
+  const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
+  const task = taskKeyRegex(prefixes ?? workBoard?.projects.map(p => p.prefix) ?? []);
+  const plain = (text: string, start: boolean) => text.split(/((?:^|\s)[/$][^\s]+)/).map((part, i) => {
+    const match = /^(\s*)([/$])([^\s]+)$/.exec(part), command = match && commands.find(c => c.name === match[3]);
+    if (!match || !command || (!start && !match[1])) return part;
+    const mention = commandMention(command, match[2] as '/' | '$'), look = experimental_describePromptMention(mention);
+    return <Fragment key={i}>{match[1]}<span title={look.title} aria-label={look.text} className={`${look.className} bg-surface-raised/50 font-normal no-underline hover:no-underline cursor-default whitespace-nowrap`}>{command.source === 'skill' ? <Icon name="Zap" aria-hidden className="size-3.5 shrink-0 self-center text-muted-foreground" /> : <PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" />}<span className="truncate">{mention.label}</span></span></Fragment>;
+  });
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
   // A pasted bb thread link reads as that thread's mention pill, as bb's composer turns it into one.
   return <>{text.replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
-    : task ? part.split(task).map((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : piece) : [part])}</>;
+    : task ? part.split(task).flatMap((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : plain(piece, index === 0 && j === 0)) : plain(part, index === 0))}</>;
 }
 
 function ViewPicker({ options, value, onChange }: { options: ViewOption[]; value: View | 'inbox'; onChange: (value: View | 'inbox') => void }) {

@@ -92,3 +92,5 @@ bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin an
 The Answers side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board lists linked tasks and opens them in-app. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
 
 The chat’s Owed card lets you jump to, confirm or dismiss older deferred answers; they expire after three days without answer movement.
+
+Сообщения владельца остаются обычным текстом: ссылки, задачи Work Board, упоминания тредов и известные команды или скилы после `/` и `$` показываются плашками, как в поле ввода. Это работает и в цитатах, эхо ответа, очереди и списке ожидаемых ответов. Превью Background updates занимает одну строку и сохраняет плашки тредов; ответы агента и сообщения плагинов используют Markdown bb.

@@ -544,7 +544,7 @@ it('shows a quoted queued reply as the quote line and the message line', async (
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'> Quoted passage\n\nMy reply', mentions:[] }], updatedAt:1 };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) } }); fireEvent.click(await recipients.findByRole('option'));
   const card = await slot.findByRole('region', { name:'Queued messages' });
-  await waitFor(() => expect(within(card).getAllByTestId('bb-markdown').map(node => node.textContent)).toEqual(['Quoted passage', 'My reply']));
+  expect(within(card).getByText('Quoted passage')).toBeTruthy(); expect(within(card).getByText('My reply')).toBeTruthy();
 });
 it('renders queued messages and sends or deletes them through the SDK', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }], updatedAt:1 };
