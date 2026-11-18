@@ -23,7 +23,7 @@ export type Entry = {
 };
 
 /** Version date string for the pricing table. */
-export const PRICE_TABLE_VERSION = "2026-11-15";
+export const PRICE_TABLE_VERSION = "2026-11-18";
 
 /**
  * All known model price entries.
@@ -130,6 +130,28 @@ export const PRICES: Record<string, Entry> = {
 
   // ────────────────────────────────────────────── OpenAI ──────────────────────────────────────────
 
+  // gpt-6.2: not in the Flex table. shortcut: ultrafast is the 3x promo rate through 2027-02-28 (6x from
+  // 2027-03-01) and costs are computed at read time, so raise it to 6 then; past ultrafast rows will reprice.
+  "gpt-6.2-astra": {
+    rates: { input: 8, cacheRead: 0.40, cacheWriteShort: 10, cacheWriteLong: 20, output: 40 },
+    long: {
+      aboveTokens: 272_000,
+      rates: { input: 16, cacheRead: 0.80, cacheWriteShort: 20, cacheWriteLong: 40, output: 60 },
+    },
+    tiers: { standard: 1, fast: 2, batch: 0.5, ultrafast: 3 },
+    verified: true,
+    source: "developers.openai.com/api/docs/pricing 2026-11-18",
+  },
+  "gpt-6.2-sol": {
+    rates: { input: 2, cacheRead: 0.10, cacheWriteShort: 2.50, cacheWriteLong: 5, output: 10 },
+    long: {
+      aboveTokens: 272_000,
+      rates: { input: 4, cacheRead: 0.20, cacheWriteShort: 5, cacheWriteLong: 10, output: 15 },
+    },
+    tiers: { standard: 1, fast: 2, batch: 0.5, ultrafast: 3 },
+    verified: true,
+    source: "developers.openai.com/api/docs/pricing 2026-11-18",
+  },
   "gpt-6.1-sol": {
     rates: { input: 2, cacheRead: 0.10, cacheWriteShort: 2.50, cacheWriteLong: 5, output: 10 },
     long: {
