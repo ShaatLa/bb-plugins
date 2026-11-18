@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { GateActivity } from "./activity";
 import { Button } from "./components/ui/button";
@@ -80,12 +80,9 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
     }, error => { if (active) setError(String(error)); });
     return () => { active = false; };
   }, [rpc]);
-  if (error) return <p role="alert">{error}</p>;
-  if (!projects) return <p>Loading projects…</p>;
-  if (!projects.length) return <p>Create a project in bb first.</p>;
-  const project = projects.find(p => p.id === selected)!;
-  const controls = <div className="flex flex-wrap items-center gap-3">
-    <Select value={selected} onValueChange={setSelected}>
+  const project = projects?.find(p => p.id === selected);
+  const controls = project && projects ? <>
+    <Select value={selected} onValueChange={setSelected} disabled={projects.length === 1}>
       <SelectTrigger aria-label="Project" className="w-56 max-w-full"><SelectValue /></SelectTrigger>
       <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
     </Select>
@@ -106,14 +103,27 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
         }}
       />
     </label>
+  </> : null;
+  const header = showActivity ? <header className="flex flex-wrap items-center justify-between gap-3">
+    <h1 className="text-xl font-semibold">Spawn Gate</h1>
+    <div className="flex flex-wrap items-center gap-3">
+      {controls}
+      <Button asChild variant="outline" size="icon">
+        <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
+          <Icon name="Settings" />
+        </UrlLink>
+      </Button>
+    </div>
+  </header> : project && <SettingsSection title="Project">
+    <SettingsWithControl label="Project"><div className="flex flex-wrap items-center gap-3">{controls}</div></SettingsWithControl>
+  </SettingsSection>;
+
+  if (!project) return <div className="space-y-5">
+    {header}
+    {error ? <p role="alert">{error}</p> : <p>{projects ? "Create a project in bb first." : "Loading projects…"}</p>}
   </div>;
   return <div className="space-y-5">
-    {showActivity ? <header className="flex flex-wrap items-center justify-between gap-3">
-      <h1 className="text-xl font-semibold">Spawn Gate</h1>
-      {controls}
-    </header> : <SettingsSection title="Project">
-      <SettingsWithControl label="Project">{controls}</SettingsWithControl>
-    </SettingsSection>}
+    {header}
     <p role="alert" className="text-xs text-destructive empty:hidden">{saveError}</p>
     {showActivity ? <>
       <GateActivity key={selected} projectId={selected} days={days} onDaysChange={setDays} />
