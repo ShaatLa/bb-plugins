@@ -83,7 +83,9 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const project = projects?.find(p => p.id === selected);
   const controls = project && projects ? <>
     <Select value={selected} onValueChange={setSelected} disabled={projects.length === 1}>
-      <SelectTrigger aria-label="Project" className="w-56 max-w-full"><SelectValue /></SelectTrigger>
+      <SelectTrigger aria-label="Project" className={showActivity ? "h-8 w-auto max-w-48 gap-2 px-2.5 py-1 text-xs [&>svg]:shrink-0" : "w-56 max-w-full"}>
+        <SelectValue />
+      </SelectTrigger>
       <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
     </Select>
     <label className="flex items-center gap-2 text-sm">
@@ -108,7 +110,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
     <h1 className="text-xl font-semibold">Spawn Gate</h1>
     <div className="flex flex-wrap items-center gap-3">
       {controls}
-      <Button asChild variant="outline" size="icon">
+      <Button asChild variant="ghost" size="icon" className="size-8">
         <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
           <Icon name="Settings" />
         </UrlLink>
