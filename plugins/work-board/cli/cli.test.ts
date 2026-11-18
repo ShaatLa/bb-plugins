@@ -279,6 +279,11 @@ describe("bb work-board CLI", () => {
       expect(unsent.exitCode).toBe(1);
       expect(unsent.stderr).toContain("Saved the blocker report as Current state of REP-1, but could not wake parent thr_parent");
       expect((await card()).progressNote).toBe("**BLOCKER**\n\nCI is red");
+
+      harness.sdk.stub("threads.send", async () => ({}) as never);
+      await harness.runCli(["update", "REP-1", "--progress", "Working on it\nHandoff: /notes/example.md"], { threadId: "thr_child" });
+      await report("thr_child", "--kind", "ready", "--body", "Done");
+      expect((await card()).progressNote).toBe("Handoff: /notes/example.md\n\n**READY**\n\nDone");
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
   });
 

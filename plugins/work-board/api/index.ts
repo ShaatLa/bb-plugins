@@ -548,7 +548,9 @@ export async function reportToParent(
   const task = store.tasks.getTask(input.taskId)!;
   const stateUpdated = !role.helper;
   if (stateUpdated) {
-    const progressNote = fitState(`**${label}**\n\n${input.body}`, `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
+    // A "Handoff:" line points a compacted or successor session at its notes; a report must not drop it.
+    const handoff = (task.progressNote ?? "").split("\n").filter((line) => line.startsWith("Handoff:"));
+    const progressNote = fitState([...handoff, `**${label}**\n\n${input.body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
     store.transaction(() => store.tasks.updateTask(task.id, { progressNote, authorName: input.threadId }));
     publishTasksChanged(bb, task.id, task.projectId);
   }
