@@ -118,3 +118,5 @@ Coarse-pointer controls have at least 40×40px targets, with desktop spacing and
 The selected chat header shows the host-rendered title, a parent link that opens in Answers, and bb’s thread actions menu. Rename uses bb’s dialog; lifecycle confirmations and selection fallback remain host-driven.
 
 Copy link is in the existing More menu for agent messages; owner bubbles and interim replies without their own menu use an icon action.
+
+With a chat open on desktop, its avatar and title, section selector, inline search, Mark all read and thread actions share one toolbar row. Phones keep Back, title, inline search and thread actions in the chat header.

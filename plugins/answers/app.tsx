@@ -567,21 +567,23 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   // With our list in bb's sidebar the page column only repeats it, so it and its toggle go.
   const inSidebar = useSidebarContacts();
   const [chatSearch, setChatSearch] = useState(false), [chatOpen, setChatOpen] = useState(false);
+  const [chatTitleTarget, setChatTitleTarget] = useState<HTMLDivElement | null>(null), [chatSearchTarget, setChatSearchTarget] = useState<HTMLDivElement | null>(null), [chatActionsTarget, setChatActionsTarget] = useState<HTMLDivElement | null>(null);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
   // iOS zooms into a focused field under 16px; bb's phone text-sm is 15px, so every field here reads 16px on touch screens.
   return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
     <div className="space-y-2 border-b border-border-seam bg-background px-4 py-2">
-      <div className="flex items-center gap-1">
+      <div data-page-toolbar className="flex items-center gap-1">
+        <div ref={setChatTitleTarget} className="hidden min-w-0 max-w-[40%] items-center gap-2.5 min-[640px]:flex" />
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
           // Markup of bb's Preview/Source switch.
           : <div role="tablist" aria-label="Section" className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">{([['Chats', 'chats'], ['Questions', 'questions'], ['Saved', 'saved']] as const).map(([label, key]) => <Button key={label} type="button" size="sm" variant="ghost" className="h-6 gap-1.5 rounded-sm px-2 text-xs text-muted-foreground max-md:pointer-coarse:h-9" aria-pressed={section === key} onClick={() => setSection(key)}>{label}{key === 'questions' && questionCount > 0 && <span aria-label={`${questionCount} pending`} className="rounded-full bg-surface-recessed px-1.5 text-2xs">{questionCount}</span>}</Button>)}</div>}
         <span className="flex-1" />
         {!threadId && !questions && view === 'inbox' && !inSidebar && <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground max-[639px]:hidden" aria-label={contactsHidden ? 'Show contacts' : 'Hide contacts'} aria-pressed={!contactsHidden} onClick={() => setContactsHidden(!contactsHidden)}><Icon name="PanelLeft" aria-hidden /></Button>}
-        {/* The open chat's search toggle (phones keep theirs in the chat's own header). */}
-        {!questions && view === 'inbox' && chatOpen && !bbChat && <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground max-[639px]:hidden" aria-label="Search conversation" aria-pressed={chatSearch} onClick={() => setChatSearch(!chatSearch)}><Icon name="Search" aria-hidden /></Button>}
+        <div ref={setChatSearchTarget} className="hidden min-w-0 items-center min-[640px]:flex" />
         {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
-        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" />Mark all read</Button>}
+        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" aria-label="Mark all read" onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" /><span className={chatOpen && !bbChat ? 'min-[640px]:sr-only' : undefined}>Mark all read</span></Button>}
+        <div ref={setChatActionsTarget} className="hidden items-center min-[640px]:flex" />
       </div>
       {searchable && !questions && <div className="flex gap-2">
         <input aria-label="Search answers" type="search" placeholder={view === 'saved' ? 'Search saved' : 'Search history'} maxLength={4000} className="min-w-0 flex-1 rounded-md border border-border-seam bg-transparent px-2.5 py-1 text-sm outline-none focus:border-ring" value={query} onChange={event => setQuery(event.target.value)} />
@@ -589,7 +591,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{view !== 'saved' && <> · <Button size="sm" variant="ghost" onClick={() => threadId ? setView('saved') : setSection('saved')}>Show in Saved</Button></>}</p>}
-    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox contactsHidden={contactsHidden || inSidebar} onBulkRead={undo.record} bbChat={bbChat} search={chatSearch} onSearch={setChatSearch} onChat={setChatOpen} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox contactsHidden={contactsHidden || inSidebar} onBulkRead={undo.record} bbChat={bbChat} search={chatSearch} onSearch={setChatSearch} onChat={setChatOpen} toolbarTargets={{ title: chatTitleTarget, search: chatSearchTarget, actions: chatActionsTarget }} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }

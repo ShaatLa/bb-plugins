@@ -1187,3 +1187,36 @@ it.each(['collapse', 'Escape'])('dismisses the bar on %s', async mode => {
   if (mode === 'Escape') fireEvent.keyDown(body, { key: 'Escape' }); else { window.getSelection()!.removeAllRanges(); fireEvent.mouseUp(body); }
   expect(slot.queryByRole('toolbar', { name: 'Selected passage' })).toBeNull();
 });
+it('portals the desktop chat header and inline search into the page toolbar', async () => {
+  const title = document.createElement('div'), search = document.createElement('div'), actions = document.createElement('div');
+  const toolbar = document.createElement('div'); toolbar.append(title, search, actions); document.body.append(toolbar);
+  try {
+    const { slot, recipients } = setup({ props: { toolbarTargets: { title, search, actions } } }); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
+    expect(title.textContent).toContain('One');
+    expect(slot.queryByRole('button', { name: 'Open thread' })).toBeNull();
+    expect(slot.container.querySelector('[data-conversation-header]')).toBeNull();
+    fireEvent.click(within(search).getByRole('button', { name: 'Search conversation' }));
+    expect(within(search).getByRole('textbox', { name: 'Search conversation' })).toBeTruthy();
+  } finally { toolbar.remove(); }
+});
+it('keeps phone search inline before the thread actions without an Open thread link', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  try {
+    const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
+    const search = slot.getByRole('button', { name: 'Search conversation' }); fireEvent.click(search);
+    const input = slot.getByRole('textbox', { name: 'Search conversation' });
+    expect(input.parentElement).toBe(search.parentElement);
+    expect(slot.queryByRole('button', { name: 'Open thread' })).toBeNull();
+    expect(slot.container.querySelector('[data-conversation-header]')).toBeNull();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('reaches selection actions with Tab from a selected message', async () => {
+  const { slot } = await selectPassage(); fireEvent.keyDown(document, { key: 'Tab' });
+  expect(document.activeElement).toBe(within(slot.getByRole('toolbar')).getByRole('button', { name: 'Add to chat' }));
+});
+it('captures touch selections through the debounced selectionchange listener', async () => {
+  const { slot, body } = await selectPassage(); fireEvent.keyDown(body, { key: 'Escape' });
+  expect(slot.queryByRole('toolbar')).toBeNull(); fireEvent(document, new Event('selectionchange'));
+  expect(await slot.findByRole('toolbar', { name: 'Selected passage' })).toBeTruthy();
+});
