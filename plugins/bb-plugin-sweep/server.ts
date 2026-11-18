@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
 import { sweepHistory } from './history.ts';
 import { formatNotification } from './notification.ts';
-import { overviewContract, projectId, statsInput } from './overview-contract.ts';
+import { managerTag, overviewContract, projectId, projectInput as input, projectsTag, statsInput, statsTag } from './overview-contract.ts';
 import { reportContents } from './reports.ts';
 import { CheckoutRefreshError, execute } from './runner.ts';
 
@@ -15,7 +15,6 @@ export const configSchema = z.object({ enabled: z.boolean().default(false), bran
 export type Config = z.infer<typeof configSchema>;
 const projectDraft = configSchema.partial().refine(config => !config.enabled || configSchema.safeParse(config).success, 'Complete the checkout settings before enabling Sweep');
 const projectsSchema = z.record(projectId, projectDraft);
-const input = z.object({ projectId }).strict();
 const configKey = configSchema.keyof();
 const configGetInput = input.extend({ key: configKey.optional() });
 const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
@@ -27,7 +26,6 @@ export const contract = defineRpcContract({
   'config.get': { input: configGetInput, output: z.unknown() },
   'config.set': { input: configSetInput, output: z.unknown() },
   'seed-state': { input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Snapshot must be JSON') }).strict(), output: z.object({ seeded: z.literal(true) }) },
-  manager: { input, output: z.object({ manager: z.string().nullable() }) },
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
@@ -36,6 +34,9 @@ const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 const reminderMs = 3600000;
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
+  settings.onChange((next, previous) => {
+    if (next.projects !== previous.projects) bb.rpc.experimental_invalidate([projectsTag, managerTag]);
+  });
   const drafts = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
   const configs = async () => {
     const configs: Record<string, Config> = {};
@@ -114,6 +115,7 @@ export default async function plugin(bb: BbPluginApi) {
     busy.add(id);
     const current = state(id);
     let config: Config | undefined;
+    let historyChanged = false;
     try {
       config = (await configs())[id]; if (!config) throw new Error('Project not configured');
       const now = Date.now(), interval = config.intervalMinutes * 60000;
@@ -124,6 +126,7 @@ export default async function plugin(bb: BbPluginApi) {
         current.lastRun = now;
         current.nextRun = now + interval;
         db.transaction(() => { history.start(id, tickId, now); save(id, current); })();
+        historyChanged = true;
         await deliver(id, current, tickId);
         if (current.refreshRetryAt && current.refreshRetryAt > Date.now()) {
           current.nextRun = current.refreshRetryAt;
@@ -186,7 +189,10 @@ export default async function plugin(bb: BbPluginApi) {
         catch (alert) { current.alertError = String(alert); save(id, current); bb.log.error(`Sweep push failed: ${String(alert)}`); }
       }
       throw e;
-    } finally { busy.delete(id); }
+    } finally {
+      busy.delete(id);
+      if (historyChanged) bb.rpc.experimental_invalidate([statsTag(id)]);
+    }
   }
   let writes = Promise.resolve();
   async function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>) {

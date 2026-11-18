@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { PluginBrowserBbSdk } from '@get-bb/plugin-sdk/app';
 import { loadPluginApp, renderSlot } from '@get-bb/plugin-sdk/testing/app';
+import { managerTag, projectsTag, statsTag } from './overview-contract';
 const app = await loadPluginApp(() => import('./app'));
 afterEach(cleanup);
 HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -59,9 +60,10 @@ it('retries an unsaved field on the next edit without rewriting fields already s
 
 const projects = () => [{ id: 'proj_first', name: 'First', enabled: true }, { id: 'proj_second', name: 'Second', enabled: false }];
 type ListedThread = Awaited<ReturnType<PluginBrowserBbSdk['threads']['list']>>[number];
-it('shows the selected project’s analytics and changes the reporting window', async () => {
+it('updates analytics on invalidation for the selected project and reporting window', async () => {
+  let executed = 5;
   const stats = vi.fn(({ projectId, days }) => ({ projectId, days, since: 1,
-    ticks: 5, executed: 5, deliveries: 2, manager: 1, answers: 1, repeats: 3, suppressedReports: 2,
+    ticks: executed, executed, deliveries: 2, manager: 1, answers: 1, repeats: 3, suppressedReports: 2,
     reminderReports: 1, refreshFailures: 0, scriptFailures: 1, deliveryFailures: 0, newItems: { 'ACTION stale-status': 2 },
   }));
   const slot = renderSlot(app.navPanels[0], { subPath: 'proj_second' }, {
@@ -75,24 +77,36 @@ it('shows the selected project’s analytics and changes the reporting window', 
   fireEvent.click(slot.getByRole('button', { name: '7 days', pressed: false }));
   expect(slot.getByRole('button', { name: '7 days', pressed: true })).toBeTruthy();
   await waitFor(() => expect(stats).toHaveBeenLastCalledWith({ projectId: 'proj_second', days: 7 }));
+  expect(slot.queryByRole('button', { name: 'Refresh' })).toBeNull();
+  executed = 9;
+  await act(async () => { await slot.behavior.experimental_invalidateRpc([statsTag('proj_second')]); });
+  await waitFor(() => expect(slot.getByText('Checks run').nextElementSibling?.textContent).toBe('9'));
 });
 
 it('changes only the selected project’s manager from the main panel', async () => {
   const panel = app.navPanels[0];
   expect(panel.experimental_sidebar).toBeUndefined();
-  const set = vi.fn(async () => ({ manager: 'thr_second' }));
+  let manager = 'thr_first';
+  const set = vi.fn(async () => {
+    manager = 'thr_second';
+    return { manager };
+  });
   const list = vi.fn(async () => [{ id: 'thr_second', title: 'New session', projectId: 'proj_second', archivedAt: null, deletedAt: null } as ListedThread]);
   const slot = renderSlot(panel, { subPath: 'proj_second' }, {
-    rpc: { 'overview.projects': projects, stats: () => ({ ticks: 0 }), manager: () => ({ manager: 'thr_first' }), 'config.set': set },
+    rpc: { 'overview.projects': projects, stats: () => ({ ticks: 0 }), manager: () => ({ manager }), 'config.set': set },
     sdk: { threads: { list } },
   });
   const select = await slot.findByRole('combobox', { name: 'Notification session' });
   expect(select.textContent).toContain('thr_first');
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj_second', archived: false }));
+  manager = 'thr_external';
+  await act(async () => { await slot.behavior.experimental_invalidateRpc([managerTag]); });
+  await waitFor(() => expect(select.textContent).toContain('thr_external'));
   fireEvent.keyDown(select, { key: 'Enter' });
   const option = await slot.findByRole('option', { name: 'New session' });
   await act(async () => { fireEvent.keyDown(option, { key: 'Enter' }); });
   expect(set).toHaveBeenCalledExactlyOnceWith({ projectId: 'proj_second', key: 'manager', value: 'thr_second' });
+  await act(async () => { await slot.behavior.experimental_invalidateRpc([managerTag]); });
   await waitFor(() => expect(select.textContent).toContain('New session'));
   fireEvent.keyDown(slot.getByRole('combobox', { name: 'Project' }), { key: 'Enter' });
   const project = await slot.findByRole('option', { name: 'First' });
@@ -101,14 +115,18 @@ it('changes only the selected project’s manager from the main panel', async ()
 });
 
 it('links to plugin settings and displays the sole project without opening a selector', async () => {
+  let available = projects().slice(0, 1);
   const slot = renderSlot(app.navPanels[0], { subPath: '' }, {
-    rpc: { 'overview.projects': () => projects().slice(0, 1), stats: () => ({ ticks: 0 }), manager: () => ({ manager: null }) },
+    rpc: { 'overview.projects': () => available, stats: () => ({ ticks: 0 }), manager: () => ({ manager: null }) },
     sdk: { threads: { list: async () => [] } },
   });
   expect(slot.getByRole('link', { name: 'Plugin settings' }).getAttribute('href')).toBe('/settings/plugins/sweep');
   const project = await slot.findByRole('combobox', { name: 'Project' });
   expect(project.textContent).toContain('First');
   expect(project.hasAttribute('disabled')).toBe(true);
+  available = projects();
+  await act(async () => { await slot.behavior.experimental_invalidateRpc([projectsTag]); });
+  await waitFor(() => expect(project.hasAttribute('disabled')).toBe(false));
 });
 
 it('hides and restores the host raw configuration without changing its values',async()=>{

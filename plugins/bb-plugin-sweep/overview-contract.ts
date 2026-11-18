@@ -3,6 +3,10 @@ import { z } from 'zod';
 
 export const historyDays = 30;
 export const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
+export const projectInput = z.object({ projectId }).strict();
+export const projectsTag = 'sweep:projects';
+export const managerTag = 'sweep:manager';
+export const statsTag = (projectId: string) => `sweep:stats:${projectId}`;
 export const statsInput = z.object({ projectId, days: z.number().int().min(1).max(historyDays).default(1) }).strict();
 const count = z.number().int().nonnegative();
 const statsOutput = z.object({
@@ -18,6 +22,8 @@ export const overviewContract = defineRpcContract({
   'overview.projects': {
     input: z.null(),
     output: z.array(z.object({ id: projectId, name: z.string(), enabled: z.boolean() })),
+    tags: () => [projectsTag],
   },
-  stats: { input: statsInput, output: statsOutput },
+  manager: { input: projectInput, output: z.object({ manager: z.string().nullable() }), tags: () => [managerTag] },
+  stats: { input: statsInput, output: statsOutput, tags: ({ projectId }) => [statsTag(projectId)] },
 });

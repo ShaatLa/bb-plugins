@@ -34,7 +34,7 @@ For new reports, Sweep compares the exit code and substantive output with the la
 
 ## Stats
 
-Open **Sweep** from the bb navigation rail. Use the controls above the statistics to pick a project or change its notification session. Selecting a session saves the project's manager field immediately. The statistics cover checks, deliveries, new items and failures for the last 24 hours, 7 days or 30 days.
+Open **Sweep** from the bb navigation rail. Use the controls above the statistics to pick a project or change its notification session. Selecting a session saves the project's manager field immediately. The statistics cover checks, deliveries, new items and failures for the last 24 hours, 7 days or 30 days. The dashboard updates after scheduled runs and when Sweep project settings change.
 
 `bb sweep stats --project <id> --days <1-30>` (default one day) and the `stats {projectId,days?}` RPC report scheduled ticks, executed checks, confirmed deliveries by channel, new distinct items by kind, repeated item sightings, suppressed reports, queued reminders and failures by stage. New items are fingerprints first seen within the requested window. Sweep keeps counters and fingerprints locally for a rolling 30 days. Manual runs do not enter these totals.
 

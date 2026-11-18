@@ -27,7 +27,8 @@ function RecipientPicker({ projectId }: { projectId: string }) {
   const sdk = useSdk();
   const controlId = useId();
   const [sessions, setSessions] = useState<Session[]>();
-  const [manager, setManager] = useState('');
+  const managerQuery = useQuery({ contract: overviewContract, method: 'manager', input: { projectId } });
+  const manager = managerQuery.data?.manager ?? '';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -45,15 +46,14 @@ function RecipientPicker({ projectId }: { projectId: string }) {
         if (page.length < limit) return [...sessions.values()];
       }
     }
-    Promise.all([rpc.call('manager', { projectId }), listSessions()]).then(([current, choices]) => {
+    listSessions().then(choices => {
       if (controller.signal.aborted) return;
-      setManager(current.manager ?? '');
       setSessions(choices);
     }, () => {
       if (!controller.signal.aborted) setError('Could not load notification sessions.');
     });
     return () => controller.abort();
-  }, [attempt, projectId, rpc, sdk]);
+  }, [attempt, projectId, sdk]);
 
   async function changeRecipient(value: string) {
     const next = value === none ? '' : value;
@@ -61,7 +61,6 @@ function RecipientPicker({ projectId }: { projectId: string }) {
     setSaving(true);
     try {
       await rpc.call('config.set', { projectId, key: 'manager', value: next });
-      setManager(next);
     } catch {
       setError('Could not save the notification session. Choose a session to retry.');
     } finally {
@@ -71,17 +70,21 @@ function RecipientPicker({ projectId }: { projectId: string }) {
 
   return <div className="space-y-2">
     <label htmlFor={controlId} className="block text-sm font-medium">Notification session</label>
-    {sessions ? <Select value={manager || none} onValueChange={changeRecipient} disabled={saving}>
+    {sessions && managerQuery.data ? <Select value={manager || none} onValueChange={changeRecipient} disabled={saving}>
       <SelectTrigger id={controlId} className="w-full"><SelectValue /></SelectTrigger>
       <SelectContent>
         <SelectItem value={none}>No session</SelectItem>
         {manager && !sessions.some(session => session.id === manager) && <SelectItem value={manager}>{manager}</SelectItem>}
         {sessions.map(session => <SelectItem key={session.id} value={session.id}>{session.title}</SelectItem>)}
       </SelectContent>
-    </Select> : !error && <p role="status" className={muted}>Loading sessions…</p>}
+    </Select> : !error && !managerQuery.error && <p role="status" className={muted}>Loading sessions…</p>}
     {saving && <p role="status" className={muted}>Saving…</p>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {error && !sessions && <Button variant="outline" size="sm" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</Button>}
+    {managerQuery.error && <div className="space-y-2">
+      <p role="alert" className="text-sm text-destructive">Could not load the notification session.</p>
+      <Button variant="outline" size="sm" onClick={managerQuery.refetch}>Retry</Button>
+    </div>}
   </div>;
 }
 
@@ -117,7 +120,7 @@ export function SweepOverview({ subPath }: { subPath: string }) {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold">Sweep</h1>
         <div className="flex flex-wrap items-center gap-2">
-          {project && <>
+          {project &&
             <div role="group" aria-label="Statistics period" className="inline-flex h-8 items-center rounded-lg bg-muted p-0.5">
               {ranges.map(([value, label]) => (
                 <Button
@@ -132,8 +135,7 @@ export function SweepOverview({ subPath }: { subPath: string }) {
                 </Button>
               ))}
             </div>
-            <Button size="sm" variant="outline" disabled={stats.isFetching} onClick={stats.refetch}>Refresh</Button>
-          </>}
+          }
           <Button asChild size="icon" variant="ghost" className="size-8">
             <UrlLink href="/settings/plugins/sweep" aria-label="Plugin settings" title="Plugin settings">
               <Icon name="Settings" aria-hidden />
@@ -153,7 +155,10 @@ export function SweepOverview({ subPath }: { subPath: string }) {
           </div>
           <RecipientPicker key={project.id} projectId={project.id} />
         </div>
-        {stats.error && <p role="alert" className="text-sm text-destructive">Could not load Sweep statistics.</p>}
+        {stats.error && <div className="space-y-2">
+          <p role="alert" className="text-sm text-destructive">Could not load Sweep statistics.</p>
+          <Button size="sm" variant="outline" onClick={stats.refetch}>Retry</Button>
+        </div>}
         {!report && !stats.error && <p role="status" className={muted}>Loading statistics…</p>}
         {report && (report.ticks === 0 ? <p className={muted}>No scheduled runs in this period.</p> : <>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">

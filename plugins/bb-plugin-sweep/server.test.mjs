@@ -7,6 +7,7 @@ import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/tes
 import { deliveryStore } from './delivery.ts';
 import plugin from './server.ts';
 import { formatNotification } from './notification.ts';
+import { managerTag, projectsTag, statsTag } from './overview-contract.ts';
 const repo = await mkdtemp(join(tmpdir(), 'sweep-test-'));
 const git = (...args) => execFileSync('git', args, {cwd:repo, stdio:'ignore'});
 git('init','-b','main');git('config','user.email','test@example.com');git('config','user.name','Test');
@@ -42,9 +43,11 @@ try {
  await plugin(bb);
  assert.deepEqual(await harness.behavior.callRpc('overview.projects',null),[]);
  await harness.behavior.callRpc('configure',{projectId,config:{...config,remote:join(repo,'obsolete')}});
+ assert.deepEqual(harness.experimental_rpcInvalidations.at(-1), [projectsTag, managerTag]);
  assert.deepEqual(await harness.behavior.callRpc('config.get',{projectId}),config);
  assert.deepEqual(await harness.behavior.callRpc('overview.projects',null),[{id:projectId,name:'Test',enabled:true}]);
  await harness.behavior.runSchedule('sweep');
+ assert.deepEqual(harness.experimental_rpcInvalidations.at(-1), [statsTag(projectId)]);
  let s=await harness.behavior.callRpc('status',{projectId});assert.match(s.pending,/ACTION/);assert.equal(pushes,1);
  assert.equal(attempts,0);assert.match(s.managerError,/failed/);assert.match(s.error,/Answers fallback failed/);
  for (const failure of ['Plugin answers is not installed','RPC answers.notice was not found']) {
@@ -186,10 +189,12 @@ try {
   assert.equal((await status()).nextRun,time+120000);assert.equal(reports.length,6);
   time+=60000;await scheduled();assert.equal((await stats()).ticks,8);
   const beforeManual=await stats();
+  const invalidationsBeforeManual=harness.experimental_rpcInvalidations.length;
   projectRemote=null;
   const missing=await harness.behavior.callRpc('run',{projectId});
   assert.equal(missing.exitCode,2);assert.match(missing.output,/Git remote URL in the bb project settings/);
   assert.deepEqual(await stats(),beforeManual);
+  assert.equal(harness.experimental_rpcInvalidations.length,invalidationsBeforeManual);
   projectRemote=repo;
   await set('args',['11','EXA-2','none']);
   time+=60000;await scheduled();
