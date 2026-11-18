@@ -127,3 +127,22 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   await act(async () => { fireEvent.change(slot.getByLabelText("Launch instructions"), { target: { value: "Follow the launch checklist." } }); });
   expect(write.mock.calls.at(-1)?.[0].values).not.toHaveProperty("enabled");
 });
+
+it("shows the single project without an active selector and links to plugin settings", async () => {
+  const projects = [{ id: "proj_sample", name: "Sample", values: {
+    enabled: false, method: "script", instruction: "", script: "spawn.py", ttlMinutes: 10,
+  } }];
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, {
+    rpc: {
+      "settings.read": () => ({ projects }),
+      report: () => ({
+        from: "2025-01-01", to: "2025-01-01", coverageStartedAt: "2025-01-01T00:00:00.000Z",
+        projects: [{ projectId: "proj_sample", name: "Sample", starts: 0, dryRuns: 0, blockedStarts: 0, refusals: [] }],
+      }),
+    },
+  });
+  const selector = await slot.findByRole("combobox", { name: "Project" });
+  expect((selector as HTMLButtonElement).disabled).toBe(true);
+  expect(selector.textContent).toBe("Sample");
+  expect(slot.getByRole("link", { name: "Plugin settings" }).getAttribute("href")).toBe("/settings/plugins/agent-spawn-gate");
+});
