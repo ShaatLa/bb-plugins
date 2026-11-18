@@ -910,7 +910,7 @@ it('restores composite deadlines after restart',async()=>{
  const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5},{threadId:'t'});
  const next=await h.harness.lifecycle.reload(plugin); cleanup.push(()=>next.harness.lifecycle.dispose());
  await vi.advanceTimersByTimeAsync(300000);
- expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. **One** — A\n2. **Two** — Your call (decide yourself)');
+ expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. One — A\n2. Two — Your call (decide yourself)');
 });
 
 it('stores urgency and keeps low questions visible without a push',async()=>{

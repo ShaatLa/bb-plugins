@@ -109,7 +109,7 @@ it('requires one partial answer and makes Your call exclusive', async () => {
  expect(slot.queryByRole('textbox')).toBeNull();
  fireEvent.click(slot.getByRole('button',{name:'Submit answer'})); await waitFor(()=>expect(submit).toHaveBeenCalledWith({q1:{selected:['Your call']}}));
  expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['a,b','c']}})).toContain('a,b; c');
- expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['Your call']}})).toBe('1. **Choice** — Your call (decide yourself)\n2. **Choice** — Skipped');
+ expect(answerText([q,{...q,id:'q2'}],{q1:{selected:['Your call']}})).toBe('1. Choice — Your call (decide yourself)\n2. Choice — Skipped');
 });
 it('answers Codex MCP elicitations here: Computer Use access, tool approvals and decline', async () => {
   const elicitation = (id: string, data: object) => ({ id, threadId: 'thr_one', status: 'pending', payload: { kind: 'provider-codex/mcp-elicitation', title: 'MCP request', data: { serverName: 'cua_repl', message: 'Codex wants access', ...data } } });

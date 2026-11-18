@@ -87,7 +87,7 @@ export type PoolSendResult = { delivery: 'sent' | 'queued'; sent: number; keptEd
 
 export function answerText(questions: readonly FormQuestion[], answers: Record<string,{selected:string[];freeText?:string}>) {
  const value=(q:FormQuestion)=>{const a=answers[q.id], picks=a ? [...a.selected.map(v=>v===YOUR_CALL ? 'Your call (decide yourself)' : q.options?.find(o=>o.value===v)?.label ?? v),...(a.freeText ? [a.freeText] : [])] : []; return picks.length ? picks.join('; ') : 'Skipped';};
- return questions.length===1 ? value(questions[0]!) : questions.map((q,i)=>`${i+1}. **${q.shortLabel ?? q.prompt}** — ${value(q)}`).join('\n');
+ return questions.length===1 ? value(questions[0]!) : questions.map((q,i)=>`${i+1}. ${q.shortLabel ?? q.prompt} — ${value(q)}`).join('\n');
 }
 
 export function defaultAnswer(item:{questions:FormQuestion[]|null;recommended:string|null}) {

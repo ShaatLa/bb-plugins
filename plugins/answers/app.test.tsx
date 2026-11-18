@@ -489,7 +489,7 @@ it('answers a composite question with checkboxes in one reply', async () => {
   fireEvent.click(await slot.findByRole('button', { name: /^L/ }));
   fireEvent.click(slot.getByRole('button', { name: 'Submit answer' }));
   await waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
-  expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: '1. **Colors** — Red; Blue\n2. **Size?** — L' });
+  expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: '1. Colors — Red; Blue\n2. Size? — L' });
 });
 it('labels a question the agent withdrew and shows its reason', async () => {
   const slot = await questionsSetup({}, { dismissedAt: 5, answerSource: 'agent', note: 'Found it in the docs' });
