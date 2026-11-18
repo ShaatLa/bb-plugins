@@ -49,6 +49,9 @@ describe("classifyJobs", () => {
     expect(one(failed({ logExcerpt: "linter refused: archive_download_unavailable_or_timed_out" }))?.class).toBe("transient");
     expect(one(failed({ logExcerpt: "Download timed out after 60s" }))?.class).toBe("transient");
     expect(one(failed({ logExcerpt: "panic: test timed out after 10m0s" }))?.class).toBe("real");
+    // A server error from an API the step calls, reported only in the annotation, is not the code's fault.
+    expect(one(failed({ annotations: [failure("deploy: merging pull request: All attempts fail:\n#1: PUT https://api.example.com/repos/acme/config/pulls/7/merge: 500  []")] }))).toMatchObject({ class: "transient", evidence: "#1: PUT https://api.example.com/repos/acme/config/pulls/7/merge: 500  []" });
+    expect(one(failed({ logExcerpt: "--- FAIL: TestHandler\n    handler_test.go:12: expected 200, got 500" }))?.class).toBe("real");
   });
 
   it("prefers runner loss over timeout and treats a log without a transient line as an ordinary failure", () => {
