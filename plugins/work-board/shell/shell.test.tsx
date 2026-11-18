@@ -202,6 +202,19 @@ describe("project view preference", () => {
     });
   });
 
+  it("Manage's Back returns to the view it was opened from", async () => {
+    const slot = openProject(PROJECT_ID);
+    await slot.findByRole("button", { name: "Switch project" });
+    slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
+    fireEvent.click(await slot.findByRole("button", { name: "Back" }));
+    // Like the Scheduled clock, it restores the view that was showing.
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: `${PROJECT_ID}?view=list` },
+    });
+  });
+
   it("still toggles when client storage rejects writes", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Storage is disabled", "SecurityError");
@@ -1382,7 +1395,7 @@ describe("tasks app shell", () => {
         rpc: seededRpc({ listLabels: () => ({ labels: [] }) }),
       },
     );
-    await slot.findByText("Projects, labels, agent presets, and folders.");
+    await slot.findByRole("tab", { name: "Labels" });
   });
 
   it("opens quick-create on bare 'c' but not from editable targets or dialogs", async () => {
@@ -1481,7 +1494,7 @@ it("opens label management from the main toolbar settings menu", async () => {
     method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
   });
   slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
-  await slot.findByText("Projects, labels, agent presets, and folders.");
+  await slot.findByRole("tab", { name: "Labels" });
   expect(slot.getByRole("tab", { name: "Labels" }).getAttribute("data-state")).toBe("active");
   expect(await slot.findByText("No labels yet.")).toBeTruthy();
 });

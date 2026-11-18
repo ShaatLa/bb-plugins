@@ -723,12 +723,6 @@ function FoldersSection() {
 export function ManagePanel() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
-      <header className="space-y-1">
-        <h2 className="text-base font-semibold">Manage</h2>
-        <p className="text-sm text-muted-foreground">
-          Projects, labels, agent presets, and folders.
-        </p>
-      </header>
       <Tabs defaultValue="labels">
         <TabsList>
           <TabsTrigger value="projects">Projects</TabsTrigger>

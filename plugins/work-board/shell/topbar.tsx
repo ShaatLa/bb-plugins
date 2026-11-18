@@ -193,8 +193,11 @@ export function TasksTopbar({
   const project = useMemo(() => projectForRoute(route, projects), [route, projects]);
   // The clock toggles: pressed again on Scheduled, it returns to the view it was opened from.
   const beforeScheduled = useRef<TasksRoute>({ kind: "all" });
+  // Manage has no sidebar entry, so its header carries the way back.
+  const beforeManage = useRef<TasksRoute>({ kind: "all" });
   useEffect(() => {
     if (route.kind !== "scheduled") beforeScheduled.current = route;
+    if (route.kind !== "manage") beforeManage.current = route;
   }, [route]);
 
   const breadcrumb = (() => {
@@ -226,6 +229,16 @@ export function TasksTopbar({
       case "manage":
         return (
           <span className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Back"
+              className="-ml-1.5 size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+              onClick={() => onNavigate(beforeManage.current)}
+            >
+              <Icon name="ArrowLeft" className="size-4" />
+            </Button>
             <span className="whitespace-nowrap font-semibold">Manage</span>
             <span className="hidden text-xs font-normal text-muted-foreground @md:inline">
               projects, labels, presets, folders
