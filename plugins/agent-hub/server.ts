@@ -518,6 +518,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
               return `${old.id}\nMerged into your earlier question from this turn; the user answers all parts in one form.`;
             }
             commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,urgency,notify_state,turn_id,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,?,?,?,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,ask.urgency==='low' ? 0 : 1,turn,now,now);
+            // Like agent_hub_report: the turn is marked here, so a reply that also ends on '?' gets no in-chat question warning even if the tool call's event is missed.
+            if (turn) commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,asked) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET asked=1',ctx.threadId,turn,now);
             onAttention(); wakeDue();
             return id;
           }

@@ -124,6 +124,8 @@ describe('server',()=>{
   const list=await call('agent_hub_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
   const id=await call('agent_hub_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});
+  // The turn counts as asked through Agent Hub without waiting for the tool call's own event.
+  expect(db.prepare("SELECT asked FROM turn_updates WHERE thread_id='t' AND turn_id='turn'").get()).toEqual({asked:1});
   expect(String(await call('agent_hub_list',{}))).toContain(`Your open questions to the user:\n${id} `);
   await expect(harness.behavior.callAgentTool('agent_hub_withdraw',{id,reason:'x'},{threadId:'other'})).rejects.toThrow('open question not found');
   await expect(call('agent_hub_withdraw',{id:'ans_mine',reason:'x'})).rejects.toThrow('open question not found');
