@@ -33,3 +33,14 @@ it('the thinking robot picks a mood for each walk every lap: rubbing its raised 
   random.mockReturnValue(.9); act(() => lap(document.querySelector('.ar-right')!, 'ar-right'));
   expect(behind()).toBe(2); expect(document.querySelectorAll('.ar-scratch')).toHaveLength(0);
 });
+it.each([
+ ['desktop',true,false],['desktop',false,true],['off',false,false],['on',true,true],
+] as const)('working animation %s with coarse=%s has animated=%s',async(mode,coarse,animated)=>{
+ vi.stubGlobal('matchMedia',(query:string)=>({matches:query==='(pointer: coarse)' && coarse,media:query,addEventListener(){},removeEventListener(){}}));
+ const slot=renderSlot({component:RobotLoader},{label:'Working'},{rpc:{getPreferences:()=>({workingAnimation:mode})}});
+ const {waitFor}=await import('@testing-library/react');
+ await waitFor(()=>expect(slot.getByRole('img',{name:'Working'}).getAttribute('data-animated')).toBe(String(animated)));
+ expect(!!slot.container.querySelector('style')).toBe(animated);
+ if(!animated) expect(slot.container.querySelector('[class^="ar-"]')).toBeNull();
+ vi.unstubAllGlobals();
+});

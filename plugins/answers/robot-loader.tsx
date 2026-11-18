@@ -1,12 +1,14 @@
+import { usePreferences } from './use-preferences';
+import { usePointerCoarse } from './components/ui/hooks/use-pointer-coarse';
+import { usePrefersReducedMotion } from './components/ui/hooks/use-media-query';
 import { createContext, useContext, useEffect, useRef, useState, type AnimationEvent, type ReactNode } from 'react';
-import { experimental_ThreadStatusGlyph as ThreadStatusGlyph } from '@get-bb/plugin-sdk/app';
 
 // A small line-art robot that shows what the agent is doing. Each scene is one CSS loop on a shared figure:
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
 // terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench on a bolt; search — looks
 // around through a magnifier; read — faces us over an open book, turning its pages; wait — walks to and fro, kicking a pebble;
 // rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising.
-// With reduced motion bb's own spinner shows instead.
+// Reduced motion and disabled animation use a still frame.
 export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait' | 'rest';
 
 // What the open chat's agent is doing now (see useAgentActivity); robots without their own activity follow it.
@@ -246,12 +248,13 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
 }
 
 export function RobotLoader({ className = 'h-5', label = 'Still working', activity }: { className?: string; label?: string; activity?: Activity }) {
+  const mode = usePreferences().data?.workingAnimation ?? 'desktop', coarse = usePointerCoarse(), reduced = usePrefersReducedMotion();
+  const animated = !reduced && mode !== 'off' && (mode !== 'desktop' || !coarse);
   const current = useContext(ActivityContext), shown = activity ?? current;
   // The fix scene picks its tool once per robot, at random.
   const [fix] = useState<'hammer' | 'wrench'>(() => Math.random() < .5 ? 'hammer' : 'wrench');
-  return <span role="img" aria-label={label} data-activity={shown} className="inline-flex items-center"><span aria-hidden className="hidden items-center motion-reduce:inline-flex"><ThreadStatusGlyph indicator="runtime" size="compact" /></span>
-    <svg aria-hidden viewBox="-10 -6 44 28" className={`w-auto overflow-visible motion-reduce:hidden ${className}`} fill="none" stroke="currentColor" strokeWidth=".9" strokeLinecap="round" strokeLinejoin="round">
-      <style>{css}</style>
-      <Scene activity={shown} fix={fix} />
+  return <span role="img" aria-label={label} data-activity={shown} data-animated={animated} className="inline-flex items-center">
+    <svg aria-hidden viewBox="-10 -6 44 28" className={`w-auto overflow-visible ${className}`} fill="none" stroke="currentColor" strokeWidth=".9" strokeLinecap="round" strokeLinejoin="round">
+      {animated ? <><style>{css}</style><Scene activity={shown} fix={fix} /></> : <g>{front}</g>}
     </svg></span>;
 }

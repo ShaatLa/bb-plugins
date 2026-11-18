@@ -5,7 +5,7 @@ import { PREFERENCES_KEY } from './preferences';
 it('migrates all legacy preferences once and preserves later writes on reload',async()=>{
  const h=createFakePluginHost({pluginId:'answers',settings:{notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'}});
  const store=createPreferences(h.bb);
- expect(await store.get()).toEqual({notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'});
+ expect(await store.get()).toMatchObject({notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'});
  await store.experimental_set({notify:'off',remindHours:1});
  expect(await createPreferences(h.bb).get()).toEqual(await h.bb.storage.kv.get(PREFERENCES_KEY));
  expect((await createPreferences(h.bb).get()).notify).toBe('off');
@@ -18,5 +18,11 @@ it('serializes patches, notifies readers and rejects invalid quiet hours',async(
  expect(await store.get()).toMatchObject({notify:'off',quietHours:'22:00-08:00',remindHours:6,handoffWarnings:false});
  expect(seen).toHaveLength(2);
  for(const quietHours of ['24:00-01:00','12:00-12:00']) expect(()=>store.experimental_set({quietHours})).toThrow();
+ await h.harness.lifecycle.dispose();
+});
+it('adds chat defaults to existing preferences without replacing their values',async()=>{
+ const h=createFakePluginHost({pluginId:'answers'});
+ await h.bb.storage.kv.set(PREFERENCES_KEY,{notify:'off',projectOrder:'proj_example'});
+ expect(await createPreferences(h.bb).get()).toMatchObject({notify:'off',projectOrder:'proj_example',showMarkAllRead:false,workingAnimation:'desktop',touchEnter:'newline',groupBackgroundUpdates:true,selectionActions:true});
  await h.harness.lifecycle.dispose();
 });

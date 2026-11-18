@@ -1294,3 +1294,15 @@ it('puts a steer straight into the running turn card instead of a separate sendi
   expect(bubble.closest('[aria-label="Sending"]')).toBeNull();
   expect(bubble.closest('li')).toBe(slot.getByText('First ask').closest('li'));
 });
+it.each([false,true])('selection action preference %s preserves the selection',async selectionActions=>{
+ const {slot}=await selectPassage({rpc:{getPreferences:()=>({selectionActions})}});
+ expect(!!slot.queryByRole('toolbar',{name:'Selected passage'})).toBe(selectionActions);
+ expect(window.getSelection()!.toString()).toContain('Answer one');
+});
+it.each([false,true])('background grouping preference %s changes cards',async groupBackgroundUpdates=>{
+ const {slot,recipients}=setup({rpc:{getPreferences:()=>({groupBackgroundUpdates})},list:()=>({items:[quiet(3,'Final report'),quiet(2,'Second report'),quiet(1,'First report')],nextCursor:null})});
+ fireEvent.click(await recipients.findByRole('option'));
+ await slot.findByText('Final report');
+ expect(!!slot.container.querySelector('[data-update-group]')).toBe(groupBackgroundUpdates);
+ if(!groupBackgroundUpdates) {expect(slot.getByText('First report')).toBeTruthy();expect(slot.getByText('Second report')).toBeTruthy();}
+});

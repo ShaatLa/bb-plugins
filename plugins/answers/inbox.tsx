@@ -1,3 +1,4 @@
+import { usePreferences } from './use-preferences';
 import { FullTranscript, FullTranscriptContext } from './full-transcript';
 import { ConversationOutline } from './conversation-outline';
 import { bindChatCommands, chatShortcut } from './chat-commands';
@@ -53,7 +54,7 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // split question older than the oldest loaded item waits there (orphans, carried to the earlier page; carried: from a newer one).
 // showLast: the chat is the newest page and has gone quiet (it and its sub-sessions idle), so its last message is final.
 // keep: an update already shown in full that way stays so while it is the last (a turn starting must not fold it back).
-export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null) {
+export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null, groupUpdates = true) {
   const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
@@ -71,7 +72,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
     if (home) { home[1].late = [...(home[1].late ?? []), ...entry.group]; placed.splice(i, 1); }
   }
   const entries: Entry[] = [];
-  for (const [, entry] of placed.sort((a, b) => a[0] - b[0])) { const prev = entries.at(-1); if (prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
+  for (const [, entry] of placed.sort((a, b) => a[0] - b[0])) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
   // Once the chat has gone quiet its latest message does not hide in a collapsed group: a final report after a run of updates
   // stays in full view. While work goes on, the updates still flying in stay collapsed.
   const tail = entries.at(-1);
@@ -356,7 +357,9 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const [replyDraft, setReplyDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   // While a quote reply is open over a message, the chat holds still: new messages and a growing composer do not scroll
   // the message (and the popup on it) away from the reader's eyes.
+  const preferences = usePreferences().data;
   const [selectionBar, setSelectionBar] = useState<Draft | null>(null);
+  useEffect(() => { if (preferences?.selectionActions === false) setSelectionBar(null); }, [preferences?.selectionActions]);
   const draft = selectionBar ?? replyDraft;
   const setDraft: typeof setReplyDraft = update => { if (selectionBar) setSelectionBar(update); else setReplyDraft(update); };
   const [selectionFeedback, setSelectionFeedback] = useTransientText();
@@ -804,6 +807,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
     return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape); document.removeEventListener('pointerdown', outside); observer?.disconnect(); mutations?.disconnect(); box?.removeEventListener('scroll', place); };
   }, [!!draft, !!selectionBar]);
   function capture(event?: React.SyntheticEvent) {
+    if (preferences?.selectionActions === false) { setSelectionBar(null); return; }
     if (event && (event.target as Element).closest('[data-selection-bar]')) return;
     const selection = window.getSelection(), target = event?.target as Node | undefined ?? selection?.anchorNode;
     const body = (target instanceof Element ? target : target?.parentElement)?.closest<HTMLElement>('[data-agent-body]');
@@ -819,7 +823,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
     const change = () => { clearTimeout(timer); timer = setTimeout(() => { if (popup.current?.getAttribute('role') !== 'dialog' || !popup.current.contains(document.activeElement)) capture(); }, 250); };
     document.addEventListener('selectionchange', change);
     return () => { clearTimeout(timer); document.removeEventListener('selectionchange', change); };
-  }, [selected, current?.projectId]);
+  }, [selected, current?.projectId, preferences?.selectionActions]);
   async function selectionAction(action: string) {
     if (!selectionBar) return;
     const value = selectionBar;
@@ -865,7 +869,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   // Folding a long last update back when a turn starts (a queued message sent) would cut the chat's end under a reader
   // near it and drop them to the bottom, so the one shown in full stays so until a newer message takes its place.
   const fullTail = useRef<string | null>(null);
-  const historyGroups = useMemo(() => { const entries = conversation(groupItems(chatItems), !!shown.at(-1)?.nextCursor, [], !working, fullTail.current).entries, last = entries.at(-1); fullTail.current = last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; return entries; }, [chatItems, pages, loadedPages, depth, working]);
+  const historyGroups = useMemo(() => { const entries = conversation(groupItems(chatItems), !!shown.at(-1)?.nextCursor, [], !working, fullTail.current, preferences?.groupBackgroundUpdates !== false).entries, last = entries.at(-1); fullTail.current = last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; return entries; }, [chatItems, pages, loadedPages, depth, working, preferences?.groupBackgroundUpdates]);
   // The robot walks at the end of the chat unless the last card is itself a pending owner message (its robot is the one);
   // cards further up carry none (ItemCard's live).
   const lastPending = (() => { const entry = historyGroups.at(-1); return !!entry && entry.part !== 'answer' && entry.group.some(item => item.dismissedAt === null && ((item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred')) || (item.kind === 'update' && item.status === 'waiting'))); })();
@@ -912,7 +916,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
         {selected && <ThreadPlan key={`plan:${selected}`} threadId={selected} />}
         {working && !optimistic.some(b => b.threadId === selected) && !lastPending && <div className="px-6 pb-3 text-muted-foreground opacity-60"><ActivityLabelContext.Provider value={activityLabel}><WorkLog key={selected} threadId={selected} live><RobotLoader className="h-8" activity={activity} label="The agent is working" /></WorkLog></ActivityLabelContext.Provider></div>}</div>}
       {selectionFeedback && <span role="status" className="absolute right-3 top-3 text-xs">{selectionFeedback}</span>}
-      {selectionBar && <div ref={popup} data-selection-bar role="toolbar" aria-label="Selected passage" className="absolute z-10 flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-popover p-0.5 text-popover-foreground shadow-md" style={{ maxWidth: selectionBar.width, top: selectionBar.top, left: selectionBar.left }} onMouseDown={event => event.preventDefault()}>
+      {preferences?.selectionActions !== false && selectionBar && <div ref={popup} data-selection-bar role="toolbar" aria-label="Selected passage" className="absolute z-10 flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-popover p-0.5 text-popover-foreground shadow-md" style={{ maxWidth: selectionBar.width, top: selectionBar.top, left: selectionBar.left }} onMouseDown={event => event.preventDefault()}>
         {(['Add to chat', 'Add to reply pool', 'Comment', ...(selectionBar.quoteSeq === undefined ? [] : ['Save'])]).map((action, i) => <button key={action} type="button" className="answers-hit inline-flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-surface-recessed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring select-none" onClick={() => void selectionAction(action)}><Icon name={(['MessageSquarePlus', 'ListEnd', 'MessageSquare', 'Star'] as const)[i]!} aria-hidden className="size-3.5 text-muted-foreground" />{action}</button>)}
       </div>}
       {draft && !selectionBar && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>

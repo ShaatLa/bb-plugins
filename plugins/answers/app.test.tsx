@@ -32,7 +32,7 @@ async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
   const list = vi.fn(() => ({ items: [item], nextCursor: null }));
   const markRead = vi.fn(() => ({ ok: true }));
   const { AnswersPanel } = await import('./app');
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 1, waiting: 0, forMe: 2 }), markRead, ...overrides } });
   pickView(slot, 'History');
   await slot.findByText(overrides.list ? /Quoted passage|What changed\?/ : 'What changed?');
   return { app, slot, list, markRead };
@@ -780,7 +780,7 @@ it('fetches each pending thread once for the Questions section and refetches onl
 it('stops refetching an older thread-tab page once it has loaded', async () => {
   const { AnswersPanel } = await import('./app');
   const list = vi.fn((input: any) => input.cursor ? { items: [], nextCursor: null } : { items: [item], nextCursor: '1|ans_older' });
-  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  const slot = renderSlot({ component: () => <AnswersPanel threadId="thr_one" /> }, {}, { rpc: { getPreferences: () => ({showMarkAllRead:true}), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
   await slot.findByText('What changed?');
   fireEvent.click(slot.getByRole('button', { name: 'Load earlier' }));
   await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor: '1|ans_older' })));
@@ -889,4 +889,12 @@ it('shows the failure reason and a quiet interruption label', async () => {
  const { slot } = await setup({ list: () => ({ items: [{ ...item, id:'ans_failure', status:'waiting', failedAt:1, failureReason:'Provider unavailable' }, { ...item, id:'ans_interrupted', question:'Stopped question', status:'waiting', interruptedAt:2, dismissedAt:2 }], nextCursor:null }) });
  expect(await slot.findByText('Provider unavailable')).toBeTruthy();
  expect(slot.getByText('Turn interrupted').className).not.toContain('text-destructive');
+});
+it.each([false,true])('Mark all read visibility follows %s',async showMarkAllRead=>{
+ const {slot}=await setup({getPreferences:()=>({showMarkAllRead})});
+ pickView(slot,'Unread');
+ expect(!!slot.queryByRole('button',{name:'Mark all read'})).toBe(showMarkAllRead);
+});
+it('hides Mark all read by default',async()=>{
+ const {slot}=await setup({getPreferences:()=>({})});pickView(slot,'Unread');expect(slot.queryByRole('button',{name:'Mark all read'})).toBeNull();
 });

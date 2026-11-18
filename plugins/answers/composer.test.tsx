@@ -1,3 +1,4 @@
+import { usePreferences } from './use-preferences';
 import { mentionsForText } from './mentions';
 import { useState } from 'react';
 // @vitest-environment jsdom
@@ -395,4 +396,17 @@ it('debounces bounded workspace file and folder mentions in the selected environ
   box.dataset.testValue='@src'; fireEvent.input(box);
   fireEvent.click(within(await slot.findByRole('listbox', {name:'Files and folders'})).getByRole('option', {name:'src'}));
   expect(mentionsForText('@src ')[0]?.resource).toMatchObject({kind:'path', entryKind:'directory', path:'src'});
+});
+it.each(['newline','send'])('touch Enter follows %s and Shift+Enter stays a newline',async touchEnter=>{
+ const old=window.matchMedia;
+ window.matchMedia=((query:string)=>({matches:query.includes('pointer: coarse'),media:query,addEventListener(){},removeEventListener(){}})) as any;
+ try {
+ const onSend=vi.fn(),onChange=vi.fn();
+ const slot=renderSlot({component:()=> <><output>{usePreferences().data?.touchEnter}</output><Composer label='Reply' value='Hello' onChange={onChange} attachments={[]} onAttachments={()=>{}} projectId={null} onSend={onSend}/></>},{},{rpc:{getPreferences:()=>({touchEnter})}});
+ await slot.findByText(touchEnter);
+ const box=slot.getByRole('textbox',{name:'Reply'});
+ fireEvent.keyDown(box,{key:'Enter'});
+ expect(onSend).toHaveBeenCalledTimes(touchEnter==='send'?1:0);
+ onSend.mockClear();fireEvent.keyDown(box,{key:'Enter',shiftKey:true});expect(onSend).not.toHaveBeenCalled();expect(onChange).toHaveBeenCalled();
+ } finally {window.matchMedia=old;}
 });

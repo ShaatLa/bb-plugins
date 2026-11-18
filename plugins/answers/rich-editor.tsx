@@ -1,3 +1,4 @@
+import { usePreferences } from './use-preferences';
 import { useThreadCommands, commandMention, type Command } from './thread-commands';
 import { taskKeyRegex } from './task-links';
 import { rpcContract } from './contract';
@@ -32,6 +33,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   onHistory?: (direction: 'up' | 'down') => boolean;
   disabled?: boolean; autoFocus?: boolean; label: string; placeholder: string; onBlur?(): void; className: string; editorRef: React.RefObject<HTMLDivElement | null>; insertRef: React.MutableRefObject<(text: string) => void>; menuAnchor?: React.RefObject<HTMLElement | null>;
 }) {
+  const touchEnter = usePreferences().data?.touchEnter;
   const sdk = useSdk(), { threads } = experimental_useSidebarThreads();
   const threadById = useMemo(() => new Map(threads.map(thread => [thread.id, thread])), [threads]);
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
@@ -249,7 +251,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Digit9') { event.preventDefault(); toggleQuote(); return; }
     if (event.key === 'Escape') { if (menu) setMenu(null); else onCancel?.(); event.preventDefault(); return; }
     // On touch screens Enter is a line break, as in phone messengers; the Send button sends. With a mouse, Enter sends.
-    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey || (typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches)) {
+    if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (event.shiftKey || (touchEnter !== 'send' && typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches)) {
       // Shift+Enter continues a quote; on an empty quote line it leaves the quote instead, so plain text can follow.
       const [a] = selection(), start = value.lastIndexOf('\n', a - 1) + 1, stop = value.indexOf('\n', a), end = stop < 0 ? value.length : stop;
       if (/^> ?$/.test(value.slice(start, end))) replace('', start, end); else replace(/^>(?: |\n|$)/.test(value.slice(start)) ? '\n> ' : '\n');

@@ -30,3 +30,18 @@ it('registers Answers and renders preferences with validated time fields and res
  fireEvent.click(slot.getByRole('button',{name:'Reset project order'}));
  await waitFor(()=>expect(update).toHaveBeenCalledWith({projectOrder:''}));
 });
+it('stores the five chat preferences from their controls',async()=>{
+ const prefs=preferencesSchema.parse({});const update=vi.fn((patch:unknown)=>({...prefs,...patch as object}));
+ const slot=renderSlot({component:AnswersSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
+ await slot.findByText('Chat');
+ for(const [label,key,value] of [['Show "Mark all read"','showMarkAllRead',true],['Group background updates','groupBackgroundUpdates',false],['Actions on selected text','selectionActions',false]] as const){
+ const control=slot.getByRole('switch',{name:label});
+ await waitFor(()=>expect(control.hasAttribute('disabled')).toBe(false));fireEvent.click(control);
+ await waitFor(()=>expect(update).toHaveBeenCalledWith({[key]:value}));
+ }
+ for(const [label,option,key,value] of [['Working animation','Off','workingAnimation','off'],['Enter on touch screens','Send','touchEnter','send']] as const){
+ const control=slot.getByRole('combobox',{name:label});
+ await waitFor(()=>expect(control.hasAttribute('disabled')).toBe(false));fireEvent.keyDown(control,{key:'Enter'});
+ fireEvent.click(await slot.findByRole('option',{name:option}));await waitFor(()=>expect(update).toHaveBeenCalledWith({[key]:value}));
+ }
+});

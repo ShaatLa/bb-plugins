@@ -218,6 +218,8 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
     hold();
   };
   const expand = () => { setOpen(true); requestAnimationFrame(showLatest); };
+  const grouped = usePreferences().data?.groupBackgroundUpdates !== false;
+  if (!grouped) return <>{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</>;
   return <li ref={row} data-update-group data-history-ids={items.map(item => item.id).join(' ')} className="py-3">
     <div className="group/card overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
       <button type="button" aria-expanded={open} aria-label={`${items.length} background updates`} onClick={() => { if (open) setOpen(false); else expand(); }} className={`flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground ${open ? 'hover:bg-state-hover' : 'group-hover/card:bg-state-hover'}`}>
@@ -547,7 +549,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   const [query, setQuery] = useStoredState(threadId ? null : 'bb-plugin-answers:page:query', '');
   const [searchQuery, setSearchQuery] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearchQuery(query), 200); return () => clearTimeout(timer); }, [query]);
-  const bbChat = usePreferences().data?.chatMode === 'bb';
+  const preferences = usePreferences().data, bbChat = preferences?.chatMode === 'bb';
   const [projectId, setProjectId] = useStoredState(threadId ? null : 'bb-plugin-answers:page:project', '');
   // Page only: the Questions section replaces the chats; a stored 'Asked of you' view (now removed) opens it.
   const [questionsTab, setQuestionsTab] = useStoredState(threadId ? null : 'bb-plugin-answers:page:questions', stored === 'for_me');
@@ -588,8 +590,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
         <span className="flex-1" />
         {!threadId && !questions && view === 'inbox' && !inSidebar && <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground max-[639px]:hidden" aria-label={contactsHidden ? 'Show contacts' : 'Hide contacts'} aria-pressed={!contactsHidden} onClick={() => setContactsHidden(!contactsHidden)}><Icon name="PanelLeft" aria-hidden /></Button>}
         <div ref={setChatSearchTarget} className="hidden min-w-0 items-center min-[640px]:flex" />
-        {/* Removal candidate (review 2026-11): Mark all read is unused so far; keep until a usage review decides. */}
-        {!questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" aria-label="Mark all read" {...{ title: "Mark all read" }} onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" /><span className={chatOpen && !bbChat ? 'min-[640px]:sr-only' : undefined}>Mark all read</span></Button>}
+        {preferences?.showMarkAllRead && !questions && (view === 'inbox' || view === 'unread') && <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" aria-label="Mark all read" {...{ title: "Mark all read" }} onClick={async () => { setError(''); try { const result = await rpc.call('markRead', { all: true, ...(threadId ? { threadId } : {}) }); if ('batch' in result) undo.record(result); } catch (cause) { setError(message(cause)); } }}><Icon name="MailOpen" aria-hidden className="size-3.5" /><span className={chatOpen && !bbChat ? 'min-[640px]:sr-only' : undefined}>Mark all read</span></Button>}
         <div ref={setChatActionsTarget} className="hidden items-center min-[640px]:flex" />
       </div>
       {searchable && !questions && <div className="flex gap-2">
