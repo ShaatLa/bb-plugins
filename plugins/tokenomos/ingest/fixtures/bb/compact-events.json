@@ -1,12 +1,12 @@
 [
   {
-    "id": "evt_5iui3364mv",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 1014,
+    "id": "evt_example01",
+    "thread_id": "thr_example",
+    "sequence": 10,
     "type": "client/turn/requested",
     "turn_id": null,
     "parent_tool_call_id": null,
-    "created_at": 1794068426722,
+    "created_at": 1790000000000,
     "data": {
       "direction": "outbound",
       "source": "tell",
@@ -15,7 +15,7 @@
         "method": "turn/start",
         "params": {}
       },
-      "requestId": "creq_5xinjk6gt8",
+      "requestId": "creq_example1",
       "senderThreadId": null,
       "input": [
         {
@@ -51,75 +51,75 @@
     }
   },
   {
-    "id": "evt_xysfsbtpse",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 40892,
+    "id": "evt_example02",
+    "thread_id": "thr_example",
+    "sequence": 20,
     "type": "turn/started",
-    "turn_id": "da3d91030d-t9",
+    "turn_id": "turn-example-1",
     "parent_tool_call_id": null,
-    "created_at": 1794682427308,
+    "created_at": 1790614000586,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
     }
   },
   {
-    "id": "evt_7qfqqusqzc",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 40893,
+    "id": "evt_example03",
+    "thread_id": "thr_example",
+    "sequence": 30,
     "type": "turn/input/accepted",
-    "turn_id": "da3d91030d-t9",
+    "turn_id": "turn-example-1",
     "parent_tool_call_id": null,
-    "created_at": 1794682427308,
+    "created_at": 1790614000586,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
-      "clientRequestId": "creq_y23tsjk98r"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example2"
     }
   },
   {
-    "id": "evt_f7es8fj8ia",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 40902,
+    "id": "evt_example04",
+    "thread_id": "thr_example",
+    "sequence": 40,
     "type": "thread/compacted",
-    "turn_id": "da3d91030d-t9",
+    "turn_id": "turn-example-1",
     "parent_tool_call_id": null,
-    "created_at": 1794682526165,
+    "created_at": 1790614099443,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
     }
   },
   {
-    "id": "evt_5jgfmg6f48",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 41297,
+    "id": "evt_example05",
+    "thread_id": "thr_example",
+    "sequence": 50,
     "type": "turn/input/accepted",
-    "turn_id": "da3d91030d-t9",
+    "turn_id": "turn-example-1",
     "parent_tool_call_id": null,
-    "created_at": 1794682896757,
+    "created_at": 1790614470035,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
-      "clientRequestId": "creq_3eh6tdpt58"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example3"
     }
   },
   {
-    "id": "evt_c4zzqsset8",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 41865,
+    "id": "evt_example06",
+    "thread_id": "thr_example",
+    "sequence": 60,
     "type": "thread/compacted",
-    "turn_id": "da3d91030d-t9",
+    "turn_id": "turn-example-1",
     "parent_tool_call_id": null,
-    "created_at": 1794683634264,
+    "created_at": 1790615207542,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
     }
   },
   {
-    "id": "evt_3iwbv2au2a",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 43715,
+    "id": "evt_example07",
+    "thread_id": "thr_example",
+    "sequence": 70,
     "type": "client/turn/requested",
     "turn_id": null,
     "parent_tool_call_id": null,
-    "created_at": 1794689355731,
+    "created_at": 1790620929009,
     "data": {
       "direction": "outbound",
       "source": "tell",
@@ -128,7 +128,7 @@
         "method": "turn/start",
         "params": {}
       },
-      "requestId": "creq_b8igehn24m",
+      "requestId": "creq_example4",
       "senderThreadId": null,
       "input": [
         {
@@ -164,69 +164,69 @@
     }
   },
   {
-    "id": "evt_g39im9brkn",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 43719,
+    "id": "evt_example08",
+    "thread_id": "thr_example",
+    "sequence": 80,
     "type": "turn/started",
-    "turn_id": "daa6b08a7b-t1",
+    "turn_id": "turn-example-2",
     "parent_tool_call_id": null,
-    "created_at": 1794689355924,
+    "created_at": 1790620929202,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
     }
   },
   {
-    "id": "evt_4nwsv24iib",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 43720,
+    "id": "evt_example09",
+    "thread_id": "thr_example",
+    "sequence": 90,
     "type": "turn/input/accepted",
-    "turn_id": "daa6b08a7b-t1",
+    "turn_id": "turn-example-2",
     "parent_tool_call_id": null,
-    "created_at": 1794689355924,
+    "created_at": 1790620929202,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
-      "clientRequestId": "creq_b8igehn24m"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example4"
     }
   },
   {
-    "id": "evt_4j94unhqxf",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 43726,
+    "id": "evt_example10",
+    "thread_id": "thr_example",
+    "sequence": 100,
     "type": "thread/compacted",
-    "turn_id": "daa6b08a7b-t1",
+    "turn_id": "turn-example-2",
     "parent_tool_call_id": null,
-    "created_at": 1794689438908,
+    "created_at": 1790621012186,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35"
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
     }
   },
   {
-    "id": "evt_wggze2zm77",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 45028,
+    "id": "evt_example11",
+    "thread_id": "thr_example",
+    "sequence": 110,
     "type": "thread/tokenUsage/updated",
-    "turn_id": "daab3f7bc8-t3",
+    "turn_id": "turn-example-3",
     "parent_tool_call_id": null,
-    "created_at": 1794728093537,
+    "created_at": 1790659666815,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
       "tokenUsage": {
         "total": {
-          "totalTokens": 17741150,
-          "inputTokens": 226,
-          "cachedInputTokens": 17685331,
-          "cacheReadInputTokens": 17538311,
-          "cacheWriteInputTokens": 147020,
-          "outputTokens": 55593,
+          "totalTokens": 17705200,
+          "inputTokens": 200,
+          "cachedInputTokens": 17650000,
+          "cacheReadInputTokens": 17500000,
+          "cacheWriteInputTokens": 150000,
+          "outputTokens": 55000,
           "reasoningOutputTokens": 0
         },
         "last": {
-          "totalTokens": 6185246,
-          "inputTokens": 62,
-          "cachedInputTokens": 6173016,
-          "cacheReadInputTokens": 6140824,
-          "cacheWriteInputTokens": 32192,
-          "outputTokens": 12168,
+          "totalTokens": 6142060,
+          "inputTokens": 60,
+          "cachedInputTokens": 6130000,
+          "cacheReadInputTokens": 6100000,
+          "cacheWriteInputTokens": 30000,
+          "outputTokens": 12000,
           "reasoningOutputTokens": 0
         },
         "modelContextWindow": 1000000,
@@ -235,17 +235,17 @@
     }
   },
   {
-    "id": "evt_rmcjm9jf4k",
-    "thread_id": "thr_wr7z5gy6db",
-    "sequence": 45030,
+    "id": "evt_example12",
+    "thread_id": "thr_example",
+    "sequence": 120,
     "type": "thread/contextWindowUsage/updated",
-    "turn_id": "daab3f7bc8-t3",
+    "turn_id": "turn-example-3",
     "parent_tool_call_id": null,
-    "created_at": 1794728095204,
+    "created_at": 1790659668482,
     "data": {
-      "providerThreadId": "40284c38-53b4-4838-864a-170e6f4a3f35",
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
       "contextWindowUsage": {
-        "usedTokens": 227432,
+        "usedTokens": 230000,
         "modelContextWindow": 1000000,
         "estimated": true
       }
