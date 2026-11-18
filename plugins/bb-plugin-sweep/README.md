@@ -28,8 +28,6 @@ Sweep stores candidate bytes and the full message in one SQLite row before telli
 
 ## Integration follow-ups
 
-Anvil: move its script path through configuration, add the protocol flags, migrate existing owner-answer state explicitly, and document Sweep as scheduler. Keep its automation until two good plugin ticks are observed; the Anvil manager owns disabling it.
-
 Work Board schedules should resolve their target through Sweep manager RPC. Slots should resolve its observer through the same RPC. CI Dashboard should resolve its manager through it. Each integration needs explicit handling for missing Sweep or an unset manager. This release changes none of these plugins.
 
 Install: `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin sweep`.
