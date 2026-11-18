@@ -10,9 +10,9 @@ Settings → Plugins → Sweep provides a project picker and separate controls f
 {"proj_example":{"enabled":true,"remote":"https://github.com/example/repo.git","branch":"main","script":"checks/sweep.py","args":["--root","{manager}"],"manager":"thr_example","intervalMinutes":10,"timeoutSeconds":300,"snapshots":false}}
 ```
 
-`{manager}` in arguments is resolved on each run. The manager must be a live, unarchived thread in the configured project. Other plugins should resolve it through RPC `manager` with `{projectId}`, returning `{manager: string|null}`. CLI: `bb sweep manager --project <id> --json`.
+`{manager}` in arguments is resolved on each run. The configured manager can be a live thread in another project. Other plugins should resolve it through RPC `manager` with `{projectId}`, returning `{manager: string|null}`. CLI: `bb sweep manager --project <id> --json`.
 
-`bb sweep status --project <id> --json` shows configuration (including manager), lastRun, exitCode, delivered, deliveredAt, nextRun, error, alertError and pending message. Times are Unix milliseconds. tickId identifies the latest scheduled tick; deliveredTickId and deliveredTo identify the accepted message and recipient. A manager can be in another project when explicitly configured. A missing nextRun means the first enabled tick is due on the next minute boundary. Schedules run only while BB and Sweep are loaded; missed intervals coalesce into one tick.
+`bb sweep status --project <id> --json` shows configuration, the last run, the delivery receipt and any pending report. Times are Unix milliseconds. `tickId` identifies the latest scheduled tick. `deliveredTickId` and `deliveredTo` identify the accepted report and its destination, either the manager's thread ID or `answers`. For Answers deliveries, `deliveredNoticeId` identifies the card and `fallbackReason` records why the manager route failed. `managerError` records the last attempted manager delivery's error, and `alertError` shows push failures. A missing `nextRun` means the first enabled tick is due on the next minute boundary. Schedules run only while BB and Sweep are loaded. Missed intervals coalesce into one tick.
 
 `bb sweep run --project <id> [--dry-run]` refreshes and runs manually without telling, acknowledging or changing status. Scripts must obey the read-only snapshot protocol themselves; Sweep cannot prevent arbitrary repository code from changing external state.
 
@@ -20,11 +20,13 @@ RPC `configure` takes `{projectId,config}` and updates the same setting. RPC `st
 
 ## Script acknowledgement protocol
 
-Without `snapshots`, stdout and stderr plus exit code are sufficient: 0 quiet, 1 ACTION, 2 or higher failure. A crash, refresh error or timeout becomes exit 2 and is delivered to the manager. Unreachable/unset/archived managers leave durable pending deliveries and trigger the push-notifications plugin. Push failures appear as alertError in status.
+Without `snapshots`, stdout and stderr plus exit code are sufficient: 0 quiet, 1 ACTION, 2 or higher failure. A crash, refresh error or timeout becomes exit 2. When the manager is unavailable or the manager send fails, Sweep tries to send the full report as an informational card in the owner's Answers inbox via `answers.notice`. Answers is optional. If the plugin or RPC is unavailable, or the call fails, Sweep keeps the report pending for retry and sends a push alert.
+
+Reports use BB Markdown. Lines starting with `ANSWER`, `ACTION`, `WAIT` or `STATE` are grouped into sections with Work Board links where a task key is available. Other output and failure diagnostics appear as plain text in a code block. If formatting exceeds the Answers size limit, Sweep sends the original full report. `pending` and `delivered` in status retain the original script report and tick ID.
 
 With `snapshots:true`, Sweep adds `--committed-state <path> --candidate-snapshot <path>`. The committed file may not exist initially. The script reads it, prints **every item requiring acknowledgement**, and writes a complete replacement candidate file. It never writes committed state. Both paths are also available as BB_SWEEP_COMMITTED_STATE and BB_SWEEP_CANDIDATE_SNAPSHOT. Candidates on exit 0 or 1 are accepted; failure candidates are ignored. Every candidate is delivered with full output even on exit 0. Scripts should omit the candidate when nothing needs acknowledgement.
 
-Sweep stores candidate bytes and the full message in one SQLite row before telling. It retries the pending message before running the next check and promotes the candidate in one database update only after successful tell. A crash between tell and acknowledgement may duplicate delivery; it cannot acknowledge an undelivered message. Changing manager redirects pending messages as well as new results. Manual runs never stage or acknowledge candidates.
+Sweep stores candidate bytes and the full report in one SQLite row before delivery. It retries the pending report before running the next check and promotes the candidate only after the manager accepts the message or Answers confirms the notice is durable. Answers deduplicates retries by tick ID. A crash between manager delivery and acknowledgement may duplicate that message. Changing manager redirects pending messages as well as new results. Manual runs never stage or acknowledge candidates.
 
 ## Integration follow-ups
 

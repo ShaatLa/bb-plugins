@@ -4,34 +4,120 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
+import { deliveryStore } from './delivery.ts';
 import plugin from './server.ts';
+import { formatNotification } from './notification.ts';
 const repo = await mkdtemp(join(tmpdir(), 'sweep-test-'));
 const git = (...args) => execFileSync('git', args, {cwd:repo, stdio:'ignore'});
 git('init','-b','main');git('config','user.email','test@example.com');git('config','user.name','Test');
-await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.ArgumentParser()\np.add_argument('--committed-state');p.add_argument('--candidate-snapshot')\na=p.parse_args()\nif a.committed_state and os.path.exists(a.committed_state):\n print('sweep: quiet');raise SystemExit(0)\nprint('ACTION test')\nif a.candidate_snapshot: open(a.candidate_snapshot,'w').write('{"seen":true}')\nraise SystemExit(1)\n`);
+await writeFile(join(repo,'sweep.py'), `import argparse,json,os\np=argparse.ArgumentParser()\np.add_argument('--committed-state');p.add_argument('--candidate-snapshot')\na=p.parse_args()\nif a.committed_state and os.path.exists(a.committed_state):\n print('sweep: 2 threads, 3 cards checked, 0 actions');raise SystemExit(0)\nprint('ANSWER EXA-1 q1: «Пример *ответа*»')\nprint('ACTION stale-status EXA-2: in_progress')\nprint('WAIT EXA-3: blocker EXA-4')\nprint('sweep: 2 threads, 3 cards checked, 2 actions')\nif a.candidate_snapshot: open(a.candidate_snapshot,'w').write('{"seen":true}')\nraise SystemExit(1)\n`);
 git('add','.');git('commit','-m','fixture');
-const projectId='proj_test', first='thr_first', second='thr_second';let fail=true;const sent=[];let pushes=0;
-const {bb,harness}=createFakePluginHost({pluginId:'sweep',sdk:{projects:{list:async()=>[{id:projectId,name:'Test'}]},threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:"proj_other"}),send:async(request)=>{if(fail)throw Error('offline');sent.push(request);}},plugins:{callRpc:async()=>{pushes++;return {};}}}});
+const projectId='proj_test', first='thr_first', second='thr_second';
+const config={enabled:true,remote:repo,branch:'main',script:'sweep.py',args:[],manager:first,snapshots:true,intervalMinutes:1};
+let fail=true, health={status:'error'};
+let answersError='Answers offline';
+const sent=[];let pushes=0, attempts=0;
+const {bb,harness}=createFakePluginHost({pluginId:'sweep',sdk:{projects:{list:async()=>[{id:projectId,name:'Test'}]},threads:{get:async({threadId})=>{if(health===null)return null;if(health instanceof Error)throw health;return makeThreadResponse({id:threadId,projectId:'proj_other',...health});},send:async(request)=>{attempts++;if(fail)throw Error('offline');sent.push(request);}},plugins:{callRpc:async({pluginId,method,input})=>{
+  if (pluginId==='answers') throw Error(answersError);
+  assert.equal(pluginId,'push-notifications');assert.equal(method,'notifications.send');
+  assert.equal(input.title,'Sweep manager unreachable');pushes++;return {};
+}}}});
 try {
  await plugin(bb);
- const config={enabled:true,remote:repo,branch:'main',script:'sweep.py',args:[],manager:first,snapshots:true,intervalMinutes:1};
  await harness.behavior.callRpc('configure',{projectId,config});
  await harness.behavior.runSchedule('sweep');
  let s=await harness.behavior.callRpc('status',{projectId});assert.match(s.pending,/ACTION/);assert.equal(pushes,1);
- await harness.behavior.callRpc('run',{projectId});assert.equal((await harness.behavior.callRpc('status',{projectId})).pending,s.pending);
+ assert.equal(attempts,0);assert.match(s.managerError,/failed/);assert.match(s.error,/Answers fallback failed/);
+ for (const failure of ['Plugin answers is not installed','RPC answers.notice was not found']) {
+   answersError=failure;
+   const previousPushes=pushes;
+   await harness.behavior.callRpc('configure',{projectId,config});await harness.behavior.runSchedule('sweep');
+   const retry=await harness.behavior.callRpc('status',{projectId});
+   assert.equal(retry.pending,s.pending);assert.equal(retry.deliveredTo,undefined);
+   assert.ok(retry.error.includes(failure));assert.equal(pushes,previousPushes+1);
+ }
+ for(const unavailable of [{runtime:{displayStatus:'error'}},{runtime:{displayStatus:'waiting-for-host'}},{archivedAt:1},{deletedAt:1},null,Error('lookup offline')]) {
+   health=unavailable;await harness.behavior.callRpc('configure',{projectId,config});await harness.behavior.runSchedule('sweep');
+   const retry=await harness.behavior.callRpc('status',{projectId});assert.equal(retry.pending,s.pending);assert.ok(retry.managerError);assert.equal(attempts,0);
+ }
+ health={};await harness.behavior.callRpc('configure',{projectId,config});await harness.behavior.runSchedule('sweep');
+ assert.equal(attempts,1);assert.match((await harness.behavior.callRpc('status',{projectId})).managerError,/offline/);
+ assert.equal((await harness.behavior.callRpc('run',{projectId})).exitCode,1);
+ assert.equal((await harness.behavior.callRpc('status',{projectId})).pending,s.pending);
  await harness.behavior.callRpc('configure',{projectId,config:{...config,manager:second}});
  assert.equal((await harness.behavior.callRpc('manager',{projectId})).manager,second);
  fail=false;
  // Due-time is durable; advance the clock for the retry.
  const original=Date.now;Date.now=()=>original()+120000;
  try {await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}
- assert.equal(sent[0].threadId,second);assert.match(sent[0].input[0].text,/ACTION/);
- s=await harness.behavior.callRpc('status',{projectId});assert.equal(s.pending,null);assert.equal(s.exitCode,0);assert.ok(s.lastRun);assert.equal(s.deliveredTo,second);assert.ok(s.deliveredTickId);assert.ok(s.nextRun);assert.match(s.delivered,/alive/);
+ assert.equal(sent[0].threadId,second);
+ assert.equal(sent[0].input[0].text, [
+   '**Sweep · Needs attention** · 2 to review · 2 threads · 3 cards checked',
+   '**Owner answers**',
+   '- [EXA-1](/plugins/work-board/work-board/task/EXA-1) — «Пример \\*ответа\\*» · `q1`',
+   '**Actions**',
+   '- **stale status** · [EXA-2](/plugins/work-board/work-board/task/EXA-2): in\\_progress',
+   '**Waiting**',
+   '- [EXA-3](/plugins/work-board/work-board/task/EXA-3) — blocked by [EXA-4](/plugins/work-board/work-board/task/EXA-4)',
+ ].join('\n\n'));
+ s=await harness.behavior.callRpc('status',{projectId});assert.equal(s.pending,null);assert.equal(s.managerError,null);assert.equal(s.exitCode,0);assert.ok(s.lastRun);assert.equal(s.deliveredTo,second);assert.ok(s.deliveredTickId);assert.ok(s.nextRun);assert.match(s.delivered,/alive/);
+ assert.equal(s.deliveredTickId,s.tickId);
  const count=sent.length;
  Date.now=()=>original()+240000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count);
- Date.now=()=>original()+3800000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count+1);assert.match(sent.at(-1).input[0].text,/alive/);
+ Date.now=()=>original()+3800000;try{await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}assert.equal(sent.length,count+1);
+ assert.equal(sent.at(-1).input[0].text, '**Sweep · No new actions** · 0 to review · 2 threads · 3 cards checked');
  console.log('Sweep retry, redirect, manual-state and status checks passed');
-}finally{await harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
+}finally{await harness.lifecycle.dispose();}
+
+const noticeInputs = [];
+const notices = new Map();
+let fallbackPushes = 0;
+const fallbackHost = createFakePluginHost({pluginId:'sweep', sdk:{
+  projects:{list:async()=>[{id:projectId,name:'Test'}]},
+  threads:{get:async()=>makeThreadResponse({status:'error'}),send:async()=>assert.fail('Failed manager must not receive a message')},
+  plugins:{callRpc:async({pluginId,method,input})=>{
+    if (pluginId === 'push-notifications') { fallbackPushes++; return {}; }
+    assert.equal(pluginId,'answers');assert.equal(method,'notice');
+    noticeInputs.push(input);
+    if (notices.has(input.tickId)) return { id:notices.get(input.tickId), created:false };
+    const id = `notice-${notices.size + 1}`;
+    notices.set(input.tickId,id);
+    if (notices.size === 1) throw Error('Lost reply after commit');
+    return { id, created:true };
+  }},
+}});
+try {
+  const {bb,harness}=fallbackHost;
+  await plugin(bb);
+  await harness.behavior.callRpc('configure',{projectId,config});
+  await harness.behavior.runSchedule('sweep');
+  let s=await harness.behavior.callRpc('status',{projectId});
+  assert.match(s.pending,/ACTION/);assert.equal(s.deliveredTo,undefined);assert.equal(fallbackPushes,1);
+  assert.equal((await harness.behavior.callRpc('run',{projectId})).exitCode,1);
+  assert.equal(noticeInputs.length,1);
+  assert.deepEqual(noticeInputs[0], {
+    source:'sweep', tickId:s.tickId, projectId, threadId:first, title:'Sweep report · Manager unavailable',
+    markdown:formatNotification(1,s.pending.slice(s.pending.indexOf('\n')+1)),
+  });
+  await harness.behavior.callRpc('configure',{projectId,config});
+  await harness.behavior.runSchedule('sweep');
+  assert.deepEqual(noticeInputs[1],noticeInputs[0]);assert.equal(fallbackPushes,1);
+  s=await harness.behavior.callRpc('status',{projectId});
+  assert.equal(s.pending,null);assert.equal(s.exitCode,0);assert.equal(s.deliveredTo,'answers');
+  assert.equal(s.deliveredNoticeId,notices.get(s.deliveredTickId));assert.match(s.fallbackReason,/Manager thread failed/);
+
+  // Keep the full output when Markdown escaping would exceed the Answers API limit.
+  const oldPending = `[sweep] exit 1\nACTION test ${'_*'.repeat(400000)}\n`;
+  deliveryStore(bb.storage.database()).stage(projectId,oldPending,null);
+  await harness.behavior.callRpc('configure',{projectId,config});
+  await harness.behavior.runSchedule('sweep');
+  assert.match(noticeInputs.at(-1).tickId,/^proj_test:legacy:[a-f0-9]{64}$/);
+  assert.equal(noticeInputs.at(-1).markdown,oldPending);
+  assert.equal((await harness.behavior.callRpc('status',{projectId})).pending,null);
+}finally{await fallbackHost.harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
+
+assert.equal(formatNotification(0, 'STATE owner-answers: reopened q1\n'), '**Sweep · Check complete**\n\n**State changes**\n\n- owner-answers: reopened q1');
+assert.equal(formatNotification(2, 'ERROR checkout failed\n```\n  indented detail\n'), '**Sweep · Check failed** (exit 2)\n\n````text\nERROR checkout failed\n```\n  indented detail\n````');
 
 // A reload must cancel in-flight repository work before the service stop deadline.
 const slowRepo = await mkdtemp(join(tmpdir(), 'sweep-stop-'));

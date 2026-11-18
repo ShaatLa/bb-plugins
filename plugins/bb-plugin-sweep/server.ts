@@ -2,7 +2,9 @@ import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
+import { formatNotification } from './notification.ts';
 import { execute } from './runner.ts';
 
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
@@ -19,7 +21,8 @@ export const contract = defineRpcContract({
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; alertError?: string | null; nextRun?: number };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number };
+const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
   const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
@@ -30,25 +33,48 @@ export default async function plugin(bb: BbPluginApi) {
   const status = async (id: string) => { const config = (await configs())[id] ?? null, current = state(id); return { projectId: id, config, ...current, nextRun: config?.enabled ? current.nextRun ?? Date.now() : null, pending: deliveries.read(id)?.pending_message ?? null }; };
   const controller = new AbortController(); bb.onDispose(() => controller.abort());
   const busy = new Set<string>();
-  async function managerFor(id: string) {
-    const manager = (await configs())[id]?.manager;
+  async function managerFor(manager: string | undefined) {
     if (!manager) throw new Error('Manager is unset');
     const thread = await bb.sdk.threads.get({ threadId: manager });
-    if (!thread || thread.archivedAt) throw new Error('Manager missing or archived');
-    return manager;
-  }
-  async function send(id: string, text: string) {
-    const manager = await managerFor(id);
-    await bb.sdk.threads.send({ threadId: manager, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text, mentions: [] }] });
+    if (!thread || thread.archivedAt || thread.deletedAt) throw new Error('Manager missing, archived or deleted');
+    if (thread.status === 'error' || thread.runtime.displayStatus === 'error') throw new Error('Manager thread failed');
+    if (thread.runtime.displayStatus === 'waiting-for-host') throw new Error('Manager host unreachable');
     return manager;
   }
   async function deliver(id: string, current: State) {
     const pending = deliveries.read(id)?.pending_message;
     if (!pending) return;
-    current.deliveredTo = await send(id, pending);
-    current.deliveredTickId = /tick=([^\s]+)/.exec(pending)?.[1];
+    const header = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/.exec(pending);
+    const heartbeat = header?.[1] === 'alive';
+    const message = header ? formatNotification(heartbeat ? 'alive' : Number(header[2]), pending.slice(header[0].length)) : pending;
+    const manager = (await configs())[id]?.manager;
+    try {
+      const threadId = await managerFor(manager);
+      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: message, mentions: [] }] });
+      current.deliveredTo = threadId;
+      current.deliveredNoticeId = undefined;
+      current.fallbackReason = undefined;
+      current.managerError = null;
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      current.managerError = String(error);
+      // Older pending reports did not carry a tick ID. Derive a stable key for their retries.
+      const tickId = header?.[3] ?? `${id}:legacy:${createHash('sha256').update(pending).digest('hex')}`;
+      const notice = await bb.sdk.plugins.callRpc({
+        pluginId: 'answers', method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
+        input: {
+          source: bb.pluginId, tickId, projectId: id, ...(manager ? { threadId: manager } : {}),
+          title: 'Sweep report · Manager unavailable',
+          markdown: Buffer.byteLength(message) <= 1024 * 1024 ? message : pending,
+        },
+      }).catch(cause => { throw new Error(`Answers fallback failed after ${current.managerError}: ${String(cause)}`, { cause }); });
+      current.deliveredTo = 'answers';
+      current.deliveredNoticeId = notice.id;
+      current.fallbackReason = current.managerError;
+    }
+    current.deliveredTickId = header?.[3];
     current.delivered = pending; current.deliveredAt = Date.now();
-    if (pending.startsWith('[sweep] alive')) current.heartbeatAt = Date.now();
+    if (heartbeat) current.heartbeatAt = Date.now();
     db.transaction(() => { deliveries.acknowledge(id); save(id, current); })();
   }
   async function tick(id: string, manual = false) {
@@ -63,7 +89,6 @@ export default async function plugin(bb: BbPluginApi) {
         current.lastRun = Date.now(); current.exitCode = null; current.nextRun = Date.now() + config.intervalMinutes * 60000;
         save(id, current);
         await deliver(id, current);
-        await managerFor(id);
       }
       let result;
       try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal, (await settings.get()).bbCli, (await settings.get()).runtimePath); }
