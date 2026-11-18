@@ -1,8 +1,8 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createTasksStore } from "../db";
-import { formatTaskCost } from "../components/task-cost";
-import { getTaskCost, taskCostSpans } from ".";
+import { formatTaskCost, modelSlices } from "../components/task-cost";
+import { getTaskCostSpans, taskCostSpans } from ".";
 
 const SUM = {
   priceVersion: "2026-11",
@@ -70,8 +70,8 @@ describe("task cost", () => {
     expect(taskCostSpans(db, other.id).spans).toEqual([{ threadId: "thr_worker", from: t(11), to: t(13) }]);
   });
 
-  it("collects an epic's members and their subtasks into one deduplicated set", async () => {
-    const { bb, harness, store, task } = setup();
+  it("collects an epic's members and their subtasks into one deduplicated set", () => {
+    const { bb, store, task } = setup();
     const epic = store.createTask({ projectId: task.projectId, title: "Epic", type: "epic" });
     const member = store.createTask({ projectId: epic.projectId, title: "Member", epicId: epic.id });
     const sub = store.createTask({ projectId: epic.projectId, title: "Sub", parentTaskId: member.id });
@@ -88,46 +88,40 @@ describe("task cost", () => {
     // thr_shared is attached to both; the tree owns its time once.
     expect(spans.map((span) => span.threadId).sort()).toEqual(["thr_member", "thr_shared", "thr_sub"]);
     expect(spans.every((span) => span.to === null)).toBe(true);
-    harness.sdk.stub("plugins.callRpc", async () => SUM as never);
-    expect(await getTaskCost(bb, epic.id)).toMatchObject({ taskCount: 2 });
-    expect(harness.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
   });
 
-  it("asks Tokenomos for the sum over spans including descendants", async () => {
-    const { bb, harness, task, system } = setup();
-    system("thr_agent", "Thread attached: @thread:thr_agent");
-    harness.sdk.stub("plugins.callRpc", async () => SUM as never);
-
-    await expect(getTaskCost(bb, task.id)).resolves.toEqual({ ...SUM.cost, threadCount: 3, taskCount: 1 });
-    expect(harness.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
-      pluginId: "tokenomos",
-      method: "costs.sum",
-      input: { spans: [{ threadId: "thr_agent", from: expect.any(Number), to: null }], includeDescendants: true },
-    });
-  });
-
-  it("marks the sum partial when a task has more spans than one call takes", async () => {
-    const { bb, harness, task, system } = setup();
+  it("caps the spans at one Tokenomos call and flags the rest", () => {
+    const { db, task, system } = setup();
+    expect(getTaskCostSpans(db, task.id)).toEqual({ spans: [], truncated: false, taskCount: 0 });
     for (let i = 0; i < 2001; i++) system(`thr_${i}`, `Thread attached: @thread:thr_${i}`);
-    harness.sdk.stub("plugins.callRpc", async () => SUM as never);
 
-    expect((await getTaskCost(bb, task.id))?.partial).toBe(true);
-    expect((harness.sdk.callsTo("plugins.callRpc")[0]![0] as { input: { spans: unknown[] } }).input.spans).toHaveLength(2000);
+    const result = getTaskCostSpans(db, task.id);
+    expect(result.spans).toHaveLength(2000);
+    expect(result).toMatchObject({ truncated: true, taskCount: 1 });
   });
 
-  it("hides the cost when Tokenomos is missing or the task has no threads", async () => {
-    const { bb, harness, task, system } = setup();
-    await expect(getTaskCost(bb, task.id)).resolves.toBeNull();
-    expect(harness.sdk.callsTo("plugins.callRpc")).toEqual([]);
-
-    system("thr_agent", "Thread attached: @thread:thr_agent");
-    harness.sdk.stub("plugins.callRpc", async () => {
-      throw new Error("plugin tokenomos is not installed");
+  it("slices models by price, folding the tail into Other", () => {
+    const model = (name: string, usd: number | null, tokens = 100) => ({
+      provider: "p", model: name, calls: 1, cost: { ...SUM.cost, usd, tokens: { ...SUM.cost.tokens, freshIn: tokens, cacheRead: 0, cacheWrite: 0, output: 0 } },
     });
-    await expect(getTaskCost(bb, task.id)).resolves.toBeNull();
-
-    harness.sdk.stub("plugins.callRpc", async () => ({ ...SUM, threadCount: 0 }) as never);
-    await expect(getTaskCost(bb, task.id)).resolves.toBeNull();
+    const slices = modelSlices(["a", "b", "c", "d", "e", "f", "g"].map((name, i) => model(name, 7 - i)));
+    expect(slices.map((slice) => slice.label)).toEqual(["a", "b", "c", "d", "e", "Other (2)"]);
+    expect(slices.at(-1)).toMatchObject({ share: 3 / 28, amount: "$3.00" });
+    expect(slices.reduce((sum, slice) => sum + slice.share, 0)).toBeCloseTo(1);
+    // A model without a price switches the pie to tokens; empty models drop out.
+    expect(modelSlices([model("x", 1, 300), model("y", null, 100), model("z", 0, 0)]).map((s) => [s.label, s.share]))
+      .toEqual([["x", 0.75], ["y", 0.25]]);
+    expect(modelSlices([])).toEqual([]);
+    // Colors follow the provider, with lighter shades for its further models.
+    const colors = modelSlices([
+      { ...model("opus", 3), provider: "claude-code" },
+      { ...model("sonnet", 2), provider: "claude-code" },
+      { ...model("sol", 1), provider: "codex" },
+    ]).map((slice) => slice.color);
+    expect(colors[0]).toBe("light-dark(#ea580c, #fb923c)");
+    expect(colors[1]).toContain("#ea580c");
+    expect(colors[1]).not.toBe(colors[0]);
+    expect(colors[2]).toBe("light-dark(#2563eb, #60a5fa)");
   });
 
   it("formats dollars, approximate sums and token-only totals", () => {

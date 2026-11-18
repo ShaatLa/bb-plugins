@@ -33,6 +33,13 @@ describe("merge queue removal", () => {
     expect(text(event!)).not.toContain("failed tests");
     expect(text(event!, [])).not.toContain("failed tests");
   });
+  it("adds the first failure message of each shown test, only when a job failed real", () => {
+    const [real] = queueRemovalEvents(REPO, [classify(queueJob(), "real")]), [flake] = queueRemovalEvents(REPO, [classify(queueJob(), "flake")]);
+    const messages = { "a.One": "AssertionError: expected 1 to be 2" };
+    expect(real!.render(["a.One", "b.Two"], undefined, messages)).toMatch(/· inspect `queue:50:1`.*\n {2}- a\.One: AssertionError: expected 1 to be 2$/);
+    expect(flake!.render(["a.One"], undefined, messages)).not.toContain("AssertionError");
+    expect(real!.render(["a.One"], undefined, null)).not.toContain("\n");
+  });
   it("shows at most three tests then +K, at most four jobs then +K, and keeps the link inside 400 characters", () => {
     const jobs = Array.from({ length: 6 }, (_, i) => classify(queueJob({ jobName: `Job ${i}`, jobId: 600 + i }), "real"));
     const [event] = queueRemovalEvents(REPO, jobs);

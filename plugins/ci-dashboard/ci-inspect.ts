@@ -22,6 +22,8 @@ export type InspectInput = Omit<ProblemContextInput, "compact" | "refs" | "notes
   queueStatus: (key: string) => "confirmed" | "pending" | "rejected";
   /** Failed test names of an attempt that were already extracted (cache only; never fetches). */
   cachedTests: (run: { id: number; attempt: number }) => string[] | null;
+  /** First failure message per failed test name of an attempt (sanitized; cache only). */
+  cachedMessages?: (run: { id: number; attempt: number }) => Record<string, string> | null;
 };
 
 const FIRST = Number.MAX_SAFE_INTEGER;
@@ -30,6 +32,14 @@ const SECTION_BUDGET = 3000;
 const timeOf = (job: JobRecord) => Date.parse(job.completedAt ?? job.startedAt ?? job.createdAt) || 0;
 const sha7 = (sha: string) => sha.slice(0, 7);
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+/** The failed tests of an attempt, with their first failure message when the failure is classified real. */
+const testFacts = (input: InspectInput, run: { id: number; attempt: number }, real: boolean) => {
+  const tests = input.cachedTests(run);
+  if (!tests?.length) return {};
+  const messages = real ? input.cachedMessages?.(run) : null, shown = tests.slice(0, 5);
+  const failureMessages = Object.fromEntries(shown.flatMap((name) => messages?.[name] ? [[clip(name.replace(/\s+/g, " "), 100), messages[name]]] : []));
+  return { failedTests: shown.map((name) => clip(name.replace(/\s+/g, " "), 100)), ...(tests.length > 5 ? { moreTests: tests.length - 5 } : {}), ...(Object.keys(failureMessages).length ? { failureMessages } : {}) };
+};
 const isOwn = (c: ClassifiedJob) => !["collateral_cancel", "superseded", "manual_cancel"].includes(c.class);
 const minutes = (ms: number) => `${Math.round(ms / 60_000)} min`;
 const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
@@ -114,7 +124,7 @@ function inspectRun(ref: string, runId: number, attempt: number | undefined, inp
 function inspectJob(ref: string, jobId: number, input: InspectInput): Inspection {
   const found = input.classified.find((c) => c.job.jobId === jobId), job = found?.job ?? (input.liveJobs ?? []).find((item) => item.jobId === jobId);
   if (!job) throw new Error(`Job ${jobId} is not known to CI Dashboard (only failed jobs of the stored window and live jobs are kept).`);
-  const pr = job.event === "merge_group" ? queuePullRequest(job.headBranch) : null, tests = input.cachedTests({ id: job.runId, attempt: job.attempt });
+  const pr = job.event === "merge_group" ? queuePullRequest(job.headBranch) : null;
   const related: { ref: string; at: number }[] = [{ ref: runRef(job.runId, job.attempt), at: FIRST }, { ref: shaRef(job.headSha), at: FIRST - 2 }];
   if (job.event === "merge_group") related.push({ ref: queueRef(job.runId, job.attempt), at: FIRST - 1 });
   if (job.pool) related.push({ ref: poolRef(job.pool), at: FIRST - 3 });
@@ -128,7 +138,7 @@ function inspectJob(ref: string, jobId: number, input: InspectInput): Inspection
       status: job.status, conclusion: job.conclusion, ...(found ? { class: found.class, reason: found.reason } : {}), ...(found?.flakeLabel ? { label: clip(found.flakeLabel, 60) } : {}),
       ...(job.inheritedFrom ? { inheritedFrom: job.inheritedFrom } : {}),
       failedSteps: job.failedSteps.slice(0, 5).map((step) => clip(step, 80)), runner: job.runnerName, pool: job.pool, startedAt: job.startedAt, completedAt: job.completedAt, ...(duration === null ? {} : { duration: seconds(duration) }),
-      ...(tests?.length ? { failedTests: tests.slice(0, 5).map((name) => clip(name.replace(/\s+/g, " "), 100)), ...(tests.length > 5 ? { moreTests: tests.length - 5 } : {}) } : {}),
+      ...testFacts(input, { id: job.runId, attempt: job.attempt }, found?.class === "real"),
       url: `https://github.com/${input.repository}/actions/runs/${job.runId}/job/${job.jobId}` },
     related: cap(related),
   };
@@ -147,7 +157,8 @@ function inspectQueue(ref: string, runId: number, attempt: number, input: Inspec
   for (const problem of input.problems) if (problem.where.runId === runId) related.push({ ref: problem.id, at: FIRST - 1 });
   return {
     ref, kind: "queue", summary: `${pr === null ? "Merge queue run" : `PR #${pr} merge queue run`} ${runId} attempt ${attempt} · removal ${status} · ${jobs.length} non-success job(s)`,
-    facts: { pullRequest: pr, confirmation: status, ownFailure: own, ...(origins[0] ? { inheritedFrom: origins[0] } : {}), classes, jobs: list.rows, ...(list.more ? { moreJobs: list.more } : {}), url: `https://github.com/${input.repository}/actions/runs/${runId}` },
+    facts: { pullRequest: pr, confirmation: status, ownFailure: own, ...(origins[0] ? { inheritedFrom: origins[0] } : {}), classes, jobs: list.rows, ...(list.more ? { moreJobs: list.more } : {}),
+      ...testFacts(input, { id: runId, attempt }, jobs.some((c) => c.class === "real")), url: `https://github.com/${input.repository}/actions/runs/${runId}` },
     related: cap(related),
   };
 }

@@ -226,26 +226,36 @@ describe("bb work-board CLI", () => {
     } finally { await harness.dispose(); await rm(dir, { recursive: true, force: true }); }
   });
 
-  it("reports ready, question or blocker on the card and wakes only the caller's parent", async () => {
+  it("reports ready, question or blocker as Current state, attaches the card's session and wakes only its parent", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);
     await harness.runCli(["project", "create", "--name", "Report", "--prefix", "REP"]);
     await harness.runCli(["create", "--project", "REP", "--title", "Report"]);
-    const parents: Record<string, string | null> = { thr_child: "thr_parent", thr_orphan: null, thr_parent: null };
-    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
+    const parents: Record<string, string | null> = { thr_child: "thr_parent", thr_helper: "thr_child", thr_orphan: null, thr_parent: null };
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, title: threadId, status: "active", parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
     harness.sdk.stub("threads.queuedMessages.list", async () => []);
     harness.sdk.stub("threads.send", async () => ({}) as never);
     const report = (thread: string | undefined, ...args: string[]) => harness.runCli(["report", "REP-1", ...args], thread ? { threadId: thread } : {});
+    const card = async () => JSON.parse(stdout(await harness.runCli(["show", "REP-1", "--json"]))).task;
+    const comments = async () => JSON.parse(stdout(await harness.runCli(["comment", "list", "REP-1", "--json"]))).comments;
+    const sessions = async () => JSON.parse(stdout(await harness.runCli(["threads", "REP-1", "--json"]))).taskThreads.map((link: { threadId: string }) => link.threadId);
     vi.stubEnv("BB_THREAD_ID", "");
     try {
-      expect(stdout(await report("thr_child", "--kind", "ready", "--body", "Merged as abc"))).toContain("Reported ready on REP-1 to @thread:thr_parent");
+      expect(stdout(await report("thr_child", "--kind", "ready", "--body", "Merged as abc"))).toContain("Reported ready on REP-1 to @thread:thr_parent; Current state replaced");
       expect(harness.sdk.callsTo("threads.send")).toEqual([[expect.objectContaining({
         threadId: "thr_parent",
         mode: "queue-if-active",
         input: [expect.objectContaining({ text: expect.stringMatching(/^\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
       })]]);
-      const comments = async () => JSON.parse(stdout(await harness.runCli(["comment", "list", "REP-1", "--json"]))).comments;
-      expect((await comments()).at(-1)).toMatchObject({ kind: "agent", threadId: "thr_child", body: "**READY**\n\nMerged as abc", notifiedCount: 1 });
+      expect(await card()).toMatchObject({ progressNote: "**READY**\n\nMerged as abc", progressUpdatedBy: "thr_child" });
+      expect(await sessions()).toEqual(["thr_child"]);
+      // The report itself never reaches the card log.
+      expect(await comments()).toEqual([]);
+
+      // A helper of the attached session only wakes that session.
+      expect(stdout(await report("thr_helper", "--kind", "blocker", "--body", "Flaky test"))).toBe("Reported blocker on REP-1 to @thread:thr_child");
+      expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
+      expect(await sessions()).toEqual(["thr_child"]);
 
       for (const [thread, args, error] of [
         ["thr_orphan", ["--kind", "blocker", "--body", "x"], "no parent thread"],
@@ -256,14 +266,44 @@ describe("bb work-board CLI", () => {
         expect(failed.exitCode).toBe(1);
         expect(failed.stderr).toContain(error);
       }
-      expect(await comments()).toHaveLength(1);
+      expect(await comments()).toEqual([]);
+
+      const long = await report("thr_child", "--kind", "question", "--body", "é".repeat(3000));
+      expect(long.exitCode).toBe(0);
+      const note = (await card()).progressNote as string;
+      expect(Buffer.byteLength(note)).toBeLessThanOrEqual(4096);
+      expect(note).toMatch(/^\*\*QUESTION\*\*\n\né+\n\n… \(cut; the full report went to @thread:thr_parent\)$/);
 
       harness.sdk.stub("threads.send", async () => { throw new Error("offline"); });
       const unsent = await report("thr_child", "--kind", "blocker", "--body", "CI is red");
       expect(unsent.exitCode).toBe(1);
-      expect(unsent.stderr).toContain("could not wake parent thr_parent");
-      expect((await comments()).at(-1)).toMatchObject({ body: "**BLOCKER**\n\nCI is red", notifiedCount: 0 });
+      expect(unsent.stderr).toContain("Saved the blocker report as Current state of REP-1, but could not wake parent thr_parent");
+      expect((await card()).progressNote).toBe("**BLOCKER**\n\nCI is red");
+
+      harness.sdk.stub("threads.send", async () => ({}) as never);
+      await harness.runCli(["update", "REP-1", "--progress", "Working on it\nHandoff: /notes/example.md"], { threadId: "thr_child" });
+      await report("thr_child", "--kind", "ready", "--body", "Done");
+      expect((await card()).progressNote).toBe("Handoff: /notes/example.md\n\n**READY**\n\nDone");
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
+  });
+
+  it("attaches an unattached child session that writes Current state, but not a helper or a top-level thread", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Attach", "--prefix", "ATT"]);
+    await harness.runCli(["create", "--project", "ATT", "--title", "Card"]);
+    const parents: Record<string, string | null> = { thr_lead: "thr_manager", thr_worker: "thr_lead", thr_manager: null };
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, title: threadId, status: "active", parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
+    const sessions = async () => JSON.parse(stdout(await harness.runCli(["threads", "ATT-1", "--json"]))).taskThreads.map((link: { threadId: string }) => link.threadId);
+    const update = (thread: string, ...args: string[]) => harness.runCli(["update", "ATT-1", ...args], { threadId: thread });
+    try {
+      expect(stdout(await update("thr_manager", "--progress", "Queued"))).toBe("Updated ATT-1  Card");
+      expect(stdout(await update("thr_lead", "--status", "in_progress"))).toBe("Updated ATT-1  Card");
+      expect(await sessions()).toEqual([]);
+      expect(stdout(await update("thr_lead", "--progress", "Working"))).toBe("Updated ATT-1  Card; attached thr_lead");
+      expect(JSON.parse(stdout(await update("thr_worker", "--progress", "Helping", "--json")))).not.toHaveProperty("attached");
+      expect(await sessions()).toEqual(["thr_lead"]);
+    } finally { await harness.dispose(); }
   });
 
   it("lists the caller's open children with their cards and state notes", async () => {

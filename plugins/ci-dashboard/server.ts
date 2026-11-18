@@ -554,7 +554,8 @@ export default function plugin(bb: BbPluginApi) {
     const artifacts = flakeSettings(values.flakeSignatures, values.flakeArtifacts).artifacts, rendered: Rendered[] = [];
     for (const event of accepted) {
       const tests = event.tests && rt.backfill ? await rt.backfill.run.failedTests(repo, event.tests.run, event.tests.jobs, artifacts, signal) : null;
-      rendered.push({ key: event.key, type: event.type, at: event.at, text: event.render(tests, event.problem && openProblems.has(event.problem) ? event.problem : undefined) });
+      const messages = tests?.length ? rt.backfill!.run.cachedFailureMessages(repo, event.tests!.run, artifacts) : null;
+      rendered.push({ key: event.key, type: event.type, at: event.at, text: event.render(tests, event.problem && openProblems.has(event.problem) ? event.problem : undefined, messages) });
     }
     if (deploymentMode(values.observeDeployments) !== "all") state.pending = state.pending.filter((event) => event.type !== "deploy" || (deploymentMode(values.observeDeployments) === "failures" && !event.key.endsWith(":success")));
     const messages = dispatch(state, rendered, global, config);
@@ -925,6 +926,7 @@ export default function plugin(bb: BbPluginApi) {
       problems: row.problems, signals: row.signals, poolTimings: row.poolTimings,
       queueStatus: (key) => !observer.success ? "pending" : observer.data.sent[REJECTED + key] !== undefined ? "rejected" : observer.data.sent[key] !== undefined ? "confirmed" : "pending",
       cachedTests: (run) => rt.backfill?.run.cachedFailedTests(repo, run, artifacts) ?? null,
+      cachedMessages: (run) => rt.backfill?.run.cachedFailureMessages(repo, run, artifacts) ?? null,
     } satisfies InspectInput);
   }
   async function readCi(input: CiQuery) {

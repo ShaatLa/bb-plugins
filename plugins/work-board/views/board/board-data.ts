@@ -1,5 +1,5 @@
 import type { TaskAdvisory } from "../../shared/task-advisories";
-import { samePolledMetadata, useActivityPoll } from "../../shell/activity-poll";
+import { samePolledMetadata, useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll";
 import { useEffect, useRef } from "react";
 import { tasksRpcContract, type Label, type Task, type TaskThread, type ThreadHealth, type DependencyTask } from "../../shared/contract.js";
 import { useTasksQuery, type TasksRpc, type QueryPublish } from "../../shell/data.js";
@@ -91,9 +91,12 @@ async function readBoardMeta(rpc: TasksRpc, taskIds: string[]) {
 
 export async function pollBoardMetadata(rpc: TasksRpc, current: MetadataRow[]): Promise<MetadataRow[]> {
   const activeIds = current.filter((row) => (row.activity?.attachedCount ?? 0) > 0 || row.taskThreads.some(isActiveThread)).map((row) => row.taskId);
-  if (!activeIds.length) return current;
+  return activeIds.length ? refreshBoardRows(rpc, current, activeIds) : current;
+}
+
+async function refreshBoardRows(rpc: TasksRpc, current: MetadataRow[], taskIds: string[]): Promise<MetadataRow[]> {
   const next = new Map(current.map((row) => [row.taskId, row]));
-  for (const row of await readBoardMeta(rpc, activeIds)) next.set(row.taskId, row);
+  for (const row of await readBoardMeta(rpc, taskIds)) next.set(row.taskId, row);
   const result = [...next.values()];
   return samePolledMetadata(result, current) ? current : result;
 }
@@ -148,6 +151,9 @@ export function useBoardMetadata(tasks: readonly Task[], projectId: string, enab
   useActivityPoll(() => {
     void query.patch(pollBoardMetadata).catch(() => query.refresh());
   }, query.isFetching, enabled && hasActive);
+  useAdvisoryRecheck(enabled ? query.data : undefined, (taskIds) => {
+    void query.patch((rpc, current) => refreshBoardRows(rpc, current, taskIds)).catch(() => query.refresh());
+  });
   return query;
 }
 

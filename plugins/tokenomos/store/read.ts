@@ -170,11 +170,42 @@ function tree(db: Database, ids: string[], descendants: boolean) {
     UNION SELECT r.root,t.id,r.depth+1 FROM reach r JOIN threads t ON t.parent_id=r.id OR t.lifecycle_owner_id=r.id WHERE r.depth<32 AND ?
   ) SELECT DISTINCT root,id FROM reach`).all(JSON.stringify(ids), descendants ? 1 : 0) as { root: string; id: string }[];
 }
-function threadData(db: Database, ids: string[], overrides: Overrides) {
+/** Per-thread and per-model split of a costs.sum result; thread rows sum to the total. */
+function breakdown(db: Database) {
+  type Entry = { cost: Cost; models: Map<string, Cost> };
+  const threads = new Map<string, Entry>(), models = new Map<string, { provider: string; model: string; cost: Cost; calls: number }>();
+  const weight = (c: Cost) => [c.usd ?? 0, c.tokens.freshIn + c.tokens.cacheRead + c.tokens.cacheWrite + c.tokens.output];
+  const byWeight = (a: Cost, b: Cost) => { const [x, y] = weight(a), [u, v] = weight(b); return u - x || v - y; };
+  return {
+    add(threadId: string, r: Group, c: Cost) {
+      const t = threads.get(threadId) ?? { cost: empty(), models: new Map() };
+      add(t.cost, structuredClone(c));
+      t.models.set(r.model, add(t.models.get(r.model) ?? empty(), structuredClone(c)));
+      threads.set(threadId, t);
+      const key = `${r.provider ?? ''}\u0000${r.model}`, m = models.get(key) ?? { provider: r.provider ?? '', model: r.model, cost: empty(), calls: 0 };
+      add(m.cost, structuredClone(c)); m.calls += r.calls;
+      models.set(key, m);
+    },
+    touch(threadId: string, partial: boolean) {
+      const t = threads.get(threadId) ?? { cost: empty(), models: new Map() };
+      t.cost.partial ||= partial; threads.set(threadId, t);
+    },
+    result() {
+      const titles = new Map((db.prepare('SELECT id,title FROM threads WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify([...threads.keys()])) as { id: string; title: string }[]).map(t => [t.id, t.title]));
+      return {
+        threads: [...threads].map(([threadId, t]) => ({ threadId, title: titles.get(threadId) ?? '', model: [...t.models].sort((a, b) => byWeight(a[1], b[1]))[0]?.[0] ?? '', cost: t.cost }))
+          .sort((a, b) => byWeight(a.cost, b.cost)),
+        models: [...models.values()].sort((a, b) => byWeight(a.cost, b.cost)),
+      };
+    },
+  };
+}
+function threadData(db: Database, ids: string[], overrides: Overrides, onRow?: (threadId: string, r: Group, c: Cost) => void) {
   const rows = db.prepare(`SELECT tt.*,COALESCE(c.partial,0) AS partial FROM thread_tokens tt LEFT JOIN thread_cov c ON c.thread_id=tt.thread_id WHERE tt.thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as (Group & { thread_id: string; last_ts: number; partial: number })[];
   const price = priceContext(overrides), result = new Map<string, { cost: Cost; updatedAt: number }>();
   for (const r of rows) {
     const c = price(r); c.partial ||= !!r.partial;
+    onRow?.(r.thread_id, r, c);
     const old = result.get(r.thread_id);
     result.set(r.thread_id, { cost: old ? add(old.cost,c) : c, updatedAt: Math.max(old?.updatedAt ?? 0,r.last_ts) });
   }
@@ -196,12 +227,14 @@ export function threadCosts(db: Database, threadIds: string[], includeDescendant
   });
   return { priceVersion: PRICE_TABLE_VERSION, threads };
 }
-export function costSum(db: Database, threadIds: string[], includeDescendants: boolean, overrides: Overrides = {}) {
-  const edges = tree(db,threadIds,includeDescendants), ids = [...new Set(edges.map(e => e.id))], data = threadData(db,ids,overrides);
+export function costSum(db: Database, threadIds: string[], includeDescendants: boolean, overrides: Overrides = {}, withBreakdown = false) {
+  const split = withBreakdown ? breakdown(db) : undefined;
+  const edges = tree(db,threadIds,includeDescendants), ids = [...new Set(edges.map(e => e.id))], data = threadData(db,ids,overrides,split?.add);
   const costs = [...data.values()].map(d => d.cost), cost = costs.length ? costs.reduce(add) : empty();
   const roots = new Set(edges.map(e => e.root));
   cost.partial ||= threadIds.some(id => !roots.has(id));
-  return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: ids.length, updatedAt: Math.max(0,...[...data.values()].map(d => d.updatedAt)) };
+  if (split) for (const [id, d] of data) split.touch(id, d.cost.partial);
+  return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: ids.length, updatedAt: Math.max(0,...[...data.values()].map(d => d.updatedAt)), ...split?.result() };
 }
 export type Span = { threadId: string; from: number; to: number | null };
 type Interval = [number, number];
@@ -218,7 +251,8 @@ function merge(list: Interval[]): Interval[] {
  * uses the union of its roots' spans). Whole hours come from hourly rollups; an hour cut by a span
  * edge is counted per call while raw rows are kept, and whole (marking the result estimated) after.
  */
-export function costSumSpans(db: Database, spans: Span[], includeDescendants: boolean, o: { overrides?: Overrides; now: number; rawRetentionDays: number; rollupRetentionDays: number }) {
+export function costSumSpans(db: Database, spans: Span[], includeDescendants: boolean, o: { overrides?: Overrides; now: number; rawRetentionDays: number; rollupRetentionDays: number; breakdown?: boolean }) {
+  const split = o.breakdown ? breakdown(db) : undefined;
   const rootSpans = new Map<string, Interval[]>();
   for (const s of spans) {
     const to = Math.min(s.to ?? o.now, o.now);
@@ -258,12 +292,15 @@ export function costSumSpans(db: Database, spans: Span[], includeDescendants: bo
     for (const [h0, h1] of merge(hours)) rows.push(...hourStmt.all(threadId, h0, h1) as (Group & { last: number })[]);
     for (const r of rows) {
       if (!r.calls) continue;
-      counted.add(threadId); cost = add(cost, price(r)); updatedAt = Math.max(updatedAt, r.last);
+      const c = price(r);
+      split?.add(threadId, r, c);
+      counted.add(threadId); cost = add(cost, c); updatedAt = Math.max(updatedAt, r.last);
     }
   }
-  const cov = db.prepare('SELECT 1 FROM thread_cov WHERE partial=1 AND thread_id IN (SELECT value FROM json_each(?)) LIMIT 1').get(JSON.stringify([...counted]));
-  if (cov) cost.partial = true;
-  return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: counted.size, updatedAt };
+  const cov = db.prepare('SELECT thread_id FROM thread_cov WHERE partial=1 AND thread_id IN (SELECT value FROM json_each(?))').all(JSON.stringify([...counted])) as { thread_id: string }[];
+  if (cov.length) cost.partial = true;
+  for (const r of cov) split?.touch(r.thread_id, true);
+  return { priceVersion: PRICE_TABLE_VERSION, cost, threadCount: counted.size, updatedAt, ...split?.result() };
 }
 export function topThreads(db: Database, range: Range, offset: number, limit: number, overrides: Overrides = {}, now = Date.now(), projectId?: string, projectNames = new Map<string,string>()) {
   const { from,to } = rangeBounds(range,now);

@@ -560,7 +560,7 @@ export function PropertiesRail({
     <aside
       aria-label="Task details"
       className={cn(
-        "w-full min-w-0 shrink-0 px-7 pb-8 @[45rem]:w-64 @[45rem]:px-4 @[45rem]:py-10",
+        "w-full min-w-0 shrink-0 px-7 pb-8 @[45rem]:w-64 @[45rem]:px-4 @[45rem]:py-10 @5xl:w-80",
         className,
       )}
     >

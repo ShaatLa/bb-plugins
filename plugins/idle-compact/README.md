@@ -13,13 +13,24 @@ thread costs as much as waking it.
 - At the timer it compacts only if the thread is still idle, runs on Claude Code, is not
   exempt, and its context is at or above the minimum.
 - Timers survive a plugin restart: the idle start time is kept in plugin storage.
-- Like the former auto-compact plugin, it also compacts at once any thread (any provider)
-  that goes idle or fails with its context at 80% of the model's window or more, while the
-  cache is warm, instead of mid-turn at the provider's own limit. Keep exempts it too.
+- Like the former auto-compact plugin, it also compacts any thread (any provider) whose
+  context is at 80% of the model's window or more, so its next turn does not run into the
+  provider's own limit mid-turn. Keep exempts it too.
+  - A thread that fails that full is compacted at once.
+  - A thread that goes idle that full is compacted just before its next message: the
+    `message.dispatch` hook holds the message, the compaction runs, and the message then
+    runs on the compacted context. If no message comes, the 50-minute check compacts it,
+    on any provider and size, while the cache is still warm. A thread archived first is
+    never compacted, so a parent can read a child's final report (`bb thread output`,
+    which a compaction empties) and archive it without that cost.
+  - The log records the decision at the stop and a compaction dropped by an archive or a
+    turn started without passing the hook (Send now). The mark lives in memory: after a
+    plugin restart such a thread gets only the 50-minute check.
 - The stop that ends a compaction this plugin started runs no checks, so a thread still
   over the threshold after compaction waits for a real turn before the next one.
 - Settings: on/off, the minimum context in tokens for the 50-minute check, and the window
-  share for compacting at once (70–95%, default 80%, or off).
+  share for compacting a full thread (70–95%, default 80%, or off).
+- `bb idle-compact status` lists the full threads waiting for their next message.
 - A Compact button in the open thread's header compacts that thread now, on any provider,
   whatever the settings, context size or keep. It is enabled only while the thread is idle
   or failed, since bb compacts nothing else; the stop ending that compaction runs no checks.
@@ -88,8 +99,9 @@ output: { items: { id, threadId, at, trigger: "idle" | "threshold" | "manual", u
 
 - An entry is written when the server accepts the compaction (`at`, ms). Refused or failed
   attempts, and compactions started by anything else, are not logged.
-- `trigger` is `idle` for the 50-minute check, `threshold` for compacting at once by
-  window share and `manual` for the header button. `usedTokensBefore` is null only for
+- `trigger` is `idle` for the 50-minute check, `threshold` for compacting by window share
+  (at once after a failure, or before the next message) and `manual` for the header button
+  and other plugins' requests. `usedTokensBefore` is null only for
   `manual`, when bb does not know the context size. The size after compaction is not known
   here; read it from the thread.
 - Items are in log order, which is time order unless the clock moved back. `at` is the

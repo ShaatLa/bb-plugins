@@ -427,18 +427,9 @@ export const taskThreadSchema = z
   })
   .strict();
 
-export const taskCostSchema = z
-  .object({
-    usd: z.number().nullable(),
-    tokens: z.object({ freshIn: z.number(), cacheRead: z.number(), cacheWrite: z.number(), output: z.number() }).strict(),
-    estimated: z.boolean(),
-    partial: z.boolean(),
-    threadCount: z.number(),
-    /** Tasks in the tree (the task, epic members, subtasks) whose threads were counted. */
-    taskCount: z.number(),
-  })
+export const costSpanSchema = z
+  .object({ threadId: z.string(), from: z.number(), to: z.number().nullable() })
   .strict();
-export type TaskCost = z.infer<typeof taskCostSchema>;
 
 export const threadHealthSchema = z
   .object({
@@ -1057,9 +1048,10 @@ export const tasksRpcContract = {
       .strict(),
     output: attachmentDeleteResultSchema,
   },
-  getTaskCost: {
+  getTaskCostSpans: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ cost: taskCostSchema.nullable() }).strict(),
+    /** Time windows of the threads that worked on the task tree, newest first; truncated past 2000. */
+    output: z.object({ spans: z.array(costSpanSchema).max(2000), truncated: z.boolean(), taskCount: z.number() }).strict(),
   },
   listTaskThreads: {
     input: z.object({ taskId: idSchema, reconcile: z.boolean().optional() }).strict(),

@@ -13,7 +13,7 @@ The same start implementation serves CLI and RPC. The plugin validates the paren
 Builder execution:
 - Fetch the project's configured Git remote on EVERY start. Resolve its remote default branch. Use a clean plugin-owned checkout at that fetched commit; never use the caller's worktree or local branch. Fetch/authentication/checkout failure aborts, with no stale checkout fallback.
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
-- stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
+- stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
 - stdout: exactly one JSON object, UTF-8, maximum 1 MiB. All logs go to stderr. Exit nonzero, invalid JSON, unsupported version, unknown fields or invalid spawn values abort before mint/spawn.
 - No mint or bb thread spawn inside the builder.
 
@@ -40,6 +40,7 @@ Environment is the bb SDK environment object, not a list of CLI flags:
 - New worktree: {type:"host",hostId?:"host_...",workspace:{type:"managed-worktree",baseBranch:{kind:"named",name:"main"}}}; baseBranch may instead be {kind:"default"}.
 - Personal: {type:"host",hostId?:"host_...",workspace:{type:"personal"}}.
 - Existing path: {type:"host",hostId?:"host_...",workspace:{type:"unmanaged",path:"/absolute/path"}}.
+For non-personal host workspaces, an omitted hostId is resolved from the parent session’s environment, then the project’s default source host. If neither exists, start fails before minting. Explicit hostId is preserved. Dry-run returns the resolved hostId. Personal workspaces keep core’s existing default behavior.
 Paths describe the selected execution host, not the builder checkout. The builder checkout is never used as the child workspace implicitly.
 
 Plugin sequence: validate builder JSON -> mint exact brief for resolved project/parent -> spawn via bb SDK with returned prompt and whitelisted spawn fields. The plugin owns tokens, attribution, project binding and spawn invocation. It does not retry spawn automatically, to avoid duplicate children.

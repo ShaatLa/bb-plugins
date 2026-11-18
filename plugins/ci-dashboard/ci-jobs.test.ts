@@ -224,6 +224,7 @@ test("failed test names come from the matching artifacts only, FAILED entries on
   const jobs = [job({ conclusion: "failure" })], globs = [/^test-results-/];
   expect(await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal())).toEqual(["pkg.A.breaks"]);
   expect(downloads).toEqual(["/repos/o/r/actions/artifacts/7/zip"]);
+  expect(backfill.cachedFailureMessages("o/r", { id: 1, attempt: 1 }, globs)).toEqual({ "pkg.A.breaks": "boom | env: SECRET=…" });
   await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal());
   expect(paths).toHaveLength(1);
   expect(await backfill.failedTests("o/r", { id: 2, attempt: 1 }, jobs, [], signal())).toBeNull();

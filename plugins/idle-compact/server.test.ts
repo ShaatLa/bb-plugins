@@ -22,7 +22,9 @@ async function setup({ used = 250_000, provider = "claude-code", status = "idle"
   const thread = makeThreadResponse({ id: "thr_a" } as any);
   const advance = async (ms: number) => { clock += ms; await vi.advanceTimersByTimeAsync(ms); };
   const emit = (event: "thread.idle" | "thread.active" | "thread.failed") => host.harness.behavior.emitThreadEvent(event, (event === "thread.idle" ? { thread, lastAssistantText: null } : event === "thread.failed" ? { thread, error: null } : { thread }) as any);
-  return { host, compact, state, advance, emit, now, setClock: (ms: number) => { clock += ms; } };
+  // The next message reaching bb's dispatch, which runs the plugin's hook first.
+  const send = async (threadId = "thr_a") => { const decision = await host.harness.registrations.hooks["message.dispatch"]!(makeMessageDispatchHookContext({ thread: { id: threadId, status: state.status as never }, attempt: "start-turn" })); await advance(0); return decision; };
+  return { host, compact, state, advance, emit, send, now, setClock: (ms: number) => { clock += ms; } };
 }
 
 it("compacts a large Claude Code thread after 50 minutes idle, once", async () => {
@@ -129,16 +131,96 @@ it("treats the server refusing a thread that is no longer idle as a skip, not re
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
 
+it("compacts at once a thread that fails at 80% of its window or more", async () => {
+  const h = await setup({ used: 800_000, status: "error" });
+  await h.emit("thread.failed"); await h.advance(0);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it.each(["claude-code", "codex"])("compacts a %s thread that stops at 80% of its window just before its next message, then lets the message run", async provider => {
+  const h = await setup({ used: 800_000, provider });
+  const info = vi.spyOn(h.host.bb.log, "info"), rechecks = () => h.host.harness.recheckCount;
+  await h.emit("thread.idle"); await h.advance(5 * 60_000);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect(info).toHaveBeenCalledWith("Compact thr_a: 800000 tokens at 80.0% of the window; compacting before its next message, or after 50 min idle");
+  expect(JSON.parse((await h.host.harness.behavior.runCli(["status", "--json"])).stdout!)).toMatchObject({ beforeNextMessage: ["thr_a"] });
+  expect(await h.send()).toMatchObject({ action: "wait" });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(JSON.parse((await h.host.harness.behavior.runCli(["status", "--json"])).stdout!)).toMatchObject({ beforeNextMessage: [] });
+  const base = rechecks();
+  await h.emit("thread.active"); await h.emit("thread.idle"); // its compaction turn ends
+  expect(rechecks()).toBe(base + 1);
+  expect(await h.send()).toEqual({ action: "proceed" });
+  await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect((await h.host.harness.behavior.callRpc("compactions.list", {}) as any).items).toEqual([expect.objectContaining({ trigger: "threshold", usedTokensBefore: 800_000 })]);
+});
+
+it("does not compact at the next message when keep is applied while that compaction reads the usage, and releases the message", async () => {
+  const h = await setup({ used: 800_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  let open!: () => void;
+  h.state.timeline = new Promise<void>(resolve => { open = resolve; });
+  const base = h.host.harness.recheckCount;
+  expect(await h.send()).toMatchObject({ action: "wait" });
+  await h.host.harness.behavior.runCli(["keep"], { threadId: "thr_a" } as any);
+  h.state.timeline = null; open(); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect(h.host.harness.recheckCount).toBeGreaterThan(base);
+  expect(await h.send()).toEqual({ action: "proceed" });
+});
+
+it("starts no second compaction from a repeated hook pass while the next-message compaction reads the usage", async () => {
+  const h = await setup({ used: 800_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  let open!: () => void;
+  h.state.timeline = new Promise<void>(resolve => { open = resolve; });
+  expect(await h.send()).toMatchObject({ action: "wait" });
+  expect(await h.send()).toMatchObject({ action: "wait" }); // a second message, or bb re-running the hook
+  await h.host.harness.behavior.runCli(["keep"], { threadId: "thr_a" } as any);
+  h.state.timeline = null; open(); await h.advance(0);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect(await h.send()).toEqual({ action: "proceed" });
+});
+
+it("calls the server once when it refuses the compaction at the next message, and lets the message run", async () => {
+  const h = await setup({ used: 800_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  h.compact.mockRejectedValueOnce(new Error("Provider does not support context compaction"));
+  await h.send();
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await h.send()).toEqual({ action: "proceed" });
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("compacts a full thread on any provider at 50 minutes idle when no message comes", async () => {
+  const h = await setup({ used: 800_000, provider: "codex" });
+  await h.emit("thread.idle"); await h.advance(IDLE_MS);
+  expect(h.compact).toHaveBeenCalledTimes(1);
+  expect(await h.send()).toMatchObject({ action: "wait" }); // its compaction turn is still running
+  expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("never compacts a full thread archived before its next message", async () => {
+  const h = await setup({ used: 800_000 });
+  const info = vi.spyOn(h.host.bb.log, "info");
+  await h.emit("thread.idle"); await h.advance(2 * 60_000);
+  await h.host.harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_a" } as any) } as any);
+  await h.advance(IDLE_MS);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect(info).toHaveBeenCalledWith("Compact thr_a: compaction before its next message dropped, thread archived");
+});
+
 it.each([
-  ["goes idle", "thread.idle", "idle", "claude-code"],
-  ["fails", "thread.failed", "error", "claude-code"],
-  ["goes idle on another provider", "thread.idle", "idle", "codex"],
-] as const)("compacts at once a thread that %s at 80% of its window or more", async (_name, event, status, provider) => {
-  const h = await setup({ used: 800_000, status, provider });
-  await h.emit(event); await h.advance(0);
-  expect(h.compact).toHaveBeenCalledTimes(1);
-  await h.advance(IDLE_MS); // the 50-minute check sees the same usage and leaves it
-  expect(h.compact).toHaveBeenCalledTimes(1);
+  ["kept since it stopped", async (h: Awaited<ReturnType<typeof setup>>) => { await h.host.harness.behavior.runCli(["keep"], { threadId: "thr_a" } as any); }],
+  ["turned off since it stopped", async (h: Awaited<ReturnType<typeof setup>>) => { await h.host.harness.setSettings({ thresholdPercent: "off" }); }],
+  ["now below a raised share", async (h: Awaited<ReturnType<typeof setup>>) => { await h.host.harness.setSettings({ thresholdPercent: "85" }); }],
+] as const)("lets the next message of a full thread %s run without compacting", async (_name, change) => {
+  const h = await setup({ used: 800_000 });
+  await h.emit("thread.idle"); await h.advance(0);
+  await change(h);
+  expect(await h.send()).toEqual({ action: "proceed" });
+  expect(h.compact).not.toHaveBeenCalled();
 });
 
 it("leaves a thread just below 80% of its window (79.95%) until the 50-minute check", async () => {
@@ -151,25 +233,25 @@ it("leaves a thread just below 80% of its window (79.95%) until the 50-minute ch
 
 it("does not compact again on the stop that ends its own compaction, even with usage still high, until a real turn", async () => {
   const h = await setup({ used: 900_000 });
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.idle"); await h.advance(0); await h.send();
   expect(h.compact).toHaveBeenCalledTimes(1);
   await h.emit("thread.active"); h.state.used = 850_000; // the compaction turn, with a new but still high figure
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
   await h.emit("thread.active"); h.state.used = 860_000; // a real turn
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.idle"); await h.advance(0); await h.send();
   expect(h.compact).toHaveBeenCalledTimes(2);
 });
 
 it("follows the threshold setting, including a change while a check waits on the SDK", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   await h.host.harness.setSettings({ thresholdPercent: "95" });
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
   await h.emit("thread.active"); await h.host.harness.setSettings({ thresholdPercent: "90" });
   let release!: () => void;
   h.state.timeline = new Promise(resolve => { release = resolve; });
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   await h.host.harness.setSettings({ thresholdPercent: "off" });
   h.state.timeline = null; release(); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
@@ -177,15 +259,15 @@ it("follows the threshold setting, including a change while a check waits on the
   await h.emit("thread.active"); await h.host.harness.setSettings({ thresholdPercent: "90" });
   const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
   vi.spyOn(kv, "set").mockImplementation(async (key: string, value: unknown) => { if (key.startsWith("own:")) await h.host.harness.setSettings({ thresholdPercent: "off" }); return set(key, value as never); });
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
 });
 
 it("does not compact when the threshold is raised above the usage while the attempt is recorded", async () => {
-  const h = await setup({ used: 850_000 });
+  const h = await setup({ used: 850_000, status: "error" });
   const kv = h.host.bb.storage.kv, set = kv.set.bind(kv);
   vi.spyOn(kv, "set").mockImplementation(async (key: string, value: unknown) => { if (key.startsWith("own:")) await h.host.harness.setSettings({ thresholdPercent: "95" }); return set(key, value as never); });
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   expect(h.compact).not.toHaveBeenCalled();
 });
 
@@ -193,7 +275,7 @@ it("logs the compactions it made for compactions.list, pages them, and prunes en
   const h = await setup({ used: 900_000 });
   const list = (input: object) => h.host.harness.behavior.callRpc("compactions.list", input) as Promise<any>;
   const t0 = h.now();
-  await h.emit("thread.idle"); await h.advance(0); // at once, over 80% of the window
+  await h.emit("thread.idle"); await h.advance(0); await h.send(); // over 80% of the window, before its next message
   await h.emit("thread.active"); h.state.used = 300_000; await h.emit("thread.idle"); // its own compaction turn ends
   await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(IDLE_MS); // a real turn, then 50 minutes idle
   await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
@@ -228,6 +310,7 @@ it("gives same-millisecond compactions distinct ids in write order, and a read w
   const t0 = h.now();
   await h.emit("thread.idle");
   await h.host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_b" } as any), lastAssistantText: null } as any);
+  await h.advance(0); void h.send(); void h.send("thr_b");
   await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(2);
   let read: any = null; const pending = list({}).then(result => { read = result; });
@@ -249,14 +332,14 @@ it("prunes by the real acceptance time, not the ordering key, after a clock that
   // Left by an instance whose clock ran 40 days fast, next to an entry 20 days old by the real clock.
   const h = await setup({ used: 900_000, seed: [entry(t0 + 40 * day, t0 + 40 * day, "thr_fast"), entry(t0 - 20 * day, t0 - 20 * day, "thr_old")] });
   const list = () => h.host.harness.behavior.callRpc("compactions.list", {}) as Promise<any>;
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.idle"); await h.advance(0); await h.send();
   const { items } = await list();
   expect(items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_old", t0 - 20 * day], ["thr_fast", t0 + 40 * day], ["thr_a", t0]]);
   // thr_a's ordering key is 40 days ahead; it is still pruned 30 days after its real acceptance.
   h.setClock(30 * day + 1);
   expect((await list()).items.map((item: any) => item.threadId)).toEqual(["thr_fast"]);
   await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
-  await h.emit("thread.active"); h.state.used = 910_000; await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.active"); h.state.used = 910_000; await h.emit("thread.idle"); await h.advance(0); await h.send();
   expect((await h.host.bb.storage.kv.list("log:")).map(key => key.split(":").at(-1)).sort()).toEqual(["thr_a", "thr_fast"]);
   expect((await list()).items.map((item: any) => [item.threadId, item.at])).toEqual([["thr_fast", t0 + 40 * day], ["thr_a", t0 + 30 * day + 1]]);
 });
@@ -267,10 +350,10 @@ it("keeps an entry exactly 30 days old, hides and prunes older ones, 20 per writ
   const kv = h.host.bb.storage.kv;
   const compactAgain = async (used: number) => {
     await h.emit("thread.active"); await h.emit("thread.idle"); // its own compaction turn ends
-    await h.emit("thread.active"); h.state.used = used; await h.emit("thread.idle"); await h.advance(0);
+    await h.emit("thread.active"); h.state.used = used; await h.emit("thread.idle"); await h.advance(0); await h.send();
   };
   const t0 = h.now();
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.idle"); await h.advance(0); await h.send();
   h.setClock(LOG_RETENTION_MS); await compactAgain(910_000);
   expect((await list({})).items.map((item: any) => item.at)).toEqual([t0, t0 + LOG_RETENTION_MS]);
   h.setClock(1);
@@ -305,7 +388,7 @@ it("compacts from the header button regardless of provider, settings and size, l
   await expect(compact()).rejects.toThrow(/only be compacted/);
   expect(await list()).toHaveLength(1);
   h.state.provider = "claude-code"; h.state.used = 910_000;
-  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0); await h.send();
   expect(h.compact).toHaveBeenCalledTimes(3);
   // An unknown context size is logged as null.
   h.state.used = undefined as never;
@@ -315,11 +398,11 @@ it("compacts from the header button regardless of provider, settings and size, l
 });
 
 it("leaves a header compaction alone when an automatic check overlaps it", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   let open!: () => void, accept!: () => void;
   h.state.timeline = new Promise<void>(resolve => { open = resolve; });
   h.compact.mockImplementationOnce(() => new Promise(resolve => { accept = () => resolve({ ok: true }); }));
-  await h.emit("thread.idle"); await h.advance(0); // the check at once waits on the usage
+  await h.emit("thread.failed"); await h.advance(0); // the check at once waits on the usage
   const manual = h.host.harness.behavior.callRpc("compact", { threadId: "thr_a" });
   await h.advance(0);
   // Its compaction turn starts while the automatic check would be writing its markers.
@@ -405,10 +488,10 @@ it("drops a queued compaction the server refuses, so the waiting message is not 
 const deferred = () => { let resolve!: () => void, reject!: (error: Error) => void; const promise = new Promise<{ ok: true }>((ok, fail) => { resolve = () => ok({ ok: true }); reject = fail; }); return { promise, resolve, reject }; };
 
 it("keeps a request made while an automatic compaction is in flight, and runs it when that one is refused", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   const q = queueing(h), auto = deferred();
   h.compact.mockImplementationOnce(() => auto.promise);
-  await h.emit("thread.idle"); await h.advance(0); // the check at once is dispatching
+  await h.emit("thread.failed"); await h.advance(0); // the check at once is dispatching
   expect(await q.call("compact", { queue: true })).toEqual({ ok: true, queued: true });
   expect(h.compact).toHaveBeenCalledTimes(1);
   auto.reject(new Error("Context can only be compacted while the thread is idle or errored")); await h.advance(0);
@@ -417,10 +500,10 @@ it("keeps a request made while an automatic compaction is in flight, and runs it
 });
 
 it("lets an in-flight automatic compaction that the server accepts cover a request made meanwhile", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   const q = queueing(h), auto = deferred();
   h.compact.mockImplementationOnce(() => auto.promise);
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   await q.call("compact", { queue: true });
   // Its stop arrives before the call returns.
   await h.emit("thread.active"); await h.emit("thread.idle");
@@ -505,18 +588,18 @@ it("releases the thread when the queued key cannot be removed before the call", 
 });
 
 it("does not compact again after a restart when a request was made while an accepted call was pending", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   h.compact.mockImplementationOnce(() => new Promise(() => {})); // the automatic call is accepted but never returns here
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   await queueing(h).call("compact", { queue: true });
   await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
 
 it("does not compact again after a restart when a request was made after the stop of an accepted call that is still pending", async () => {
-  const h = await setup({ used: 900_000 });
+  const h = await setup({ used: 900_000, status: "error" });
   h.compact.mockImplementationOnce(() => new Promise(() => {}));
-  await h.emit("thread.idle"); await h.advance(0);
+  await h.emit("thread.failed"); await h.advance(0);
   await h.emit("thread.active"); await h.emit("thread.idle"); // the compaction's stop, before its call returns
   await queueing(h).call("compact", { queue: true });
   await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);

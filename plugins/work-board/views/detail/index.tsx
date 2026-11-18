@@ -1,10 +1,10 @@
 import { CurrentState } from "./current-state";
-import { useActivityPoll } from "../../shell/activity-poll.js";
+import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
-import { TaskCostLine } from "../../components/task-cost";
+import { TaskCostSection } from "../../components/task-cost";
 import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
@@ -409,6 +409,7 @@ function TaskDetail({
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
   );
   useActivityPoll(activity.refresh, activity.isFetching, !!activity.data?.activity?.attachedCount || !!activity.data?.taskThreads.some(isActiveThread));
+  useAdvisoryRecheck(activity.data ? [activity.data] : undefined, () => activity.refresh());
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
@@ -538,7 +539,7 @@ function TaskDetail({
     <PrLinksProvider taskId={task.id}>
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
-        <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
+        <div className="mx-auto w-full min-w-0 max-w-[72rem] flex-1 px-7 pb-16 pt-8 @3xl:pl-13 @3xl:pr-8 @3xl:pt-11">
           {header(
             <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
@@ -735,7 +736,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
-          <TaskCostLine key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
+          <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
           <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>

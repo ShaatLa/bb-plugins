@@ -23,7 +23,7 @@ import {
   removeAttachmentBlobs,
 } from "../attachments";
 import { deliverCommentToLatestAgent, notifyThread } from "../steer";
-import { getTaskCost } from "../costs";
+import { getTaskCostSpans } from "../costs";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
@@ -511,50 +511,61 @@ export async function createComment(
 export const REPORT_KINDS = ["ready", "question", "blocker"] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
+/** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
+export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
+  const thread = await bb.sdk.threads.get({ threadId });
+  // The parent fallback link only marks a card nobody works on; it makes no one a helper.
+  const sessions = store.tasks.listTaskThreads(taskId).filter((link) => link.presetName !== "Parent thread").map((link) => link.threadId);
+  const parentThreadId = thread.parentThreadId ?? null;
+  return { parentThreadId, attached: sessions.includes(threadId), helper: parentThreadId !== null && sessions.includes(parentThreadId) };
+}
+
+const STATE_LIMIT = 4096;
+function fitState(text: string, overflow: string): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= STATE_LIMIT) return text;
+  const kept = new TextDecoder().decode(bytes.subarray(0, STATE_LIMIT - Buffer.byteLength(overflow, "utf8"))).replace(/\uFFFD$/, "");
+  return kept + overflow;
+}
+
 /**
- * A child thread's report on its card: saved as an agent comment, then the
- * child's own parent thread is woken. Progress goes to the state note instead.
+ * A child thread's report on its card wakes the child's own parent thread and
+ * stays out of the card log. The card's own session also replaces Current
+ * state with it; a helper's report leaves the state to the session it helps.
  */
 export async function reportToParent(
   bb: BbPluginApi,
   store: TasksApiStore,
-  input: { taskId: string; threadId: string; kind: ReportKind; body: string; authorName: string },
-): Promise<{ comment: StoredComment; parentThreadId: string; notified: boolean }> {
-  const child = await bb.sdk.threads.get({ threadId: input.threadId });
-  const parentThreadId = child.parentThreadId;
+  input: { taskId: string; threadId: string; kind: ReportKind; body: string },
+): Promise<{ parentThreadId: string; notified: boolean; stateUpdated: boolean }> {
+  const role = await cardRole(bb, store, input.taskId, input.threadId);
+  const parentThreadId = role.parentThreadId;
   if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);
   const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
   if (parent.archivedAt != null || parent.deletedAt != null)
     throw new Error(`Parent thread ${parentThreadId} is archived or deleted`);
   const label = input.kind.toUpperCase();
-  const comment = await createComment(bb, store, {
-    taskId: input.taskId,
-    kind: "agent",
-    authorName: input.authorName,
-    presetName: null,
-    threadId: input.threadId,
-    recordedByThread: input.threadId,
-    body: `**${label}**\n\n${input.body}`,
-    notify: false,
-    awaitDelivery: false,
-  });
-  const key = store.tasks.getTask(input.taskId)!.key;
+  const task = store.tasks.getTask(input.taskId)!;
+  const stateUpdated = !role.helper;
+  if (stateUpdated) {
+    // A "Handoff:" line points a compacted or successor session at its notes; a report must not drop it.
+    const handoff = (task.progressNote ?? "").split("\n").filter((line) => line.startsWith("Handoff:"));
+    const progressNote = fitState([...handoff, `**${label}**\n\n${input.body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
+    store.transaction(() => store.tasks.updateTask(task.id, { progressNote, authorName: input.threadId }));
+    publishTasksChanged(bb, task.id, task.projectId);
+  }
   let notified = false;
   try {
     await notifyThread(
       bb,
       parentThreadId,
-      `**${key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${key}](/plugins/work-board/work-board/task/${key})`,
+      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
     );
     notified = true;
   } catch (error) {
-    bb.log.warn(`failed to deliver ${label} report on ${key} to ${parentThreadId}: ${errorMessage(error)}`);
+    bb.log.warn(`failed to deliver ${label} report on ${task.key} to ${parentThreadId}: ${errorMessage(error)}`);
   }
-  const updated = store.transaction(() =>
-    store.tasks.updateComment(comment.id, { notifiedCount: notified ? 1 : 0 }),
-  );
-  publishCommentsChanged(bb, input.taskId);
-  return { comment: updated, parentThreadId, notified };
+  return { parentThreadId, notified, stateUpdated };
 }
 
 // shortcut: one page of 200 children, page with offset if a parent ever has more.
@@ -1274,8 +1285,8 @@ export function registerHandlers(
         };
       }) };
     },
-    async getTaskCost(input) {
-      return { cost: await getTaskCost(bb, input.taskId) };
+    async getTaskCostSpans(input) {
+      return getTaskCostSpans(bb.storage.database(), input.taskId);
     },
     async listTaskThreads(input) {
       if (input.reconcile !== false) await discoverRunningTaskThreads(bb, store);

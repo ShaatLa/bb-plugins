@@ -48,6 +48,8 @@ export const gitSyncConfigSchema = z
     lookbackDays: z.number().int().min(1).max(365).default(30),
     titleDiscovery: z.boolean().default(true),
     requiredChecks: names.default([]),
+    // Required contexts posted after CI by a project gate; `pr wait` reports them but never waits for them.
+    prWaitIgnoredChecks: names.default([]),
     postMergeWorkflows: names.max(10).default([]),
     postMergeDays: z.number().int().min(1).max(90).default(7),
   })

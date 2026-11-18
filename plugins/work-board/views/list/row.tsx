@@ -3,7 +3,7 @@ import { TaskAdvisories } from "../../components/task-advisories";
 import { TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
 import { PullRequestSummary, type PrSummary } from "../../components/pr-summary";
-import { memo, useState } from "react";
+import { memo, useState, type CSSProperties } from "react";
 import type {
   Label,
   Project,
@@ -97,6 +97,8 @@ interface TaskRowProps {
   onMoveToProject: (task: Task, projectId: string) => void;
   onOpen: (taskKey: string) => void;
   pending: boolean;
+  /** Longest visible key length, so the wide-layout key column fits every key. */
+  keyChars?: number;
 }
 
 export const TaskRow = memo(function TaskRow({
@@ -114,6 +116,7 @@ export const TaskRow = memo(function TaskRow({
   onMoveToProject,
   onOpen,
   pending,
+  keyChars,
 }: TaskRowProps) {
   const [openMenu, setOpenMenu] = useState<"status" | "priority" | null>(null);
 
@@ -159,7 +162,10 @@ export const TaskRow = memo(function TaskRow({
           onOpenChange={(next) => setOpenMenu(next ? "priority" : null)}
           className="col-start-1 row-start-2"
         />
-        <span className="col-start-2 row-start-2 min-w-0 truncate text-xs tabular-nums text-subtle-foreground @max-md:max-w-32 @md:w-14 @md:shrink-0">
+        <span
+          className="col-start-2 row-start-2 min-w-0 truncate text-xs tabular-nums text-subtle-foreground @max-md:max-w-32 @md:w-[var(--wb-key-w,3.5rem)] @md:shrink-0"
+          style={keyChars ? ({ "--wb-key-w": `${keyChars + 1}ch` } as CSSProperties) : undefined}
+        >
           {task.key}
         </span>
         <StatusEditor
@@ -172,7 +178,7 @@ export const TaskRow = memo(function TaskRow({
         <span className="col-start-2 col-span-2 row-start-1 min-w-0 truncate text-sm @md:flex-1">
           {task.title}
         </span>
-        <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
+        <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end whitespace-nowrap text-xs text-subtle-foreground @max-md:flex-wrap @max-md:justify-end @md:shrink-0">
           {task.type === "epic" ? (
             <span className={RAIL_CHIP_CLASS}>
               <Icon name="Zap" className="size-3" />

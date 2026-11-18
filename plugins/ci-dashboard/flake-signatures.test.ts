@@ -5,7 +5,7 @@ import { createBackfill, createJobStore, createLogFetcher, fetchAttemptJobs, job
 import type { JobRecord } from "./ci-jobs-types";
 import { buildSignals } from "./ci-signals";
 import { flakeSettings, flakeSignaturesSchema, parseFlakeRules } from "./flake-signatures";
-import { failedTestNames, scanZip as scanEvidence } from "./flake-artifacts";
+import { failedTestEntries, failedTestNames, failureMessage, redact, scanZip as scanEvidence } from "./flake-artifacts";
 import { at, failed, failure, fakeGithub, job, runContext, syntheticRun, zip } from "./test-support";
 
 const rules = (text: string) => parseFlakeRules(text).rules;
@@ -484,5 +484,27 @@ describe("failedTestNames", () => {
     expect(failedTestNames('<testsuite><testcase classname="a.B" name="ok"/><testcase classname="a.B" name="bad"><error message="x"/></testcase><testcase name="bare"><failure/></testcase></testsuite>')).toEqual(["a.B.bad", "bare"]);
     expect(failedTestNames("plain log")).toBeNull();
     expect(failedTestNames(JSON.stringify({ testResults: [] }))).toEqual([]);
+  });
+});
+
+describe("failedTestEntries", () => {
+  it("takes the assertion lines up to the stack, skips runner framing, bounds and redacts them", () => {
+    const jest = JSON.stringify({ testResults: [{ name: "a.test.ts", status: "failed", assertionResults: [{ status: "failed", fullName: "a works", failureMessages: ["\u001b[31mError: expect(received).toBe(expected)\u001b[39m\n\nExpected: \"x\"\nReceived: \"y\"\n\n    at Object.<anonymous> (/Users/someone/a.test.ts:3:1)"] }] }] });
+    expect(failedTestEntries(jest)).toEqual([{ name: "a works", message: 'Error: expect(received).toBe(expected) | Expected: "x" | Received: "y"' }]);
+    const go = ['{"Action":"output","Package":"p/store","Test":"TestA","Output":"=== RUN   TestA\\n"}', '{"Action":"output","Package":"p/store","Test":"TestA","Output":"    a_test.go:9: got 1, want 2\\n"}', '{"Action":"output","Package":"p/store","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\\n"}', '{"Action":"fail","Package":"p/store","Test":"TestA"}'].join("\n");
+    expect(failedTestEntries(go)).toEqual([{ name: "store.TestA", message: "a_test.go:9: got 1, want 2" }]);
+    expect(failedTestEntries('<testsuite><testcase name="t"><failure message="boom"/></testcase></testsuite>')).toEqual([{ name: "t", message: "boom" }]);
+    expect(failureMessage(["x".repeat(500)])).toHaveLength(200);
+    expect(failureMessage([])).toBe("");
+  });
+  it("redacts env values, tokens, credentials and home paths", () => {
+    expect(redact("DB_URL: postgres://x STATUS: ok")).toBe("DB_URL: … STATUS: ok");
+    const text = redact("API_KEY=abc123 token: s3cr3t Authorization=Bearer xyz https://user:pw@host/x ghp_" + "a".repeat(30) + " /Users/someone/app/x.ts aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dF3 `code` plain_long_test_name_without_secrets_inside");
+    expect(text).not.toMatch(/abc123|s3cr3t|xyz|pw@|ghp_a|someone|aB3dE5/);
+    expect(text).toContain("API_KEY=…");
+    expect(text).toContain("https://…@host/x");
+    expect(text).toContain("~/app/x.ts");
+    expect(text).toContain("'code'");
+    expect(text).toContain("plain_long_test_name_without_secrets_inside");
   });
 });

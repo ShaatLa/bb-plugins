@@ -1,5 +1,5 @@
 import { useTaskStatuses } from "./task-statuses.js";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { Project, Task } from "../shared/contract.js";
 import { groupTasksByStatus } from "../views/list/lib.js";
 import { patchTasks, useTasksQuery } from "./data.js";
@@ -191,6 +191,11 @@ export function TasksTopbar({
   onNewTask,
 }: TasksTopbarProps) {
   const project = useMemo(() => projectForRoute(route, projects), [route, projects]);
+  // The clock toggles: pressed again on Scheduled, it returns to the view it was opened from.
+  const beforeScheduled = useRef<TasksRoute>({ kind: "all" });
+  useEffect(() => {
+    if (route.kind !== "scheduled") beforeScheduled.current = route;
+  }, [route]);
 
   const breadcrumb = (() => {
     switch (route.kind) {
@@ -289,7 +294,7 @@ export function TasksTopbar({
       {project ? <ViewToggle view={view} onChange={onViewChange} /> : null}
       <ScheduledButton
         active={route.kind === "scheduled"}
-        onClick={() => onNavigate({ kind: "scheduled", tab: "all" })}
+        onClick={() => onNavigate(route.kind === "scheduled" ? beforeScheduled.current : { kind: "scheduled", tab: "all" })}
       />
       <RefreshTasksButton />
       <DropdownMenu>

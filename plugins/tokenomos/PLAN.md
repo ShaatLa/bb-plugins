@@ -90,7 +90,7 @@ In: Claude Code and Codex exactly from transcripts on the server machine
 for other providers and remote machines; local models; usage-limit windows
 with per-model burn inside each window; compaction savings; local-model
 savings; four chart ranges; Work Board and Answers RPCs; a thread context card
-row in bb's chat; settings section; CLI `bb tokenomos`; «Вне bb» group behind
+row in bb's chat; settings section; CLI `bb tokenomos`; "Outside bb" group behind
 a setting.
 
 Antigravity via its new `usage.list` (§6.5), the same consumer as local
@@ -99,7 +99,7 @@ machines; time-dependent prices (one current price per model); changing
 long-context thresholds; budgets, alerts, forecasts; per-role spend;
 before/after date views.
 
-«Вне bb» (owner decision): sessions in `~/.claude/projects` and
+"Outside bb" (owner decision): sessions in `~/.claude/projects` and
 `~/.codex/sessions` whose root session id matches no bb thread, changed within
 `rollupRetentionDays`; scanned every 5 min by stat only, setting
 `includeOutsideBb` (default off). Rows get `thread_id = ""`, `project_id =
@@ -247,8 +247,7 @@ dimensions are stored as `""`, never NULL, so composite primary keys hold.
   calls, fresh_in, cache_read, cache_write_short, cache_write_long, output,
   reasoning)`, PK over the seven dimensions; retained `rollupRetentionDays`
   (184–400, default 200, so the 3-month delta has a full previous period).
-Serves all four ranges and the limit windows. KPI deltas show «нет данных за
-прошлый период» when the previous period is not fully covered.
+Serves all four ranges and the limit windows. KPI deltas show "no data for the previous period" when the previous period is not fully covered.
 - `thread_tokens(thread_id, provider, model, tier, band, … tokens, calls, first_ts,
   last_ts)` PK `(thread_id, provider, model, tier, band)`, all-time (provider so local
   calls inside a cloud thread price as 0), plus
@@ -293,44 +292,9 @@ incremental_vacuum`. `thread_tokens`, `compactions`, `compaction_effect`,
 
 ### 3.6 Compaction savings (estimate, tokens stored, priced at read)
 
-At ingest, each `thread/compacted` event is its own compaction C (id = event
-id; a turn can hold several, e.g. thr_wr7z5gy6db turn da3d91030d-t9 has two,
-18 min apart). `before` = the last `context_last` before C's event sequence
-(and after the previous compaction of T), `after` = the first snapshot after
-C; skip if either is missing; `Δ = before − after`. While C is T's latest
-compaction, every new main-conversation (`conv = ""`) usage row of T updates
-`compaction_effect(C, model, tier, band)`: `calls_hit` when the previous main
-call of T used the same model and the gap ≤ TTL (`promptCacheTtlMs` of the
-latest usage event, else 1 h Claude / 30 min OpenAI), else `calls_miss` (a
-model switch is a miss: caches are model-scoped); the first such call sets
-`first_gap_hit`. Subagent and native-child rows count in totals but never in
-compaction effects. Overhead: rows inside C's turn and before the first call
-after C count as `overhead_*` only when the turn is compaction-only — its
-accepted request input is the standalone builtin `/compact` command (manual
-`threads.compact` dispatches exactly that; WP4 builds the fixture from the
-real `/compact` turns thr_wr7z5gy6db daa6b08a7b-t1 and thr_2sivhbkntb
-da416ee912-t1) and at least one usage row of that turn lies between its
-`turn/started` and C. Otherwise, including manual compactions whose summary
-call leaves no usage row (the daa6b08a7b-t1 transcript has a
-`compact_boundary` 257,112 → 16,287 but no usage-bearing row in the turn),
-`own_cost_known = 0`.
+At ingest, each `thread/compacted` event is its own compaction C (id = event id; a turn can hold several, e.g. thr_wr7z5gy6db turn da3d91030d-t9 has two, 18 min apart). `before` = the last `context_last` before C's event sequence (and after the previous compaction of T), `after` = the first snapshot after C; skip if either is missing; `Δ = before − after`. While C is T's latest compaction, every new main-conversation (`conv = ""`) usage row of T updates `compaction_effect(C, model, tier, band)`: `calls_hit` when the previous main call of T used the same model and the gap ≤ TTL (`promptCacheTtlMs` of the latest usage event, else 1 h Claude / 30 min OpenAI), else `calls_miss` (a model switch is a miss: caches are model-scoped); the first such call sets `first_gap_hit`. Subagent and native-child rows count in totals but never in compaction effects. Overhead: rows inside C's turn and before the first call after C count as `overhead_*` only when the turn is compaction-only — its accepted request input is the standalone builtin `/compact` command (manual `threads.compact` dispatches exactly that; WP4 builds the fixture from the real `/compact` turns thr_wr7z5gy6db daa6b08a7b-t1 and thr_2sivhbkntb da416ee912-t1) and at least one usage row of that turn lies between its `turn/started` and C. Otherwise, including manual compactions whose summary call leaves no usage row (the daa6b08a7b-t1 transcript has a `compact_boundary` 257,112 → 16,287 but no usage-bearing row in the turn), `own_cost_known = 0`.
 
-Read-time estimate, priced with current prices and per model:
-`gross = Δ × (calls_hit × read + calls_miss × writeLong)` with rates of each
-effect row's model, tier and band. A call whose counterfactual prompt
-(`promptTokens + Δ`) falls in a different band is counted in `calls_cross`
-instead and left out of the money estimate (its whole request would be priced
-at another rate); tokens saved still include it, and the money figure is
-marked «частично» when `calls_cross > 0`;
-`rewrite = first_gap_hit ? after × (writeLong − read) : 0` (the summary prefix
-must be written once where the old prefix would have been read);
-`net = gross − rewrite − overhead` (negative values are shown, not clamped).
-When `own_cost_known = 0`, show `net` labelled «без учёта стоимости самой
-компакции». Counterfactual assumptions in a tooltip: same calls and models,
-context grows identically, no extra forced compaction. Idle Compact entries
-(`compactions.list`) match C by thread and `at` ±2 min → `origin =
-idle-compact`. The estimate is the same before and after raw retention expires
-(test).
+Read-time estimate, priced with current prices and per model: `gross = Δ × (calls_hit × read + calls_miss × writeLong)` with rates of each effect row's model, tier and band. A call whose counterfactual prompt (`promptTokens + Δ`) falls in a different band is counted in `calls_cross` instead and left out of the money estimate (its whole request would be priced at another rate); tokens saved still include it, and the money figure is marked "partial" when `calls_cross > 0`; `rewrite = first_gap_hit ? after × (writeLong − read) : 0` (the summary prefix must be written once where the old prefix would have been read); `net = gross − rewrite − overhead` (negative values are shown, not clamped). When `own_cost_known = 0`, show `net` labelled "excluding the compaction cost itself". Counterfactual assumptions in a tooltip: same calls and models, context grows identically, no extra forced compaction. Idle Compact entries (`compactions.list`) match C by thread and `at` ±2 min → `origin = idle-compact`. The estimate is the same before and after raw retention expires (test).
 
 ### 3.7 Pricing
 
@@ -338,8 +302,7 @@ idle-compact`. The estimate is the same before and after raw retention expires
   `Σ component × rate(model, tier, band)`.
 - `prices.ts`: `PRICE_TABLE_VERSION = "2026-11-15"`, entries in $/MTok
   `{ input, output, cacheRead, cacheWriteShort, cacheWriteLong, longContext?:
-  { aboveTokens, input, output, cacheRead, cacheWriteShort, cacheWriteLong },
-  tiers?: { [tier]: { multiplier } | rates }, source, verified }`.
+  ` tiers?: { [tier]: { multiplier } | rates }, source, verified }`.
 - Anthropic (claude-api skill table): Opus 5.5 4/20 read 0.20; Opus 5, 4.8,
   4.7, 4.6 5/25 read 0.50; Fable 5.2 8/40 read 0.20; Fable 5.1 10/50 read 0.25;
   Fable 5 10/50 read 1.00; Sonnet 5.5 2/10 read 0.10; Sonnet 5 2/10 read 0.20;
@@ -376,14 +339,14 @@ idle-compact`. The estimate is the same before and after raw retention expires
   history correctly. Adding an edge later is a migration that only affects new
   rows. Overrides (setting `priceOverrides`, multiline
   JSON validated by zod, edited from the settings table) change rates only and
-  apply to all history at once. Money is always labelled «API-эквивалент»; "~"
+  apply to all history at once. Money is always labelled "API-equivalent"; "~"
   when anything in it is estimated, recovered or unverified.
 
 ### 3.8 Local-model savings
 
 Local rows cost 0. Savings = the same components priced at the reference model
 (setting `referenceModel`, default `claude-sonnet-5-5`), at read time; own tile
-and a column in the provider breakdown, labelled «~ vs <model>». Because every
+and a column in the provider breakdown, labelled "~ vs <model>". Because every
 row keeps its prompt-size `band` (§3.7), any reference model whose thresholds
 are in `BAND_EDGES` reprices all retained history correctly; the picker lists
 only such models.
@@ -395,7 +358,7 @@ per minute at most, only while the page or CLI asks; no background polling).
 For each window with a known length (five-hour, daily, weekly), start =
 `resetsAt − length`; Tokenomos joins `usage_hourly` for that provider since the
 window start (hour granularity, the partial first hour included pro rata is not
-attempted: labelled «с <hour>») and returns tokens and API-equivalent cost by
+attempted: labelled "from <hour>") and returns tokens and API-equivalent cost by
 model. A window with `model` set (Claude's per-model weekly windows) joins
 only models whose id contains that family name case-insensitively; if none
 matches or the scope is not understood, and for custom windows, only the
@@ -443,7 +406,7 @@ reparent refreshes every reader of the parent (≤ once per 5 s).
   §3.4. Runs in the background service, yields between threads.
 - External: `usage.list` and `compactions.list` every 60 s and on
   `thread.idle` of a local-models thread; `unknown_method`/`not_found` → back
-  off to 15 min, status «нет данных».
+  off to 15 min, status "no data".
 - Freshness: after a batch that changed rows, `bb.rpc.experimental_invalidate
   (["usage"])` at most once per 5 s. Settings changes that affect reads
   (overrides, reference model, outside-bb) invalidate too. UI uses live RPC
@@ -456,23 +419,23 @@ reparent refreshes every reader of the parent (≤ once per 5 s).
 Load the `dataviz` skill before building charts. bb registry components
 (`npx shadcn add @bb/chart @bb/table @bb/tabs @bb/skeleton @bb/tooltip`), host
 token classes only, series colors `--chart-1..5` in fixed order: Claude Code
-1, Codex 2, Local models 3, Antigravity 4, other 5; by model: top 4 + «Другие».
+1, Codex 2, Local models 3, Antigravity 4, other 5; by model: top 4 + "Others".
 Check light and dark in a local headless browser.
 
-### 5.1 Page (`navPanel`, path `tokenomos`, title «Tokenomos»)
+### 5.1 Page (`navPanel`, path `tokenomos`, title "Tokenomos")
 
-1. «Лимиты»: one row per provider window — % used (bb's numbers), reset time,
-   and «в этом окне» the top models by tokens and ~$ with the cache-read share.
-2. Range tabs «День · Неделя · Месяц · 3 месяца» (only these) and a «По
-   провайдерам / По моделям» toggle; range in the URL subPath.
-3. KPI tiles: «Расход (API-эквивалент)» with delta vs the previous equal
-   period; «Токены» with the cache-read share; «Компакция ~»; «Локальные модели
-   ~».
+1. "Limits": one row per provider window — % used (bb's numbers), reset time,
+   and "in this window" the top models by tokens and ~$ with the cache-read share.
+2. Range tabs "Day · Week · Month · 3 months" (only these) and a "By
+   provider / By model" toggle; range in the URL subPath.
+3. KPI tiles: "Usage (API equivalent)" with delta vs the previous equivalent
+   period; "Tokens" with the cache-read share; "Compaction ~"; "Local models
+   ~".
 4. Stacked bars: day 24 × 1 h, week 7 × 1 d, month 30 × 1 d, 3 months 13 × 1 w;
    per-segment tooltip, legend, table view toggle.
 5. Breakdown table by provider/model: fresh, cache read, cache write, output,
    calls, ~$.
-6. Top threads (50 per page, «Ещё» loads the next page; no virtualisation
+6. Top threads (50 per page, "More" loads the next page; no virtualisation
    needed at that size): title, project, provider, own ~$,
    with sub-threads ~$, opens the thread.
 7. Compactions in range: thread, when, before → after, origin, ~net.
@@ -487,7 +450,7 @@ Not in v1: session cost in chat comes through Answers (agreed). Adding a
 Declarative: `rawRetentionDays`, `rollupRetentionDays`, `referenceModel`,
 `includeOutsideBb`, `priceOverrides`. `settingsSection`: per-source status
 (last ingest, rows, last error, degraded threads), disk use and row counts,
-«Очистить старые данные», price table with editable override cells.
+"Clear old data", price table with editable override cells.
 
 ## 6. Public contracts
 
@@ -525,8 +488,7 @@ promptTokens (incl. cached), cachedTokens, completionTokens (incl. reasoning),
 reasoningTokens|null, durationMs, ttftMs|null }], nextCursor|null }`. Page until
 `nextCursor` is null, keep the last non-null one; dedupe on `id`. `thread`
 entries resolve `providerThreadId` via `provider_session`; unresolved wait in
-`ext_pending` 24 h, then go to «Локальные вызовы». `tool`/`cli` entries count
-to the calling thread.
+`ext_pending` 24 h, then move to local calls. `tool`/`cli` entries count to the calling thread.
 
 ### 6.5 Consumed: Antigravity (built in thr_gmerajvzbr's worktree, deploy pending)
 

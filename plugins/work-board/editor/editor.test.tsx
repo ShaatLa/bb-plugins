@@ -62,7 +62,7 @@ describe("markdown round-trip", () => {
     ["mention", "Blocked on [TSK-42](bbtask://TSK-42) for review."],
     [
       "thread mention",
-      "Discussed in [Fix login flow](bbthread://thr_a82u8wp8qq) yesterday.",
+      "Discussed in [Fix login flow](bbthread://thr_example) yesterday.",
     ],
     [
       "mixed document",
@@ -246,7 +246,7 @@ describe("mention extension", () => {
             },
             {
               type: "thread" as const,
-              id: "thr_a82u8wp8qq",
+              id: "thr_example",
               title: "Fix login flow",
             },
           ])
@@ -262,11 +262,11 @@ describe("mention extension", () => {
     fireEvent.click(screen.getByText("Fix login flow").closest("button")!);
     await waitFor(() =>
       expect(onChange).toHaveBeenCalledWith(
-        "[Fix login flow](bbthread://thr_a82u8wp8qq) ",
+        "[Fix login flow](bbthread://thr_example) ",
       ),
     );
     expect(
-      screen.container.querySelector('[data-thread-mention="thr_a82u8wp8qq"]'),
+      screen.container.querySelector('[data-thread-mention="thr_example"]'),
     ).toBeTruthy();
   });
 });
@@ -275,17 +275,17 @@ describe("thread mention extension", () => {
   it("parses a bbthread link into a pill and serializes it back", () => {
     const editor = new Editor({
       extensions: createEditorExtensions(),
-      content: "See [Fix login flow](bbthread://thr_a82u8wp8qq).",
+      content: "See [Fix login flow](bbthread://thr_example).",
     });
     try {
       const pill = editor.view.dom.querySelector(
-        '[data-thread-mention="thr_a82u8wp8qq"]',
+        '[data-thread-mention="thr_example"]',
       );
       expect(pill?.classList.contains("bb-work-board-thread-mention")).toBe(true);
       expect(pill?.textContent).toBe("Fix login flow");
       expect(pill?.querySelector("svg.bb-work-board-mention-icon")).toBeTruthy();
       expect(editor.storage.markdown.getMarkdown()).toBe(
-        "See [Fix login flow](bbthread://thr_a82u8wp8qq).",
+        "See [Fix login flow](bbthread://thr_example).",
       );
     } finally {
       editor.destroy();
@@ -296,7 +296,7 @@ describe("thread mention extension", () => {
     const onOpenThread = vi.fn();
     const screen = render(
       <TasksEditor
-        value="See [Fix login flow](bbthread://thr_a82u8wp8qq)."
+        value="See [Fix login flow](bbthread://thr_example)."
         onChange={() => undefined}
         readOnly
         variant="comment"
@@ -304,10 +304,10 @@ describe("thread mention extension", () => {
       />,
     );
     const pill = screen.container.querySelector(
-      '[data-thread-mention="thr_a82u8wp8qq"]',
+      '[data-thread-mention="thr_example"]',
     );
     fireEvent.click(pill!);
-    expect(onOpenThread).toHaveBeenCalledWith("thr_a82u8wp8qq");
+    expect(onOpenThread).toHaveBeenCalledWith("thr_example");
   });
 });
 
@@ -698,7 +698,7 @@ describe("description links", () => {
     let editor: Editor | undefined;
     const view = render(
       <TasksEditor
-        value="Open http://127.0.0.1:8768/Anvil%20Pipeline%20builder.dc.html?v=cpedit"
+        value="Open http://127.0.0.1:8768/Example%20Pipeline%20builder.dc.html?v=cpedit"
         onChange={() => {}}
         onOpenUrl={onOpenUrl}
         onEditorReady={(ready) => { editor = ready; }}
@@ -712,7 +712,7 @@ describe("description links", () => {
     };
     const anchor = view.container.querySelector("a[href]")!;
     expect(click(anchor)).toBe(true);
-    expect(onOpenUrl).toHaveBeenCalledWith("http://127.0.0.1:8768/Anvil%20Pipeline%20builder.dc.html?v=cpedit");
+    expect(onOpenUrl).toHaveBeenCalledWith("http://127.0.0.1:8768/Example%20Pipeline%20builder.dc.html?v=cpedit");
     expect(click(anchor, { shiftKey: true })).toBeFalsy();
     expect(click(view.container.querySelector("p")!)).toBeFalsy();
     expect(onOpenUrl).toHaveBeenCalledTimes(1);
