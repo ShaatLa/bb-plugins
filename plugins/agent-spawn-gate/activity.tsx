@@ -63,7 +63,6 @@ export function GateActivity({ projectId, days, onDaysChange }: { projectId: str
           </Card>
         )}
       </dl>
-      <p className="text-xs text-muted-foreground">Collecting data since {report.coverageStartedAt.slice(0, 16).replace("T", " ")} UTC.</p>
       {project.refusals.length ? <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <caption className="pb-2 text-left font-medium">Refusals by reason</caption>

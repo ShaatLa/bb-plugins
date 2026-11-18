@@ -102,7 +102,6 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   const initial = report.mock.calls[0]![0];
   expect(initial.projectId).toBe("proj_sample");
   expect(Date.parse(initial.to) - Date.parse(initial.from)).toBe(6 * 86_400_000);
-  expect(slot.getByText(/Collecting data since 2025-01-01 12:00 UTC/)).toBeTruthy();
 
   async function choose(label: string, optionName: string) {
     fireEvent.keyDown(slot.getByRole("combobox", { name: label }), { key: "Enter" });
