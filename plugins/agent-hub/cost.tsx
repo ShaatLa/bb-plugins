@@ -68,6 +68,8 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
   const slices: Slice[] = top.map((m, i) => ({ name: m.model, label: `${money(m.cost)}${pct(m.cost.usd) && ` · ${pct(m.cost.usd)}`}`, usd: m.cost.usd ?? 0, color: SLOTS[i] }));
   if (rest.length > 0) slices.push({ name: 'Other', label: `${money({ ...rest[0].cost, usd: rest.every(m => m.cost.usd !== null) ? other : null })}${pct(other) && ` · ${pct(other)}`}`, usd: other, color: 'var(--color-muted-foreground)', opacity: 0.4 });
   let from = 0;
+  // Hovering a slice or its legend row grows the slice and marks the row, so the two read as one.
+  const [hot, setHot] = useState<string | null>(null);
   const arcs = slices.map(x => { const len = total > 0 ? x.usd / total * CIRC : 0, start = from; from += len; return { x, start, dash: Math.max(0, len - GAP) }; });
   const group = 'mt-2 space-y-1 border-t border-border-hairline pt-2';
   const sub = cost.total.usd !== null && cost.own.usd !== null ? { ...cost.total, usd: Math.max(0, cost.total.usd - cost.own.usd) } : { ...cost.total, usd: null };
@@ -75,10 +77,10 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
     <div className="space-y-1"><Row label="This session" value={money(cost.own)} />{subs > 0 && <Row label={`Sub-sessions (${subs})`} value={money(sub)} />}<Row label="Total" value={money(cost.total)} /></div>
     <div className={group}>{details !== 'loading' && !details.available ? <p className="text-muted-foreground">Details unavailable</p> : <><Row label="Today" value={period(ready?.today)} /><Row label="Last 7 days" value={period(ready?.week)} /></>}</div>
     {ready && ready.models.length > 0 && <div className={`${group} flex items-center gap-3`}>
-      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} className="shrink-0" role="img" aria-label={`Cost by model: ${slices.map(x => `${x.name} ${x.label.split(' · ')[1] ?? ''}`.trim()).join(', ')}`}>
-        <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>{arcs.filter(a => a.x.usd > 0 && a.dash > 0).map(a => <circle key={a.x.name} cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" stroke={a.x.color} strokeOpacity={a.x.opacity} strokeWidth={RING} strokeDasharray={`${a.dash} ${CIRC - a.dash}`} strokeDashoffset={-a.start} />)}</g>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} className="shrink-0 overflow-visible" role="img" aria-label={`Cost by model: ${slices.map(x => `${x.name} ${x.label.split(' · ')[1] ?? ''}`.trim()).join(', ')}`}>
+        <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>{arcs.filter(a => a.x.usd > 0 && a.dash > 0).map(a => <circle key={a.x.name} data-slice={a.x.name} cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" stroke={a.x.color} strokeOpacity={(a.x.opacity ?? 1) * (hot && hot !== a.x.name ? 0.45 : 1)} strokeWidth={hot === a.x.name ? RING + 4 : RING} strokeDasharray={`${a.dash} ${CIRC - a.dash}`} strokeDashoffset={-a.start} className="cursor-default transition-[stroke-width,stroke-opacity] duration-150" onMouseEnter={() => setHot(a.x.name)} onMouseLeave={() => setHot(null)} />)}</g>
       </svg>
-      <div className="min-w-0 flex-1 space-y-1">{slices.map(x => <div key={x.name} className="flex items-center gap-2"><span className="h-2 w-2 shrink-0 rounded-full" style={{ background: x.color, opacity: x.opacity }} /><span className="min-w-0 flex-1 truncate text-foreground">{x.name}</span><span className="tabular-nums text-muted-foreground">{x.label}</span></div>)}</div>
+      <div className="min-w-0 flex-1 space-y-1">{slices.map(x => <div key={x.name} data-legend={x.name} data-hot={hot === x.name || undefined} className={`-mx-1 flex items-center gap-2 rounded px-1 transition-colors ${hot === x.name ? 'bg-state-hover' : ''}`} onMouseEnter={() => setHot(x.name)} onMouseLeave={() => setHot(null)}><span className="h-2 w-2 shrink-0 rounded-full" style={{ background: x.color, opacity: x.opacity }} /><span className="min-w-0 flex-1 truncate text-foreground">{x.name}</span><span className="tabular-nums text-muted-foreground">{x.label}</span></div>)}</div>
     </div>}
   </div>, document.body);
 }
