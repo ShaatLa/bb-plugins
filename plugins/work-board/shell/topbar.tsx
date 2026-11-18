@@ -249,7 +249,7 @@ export function TasksTopbar({
               <button
                 type="button"
                 aria-label="Switch project"
-                className="flex min-w-0 max-w-full items-center gap-2 rounded-md px-1 py-0.5 -mx-1 hover:bg-state-hover"
+                className="flex min-w-0 max-w-full items-center gap-2 -mx-1.5 rounded-md px-1.5 py-0.5 hover:bg-state-hover"
               >
                 {project ? (
                   <span
@@ -322,7 +322,8 @@ export function TasksTopbar({
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border-hairline bg-background px-3.5 text-sm max-md:pointer-coarse:h-12 max-md:pl-12 max-md:pointer-coarse:pl-14">
-      <div className="min-w-0 flex-1 overflow-hidden">{breadcrumb}</div>
+      {/* Room on the left so hover backgrounds pulled out with negative margins are not clipped. */}
+      <div className="-ml-2 min-w-0 flex-1 overflow-hidden pl-2">{breadcrumb}</div>
       {route.kind === "project" && project ? (
         <LockChips projectId={project.id} />
       ) : null}
