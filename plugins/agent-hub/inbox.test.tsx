@@ -142,6 +142,20 @@ it('reopens a chat the reader left scrolled up at their place, not at a New divi
     await waitFor(() => expect(tops.get(document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!)).toBe(300));
   } finally { spies.forEach(spy => spy.mockRestore()); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
 });
+it('reopens a chat from its cached copy at once, and marks a message that came meanwhile as New once the refetch lands', async () => {
+  const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Answer two' };
+  const old = { ...base, id:'ans_old', question:'Old one', readAt:1, createdAt:1, answeredAt:1 }, fresh = { ...base, id:'ans_new', question:'New one', questionSeq:5, answer:'Unread reply', readAt:null, createdAt:2, answeredAt:2 };
+  let release!: (value: object) => void, calls = 0;
+  const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId !== 'thr_one' ? { items:[{ ...base, id:'ans_two', threadId:'thr_two', question:'Other chat' }], nextCursor:null } : ++calls === 1 ? { items:[old], nextCursor:null } : new Promise(r => { release = r; }) });
+  fireEvent.click(await recipients.findByRole('option', { name:/One/ })); await slot.findByText('Old one');
+  fireEvent.click(recipients.getByRole('option', { name:/Two/ })); await slot.findByText('Other chat');
+  fireEvent.click(recipients.getByRole('option', { name:/One/ }));
+  expect(await slot.findByText('Old one')).toBeTruthy(); expect(release).toBeTypeOf('function');
+  expect(document.querySelector('[data-new]')).toBeNull();
+  release({ items:[fresh, old], nextCursor:null });
+  await slot.findByText('Unread reply');
+  await waitFor(() => expect(document.querySelector('[data-new]')).not.toBeNull());
+});
 it('keeps the card a scrolled-up reader is on in place when something above it changes height', async () => {
   const observers: (() => void)[] = [];
   vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
