@@ -1040,7 +1040,7 @@ it('flips a growing quote popup and fits it to a narrowed chat', async () => {
     const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
     const body = slot.container.querySelector('[data-agent-body]')!;
     const range = document.createRange(); range.selectNodeContents(body); window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
-    fireEvent.mouseUp(body);
+    fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
     const popup = await slot.findByRole('dialog', { name: 'Quote reply' });
     const top = parseFloat(popup.style.top);
     popupHeight = 200;
@@ -1139,4 +1139,51 @@ it('keeps the queue drag handle visible without hover, so touch screens and ligh
   fireEvent.click(await recipients.findByRole('option'));
   const handle = await slot.findByRole('button', { name:'Reorder queued message 1' });
   expect(handle.querySelector('[data-icon="DragDropVertical"], svg')!.getAttribute('class') ?? '').not.toMatch(/(^|\s)opacity-0(\s|$)/);
+});
+
+async function selectPassage(options: Parameters<typeof setup>[0] = {}) {
+  const result = setup(options); fireEvent.click(await result.recipients.findByRole('option')); await result.slot.findByText('Answer one');
+  const body = result.slot.container.querySelector<HTMLElement>('[data-agent-body]')!;
+  const range = document.createRange(); range.selectNodeContents(body);
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
+  Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ top: 20, bottom: 40, left: 20 }) });
+  window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+  fireEvent.mouseUp(body); return { ...result, body };
+}
+it('shows selection actions without opening a dialog or moving focus', async () => {
+  const before = document.activeElement, { slot } = await selectPassage();
+  expect(slot.getByRole('toolbar', { name: 'Selected passage' })).toBeTruthy();
+  for (const name of ['Add to chat', 'Add to reply pool', 'Comment', 'Save to Answers']) expect(within(slot.getByRole('toolbar')).getByRole('button', { name })).toBeTruthy();
+  expect(slot.queryByRole('dialog', { name: 'Quote reply' })).toBeNull(); expect(document.activeElement).toBe(before);
+});
+it('opens the selected quote only on Comment', async () => {
+  const { slot } = await selectPassage(); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
+  expect(within(slot.getByRole('dialog', { name: 'Quote reply' })).getByText('Answer one')).toBeTruthy();
+});
+it('adds a selection directly to the pool with its source', async () => {
+  const poolAdd = vi.fn(() => ({ id: 'pool_example' })); const { slot } = await selectPassage({ rpc: { poolAdd } });
+  fireEvent.click(slot.getByRole('button', { name: 'Add to reply pool' }));
+  await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: 'thr_one', itemId: 'ans_one', quoteSeq: 2, quote: 'Answer one', note: '' }));
+});
+it('saves the selected assistant passage', async () => {
+  const save = vi.fn(() => ({ ok: true })); const { slot } = await selectPassage({ rpc: { save } });
+  fireEvent.click(within(slot.getByRole('toolbar')).getByRole('button', { name: 'Save to Answers' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith({ threadId: 'thr_one', seq: 2, role: 'assistant', text: 'Answer one' }));
+  expect((await slot.findByRole('status')).textContent).toBe('Saved');
+});
+it('hides selection Save without a sequence', async () => {
+  const { slot, body } = await selectPassage(); delete body.dataset.seq; fireEvent.mouseUp(body);
+  expect(within(slot.getByRole('toolbar')).queryByRole('button', { name: 'Save to Answers' })).toBeNull();
+});
+it('appends a Markdown quote to the existing thread draft and focuses it', async () => {
+  const { slot, body } = await selectPassage(); const editor = slot.getByRole('textbox', { name: 'Send message' });
+  change(editor, { target: { value: 'Existing' } }); fireEvent.mouseUp(body);
+  fireEvent.click(slot.getByRole('button', { name: 'Add to chat' }));
+  await waitFor(() => expect(JSON.parse(localStorage.getItem('bb-plugin-answers:page:compose')!).thr_one.text).toBe('Existing\n\n> Answer one\n\n'));
+  expect(document.activeElement).toBe(editor);
+});
+it.each(['collapse', 'Escape'])('dismisses the bar on %s', async mode => {
+  const { slot, body } = await selectPassage(); expect(slot.getByRole('toolbar', { name: 'Selected passage' })).toBeTruthy();
+  if (mode === 'Escape') fireEvent.keyDown(body, { key: 'Escape' }); else { window.getSelection()!.removeAllRanges(); fireEvent.mouseUp(body); }
+  expect(slot.queryByRole('toolbar', { name: 'Selected passage' })).toBeNull();
 });

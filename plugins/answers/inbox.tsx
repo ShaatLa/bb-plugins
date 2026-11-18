@@ -350,12 +350,16 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
 
   // Once a thread's reply pool holds an entry, quote replies keep collecting into it (see poolFirst).
   const pools = useQuery({ contract: rpcContract, method: 'pools', input: {} });
-  const [draft, setDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
+  const [replyDraft, setReplyDraft] = useStoredState<Draft | null>('bb-plugin-answers:page:draft', null), [text, setText] = useStoredState('bb-plugin-answers:page:draft-text', ''), [files, setFiles] = useStoredState<Attachment[]>('bb-plugin-answers:page:draft-files', []), [error, setError] = useState(''), [pending, setPending] = useState(false);
   // While a quote reply is open over a message, the chat holds still: new messages and a growing composer do not scroll
   // the message (and the popup on it) away from the reader's eyes.
   const quoting = useRef(false); quoting.current = !!draft;
   // The quote popup's live selection and the spot it was last placed from it; the popup follows it as the chat changes.
   const anchor = useRef<Range | null>(null), placed = useRef<{ top: number; above: number; left: number } | null>(null);
+  const [selectionBar, setSelectionBar] = useState<Draft | null>(null);
+  const draft = selectionBar ?? replyDraft;
+  const setDraft: typeof setReplyDraft = update => { if (selectionBar) setSelectionBar(update); else setReplyDraft(update); };
+  const [selectionFeedback, setSelectionFeedback] = useTransientText();
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
   const restore = useRef(useState(() => { const saved = selected ? readScrolls()[selected] : undefined; return saved && selected ? { threadId: selected, ...saved } : null; })[0]);
@@ -662,11 +666,11 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   // Flip the popup above the selection when it would be clipped by the bottom of the scroll area.
   useLayoutEffect(() => {
     const node = popup.current, box = scroll.current; if (!draft || draft.above === undefined || !node || !box) return;
-    const flip = () => { const height = node.offsetHeight, top = draft.above! - height; if (draft.top + height > box.scrollTop + box.clientHeight && top >= box.scrollTop) setDraft(old => old === draft ? { ...old, top, above: undefined } : old); };
+    const flip = () => { const height = node.offsetHeight, top = draft.above! - height; if ((selectionBar ? !window.matchMedia?.('(pointer: coarse)').matches && top >= box.scrollTop : draft.top + height > box.scrollTop + box.clientHeight && top >= box.scrollTop)) setDraft(old => old === draft ? { ...old, top, above: undefined } : old); };
     flip();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(flip); observer?.observe(node);
     return () => observer?.disconnect();
-  }, [draft]);
+  }, [draft, !!selectionBar]);
   useEffect(() => {
     if (!draft) return;
     const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setDraft(null); };
@@ -684,6 +688,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
         let pos: { top: number; above: number; left: number } | null = null;
         if (range && range.startContainer.isConnected && range.endContainer.isConnected && range.getClientRects().length) pos = selectionPosition(range, box, width);
         else { const body = box.parentElement?.querySelector<HTMLElement>(`[data-agent-body][data-item="${old.itemId}"]`); if (body) { const r = body.getBoundingClientRect(), b = box.getBoundingClientRect(); pos = { top: r.bottom - b.top + box.scrollTop + 6, above: r.top - b.top + box.scrollTop - 6, left: old.left }; } }
+        if (selectionBar && range && box.clientHeight) { const r = range.getBoundingClientRect(), b = box.getBoundingClientRect(); if (r.bottom < b.top || r.top > b.bottom) return null; }
         const left = Math.max(8, Math.min(pos?.left ?? old.left, box.clientWidth - (width + 8)));
         // Unchanged since the last placing (which the flip below the selection may have adjusted): keep the popup as is.
         if (pos && placed.current && placed.current.top === pos.top && placed.current.above === pos.above && left === old.left && width === old.width) return old;
@@ -696,15 +701,38 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
     if (box) { observer?.observe(box); box.addEventListener('scroll', place); }
     if (area) mutations?.observe(area, { childList: true, subtree: true, characterData: true });
     return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape); document.removeEventListener('pointerdown', outside); observer?.disconnect(); mutations?.disconnect(); box?.removeEventListener('scroll', place); };
-  }, [!!draft]);
-  function capture(event: React.SyntheticEvent) {
-    const body = (event.target as Element).closest<HTMLElement>('[data-agent-body]'), selection = window.getSelection();
-    if (!body || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) return;
+  }, [!!draft, !!selectionBar]);
+  function capture(event?: React.SyntheticEvent) {
+    if (event && (event.target as Element).closest('[data-selection-bar]')) return;
+    const selection = window.getSelection(), target = event?.target as Node | undefined ?? selection?.anchorNode;
+    const body = (target instanceof Element ? target : target?.parentElement)?.closest<HTMLElement>('[data-agent-body]');
+    if (!body || !scroll.current?.contains(body) || !selected || !selection || selection.rangeCount !== 1 || selection.isCollapsed || !scroll.current) { setSelectionBar(null); return; }
     const range = clipSelection(selection.getRangeAt(0), body); if (!range) return;
     const quote = selectionMarkdown(range, body); if (!quote.trim()) return;
     anchor.current = range; placed.current = null;
-    setDraft({ threadId: selected, projectId: current?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(560, scroll.current.clientWidth - 16)), width: Math.min(560, scroll.current.clientWidth - 16) });
-    setText(''); setFiles([]); setError(quote.length > 20000 ? 'Quote exceeds 20,000 characters' : '');
+    setSelectionBar({ threadId: selected, projectId: current?.projectId ?? null, itemId: body.dataset.item!, quote, quoteSeq: body.dataset.seq ? Number(body.dataset.seq) : undefined, ...selectionPosition(range, scroll.current, Math.min(560, scroll.current.clientWidth - 16)), width: Math.min(560, scroll.current.clientWidth - 16) });
+
+  }
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const change = () => { clearTimeout(timer); timer = setTimeout(() => { if (!popup.current?.contains(document.activeElement)) capture(); }, 250); };
+    document.addEventListener('selectionchange', change);
+    return () => { clearTimeout(timer); document.removeEventListener('selectionchange', change); };
+  }, [selected, current?.projectId]);
+  async function selectionAction(action: string) {
+    if (!selectionBar) return;
+    const value = selectionBar;
+    if (action === 'Comment') { setSelectionBar(null); setReplyDraft({ ...value, ...selectionPosition(anchor.current!, scroll.current!, value.width) }); setText(''); setFiles([]); setError(value.quote.length > 20000 ? 'Quote exceeds 20,000 characters' : ''); return; }
+    if (value.quote.length > 20000) { setError('Quote exceeds 20,000 characters'); return; }
+    setSelectionBar(null);
+    try {
+      if (action === 'Add to chat') {
+        const old = drafts[value.threadId] ?? compose;
+        updateCompose(value.threadId, { ...old, text: `${old.text}${old.text ? '\n\n' : ''}${value.quote.split('\n').map(line => `> ${line}`).join('\n')}\n\n` });
+        stack.current?.querySelector<HTMLElement>('[role="textbox"][aria-label="Send message"]')?.focus();
+      } else if (action === 'Add to reply pool') { await rpc.call('poolAdd', { threadId: value.threadId, itemId: value.itemId, quote: value.quote, note: '', ...(value.quoteSeq === undefined ? {} : { quoteSeq: value.quoteSeq }) }); panel.openTab({ tab: poolsTab }); }
+      else { await rpc.call('save', { threadId: value.threadId, seq: value.quoteSeq!, role: 'assistant', text: value.quote }); setSelectionFeedback('Saved'); }
+    } catch (e) { setError(errorText(e)); }
   }
   async function send(pool: boolean, options?: SendOptions) {
     if (!draft || pending || draft.quote.length > 20000) return;
@@ -764,14 +792,18 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
     <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={setSelected} onBulkRead={onBulkRead} /></div>
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
-    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={capture} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
+    <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={event => { if (event.key !== 'Escape' && event.key !== 'Tab') capture(event); }} onKeyDown={event => { if (event.key === 'Tab' && selectionBar && !event.shiftKey) { event.preventDefault(); popup.current?.querySelector<HTMLElement>('button')?.focus(); } }} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
       {/* A column at least as tall as the view, so a short chat still keeps the composer at the bottom, as bb's chat does; clip (not hidden, which would break sticky) cuts bb's hidden voice textarea that hangs 7px below the composer and made short chats scroll. */}
       {selected && <div data-chat-column className="flex min-h-full flex-col overflow-clip" style={{ '--scrollbar': `${scrollbar}px`, '--answers-header-height': `${headerHeight}px` } as CSSProperties}>{mobileHeader}<div data-conversation-header className={`sticky top-[var(--answers-header-height,57px)] z-[2] flex justify-end border-b border-border-seam bg-background px-3 py-1 ${search ? '' : onSearch ? 'hidden' : 'max-[639px]:hidden'}`}>{!onSearch && <Button size="sm" variant="ghost" className="max-[639px]:hidden" aria-label="Search conversation" onClick={() => { setSearch(!search); setOlder(false); }}><Icon name="Search" aria-hidden /></Button>}{search && <input aria-label="Search conversation" autoFocus className="w-56 rounded border border-border-seam bg-background px-2 text-sm max-[639px]:min-w-0 max-[639px]:flex-1" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearch(false); setQuery(''); setOlder(false); } }} />}{search && query.trim() && <div role="listbox" aria-label="Search results" className="absolute right-3 top-full z-10 max-h-64 w-72 overflow-auto rounded border border-border-seam bg-background shadow-lg">{searchError && <p role="alert">{searchError}</p>}{matches.map(match => <button key={match.id} role="option" aria-selected={false} className="answers-hit block w-full border-b border-border-seam p-2 text-left text-xs hover:bg-state-hover" onClick={() => { setJump(match.id); setOlder(false); setSearch(false); }}>{(match.answer || match.question).slice(0, 160)} <time className="block text-muted-foreground">{new Date(match.updatedAt).toLocaleDateString()}</time></button>)}</div>}</div>{older && <p role="status" className="px-4 text-xs">Older than loaded history — <UrlLink href={`${current?.projectId ? `/projects/${current?.projectId}` : ''}/threads/${selected}`}>open in chat</UrlLink></p>}<HistoryPage key={selected} threadId={selected} index={0} unread={current?.unread} {...{ depth, receive }} />{pages.at(-1)?.nextCursor && <EarlierLoader loading={pages.length < depth} enabled={settled} onLoad={() => { position.current.prepend = true; setDepth(d => Math.max(d, pages.length + 1)); }} />}<ActivityContext.Provider value={activity}><ActivityLabelContext.Provider value={activityLabel}><History key={selected} groups={historyGroups} flash={flash} markId={mark.current} settled={settled} onJump={jumpTo} /></ActivityLabelContext.Provider></ActivityContext.Provider>{optimistic.some(b => b.threadId === selected) && <ul inert aria-label="Sending" className="pl-4 pr-[max(0px,calc(1rem-var(--scrollbar,0px)))] [&>li]:border-t [&>li]:border-border-seam">{optimistic.filter(b => b.threadId === selected).map(b => <ItemCard key={b.id} item={sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId))} chat markable={false} replyToOwn={false} />)}</ul>}
         {/* The agent works on its own (woken by a child, a plugin, a script): the robot walks at the end of the chat, unless
             a pending owner message already shows it. */}
         {working && !optimistic.some(b => b.threadId === selected) && !lastPending && <div className="px-6 pb-3 text-muted-foreground opacity-60"><ActivityLabelContext.Provider value={activityLabel}><WorkLog key={selected} threadId={selected} live><RobotLoader className="h-8" activity={activity} label="The agent is working" /></WorkLog></ActivityLabelContext.Provider></div>}</div>}
-      {draft && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
+      {selectionFeedback && <span role="status" className="absolute right-3 top-3 text-xs">{selectionFeedback}</span>}
+      {selectionBar && <div ref={popup} data-selection-bar role="toolbar" aria-label="Selected passage" className="absolute z-10 flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-popover p-0.5 text-popover-foreground shadow-md" style={{ maxWidth: selectionBar.width, top: selectionBar.top, left: selectionBar.left }} onMouseDown={event => event.preventDefault()}>
+        {(['Add to chat', 'Add to reply pool', 'Comment', ...(selectionBar.quoteSeq === undefined ? [] : ['Save to Answers'])]).map((action, i) => <button key={action} type="button" className="answers-hit inline-flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-surface-recessed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring select-none" onClick={() => void selectionAction(action)}><Icon name={(['MessageSquarePlus', 'Sent', 'MessageCircle', 'Star'] as const)[i]!} aria-hidden className="size-3.5 text-muted-foreground" />{action}</button>)}
+      </div>}
+      {draft && !selectionBar && <div ref={popup} role="dialog" aria-label="Quote reply" className="absolute z-10" style={{ width: draft.width, top: draft.top, left: draft.left }} onBlur={event => { if (event.relatedTarget && !(event.relatedTarget as Element).closest?.('[role=option]') && !event.currentTarget.contains(event.relatedTarget as Node)) setDraft(null); }}>
         <Composer label="Quote reply text" className="shadow-lg" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={draft.projectId} pending={pending} sendDisabled={draft.quote.length > 20000} onSend={options => void send(false, options)}
           header={<div className="flex items-start gap-2 pl-4 pr-2 pt-2"><div className="mt-1 max-h-32 min-w-0 flex-1 overflow-auto border-l-2 border-border-seam pl-2 text-sm text-muted-foreground"><Markdown content={draft.quote} /></div><Button type="button" size="icon" variant="ghost" className="size-7 shrink-0 text-muted-foreground" aria-label="Close" onClick={() => setDraft(null)}><Icon name="X" aria-hidden /></Button></div>}
           onPool={draft.quote.length > 20000 ? undefined : () => void send(true)} poolFirst={!!pools.data?.pools.some(pool => pool.threadId === draft.threadId && pool.entries.length)} />

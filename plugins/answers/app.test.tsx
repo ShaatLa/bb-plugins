@@ -243,7 +243,7 @@ it('keeps the quote popup under its selection when the chat moves it (new messag
   let bottom = 30;
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, top: bottom - 10, bottom, width: 50, height: 10 }] });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   const dialog = slot.getByRole('dialog', { name: 'Quote reply' });
   // jsdom has no height, so the popup flips above the selection (its top edge 6px over it).
   expect(dialog.style.top).toBe('14px');
@@ -267,7 +267,7 @@ it('does not follow a new message to the bottom while a quote popup is open', as
     const body = slot.getByText('The answer').closest('[data-agent-body]')!, range = document.createRange(); range.selectNodeContents(body);
     Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, top: 20, bottom: 30, width: 50, height: 10 }] });
     vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-    fireEvent.mouseUp(body); expect(slot.getByRole('dialog', { name: 'Quote reply' })).toBeTruthy();
+    fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' })); expect(slot.getByRole('dialog', { name: 'Quote reply' })).toBeTruthy();
     fresh = true; height = 1600;
     await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
     await slot.findByText('Newer answer');
@@ -282,7 +282,7 @@ it('snapshots a quote draft through focus and refresh; Add to reply pool opens t
   Object.defineProperty(range, 'getClientRects', { value: () => [{ left: 20, bottom: 30, width: 50, height: 10 }] });
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 20, bottom: 30, width: 50, height: 10 }] });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   const text = slot.getByRole('textbox', { name: 'Quote reply text' }) as HTMLTextAreaElement;
   fireEvent.focus(text); change(text, { target: { value: 'Snapshot note' } });
   await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
@@ -302,7 +302,7 @@ it('keeps the bottom composer mounted while the quote popup is open', async () =
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
   Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 20, bottom: 30 }) });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   expect(slot.getByRole('textbox', { name: 'Send message' })).toBe(bottom);
   expect(document.activeElement).toBe(slot.getByRole('textbox', { name: 'Quote reply text' }));
   fireEvent.keyDown(slot.getByRole('textbox', { name: 'Quote reply text' }), { key: 'Escape' });
@@ -316,7 +316,7 @@ it.each(['Escape', 'outside'])('closes quote draft on %s', async mode => {
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
   Object.defineProperty(Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 20, bottom: 30 }) });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   const text = slot.getByRole('textbox', { name: 'Quote reply text' });
   if (mode === 'Escape') fireEvent.keyDown(text, { key: 'Escape' }); else fireEvent.blur(text, { relatedTarget: slot.getByRole('button', { name: 'Chats' }) });
   expect(slot.queryByRole('dialog')).toBeNull();
@@ -410,7 +410,7 @@ it('sends the snapshot to its original recipient after switching recipients', as
   const range = document.createRange(); range.selectNodeContents(body);
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 10, bottom: 50, width: 30, height: 10 }] });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Immediate note' } });
   fireEvent.pointerDown(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
   fireEvent.click(within(slot.getByRole('listbox', { name: 'Recipients' })).getAllByRole('option')[1]!);
@@ -426,7 +426,7 @@ it('shows a sent quote reply in the conversation at once, before the thread even
   const range = document.createRange(); range.selectNodeContents(body);
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [{ left: 10, bottom: 50, width: 30, height: 10 }] });
   vi.spyOn(window, 'getSelection').mockReturnValue({ rangeCount: 1, isCollapsed: false, getRangeAt: () => range } as any);
-  fireEvent.mouseUp(body);
+  fireEvent.mouseUp(body); fireEvent.click(slot.getByRole('button', { name: 'Comment' }));
   change(slot.getByRole('textbox', { name: 'Quote reply text' }), { target: { value: 'Quick note' } });
   fireEvent.click(slot.getByRole('button', { name: 'Send' }));
   const bubble = await waitFor(() => slot.getByRole('list', { name: 'Sending' }));
