@@ -966,3 +966,25 @@ it('jumps directly to a stored sequence and pages newer history only on demand',
 });
 
 it('keeps Work Board rules out of Answers instructions',()=>{expect(INSTRUCTIONS).not.toMatch(/Work Board|work-board/);});
+
+it('reads and writes scoped config through RPC and CLI',async()=>{
+ const {harness}=setup();
+ expect(await harness.behavior.callRpc('config.get',{key:'notify'})).toBe('asked');
+ expect(await harness.behavior.callRpc('config.set',{key:'notify',value:'off'})).toBe('off');
+ expect(await harness.behavior.callRpc('getPreferences',{})).toMatchObject({notify:'off'});
+ expect(await harness.behavior.callRpc('config.get',{projectId:'proj_example'})).toEqual({channelCommands:['work-board question add']});
+ expect(await harness.behavior.callRpc('config.set',{projectId:'proj_example',key:'channelCommands',value:'example-tracker ask,other ask'})).toEqual(['example-tracker ask','other ask']);
+ expect((await harness.behavior.runCli(['config','set','remindHours','2','--json'])).stdout).toBe('2');
+ expect((await harness.behavior.runCli(['config','get','remindHours','--json'])).stdout).toBe('2');
+ expect((await harness.behavior.runCli(['config','set','channelCommands','["example-tracker ask"]','--project','proj_example','--json'])).stdout).toBe('["example-tracker ask"]');
+ expect((await harness.behavior.runCli(['config','get','channelCommands','--project','proj_example','--json'])).stdout).toBe('["example-tracker ask"]');
+ expect(await harness.behavior.callRpc('config.get',{})).toMatchObject({notify:'off',remindHours:2});
+});
+it.each([{key:'unknown',value:true},{key:'remindHours',value:-1},{key:'notify',value:'bad'},{key:'quietHours',value:'24:00-02:00'},{key:'channelCommands',projectId:'proj_example',value:'[""]'},{key:'channelCommands',projectId:'proj_example',value:[1]}])('rejects invalid granular setting %j',async input=>{
+ const {harness}=setup(); await expect(harness.behavior.callRpc('config.set',input)).rejects.toThrow(/Unknown key|Too small|Invalid|expected|Expected/i);
+});
+it('lists valid keys for unknown keys in either scope',async()=>{
+ const {harness}=setup();
+ await expect(harness.behavior.callRpc('config.get',{key:'unknown'})).rejects.toThrow(/notify/);
+ await expect(harness.behavior.callRpc('config.get',{projectId:'proj_example',key:'unknown'})).rejects.toThrow(/channelCommands/);
+});

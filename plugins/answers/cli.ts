@@ -1,9 +1,11 @@
+import type { createConfig } from './config';
 import { cliCommand, defineCli, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { OWNER_ITEM_SQL } from './ingest';
 import { inputs, viewSchema, type ListInput, type ListResult } from './contract';
 import type { z } from 'zod';
 import type Database from 'better-sqlite3';
 type Api = {
+  config:ReturnType<typeof createConfig>;
   list(input: ListInput): Promise<ListResult>;
   markRead(input: z.infer<typeof inputs.markRead>): {ok:true;count?:number};
   status(): unknown;
@@ -12,6 +14,14 @@ type Api = {
 export function registerCli(bb: BbPluginApi, api: Api) {
   const thread={type:'string',description:'Filter by thread'} as const;
   bb.cli.register(defineCli({name:'answers',summary:'Questions, answers and saved messages',commands:{
+    config:cliCommand({summary:'Read or change one scoped setting',positionals:[{name:'action',description:'get or set',required:true},{name:'key',description:'Setting key',required:false},{name:'value',description:'Setting value',required:false}],options:{project:{type:'string',description:'Project id (omit for global preferences)'},json:{type:'boolean',description:'Return JSON'}},async run(i){
+      const {action,key,value}=i.positionals,projectId=i.options.project;
+      if (action!=='get' && action!=='set') throw new Error('Use config get [<key>] or config set <key> <value>');
+      if (action==='get' && value!==undefined) throw new Error('config get takes at most one key');
+      if (action==='set' && (key===undefined || value===undefined)) throw new Error('Use config set <key> <value>');
+      const result=action==='get' ? await api.config.get({projectId,key}) : await api.config.set({projectId,key:key!,value});
+      return {exitCode:0,stdout:i.options.json || typeof result!=='string' ? JSON.stringify(result) : result};
+    }}),
     list:cliCommand({summary:'List up to 50 items',options:{view:{type:'enum',values:viewSchema.options,description:'Items view'},thread,json:{type:'boolean',description:'Return JSON'}},async run(i){
       const result=await api.list(inputs.list.parse({view:i.options.view ?? 'unread',threadId:i.options.thread}));
       return {exitCode:0,stdout:i.options.json ? JSON.stringify(result) : result.items.map(r=>`${r.id} ${r.status} ${r.threadTitle ?? r.threadId} ${r.question.replace(/\s+/g,' ').slice(0,160)}`).join('\n') || 'No items.'};

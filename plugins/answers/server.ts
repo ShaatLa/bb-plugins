@@ -1,3 +1,4 @@
+import { createConfig } from './config';
 import { mentionsForText, threadToken } from './mentions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
@@ -54,6 +55,7 @@ export default function plugin(bb: BbPluginApi) {
   // Per thread, bumped when bb reports its context window usage changed, so the open chat rereads its ring then, not on a timer.
   const contextStamps = new Map<string,{stamp:number;compactedAt:number|null}>();
   const notifier=createNotifier(bb,db);
+  const config=createConfig(bb,notifier.settings);
   const onAttention = () => {void notifier.run();};
   const driver = createDriver(bb,db,() => {invalidate(); onAttention();},(threadId,compactedAt) => {const last=contextStamps.get(threadId); contextStamps.set(threadId,{stamp:(last?.stamp ?? 0)+1,compactedAt:compactedAt ?? last?.compactedAt ?? null}); bb.rpc.experimental_invalidate([CONTEXT_TAG]);},async () => (await notifier.settings.get()).handoffWarnings);
   let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
@@ -257,6 +259,8 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
   const handlers = {
+    'config.get':config.get,
+    'config.set':config.set,
     list, async counts() { await syncReadFromBb(); return counts(); },
     undoRead(raw:z.infer<typeof inputs.undoRead>) {
       const p=inputs.undoRead.parse(raw),threads=threadsOf('read_batch=? AND read_at>=?',p.batch,Date.now()-600000),count=db.prepare('UPDATE items SET read_at=NULL,read_batch=NULL WHERE read_batch=? AND read_at>=?').run(p.batch,Date.now()-600000).changes;
@@ -537,7 +541,7 @@ export default function plugin(bb: BbPluginApi) {
     });
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
-  registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
+  registerCli(bb,{config,list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   // The event payload avoids a metadata lookup for both contacts and sub-sessions.
   bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row

@@ -30,3 +30,11 @@ A script or background process that wakes its own thread with `bb thread tell` m
 Reply pools: the user collects quotes from answers (Add to reply pool in the send menu of the quote and comment popups) and sends them as one message. Quote limit: 20,000 characters; note: 8,000; combined pool message: 32,000. On uncertain delivery, check the thread before retrying; never auto-resend.
 
 Channel detection is project-specific: `channelCommands` defaults to `["work-board question add"]`. Commands containing any configured fragment count as an explicit question channel; `answers_ask` always counts. Threads without a project use the default. This detection does not prescribe where agents must ask questions.
+
+```sh
+bb answers config get [<key>] [--project <id>] [--json]
+bb answers config set <key> <value> [--project <id>] [--json]
+```
+
+Omit `--project` for global preferences; include it for project settings (currently only `channelCommands`, CLI/RPC only). With no key, `get` lists that scope; with a key it returns only its value. `set` returns the stored value.
+RPC: `config.get {projectId?, key?}`, `config.set {projectId?, key, value}`. Existing whole-object preference RPCs remain available. Global changes use the settings page’s validation and live-change path. Unknown keys list valid keys. Booleans and numbers accept JSON literals; selects and quiet hours accept strings. `channelCommands` accepts a JSON array of non-empty strings (including `[]` to disable extra channels) or a comma-separated list.
