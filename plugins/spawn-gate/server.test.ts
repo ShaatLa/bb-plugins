@@ -8,7 +8,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
 const brief = "Review the task.\nReply only OK.";
 async function setup(enabled = true, existing = false) {
-  let { bb, harness } = createFakePluginHost({ pluginId: "agent-spawn-gate", sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] }, threads: {
+  let { bb, harness } = createFakePluginHost({ pluginId: "spawn-gate", sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] }, threads: {
     get: async () => makeThreadResponse({ projectId: PROJECT }),
     events: { list: async () => existing ? [{ type: "thread/started" }] : [] },
   } } });
@@ -128,7 +128,7 @@ it("does not register the old repeated settings form and lists projects added af
 });
 
 it("starts every project disabled without reading project-specific host settings", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "agent-spawn-gate", sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] } } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "spawn-gate", sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] } } });
   cleanups.push(() => harness.lifecycle.dispose());
   await plugin(bb);
   const result = await harness.behavior.callRpc("settings.read", null) as { projects: { values: { enabled: boolean; method: string } }[] };

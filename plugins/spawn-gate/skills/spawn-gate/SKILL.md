@@ -1,5 +1,5 @@
 ---
-name: agent-spawn-gate
+name: spawn-gate
 description: Follow Spawn Gate project workflows and mint one-use child-start admissions.
 ---
 
@@ -15,8 +15,8 @@ RPC `start` takes `{projectId,parentThreadId,args,dryRun?}`. Builder contract:
 START-CONTRACT.md in the plugin package. Absolute builder input paths must be
 readable on the bb server machine. The caller's branch is never used.
 
-In Instruction mode, or for existing integrations, call plugin `agent-spawn-gate`, RPC `mint`, with
-`{projectId,parentThreadId,brief}`. CLI: `bb plugin rpc call agent-spawn-gate mint
+In Instruction mode, or for existing integrations, call plugin `spawn-gate`, RPC `mint`, with
+`{projectId,parentThreadId,brief}`. CLI: `bb plugin rpc call spawn-gate mint
 --input-file request.json --json`. The brief may be plain task text.
 Output is `{token,expiresAt,prompt}`. Write prompt verbatim to a file and use
 `bb thread spawn --project <projectId> --parent-thread <parentThreadId>
@@ -26,7 +26,7 @@ to ten minutes.
 Settings uses one project dropdown. Valid changes automatically persist only
 the selected project's values. Every project defaults off and offers the same
 script/instruction selection. CLI shares the UI's RPC/store:
-`bb plugin rpc call agent-spawn-gate settings.read --json` returns projects and
+`bb plugin rpc call spawn-gate settings.read --json` returns projects and
 saved values. `settings.write` with `{projectId,values:{enabled:false}}` disables
 only that project. Other fields: method, instruction, script, ttlMinutes.
 

@@ -28,7 +28,7 @@ async function fixture() {
     return git("rev-parse", "HEAD");
   };
   const first = await write();
-  const { bb, harness } = createFakePluginHost({ pluginId: "agent-spawn-gate", sdk: { projects: { get: async () => ({ gitRemoteUrl: repo }), list: async () => [{ id: "proj_example", name: "Example" }] }, threads: { get: async () => makeThreadResponse({ projectId: "proj_example" }) } } });
+  const { bb, harness } = createFakePluginHost({ pluginId: "spawn-gate", sdk: { projects: { get: async () => ({ gitRemoteUrl: repo }), list: async () => [{ id: "proj_example", name: "Example" }] }, threads: { get: async () => makeThreadResponse({ projectId: "proj_example" }) } } });
   cleanups.push(() => harness.lifecycle.dispose());
   const mint = vi.fn(async ({ brief }) => ({ token: "test-token", prompt: `${brief}\nagent-admission v1 token=example` }));
   const spawn = vi.fn(async (_request: Record<string, unknown>) => makeThreadResponse({ id: "thr_child" }));

@@ -108,7 +108,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const header = showActivity && <header className="flex items-center justify-between gap-3">
     <h1 className="text-xl font-semibold">Spawn Gate</h1>
     <Button asChild variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground">
-      <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
+      <UrlLink href="/settings/plugins/spawn-gate" aria-label="Plugin settings" title="Plugin settings">
         <Icon name="Settings" />
       </UrlLink>
     </Button>
@@ -159,5 +159,5 @@ function GatePage() {
 
 export default definePluginApp(app => {
   app.slots.settingsSection({ id: "project-settings", component: GateSettings });
-  app.slots.navPanel({ id: "spawn-gate", title: "Spawn Gate", icon: "agent-spawn-gate/entry", path: "activity", component: GatePage });
+  app.slots.navPanel({ id: "spawn-gate", title: "Spawn Gate", icon: "spawn-gate/entry", path: "activity", component: GatePage });
 });

@@ -5,7 +5,7 @@ Command:
 Project and parent default to the invoking bb CLI context; explicit flags win. Both are required after resolution. Arguments after -- are passed to the configured builder verbatim as argv, never through a shell. No spawn flags are accepted after -- by the plugin: those are builder-specific arguments only.
 
 RPC:
-  plugin: agent-spawn-gate
+  plugin: spawn-gate
   method: start
   input: {projectId:string, parentThreadId:string, args:string[], dryRun?:boolean}
 The same start implementation serves CLI and RPC. The plugin validates the parent belongs to projectId before running the builder. This first start implementation requires the project's Script mode; existing Instruction mode and mint remain supported through their current contract.

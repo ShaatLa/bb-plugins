@@ -2,7 +2,16 @@
 
 Persistent per-project launch workflows for new agent sessions. The core
 `message.dispatch` hook enforces a one-use admission before any provider runs.
-Install entry, package directory and plugin ID: **agent-spawn-gate**.
+Install entry, package directory and plugin ID: **spawn-gate**. The CLI remains `bb agent-spawn-gate`.
+
+## Upgrade from agent-spawn-gate
+
+Pause new launches and disable `agent-spawn-gate` before installing
+`spawn-gate`. On first load it copies the legacy database and project settings.
+Check the enabled projects, the activity report and a builder dry run before
+resuming launches. Keep the legacy installation disabled until the checks pass.
+If a check fails, disable `spawn-gate` and re-enable `agent-spawn-gate` before
+resuming launches. The migration leaves the legacy files and settings in place.
 
 ## Settings
 
@@ -36,8 +45,8 @@ UI and CLI share the same schema-validated RPC and storage. The plugin does
 not register native `bb plugin config` fields.
 
 ```sh
-bb plugin rpc call agent-spawn-gate settings.read --json
-bb plugin rpc call agent-spawn-gate settings.write --input-file settings.json --json
+bb plugin rpc call spawn-gate settings.read --json
+bb plugin rpc call spawn-gate settings.write --input-file settings.json --json
 ```
 
 `settings.read` takes null and returns `{projects:[{id,name,values}]}`.
@@ -128,7 +137,7 @@ Earlier counts are preserved without reconstructing missing events.
 After following the configured workflow, call:
 
 ```sh
-bb plugin rpc call agent-spawn-gate mint --input-file request.json --json
+bb plugin rpc call spawn-gate mint --input-file request.json --json
 ```
 
 Input: `{projectId,parentThreadId,brief}`. The parent must belong to the project;
@@ -174,7 +183,7 @@ npm ci
 npm run typecheck
 npm test
 bb plugin build .
-bb plugin reload agent-spawn-gate
+bb plugin reload spawn-gate
 ```
 
 Tests cover provider rejection, human exemptions, token binding/expiry/replay,

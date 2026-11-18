@@ -154,5 +154,5 @@ it("shows the single project without an active selector and links to plugin sett
   const selector = await slot.findByRole("combobox", { name: "Project" });
   expect((selector as HTMLButtonElement).disabled).toBe(true);
   expect(selector.textContent).toBe("Sample");
-  expect(slot.getByRole("link", { name: "Plugin settings" }).getAttribute("href")).toBe("/settings/plugins/agent-spawn-gate");
+  expect(slot.getByRole("link", { name: "Plugin settings" }).getAttribute("href")).toBe("/settings/plugins/spawn-gate");
 });
