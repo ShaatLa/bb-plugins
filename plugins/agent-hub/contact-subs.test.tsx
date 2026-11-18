@@ -11,11 +11,11 @@ vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOrig
 afterEach(() => { cleanup(); localStorage.clear(); vi.clearAllMocks(); });
 const parent = 'thr_example', child = 'thr_example_child', stored = 'bb-plugin-answers:page:open-subs';
 const idle = { projectId: null, parentThreadId: null, parentNotifications: 'all', archivedAt: null, pinnedAt: null, sectionId: null, isUnread: false, status: 'idle', runtimeStatus: 'idle', queuedWork: 'none', hasPendingInteraction: false, indicator: 'none', activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, environment: null };
-function setup(open = false, sidebar = false, selected = parent) {
+function setup(open = false, sidebar = false, selected = parent, asking: string[] = [], childFields: object = {}) {
   if (open) localStorage.setItem(stored, JSON.stringify([parent]));
   const onSelect = vi.fn(), onNavigate = vi.fn(), markThreadRead = vi.fn(() => ({ batch: null, count: 1 }));
   function Contacts() { return <ContactsList model={useContacts(selected)} selected={selected} onSelect={onSelect} onNavigate={onNavigate} />; }
-  const slot = renderSlot({ component: sidebar ? AgentHubContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent }], projects: [] } } as any);
+  const slot = renderSlot({ component: sidebar ? AgentHubContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ asking, recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent, ...childFields }, { ...idle, id: 'thr_example_quiet', title: 'Quiet', parentThreadId: parent }], projects: [] } } as any);
   return { slot, onSelect, onNavigate, markThreadRead };
 }
 it('toggles and stores sub-sessions only through a separate chevron button', async () => {
@@ -83,4 +83,17 @@ it('shows bb\'s draft pencil instead of the time or spinner while the Answers co
   expect(await glyph('busy')).toBe('working-draft');
   expect(await glyph('empty')).toBeUndefined();
   localStorage.removeItem(COMPOSE_KEY);
+});
+it('keeps a sub-session that asks the owner visible under its collapsed parent', async () => {
+  for (const [asking, fields] of [[[child], {}], [[], { hasPendingInteraction: true }]] as const) {
+    const { slot } = setup(false, false, parent, [...asking], fields);
+    const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
+    expect(subs.textContent).toContain('Child'); expect(subs.textContent).not.toContain('Quiet');
+    expect(slot.getByRole('img', { name: 'Asking you' })).toBeTruthy();
+    expect(slot.getByRole('button', { name: 'Show sub-sessions' })).toBeTruthy();
+    slot.unmount();
+  }
+  const { slot } = setup();
+  await slot.findByRole('button', { name: 'Show sub-sessions' });
+  expect(slot.queryByRole('list', { name: 'Sub-sessions of Parent' })).toBeNull();
 });

@@ -67,7 +67,7 @@ export const rpcContract=defineRpcContract({
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  inlinePreview:{input:inputs.inlinePreview,output:inlinePreviewSchema},
- recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema)})},
+ recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema),asking:z.array(threadId).default([])})},
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, queueStamp:{tags:()=>[QUEUE_TAG],input:inputs.queueStamp,output:z.object({stamp:z.number()})}, contextStamp:{tags:()=>[CONTEXT_TAG],input:inputs.contextStamp,output:z.object({stamp:z.number(),compactedAt:z.number().nullable().default(null)})}, logClientError:{input:inputs.logClientError,output:z.object({ok:z.literal(true)})}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
  poolSend:{input:inputs.poolSend,output:z.object({delivery:z.enum(['sent','queued']),sent:time,keptEdited:time})}, quoteReply:{input:inputs.quoteReply,output:z.object({delivery:z.enum(['sent','queued'])})},
