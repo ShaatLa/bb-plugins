@@ -29,7 +29,7 @@ export async function migrateAnswers(bb: BbPluginApi) {
    if (count(current)) throw new Error('Migration deferred: new store already contains items; refusing to overwrite it');
   } finally { current.close(); }
  }
- const previous = new Map<string, unknown>(), copiedSecrets: string[] = [];
+ const previous = new Map<string, unknown>(), copiedSecrets: string[] = [], secretNames: string[] = [];
  let source: Database.Database | undefined, staged: Database.Database | undefined;
  try {
   rmSync(staging, { force: true });
@@ -61,6 +61,7 @@ export async function migrateAnswers(bb: BbPluginApi) {
    mkdirSync(join(next, 'secrets'), { recursive: true, mode: 0o700 });
    for (const entry of readdirSync(join(old, 'secrets'), { withFileTypes: true })) {
     if (!entry.isFile()) throw new Error('Unexpected entry in legacy secrets directory');
+    secretNames.push(entry.name);
     const dest = join(next, 'secrets', entry.name);
     if (existsSync(dest)) {
      if (readFileSync(dest).equals(readFileSync(join(old, 'secrets', entry.name)))) continue;
@@ -69,7 +70,7 @@ export async function migrateAnswers(bb: BbPluginApi) {
     copyFileSync(join(old, 'secrets', entry.name), dest); copiedSecrets.push(entry.name); chmodSync(dest, 0o600);
    }
   }
-  const result: Report = { ran: true, completedAt: new Date().toISOString(), kvKeys: [...values.keys()], secrets: copiedSecrets, error: null };
+  const result: Report = { ran: true, completedAt: new Date().toISOString(), kvKeys: [...values.keys()], secrets: secretNames, error: null };
   staged.exec(`CREATE TABLE ${marker} (value TEXT NOT NULL)`);
   staged.prepare(`INSERT INTO ${marker} VALUES (?)`).run(JSON.stringify(result));
   staged.pragma('wal_checkpoint(TRUNCATE)'); staged.close(); staged = undefined;

@@ -13,7 +13,7 @@ export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thr
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Answers). A short one ("Хотите?") keeps the
 // sentence before it for context; table rows only list.
-const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers/i;
+const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers|in agent hub|via agent hub|в agent hub|через agent hub/i;
 export function chatQuestion(text: string): string | null {
  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
  const mask = text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, blank).replace(/`[^`\n]*`/g, blank).replace(/^[ \t]*>.*$/gm, blank).replace(/^[ \t]*\|.*\|[ \t]*$/gm, blank)

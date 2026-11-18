@@ -59,3 +59,16 @@ it('registers migration status under the main CLI', async () => {
  const result = await host.harness.behavior.runCli(['migration','status','--json']);
  expect(result.exitCode).toBe(0); expect(JSON.parse(result.stdout)).toMatchObject({ran:false,completedAt:null,kvKeys:[],secrets:[],error:null,newItemCount:0});
 });
+it('keeps a failed startup empty and readable until the next migration attempt', async () => {
+ const { dir, host } = setup();
+ writeFileSync(join(dir, 'bb.db'), 'invalid database');
+ const list = vi.fn(async () => []); host.harness.sdk.stub('threads.list', list);
+ await plugin(host.bb);
+ const status = await host.harness.behavior.runCli(['migration','status','--json']);
+ expect(status.exitCode).toBe(0);
+ expect(JSON.parse(status.stdout)).toMatchObject({ran:false,newItemCount:0});
+ expect(JSON.parse(status.stdout).error).toContain('database');
+ expect(list).not.toHaveBeenCalled();
+ expect(host.bb.storage.database().pragma('query_only', {simple:true})).toBe(1);
+ expect(await host.harness.behavior.callRpc('counts', {})).toEqual({unread:0,waiting:0,forMe:0,inbox:0});
+});

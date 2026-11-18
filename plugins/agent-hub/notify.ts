@@ -29,13 +29,13 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if (old?.value!==end) {db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run(); db.prepare("INSERT INTO notify_meta(key,value) VALUES ('held_for',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(end);}
   for (const id of ids) db.prepare('UPDATE items SET notify_state=2 WHERE id=?').run(id);
  })();
- const log=(e:unknown)=>{if (Date.now()-lastError>=3600000 || !lastError) {lastError=Date.now(); bb.log.debug(`Answers push unavailable: ${String(e)}`);}};
+ const log=(e:unknown)=>{if (Date.now()-lastError>=3600000 || !lastError) {lastError=Date.now(); bb.log.debug(`Agent Hub push unavailable: ${String(e)}`);}};
  const push=async(input:{title:string;body:string;threadId?:string})=>{
   const outputSchema=z.object({channels:z.array(z.string())});
   try {const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'push-notifications',method:'notifications.send',input,outputSchema})); if (!result.channels.length) log('no channels');}
   catch(e){log(e);}
  };
- const serial=(task:()=>Promise<void>|void)=>{chain=chain.then(task).catch(e=>bb.log.warn(`Answers notify: ${String(e)}`)); return chain;};
+ const serial=(task:()=>Promise<void>|void)=>{chain=chain.then(task).catch(e=>bb.log.warn(`Agent Hub notify: ${String(e)}`)); return chain;};
  const arm=()=>{if(endTimer) clearTimeout(endTimer); const end=windowEnd(); if(end!==null){endTimer=setTimeout(()=>void serial(summary),Math.max(0,end-Date.now())); endTimer.unref();}};
  async function summary(){
   if(disposed) return;
@@ -45,13 +45,13 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   const valid=selected.filter(matches),chosen=valid.filter(r=>r.urgency!=='blocking'),threads=new Set(chosen.map(r=>r.thread_id)).size;
   db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();})();
   for(const r of valid.filter(r=>r.urgency==='blocking')) await sendOne(r);
-  if(chosen.length && level!=='off') await push({title:'Answers',body:`While you were away: ${chosen.length} new in ${threads} threads`});
+  if(chosen.length && level!=='off') await push({title:'Agent Hub',body:`While you were away: ${chosen.length} new in ${threads} threads`});
   arm();
  }
  async function sendOne(r:Row) {
   const titles=await bb.sdk.threads.list({threadIds:[r.thread_id],includeHidden:true,limit:1});
   const minutes=Math.max(1,Math.floor((Date.now()-r.created_at)/60000)),age=minutes<60 ? `${minutes}m` : minutes<1440 ? `${Math.floor(minutes/60)}h` : `${Math.floor(minutes/1440)}d`;
-  const title=clean(titles[0]?.title ?? 'Answers',80)||'Answers',body=r.reminders>0 && r.reminded_at!==null ? `Still waiting (${age}): ${r.question}` : r.kind==='for_me' ? r.question : r.failed_at!==null && r.status!=='answered' ? `Turn failed: ${r.question}` : r.answer ?? r.question;
+  const title=clean(titles[0]?.title ?? 'Agent Hub',80)||'Agent Hub',body=r.reminders>0 && r.reminded_at!==null ? `Still waiting (${age}): ${r.question}` : r.kind==='for_me' ? r.question : r.failed_at!==null && r.status!=='answered' ? `Turn failed: ${r.question}` : r.answer ?? r.question;
   await push({title:r.urgency==='blocking' ? `Blocking · ${title}` : title,body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});
  }
  async function flush(){
@@ -60,9 +60,9 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   const end=windowEnd(); if(end!==null){held(end,batch.map(r=>r.id));arm();return;}
   if(!batch.length)return;
   const ids=[...new Set(batch.map(r=>r.thread_id))];
-  const titles=new Map((await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})).map(t=>[t.id,t.title ?? 'Answers']));
-  if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Answers',80)||'Answers',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});}
-  else await push({title:`${batch.length} new in Answers`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Answers').join(', '),180),...(ids.length===1?{threadId:ids[0]}:{})});
+  const titles=new Map((await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})).map(t=>[t.id,t.title ?? 'Agent Hub']));
+  if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Agent Hub',80)||'Agent Hub',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});}
+  else await push({title:`${batch.length} new in Agent Hub`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Agent Hub').join(', '),180),...(ids.length===1?{threadId:ids[0]}:{})});
  }
  function run(){return serial(async()=>{
   if(disposed)return;

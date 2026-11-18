@@ -50,6 +50,9 @@ export default function plugin(bb: BbPluginApi) {
 function start(bb: BbPluginApi, migrationError: string | null) {
   const db = bb.storage.database();
   bb.storage.migrate(db,migrations);
+  const migrationPending = !!migrationError && !(db.prepare('SELECT 1 FROM items LIMIT 1').get());
+  // Keep a failed import empty so the next start can retry without overwriting new work.
+  if (migrationPending) db.pragma('query_only = ON');
   // Leading call goes out at once; calls inside the next 150 ms collapse into one trailing invalidate, so bursts cause one client refetch.
   let invTimer: ReturnType<typeof setTimeout> | undefined, invPending = false, invOff = false;
   const invalidate = (): void => {
@@ -136,7 +139,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
-    if (p.threadId && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.threadId)) await driver.schedule(p.threadId);
+    if (!migrationPending && p.threadId && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.threadId)) await driver.schedule(p.threadId);
     const views = {
       // Same set as the Inbox: unread answers and open agent questions.
       unread:ATTENTION_SQL,
@@ -209,7 +212,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   let remindHours=0, reminderSettingsChanged=false;
   let wakeTimer: ReturnType<typeof setTimeout>|undefined, disposed=false;
   function wakeDue() {
-    if (disposed) return;
+    if (disposed || migrationPending) return;
     if (wakeTimer) clearTimeout(wakeTimer);
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
@@ -327,7 +330,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
       const p=inputs.recipients.parse(raw);
-      if (p.selected && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.selected)) await driver.schedule(p.selected);
+      if (!migrationPending && p.selected && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.selected)) await driver.schedule(p.selected);
       // A contact counts its own open agent questions too; explicit sub-agent asks live only in Questions.
       const contactAttention = ATTENTION_SQL;
       const chosenAttention=contactAttention.replaceAll('thread_id NOT IN','chosen.thread_id NOT IN');
@@ -370,7 +373,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       return {recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
-    // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs answers`.
+    // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Answers UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
     queueStamp(raw:z.infer<typeof inputs.queueStamp>) {return {stamp:queueStamps.get(inputs.queueStamp.parse(raw).threadId) ?? 0};},
     contextStamp(raw:z.infer<typeof inputs.contextStamp>) {return contextStamps.get(inputs.contextStamp.parse(raw).threadId) ?? {stamp:0,compactedAt:null};},
@@ -477,6 +480,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
     bb.agents.registerTool({name:`answers_${method}`,description:{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from answers_ask or one Answers caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Asks in the same turn merge up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
+        if (migrationPending) throw new Error('Agent Hub migration failed; restart to retry before writing');
         const p=toolInputs[method].parse(raw);
         return driver.withThread(ctx.threadId,() => {
           const now=Date.now();
@@ -551,7 +555,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
   registerCli(bb,{config,list,markRead,db,migrationStatus:()=>migrationStatus(bb,db,migrationError),status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
   // The event payload avoids a metadata lookup for both contacts and sub-sessions.
-  bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
+  if (!migrationPending) bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row
   // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
   for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});
@@ -565,6 +569,6 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   notifier.settings.onChange(next=>{reminderSettingsChanged=true;remindHours=next.remindHours;wakeDue();});
   void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Answers reminders: ${String(e)}`));
   wakeDue();
-  const startup = driver.reconcile().catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
+  const startup = (migrationPending ? Promise.resolve() : driver.reconcile()).catch(e=>bb.log.warn(`Answers discovery: ${String(e)}`));
   bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
 }

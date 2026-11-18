@@ -1,6 +1,6 @@
 # Agent Hub
 
-Id плагина — `answers` (раньше назывался Answers); инструменты агентов по-прежнему называются `answers_*`.
+Id плагина — `agent-hub` (раньше назывался Answers); инструменты агентов по-прежнему называются `answers_*`.
 
 Полная расшифровка открывается кнопкой Full transcript на панели разговора или в раскрытом шаге журнала. В ней показан ThreadChat выбранного треда; Back to Agent Hub возвращает ту же ленту и позицию прокрутки. Отправка из расшифровки наследует режим разрешений треда.
 
@@ -155,3 +155,5 @@ The question card header toggles the pending stack, keeping the header and count
 Choose **Add to reply pool** from the main composer’s send menu to move its text and attachments into this thread’s pool and open the Pools tab. The action appears when the composer has content.
 
 Drop files or images from the OS onto a reply pool header or its empty area to create an entry, or onto an existing entry to add attachments. Uploads use the thread’s project and the same ten-attachment limit as the composer. Attachment chips do not provide a custom drag-out format.
+
+If import fails, the empty database stays read-only and automatic ingestion pauses until restart, keeping retries safe. Preferences and migration status remain available. An already populated new database is preserved and reported as a migration conflict.

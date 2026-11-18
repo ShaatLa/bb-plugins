@@ -85,7 +85,7 @@ Open **Agent Hub** in BB's navigation sidebar; its badge counts unread answers a
 - **Inbox**: conversations on the left, grouped by project (drag to reorder) with a resizable column, running-thread indicators and BB's thread context menu; the selected thread's history on the right opens at the first unread message.
 - A composer like BB's: voice input, attachments, scheduled sends, drafts, steering an active turn, and BB's queue card for queued messages (edit, reschedule, reorder, send now, delete). Project, branch and context usage sit under the composer.
 - **Awaiting answer**, **Asked of you**, **Saved** and **History** views with search, a project filter and **Mark all read** with undo.
-- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Answers**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
+- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Agent Hub**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
 - Agent tools: `answers_defer` and `answers_list`/`answers_resolve` link a delayed answer to its question; `answers_ask` asks you a question, optionally with choices and a recommendation.
 - An optional provider usage summary under the conversation list, and notifications for questions asked of you (needs the Push Notifications plugin) with quiet hours.
 

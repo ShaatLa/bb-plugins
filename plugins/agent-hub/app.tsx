@@ -626,7 +626,8 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
 export const answersThreadHref = (threadId: string) => `/plugins/agent-hub/agent-hub?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
-  const stack = useQuestionStack();
+  const sharedStack = useQuestionStack(), [collapsed, setCollapsed] = useState(false);
+  const stack = sharedStack ?? { collapsed, toggle: () => setCollapsed(!collapsed) };
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
