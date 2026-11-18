@@ -1,5 +1,5 @@
 import type { Task } from "../shared/contract";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { taskBatches } from "../shell/task-batches";
 import { signalTaskIds } from "../shell/signal-scheduler";
 import { useTasksQuery, type TasksRpc } from "../shell/data";
@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 
 async function readCounts(rpc: TasksRpc, ids: readonly string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("questionCounts", { taskIds })).counts);
-  return new Map(rows.map((row) => [row.taskId, row.unanswered]));
+  return new Map(rows.map((row) => [row.taskId, row]));
 }
 export function useQuestionCounts(tasks: readonly Task[], enabled = true, projectId = tasks[0]?.projectId ?? "") {
   const taskIds = tasks.map((task) => task.id).sort();
@@ -48,17 +48,34 @@ export function useQuestionCounts(tasks: readonly Task[], enabled = true, projec
       return next;
     }).catch(() => query.refresh());
   }, [projectId, idsKey, enabled, query.isFetching, query.data, query.patch]);
-  return query;
+  return { ...query,
+    details: query.data,
+    data: useMemo(() => query.data && new Map([...query.data].map(([id, row]) => [id, row.unanswered])), [query.data]),
+  };
 }
 
 export function QuestionCount({
   count = 0,
   title,
+  kinds,
 }: {
   count?: number;
   title?: string;
+  kinds?: { decisions: number; checks: number };
 }) {
   if (!count) return null;
+  if (kinds && (kinds.decisions || kinds.checks)) return (
+    <>
+      {kinds.decisions > 0 && <QuestionCount count={kinds.decisions} title={title ?? `${kinds.decisions} open decisions`} />}
+      {kinds.checks > 0 && (
+        <span role="img" aria-label={`${kinds.checks} open checks`} title={title ?? `${kinds.checks} open checks`}
+          className="inline-flex shrink-0 items-center gap-1 px-1.5 py-px text-xs tabular-nums text-warning">
+          <Icon name="Eye" className="size-3" aria-hidden />
+          {kinds.checks}
+        </span>
+      )}
+    </>
+  );
   const label = `${count} unanswered ${count === 1 ? "question" : "questions"}`;
   return (
     <span

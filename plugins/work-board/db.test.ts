@@ -45,7 +45,6 @@ function cursorForEmptyArrayFilter(
     activeOnly: false,
     parentTaskId: { specified: false, value: null },
     type: null,
-    executionTarget: null,
     epicId: { specified: false },
     search: null,
     sort: "manual",
@@ -57,6 +56,17 @@ function cursorForEmptyArrayFilter(
 }
 
 describe("tasks storage", () => {
+  it("migrates existing tasks to nullable current state columns", async () => {
+    const { db, store, harness } = setup();
+    try {
+      const project = createProject(store, "OLD");
+      const task = store.createTask({ projectId: project.id, title: "Existing", description: "Preserved" });
+      db.exec("ALTER TABLE tasks DROP COLUMN progress_note; ALTER TABLE tasks DROP COLUMN progress_updated_at; ALTER TABLE tasks DROP COLUMN progress_updated_by; DELETE FROM schema_version WHERE version=28;");
+      const migrated = createTasksStore(db);
+      expect(migrated.getTask(task.id)).toMatchObject({ description: "Preserved", progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null });
+    } finally { await harness.dispose(); }
+  });
+
   it("initializes its versioned schema idempotently", async () => {
     const { db, harness } = setup();
     try {
@@ -67,7 +77,37 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(27);
+      ).toBe(32);
+      const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
+      expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("rebuilds projects to allow a 3-day auto-archive without losing rows that reference them", async () => {
+    const { db, harness } = setup();
+    try {
+      const store = createTasksStore(db);
+      const project = store.createProject({ name: "Keep", prefix: "KEEP", color: "blue" });
+      const task = store.createTask({ projectId: project.id, title: "Still here" });
+      store.createComment({ taskId: task.id, kind: "user", authorName: "You", body: "Kept" });
+      const objects = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE tbl_name='projects' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+      const sql = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'").get()!.sql;
+      db.pragma("foreign_keys = OFF");
+      db.exec("CREATE TEMP TABLE p AS SELECT * FROM projects; DROP TABLE projects;");
+      db.exec(sql.replace("IN ('off', '3', '7', '14', '30')", "IN ('off', '7', '14', '30')"));
+      db.exec("INSERT INTO projects SELECT * FROM p; DROP TABLE p; DELETE FROM schema_version WHERE version=29;");
+      for (const object of objects) db.exec(object.sql);
+      db.pragma("foreign_keys = ON");
+      expect(() => db.prepare("UPDATE projects SET auto_archive_after_days='3' WHERE id=?").run(project.id)).toThrow();
+
+      const upgraded = createTasksStore(db);
+      expect(upgraded.updateProject(project.id, { autoArchiveAfterDays: "3" }).autoArchiveAfterDays).toBe("3");
+      expect(upgraded.getTask(task.id)?.title).toBe("Still here");
+      expect(upgraded.listComments(task.id)).toHaveLength(1);
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='task_list_revision_project_prefix'").get()).toBeTruthy();
+      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     } finally {
       await harness.dispose();
     }

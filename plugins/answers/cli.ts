@@ -11,7 +11,7 @@ type Api = {
 export function registerCli(bb: BbPluginApi, api: Api) {
   const thread={type:'string',description:'Filter by thread'} as const;
   bb.cli.register(defineCli({name:'answers',summary:'Questions, answers and saved messages',commands:{
-    list:cliCommand({summary:'List up to 50 items',options:{view:{type:'enum',values:viewSchema.options,description:'Inbox view'},thread,json:{type:'boolean',description:'Return JSON'}},async run(i){
+    list:cliCommand({summary:'List up to 50 items',options:{view:{type:'enum',values:viewSchema.options,description:'Items view'},thread,json:{type:'boolean',description:'Return JSON'}},async run(i){
       const result=await api.list(inputs.list.parse({view:i.options.view ?? 'unread',threadId:i.options.thread}));
       return {exitCode:0,stdout:i.options.json ? JSON.stringify(result) : result.items.map(r=>`${r.id} ${r.status} ${r.threadTitle ?? r.threadId} ${r.question.replace(/\s+/g,' ').slice(0,160)}`).join('\n') || 'No items.'};
     }}),

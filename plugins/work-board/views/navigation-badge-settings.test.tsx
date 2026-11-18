@@ -25,9 +25,9 @@ describe("navigation badge settings", () => {
     });
     const summary = await slot.findByText("Navigation badge");
     expect(summary.closest("details")?.open).toBe(false);
-    const owner = await slot.findByRole("checkbox", { name: "Owner actions" });
+    const owner = await slot.findByRole("checkbox", { name: "Tasks waiting on you" });
     await waitFor(() => expect(owner.hasAttribute("disabled")).toBe(false));
     fireEvent.click(owner);
-    await waitFor(() => expect(saved).toEqual({ criteria: ["open", "owner"] }));
+    await waitFor(() => expect(saved).toEqual({ criteria: ["open", "waiting_on_owner"] }));
   });
 });

@@ -1,3 +1,4 @@
+import { registerAttachments } from "../attachments";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createFakePluginHost,
@@ -35,6 +36,7 @@ function setup() {
   });
   harnesses.push(harness);
   const store = createStore(bb);
+  registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
   const project = store.tasks.createProject({
@@ -56,11 +58,58 @@ function setup() {
 }
 
 describe("task questions", () => {
+  it("moves answer attachments atomically, returns their IDs and includes retrieval commands in the notification", async () => {
+    const { harness, store, task, structured, cli } = setup();
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    harness.sdk.stub("threads.send", async () => {});
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: "thr_asker", prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    const attachment = store.tasks.createAttachment({ taskId: task.id, fileName: "log.txt", mime: "text/plain", sizeBytes: 12, blobPath: "blobs/log.txt", isImage: false });
+    const result = await structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [question.options[0]!.id], authorName: "Owner", attachmentIds: [attachment.id] });
+    expect(result.attachmentIds).toEqual([attachment.id]);
+    expect(store.tasks.getAttachment(attachment.id)).toMatchObject({ taskId: null, commentId: result.commentId });
+    expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).toContain(`Attachment: log.txt (12 bytes) — \`bb work-board attachment get ${attachment.id} --out <path>\``);
+    const listed = await cli("question", "list", task.key, "--json");
+    expect(listed.questions[0].answerAttachments).toEqual([{ id: attachment.id, fileName: "log.txt", mime: "text/plain", sizeBytes: 12 }]);
+    const payload = structured.listQuestions(task.id)[0]!;
+    expect(payload).not.toHaveProperty("answerAttachments");
+    expect(payload).not.toHaveProperty("answerCommentId");
+  });
+
+  it("rejects foreign, comment-owned and attachment-only answers without changing the decision", async () => {
+    const { store, task, project, structured } = setup();
+    const foreign = store.tasks.createTask({ projectId: project.id, title: "Other" });
+    const comment = store.tasks.createComment({ taskId: task.id, kind: "user", authorName: "Owner", body: "Other comment" });
+    const create = (owner: { taskId: string } | { commentId: string }) => store.tasks.createAttachment({ ...owner, fileName: "log.txt", mime: "text/plain", sizeBytes: 1, blobPath: "blobs/log.txt", isImage: false });
+    const own = create({ taskId: task.id });
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    for (const attachment of [create({ taskId: foreign.id }), create({ commentId: comment.id })]) {
+      await expect(structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [question.options[0]!.id], authorName: "Owner", attachmentIds: [own.id, attachment.id] })).rejects.toThrow("Attachment must belong");
+      expect(store.tasks.getAttachment(own.id)?.taskId).toBe(task.id);
+      expect(structured.listQuestions(task.id)[0]?.revision).toBe(1);
+    }
+    await expect(structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [], authorName: "Owner", attachmentIds: [own.id] })).rejects.toThrow("Attachments require an answer");
+  });
+
+  it("uploads repeatable CLI answer files on the selected machine and cleans up after a stale answer", async () => {
+    const { harness, store, task, structured, cli } = setup();
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Proceed?", mode: "single", options: ["Yes"] });
+    const args = ["question", "answer", task.key, "--question", question.id, "--text", "Confirmed", "--revision", "1", "--file", "one.txt", "--file", "two.txt", "--json"];
+    const result = await cli(...args);
+    expect(result.attachmentIds).toHaveLength(2);
+    expect(store.tasks.listAttachmentsForComment(result.commentId).map(a => a.fileName)).toEqual(["one.txt", "two.txt"]);
+    expect(harness.sdk.callsTo("files.read")).toHaveLength(2);
+    const failed = await harness.runCli(args);
+    expect(failed.exitCode).not.toBe(0);
+    expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    expect(store.tasks.listAttachmentsForComment(result.commentId)).toHaveLength(2);
+  });
+
   it("keeps the decision label until the last open question is answered or deleted", async () => {
     const { structured, store, project, task } = setup();
     const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });
     store.tasks.addTaskLabel(task.id, keep.id);
-    const create = async () => (await structured.handlers.createQuestion({ taskId: task.id, prompt: "Choose?", mode: "single", options: ["A", "B"] })).question;
+    const create = async () => (await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Choose?", mode: "single", options: ["A", "B"] })).question;
     const first = await create();
     const second = await create();
     const names = () => store.tasks.listLabelsForTask(task.id).map((label) => label.name).sort();
@@ -75,6 +124,15 @@ describe("task questions", () => {
     expect(names()).toContain("решение владельца");
     await structured.handlers.deleteQuestion({ questionId: first.id, revision: reopened.revision });
     expect(names()).toEqual(["Keep"]);
+  });
+
+  it("marks a legacy no-free-text question as allowing free text when answered with text", async () => {
+    const { bb, structured, task } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Verify?", mode: "single", options: [] });
+    bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.allowOther', json('false')) WHERE id=?").run(question.id);
+    const { question: answered } = await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [], answerText: "Broken on dev", authorName: "Owner" });
+    expect(answered).toMatchObject({ allowOther: true, answerText: "Broken on dev", selectedOptionIds: [] });
+    expect(answered.history?.at(-1)).toMatchObject({ allowOther: false, answerText: null });
   });
 
   it("sets and clears recommendations through stable IDs without selecting an answer", async () => {
@@ -214,7 +272,7 @@ describe("task questions", () => {
 
   it("reads replacement options on the CLI host and keeps existing option IDs", async () => {
     const { cli, harness, task, structured } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Choices?",
       mode: "single",
@@ -251,7 +309,7 @@ describe("task questions", () => {
 
   it("edits by stable option ID, rejects stale or unconfirmed changes and preserves the previous decision", async () => {
     const { task, harness, structured, cli, store } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Size?",
       mode: "single",
@@ -342,7 +400,7 @@ describe("task questions", () => {
     });
     expect(
       await harness.callRpc("questionCounts", { taskIds: [task.id] }),
-    ).toEqual({ counts: [{ taskId: task.id, unanswered: 1 }] });
+    ).toMatchObject({ counts: [{ taskId: task.id, unanswered: 1, waitingOnOwner: true }] });
     const noop = await cli(
       "question",
       "update",
@@ -387,7 +445,7 @@ describe("task questions", () => {
       "Now",
       "--option",
       "Later",
-      "--allow-other",
+
       "--json",
     );
     const result = await cli(
@@ -411,7 +469,7 @@ describe("task questions", () => {
     });
     expect(
       await harness.callRpc("questionCounts", { taskIds: [task.id] }),
-    ).toEqual({ counts: [] });
+    ).toMatchObject({ counts: [{ taskId: task.id, unanswered: 0, waitingOnOwner: false }] });
     await expect(
       harness.callRpc("answerQuestion", {
         questionId: question.id,
@@ -451,7 +509,7 @@ describe("task questions", () => {
       ],
     });
     const other = (
-      await structured.handlers.createQuestion({
+      await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Strict?",
         mode: "single",
@@ -463,9 +521,9 @@ describe("task questions", () => {
         questionId: other.id,
         revision: 1,
         selectedOptionIds: [],
-        answerText: "Not allowed",
+        answerText: "Always allowed",
       }),
-    ).rejects.toThrow("Invalid question answer");
+    ).resolves.toMatchObject({ question: { answerText: "Always allowed" } });
   });
 
   it.each([false, true])(
@@ -485,7 +543,7 @@ describe("task questions", () => {
         title: "Worker",
         liveStatus: "idle",
       });
-      const { question } = await structured.handlers.createQuestion({
+      const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Proceed?",
         mode: "single",
@@ -509,12 +567,13 @@ describe("task questions", () => {
             mode: "queue-if-active",
             input: [
               expect.objectContaining({
-                text: expect.stringContaining("Answer: Yes"),
+                text: expect.stringContaining("**Answer:** Yes"),
               }),
             ],
           }),
         ],
       ]);
+      expect(JSON.stringify(harness.sdk.callsTo("threads.send"))).not.toContain("Treat this as updated context");
       expect(store.tasks.listComments(task.id)[0]?.notifiedCount).toBe(
         fails ? 0 : 1,
       );
@@ -669,7 +728,7 @@ describe("task questions", () => {
       "--json",
     );
     expect(structured.listQuestions(task.id)).toEqual([]);
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Will cascade?",
       mode: "single",

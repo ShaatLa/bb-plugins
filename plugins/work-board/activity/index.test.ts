@@ -181,13 +181,13 @@ it("exposes abandonment evidence consistently in RPC, CLI JSON and human output"
     expect(shown.stdout).toContain("Activity: Abandoned");
     expect(shown.stdout).toContain("Previous work is recorded");
     expect(shown.stdout).toContain("@thread:thr_archived");
-    store.tasks.updateTask(task.id, { executionTarget: "owner" });
+    store.tasks.updateTask(task.id, { });
     const ownerMeta = await host.harness.callRpc("listTaskCardMeta", { taskIds: [task.id] }) as { metadata: { activity: unknown }[] };
-    expect(ownerMeta.metadata[0]!.activity).toMatchObject({ state: null, diagnostics: { hasWorked: true, complete: true } });
+    expect(ownerMeta.metadata[0]!.activity).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true, complete: true } });
     const ownerJson = await host.harness.runCli(["show", task.key, "--json"]);
     expect(ownerJson.exitCode, ownerJson.stderr).toBe(0);
-    expect(JSON.parse(ownerJson.stdout).activity).toMatchObject({ state: null, diagnostics: { hasWorked: true } });
-    store.tasks.updateTask(task.id, { executionTarget: "agent" });
+    expect(JSON.parse(ownerJson.stdout).activity).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true } });
+    store.tasks.updateTask(task.id, { });
     expect((await activityService(host.bb, store).metadata([task.id])).get(task.id)?.state).toBe("abandoned");
   } finally { await host.harness.dispose(); }
 });

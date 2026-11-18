@@ -4,7 +4,7 @@ import type { GitHubRequest } from "./metrics";
 import type { ClassifiedJob, Inherited, JobRecord, JobSignature } from "./ci-jobs-types";
 import { BAD, BUILD_REASON, classifyJobs, INHERIT_WAIT_MS, inheritable, PASS_REASON, queuePullRequest, type ClassifyOptions } from "./ci-classify";
 import { annotationHit, buildFailureLine, matchLine, MAX_ARTIFACT_BYTES, type FlakeRule, type SignatureHit } from "./flake-signatures";
-import { failedTestNames, scanZip, zipTextEntries, type ZipEvidence } from "./flake-artifacts";
+import { failedTestEntries, scanZip, zipTextEntries, type ZipEvidence } from "./flake-artifacts";
 
 const level = z.enum(["failure", "warning", "notice"]);
 const annotation = z.object({ level, title: z.string(), message: z.string() });
@@ -69,6 +69,17 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
     /** Rewrites one stored job (e.g. after a signature re-scan); the indexed columns never change. */
     /** Names of the jobs that succeeded at a head commit (merge queue groups: what that group ran and passed). */
     /** True when a push run is stored for the commit: it is on a branch (the default branch), not a merge queue group commit. */
+    pushAt(repository: string, sha: string, branch: string | null): string | null {
+      return (database.prepare("SELECT MIN(created_at) AS at FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' AND json_extract(data, '$.headBranch') = ?").get(repository, sha, branch) as { at: string | null }).at;
+    },
+    landingSha(repository: string, number: number, branch: string | null): string | null {
+      const rows = database.prepare("SELECT DISTINCT head_sha AS sha, json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND json_extract(data, '$.event') = 'merge_group' AND json_extract(data, '$.headBranch') LIKE ? ORDER BY created_at DESC").all(repository, `%/pr-${number}-%`) as { sha: string; branch: string }[];
+      return rows.find((row) => queuePullRequest(row.branch) === number && this.pushAt(repository, row.sha, branch) !== null)?.sha ?? null;
+    },
+    landedPullRequest(repository: string, sha: string): number | null {
+      const row = database.prepare("SELECT json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'merge_group' LIMIT 1").get(repository, sha) as { branch: string } | undefined;
+      return queuePullRequest(row?.branch ?? null);
+    },
     pushedAt(repository: string, sha: string): boolean { return !!database.prepare("SELECT 1 FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' LIMIT 1").get(repository, sha); },
     passedAtHead(repository: string, sha: string): string[] { return (database.prepare("SELECT DISTINCT json_extract(data, '$.jobName') AS name FROM ci_jobs WHERE repository = ? AND head_sha = ? AND conclusion = 'success'").all(repository, sha) as { name: string }[]).map((row) => row.name); },
     saveJob(j: JobRecord) { database.prepare("UPDATE ci_jobs SET data = ? WHERE repository = ? AND run_id = ? AND attempt = ? AND job_id = ?").run(slim(j), j.repository, j.runId, j.attempt, j.jobId); },
@@ -274,6 +285,8 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
   const rescanned = new Map<string, string>(), unscannable = new Set<string>(), artifactCache = new Map<string, ZipEvidence>();
   const keyOf = (repository: string, id: number, attempt: number) => `${repository}#${id}#${attempt}`;
   const testCache = new Map<string, string[]>();
+  // First failure message per failed test name, filled with testCache (same key); "" entries are left out.
+  const messageCache = new Map<string, Record<string, string>>();
   const testKey = (repository: string, run: { id: number; attempt: number }, globs: RegExp[]) => `${repository}#${run.id}#${run.attempt}#${globs.map(g => g.source).join(",")}`;
   // First parent of a merge queue head commit (immutable, so cached per sha); null: unknown or unreadable.
   const parentCache = new Map<string, string | null>();
@@ -329,19 +342,26 @@ export function createBackfill({ store, request, fetchText, fetchArtifact, budge
     cachedFailedTests(repository: string, run: { id: number; attempt: number }, globs: RegExp[]): string[] | null {
       return testCache.get(testKey(repository, run, globs)) ?? null;
     },
+    /** First failure message (sanitized, at most 200 characters) of each failed test that failedTests already extracted for this attempt; never fetches. */
+    cachedFailureMessages(repository: string, run: { id: number; attempt: number }, globs: RegExp[]): Record<string, string> | null {
+      return messageCache.get(testKey(repository, run, globs)) ?? null;
+    },
     /** Names of the failed tests in the attempt's test-report artifacts (the configured globs, FAILED entries only); null without globs, budget or a readable report. Cached per attempt. */
     async failedTests(repository: string, run: { id: number; attempt: number }, attemptJobs: JobRecord[], globs: RegExp[], signal: AbortSignal): Promise<string[] | null> {
       if (!globs.length || !fetchArtifact) return null;
       const key = testKey(repository, run, globs);
       if (testCache.has(key)) return testCache.get(key)!;
       try {
-        const names: string[] = [];
+        const names: string[] = [], messages: Record<string, string> = {};
         for (const a of (await spend(signal, () => attemptArtifacts(request, repository, run, attemptJobs, globs))).slice(0, 5)) {
           const zip = await spend(signal, () => fetchArtifact(`/repos/${repository}/actions/artifacts/${a.id}/zip`, MAX_ARTIFACT_BYTES));
-          for (const entry of zipTextEntries(zip)) for (const name of failedTestNames(entry.text) ?? []) if (!names.includes(name)) names.push(name);
+          for (const entry of zipTextEntries(zip)) for (const { name, message } of failedTestEntries(entry.text) ?? []) {
+            if (!names.includes(name)) names.push(name);
+            if (message && !messages[name]) messages[name] = message;
+          }
         }
-        if (testCache.size >= 500) testCache.clear();
-        testCache.set(key, names);
+        if (testCache.size >= 500) { testCache.clear(); messageCache.clear(); }
+        testCache.set(key, names); messageCache.set(key, messages);
         return names;
       } catch { return null; }
     },

@@ -22,7 +22,8 @@ import {
   deleteAttachmentById,
   removeAttachmentBlobs,
 } from "../attachments";
-import { deliverCommentToLatestAgent } from "../steer";
+import { deliverCommentToLatestAgent, notifyThread } from "../steer";
+import { getTaskCostSpans } from "../costs";
 import { reconcileTaskThreads } from "../lifecycle/thread-links";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
@@ -352,50 +353,6 @@ function writeSystemComments(
   }
 }
 
-function recordOwnerCompletion(
-  store: TasksApiStore,
-  before: StoredTask,
-  after: StoredTask,
-  authorName: string,
-): StoredComment | null {
-  if (
-    after.executionTarget !== "owner" ||
-    after.status !== "done" ||
-    before.status === "done"
-  )
-    return null;
-  return store.tasks.createComment({
-    taskId: after.id,
-    kind: "system",
-    authorName,
-    body: `Owner action completed by ${authorName}: ${after.title}. Re-read the task and its comments to verify the result before continuing.`,
-  });
-}
-
-async function notifyOwnerCompletion(
-  bb: BbPluginApi,
-  store: TasksApiStore,
-  task: StoredTask,
-  comment: StoredComment | null,
-): Promise<{ notification?: "sent" | "not_sent" }> {
-  if (!comment || !task.requesterThreadId) return {};
-  const count = await deliverCommentToLatestAgent(bb, store.tasks, {
-    taskId: task.id,
-    commentId: comment.id,
-    body: comment.body,
-    authorName: comment.authorName,
-    threadId: task.requesterThreadId,
-    mode: "queue-if-active",
-  });
-  store.tasks.updateComment(comment.id, { notifiedCount: count });
-  if (!count)
-    writeSystemComments(store, task.id, "Work Board", [
-      "Owner action is saved as Done, but the requester thread could not be notified. Notify it manually.",
-    ]);
-  publishCommentsChanged(bb, task.id);
-  return { notification: count ? "sent" : "not_sent" };
-}
-
 function attachmentMetadata(attachment: StoredAttachment): AttachmentMetadata {
   return {
     id: attachment.id,
@@ -551,6 +508,97 @@ export async function createComment(
   return comment;
 }
 
+export const REPORT_KINDS = ["ready", "question", "blocker"] as const;
+export type ReportKind = (typeof REPORT_KINDS)[number];
+
+/** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
+export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
+  const thread = await bb.sdk.threads.get({ threadId });
+  // The parent fallback link only marks a card nobody works on; it makes no one a helper.
+  const sessions = store.tasks.listTaskThreads(taskId).filter((link) => link.presetName !== "Parent thread").map((link) => link.threadId);
+  const parentThreadId = thread.parentThreadId ?? null;
+  return { parentThreadId, attached: sessions.includes(threadId), helper: parentThreadId !== null && sessions.includes(parentThreadId) };
+}
+
+const STATE_LIMIT = 4096;
+function fitState(text: string, overflow: string): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= STATE_LIMIT) return text;
+  const kept = new TextDecoder().decode(bytes.subarray(0, STATE_LIMIT - Buffer.byteLength(overflow, "utf8"))).replace(/\uFFFD$/, "");
+  return kept + overflow;
+}
+
+/**
+ * A child thread's report on its card wakes the child's own parent thread and
+ * stays out of the card log. The card's own session also replaces Current
+ * state with it; a helper's report leaves the state to the session it helps.
+ */
+export async function reportToParent(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  input: { taskId: string; threadId: string; kind: ReportKind; body: string },
+): Promise<{ parentThreadId: string; notified: boolean; stateUpdated: boolean }> {
+  const role = await cardRole(bb, store, input.taskId, input.threadId);
+  const parentThreadId = role.parentThreadId;
+  if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);
+  const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
+  if (parent.archivedAt != null || parent.deletedAt != null)
+    throw new Error(`Parent thread ${parentThreadId} is archived or deleted`);
+  const label = input.kind.toUpperCase();
+  const task = store.tasks.getTask(input.taskId)!;
+  const stateUpdated = !role.helper;
+  if (stateUpdated) {
+    // A "Handoff:" line points a compacted or successor session at its notes; a report must not drop it.
+    const handoff = (task.progressNote ?? "").split("\n").filter((line) => line.startsWith("Handoff:"));
+    const progressNote = fitState([...handoff, `**${label}**\n\n${input.body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
+    store.transaction(() => store.tasks.updateTask(task.id, { progressNote, authorName: input.threadId }));
+    publishTasksChanged(bb, task.id, task.projectId);
+  }
+  let notified = false;
+  try {
+    await notifyThread(
+      bb,
+      parentThreadId,
+      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
+    );
+    notified = true;
+  } catch (error) {
+    bb.log.warn(`failed to deliver ${label} report on ${task.key} to ${parentThreadId}: ${errorMessage(error)}`);
+  }
+  return { parentThreadId, notified, stateUpdated };
+}
+
+// shortcut: one page of 200 children, page with offset if a parent ever has more.
+const MAX_CHILDREN = 200;
+
+/** A parent's open child threads with the cards each one is linked to and their state notes. */
+export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, parentThreadId: string, includeFinished = false) {
+  const threads = await bb.sdk.threads.list({ parentThreadId, limit: MAX_CHILDREN });
+  const children = threads
+    .filter((thread) => thread.archivedAt == null)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((thread) => {
+      const cards = store.tasks
+        .listTaskThreadsByThreadId(thread.id)
+        .filter((link) => link.presetName !== "Parent thread")
+        .flatMap((link) => {
+          const task = store.tasks.getTask(link.taskId);
+          return task && !task.archivedAt
+            ? [{ key: task.key, title: task.title, status: task.status, progressNote: task.progressNote, progressUpdatedAt: task.progressUpdatedAt }]
+            : [];
+        });
+      const shown = includeFinished ? cards : cards.filter((card) => !["done", "canceled"].includes(card.status));
+      return {
+        threadId: thread.id,
+        title: thread.title ?? thread.titleFallback ?? null,
+        status: thread.status,
+        cards: shown,
+        hiddenFinishedCards: cards.length - shown.length,
+      };
+    });
+  return { parentThreadId, children, truncated: threads.length >= MAX_CHILDREN };
+}
+
 interface TaskPullRequestsResult {
   pullRequests: TaskPullRequest[];
   unavailableThreadIds: string[];
@@ -644,6 +692,14 @@ const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
 
 async function readBadgeCriteria(bb: BbPluginApi) {
   const stored = await bb.storage.kv.get<unknown>(BADGE_CRITERIA_KEY);
+  const upgraded = await bb.storage.kv.get<boolean>("navigation-badge:waiting-on-owner-upgraded");
+  if (!upgraded) {
+    if (Array.isArray(stored) && !stored.includes("waiting_on_owner")) {
+      stored.push("waiting_on_owner");
+      await bb.storage.kv.set(BADGE_CRITERIA_KEY, stored);
+    }
+    await bb.storage.kv.set("navigation-badge:waiting-on-owner-upgraded", true);
+  }
   if (!Array.isArray(stored)) return [...DEFAULT_BADGE_CRITERIA];
   return BADGE_CRITERIA.filter((criterion) => stored.includes(criterion));
 }
@@ -814,8 +870,6 @@ export function registerHandlers(
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
             type: input.type,
-            executionTarget: input.executionTarget,
-            requesterThreadId: input.requesterThreadId,
             epicId: input.epicId,
           });
           replaceTaskLabels(store, created.id, input.labelIds);
@@ -852,26 +906,6 @@ export function registerHandlers(
       try {
         const current = store.tasks.getTask(input.taskId);
         if (!current) throw new Error(`Task not found: ${input.taskId}`);
-        if (
-          input.executionTarget === "owner" &&
-          current.executionTarget !== "owner" &&
-          store.tasks
-            .listTaskThreads(current.id)
-            .some(
-              (thread) =>
-                thread.liveStatus === "starting" ||
-                thread.liveStatus === "working",
-            )
-        ) {
-          return {
-            ok: false,
-            error: {
-              code: "task_execution_invalid",
-              message:
-                "Stop active task agents before converting to an Owner action",
-            },
-          };
-        }
         const parentTaskId =
           input.parentTaskId === undefined
             ? current.parentTaskId
@@ -888,34 +922,21 @@ export function registerHandlers(
           const updated = store.tasks.updateTask(current.id, {
             title: input.title,
             description: input.description,
+            notifyStatus: Boolean(input.agentThreadId),
+            progressNote: input.progressNote,
+            authorName: input.authorName,
             status: input.status,
             priority: input.priority,
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
             type: input.type,
-            executionTarget: input.executionTarget,
-            requesterThreadId: input.requesterThreadId,
             epicId: input.epicId,
           });
           if (input.labelIds) {
             replaceTaskLabels(store, current.id, input.labelIds);
           }
 
-          const completion = recordOwnerCompletion(
-            store,
-            current,
-            updated,
-            input.authorName,
-          );
           const bodies: string[] = [];
-          if (updated.executionTarget !== current.executionTarget)
-            bodies.push(
-              `Executor changed to ${displayName(updated.executionTarget)} by ${input.authorName}`,
-            );
-          if (updated.requesterThreadId !== current.requesterThreadId)
-            bodies.push(
-              `Requester thread ${updated.requesterThreadId ? `set to @thread:${updated.requesterThreadId}` : "cleared"} by ${input.authorName}`,
-            );
           if (updated.type !== current.type) {
             bodies.push(
               `Type changed to ${displayName(updated.type)} by ${input.authorName}`,
@@ -954,8 +975,7 @@ export function registerHandlers(
           writeSystemComments(store, current.id, input.authorName, bodies);
           return {
             task: apiTask(store, updated),
-            systemCommentsWritten: bodies.length + (completion ? 1 : 0),
-            completion,
+            systemCommentsWritten: bodies.length,
           };
         });
 
@@ -963,13 +983,7 @@ export function registerHandlers(
         if (result.systemCommentsWritten > 0) {
           publishCommentsChanged(bb, result.task.id);
         }
-        const notification = await notifyOwnerCompletion(
-          bb,
-          store,
-          result.task,
-          result.completion,
-        );
-        return { ok: true, task: result.task, ...notification };
+        return { ok: true, task: result.task };
       } catch (error) {
         if (error instanceof SecretDetectedError) {
           return {
@@ -1022,9 +1036,9 @@ export function registerHandlers(
         labelIds: input.labelIds,
         activeOnly: input.activeOnly,
         staleStatus: input.staleStatus,
+        waitingOnOwner: input.waitingOnOwner,
         parentTaskId: input.parentTaskId,
         type: input.type,
-        executionTarget: input.executionTarget,
         epicId: input.epicId,
         search: input.search,
         sort: input.sort,
@@ -1045,6 +1059,7 @@ export function registerHandlers(
       const result = store.transaction(() => {
         const moved = store.tasks.updatePosition(current.id, {
           status: input.status,
+          notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
           afterTaskId: input.afterTaskId,
         });
@@ -1054,23 +1069,11 @@ export function registerHandlers(
             `Status changed to ${statusLabel(moved.status, store.tasks.getProject(moved.projectId)?.statuses)} by ${input.authorName}`,
           ]);
         }
-        const completion = recordOwnerCompletion(
-          store,
-          current,
-          moved,
-          input.authorName,
-        );
-        return { task: apiTask(store, moved), statusChanged, completion };
+        return { task: apiTask(store, moved), statusChanged };
       });
       publishTasksChanged(bb, result.task.id, result.task.projectId);
       if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
-      const notification = await notifyOwnerCompletion(
-        bb,
-        store,
-        result.task,
-        result.completion,
-      );
-      return { ok: true, task: result.task, ...notification };
+      return { ok: true, task: result.task };
     },
     moveTaskToProject(input) {
       const current = store.tasks.getTask(input.taskId);
@@ -1282,6 +1285,9 @@ export function registerHandlers(
         };
       }) };
     },
+    async getTaskCostSpans(input) {
+      return getTaskCostSpans(bb.storage.database(), input.taskId);
+    },
     async listTaskThreads(input) {
       if (input.reconcile !== false) await discoverRunningTaskThreads(bb, store);
       return { taskThreads: input.reconcile === false
@@ -1373,6 +1379,7 @@ export function registerHandlers(
       return { criteria: await readBadgeCriteria(bb) };
     },
     async setNavigationBadgeCriteria({ criteria }) {
+      await readBadgeCriteria(bb);
       // Store in a stable order and without repeats so the badge never counts a criterion twice.
       const saved = BADGE_CRITERIA.filter((criterion) => criteria.includes(criterion));
       await bb.storage.kv.set(BADGE_CRITERIA_KEY, saved);

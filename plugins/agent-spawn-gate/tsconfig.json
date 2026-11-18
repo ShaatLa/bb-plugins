@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [
+      "node"
+    ],
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "*.ts",
+    "*.tsx",
+    "components",
+    "lib",
+    "hooks"
+  ]
+}

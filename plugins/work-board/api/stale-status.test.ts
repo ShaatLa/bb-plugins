@@ -26,6 +26,14 @@ it("reports recorded diagnostics, filters before pagination, and never moves tas
   expect(next.tasks[0].id).not.toBe(page.tasks[0].id);
   expect(store.tasks.staleStatusFlags().get(review.id)).toEqual(["no_open_pr"]);
   expect(store.tasks.staleStatusFlags().get(progress.id)).toEqual(["no_active_thread"]);
+  const holder = create("holder", "in_review");
+  db.prepare<[string, string]>("INSERT INTO task_dependencies (task_id, blocking_task_id) VALUES (?, ?)").run(progress.id, holder.id);
+  expect(store.tasks.staleStatusFlags().has(progress.id)).toBe(false);
+  store.tasks.updateTask(holder.id, { status: "canceled" });
+  expect(store.tasks.staleStatusFlags().has(progress.id)).toBe(false);
+  store.tasks.updateTask(holder.id, { status: "done" });
+  expect(store.tasks.staleStatusFlags().get(progress.id)).toEqual(["no_active_thread"]);
+  db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(holder.id);
   expect(store.tasks.staleStatusFlags().get(done.id)).toEqual(["no_merge_or_outcome"]);
   const list = await harness.runCli(["list", "--project", "DIA", "--stale-status", "--json"]);
   expect(list.exitCode, list.stderr).toBe(0);

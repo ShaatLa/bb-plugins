@@ -186,7 +186,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
         const task = taskData.get(id);
         const status = task?.status;
-        return [id, evaluateTaskActivity({ sessions, executionTarget: task?.executionTarget ?? "agent", hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

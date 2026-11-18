@@ -79,7 +79,7 @@ export type CiState = {
   readyAt: string | null;
   required: RequiredRule[] | null;
   checks: { name: string; app: string; appId: number | null; state: CheckState; url: string | null; startedAt: string | null }[];
-  runs: { id: number; name: string | null; status: string; conclusion: string | null; url: string; createdAt: string }[];
+  runs: { id: number; workflowId: number; name: string | null; status: string; conclusion: string | null; url: string; createdAt: string }[];
 };
 export class GithubError extends Error {
   constructor(
@@ -347,7 +347,7 @@ export function createGithubClient(options: {
     const runs = z.object({ workflow_runs: z.array(workflowRun) })
       .parse(await request(`/repos/${repo}/actions/runs?head_sha=${head}&per_page=100`)).workflow_runs
       .filter((value) => value.head_sha === head)
-      .map((value) => ({ id: value.id, name: value.name, status: value.status, conclusion: value.conclusion, url: value.html_url, createdAt: value.created_at }));
+      .map((value) => ({ id: value.id, workflowId: value.workflow_id, name: value.name, status: value.status, conclusion: value.conclusion, url: value.html_url, createdAt: value.created_at }));
     let readyAt: string | null = null;
     for (const raw of await pages(`/repos/${repo}/issues/${number}/events`)) {
       const event = z.object({ event: z.string(), created_at: z.string() }).safeParse(raw);

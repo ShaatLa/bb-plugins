@@ -95,7 +95,42 @@ export function failedTestEvidence(text: string): { corpus: string; build: strin
 }
 /** Names of the FAILED tests of a recognized test report (no output, no passing tests); null when the text is not a report. */
 export function failedTestNames(text: string): string[] | null {
-  return failures(text)?.map((failure) => failure.name).filter(Boolean) ?? null;
+  return failedTestEntries(text)?.map((entry) => entry.name) ?? null;
+}
+/** FAILED tests of a recognized test report with their first failure message (sanitized, at most 200 characters); null when the text is not a report. */
+export function failedTestEntries(text: string): { name: string; message: string }[] | null {
+  return failures(text)?.filter((failure) => failure.name).map((failure) => ({ name: failure.name, message: failureMessage(failure.output) })) ?? null;
+}
+
+// Runner chatter around a failure, not the failure itself (Go test2json framing, summary lines).
+const NOISE = /^(?:=== (?:RUN|PAUSE|CONT|NAME)\b|--- (?:FAIL|PASS|SKIP)\b|FAIL\b|PASS\b|ok\b|exit status\b|\s*$)/;
+// Stack frames end the message: what follows is code location, not the assertion.
+const FRAME = /^\s*(?:at\s|File "|goroutine\s|\S+\.\w+:\d+\s*$)/;
+/** The assertion or error lines of a failure up to its stack: sanitized, joined, at most 200 characters ("" when there is none). */
+export function failureMessage(output: string[], max = 200): string {
+  const lines: string[] = [];
+  for (const raw of output) {
+    const line = stripAnsi(raw).trim();
+    if (lines.length && FRAME.test(line)) break;
+    if (NOISE.test(line) || FRAME.test(line)) continue;
+    lines.push(line);
+    if (lines.join(" | ").length >= max) break;
+  }
+  const text = redact(lines.join(" | "));
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+/** Removes what could be a secret or a local detail from a failure message: env assignments, tokens, credentials, home paths; backticks would break Markdown. */
+export function redact(text: string): string {
+  return text
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|sk-[\w-]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*)/g, "…")
+    .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 …")
+    .replace(/(\w+:\/\/)[^\s/@:]+:[^\s/@]+@/g, "$1…@")
+    .replace(/\b(\w*(?:password|passwd|secret|token|api[_-]?key|authorization|cookie)\w*)(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2…")
+    .replace(/\b([A-Z][A-Z0-9_]{2,})=("[^"]*"|'[^']*'|\S+)/g, "$1=…")
+    .replace(/\b([A-Z][A-Z0-9]*_[A-Z0-9_]+):\s+("[^"]*"|'[^']*'|\S+)/g, "$1: …")
+    .replace(/(?<![\w/+=-])(?=[A-Za-z0-9+/=]*\d)(?=[A-Za-z0-9+/=]*[A-Za-z])[A-Za-z0-9+/=]{32,}/g, "…")
+    .replace(/(?:\/Users|\/home)\/[^\s/]+/g, "~")
+    .replace(/`/g, "'");
 }
 
 /** Text entries of a zip (stored and deflated only, no zip64, no encryption); binary entries and anything past the total cap are skipped. */

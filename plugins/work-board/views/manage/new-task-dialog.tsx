@@ -1,5 +1,4 @@
 import { useTaskStatuses } from "../../shell/task-statuses.js";
-import { useBbContext } from "@get-bb/plugin-sdk/app";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
@@ -170,7 +169,6 @@ function blankDraft(
     labelIds: [],
     dueDate: "",
     type: "task",
-    executionTarget: "agent",
     epicId: null,
   };
 }
@@ -189,7 +187,6 @@ export function NewTaskDialog({
   defaultStatus,
 }: NewTaskDialogProps) {
   const rpc = useTasksRpc();
-  const bbContext = useBbContext();
   const navigation = useTasksNavigation();
   const projects = useProjects();
 
@@ -405,9 +402,6 @@ export function NewTaskDialog({
         dueDate: dueDate === "" ? null : dueDate,
         parentTaskId: null,
         type,
-        executionTarget: draft.executionTarget ?? "agent",
-        requesterThreadId:
-          draft.executionTarget === "owner" ? bbContext.threadId : null,
         epicId:
           type === "epic" || draft.projectId !== effectiveProjectId
             ? null
@@ -590,11 +584,7 @@ export function NewTaskDialog({
             onChange={(markdown) =>
               updateDraft(() => ({ description: markdown }))
             }
-            placeholder={
-              draft.executionTarget === "owner"
-                ? "Action to take, why the owner is needed, and how to verify completion…"
-                : "Description — rich text, round-trips as markdown for agents"
-            }
+            placeholder="Description — rich text, round-trips as markdown for agents"
             className="mt-2 min-h-16 flex-auto overflow-y-auto"
             onAttachFiles={stageMore}
           />
@@ -632,18 +622,6 @@ export function NewTaskDialog({
             />
           </div>
           <div className="flex flex-wrap items-center gap-1.5 pt-2">
-            <TaskFieldPicker<"agent" | "owner">
-              dialogOpen={open}
-              label="Executor"
-              value={draft.executionTarget ?? "agent"}
-              options={[
-                { value: "agent", label: "Agent" },
-                { value: "owner", label: "Owner action" },
-              ]}
-              onValueChange={(executionTarget) =>
-                updateDraft(() => ({ executionTarget }))
-              }
-            />
             {type === "task" ? (
               <EpicPicker
                 projectId={effectiveProjectId}

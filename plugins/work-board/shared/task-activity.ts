@@ -50,12 +50,11 @@ export function evaluateTaskActivity(input: {
   sessions: TaskActivitySession[];
   hasWorked: boolean;
   hasLostSession: boolean;
-  executionTarget: "agent" | "owner";
   terminal: boolean;
   complete: boolean;
   inactiveSessions?: z.infer<typeof inactiveSessionSchema>[];
 }): TaskActivity {
-  const { sessions, hasWorked, hasLostSession, terminal, complete, executionTarget } = input;
+  const { sessions, hasWorked, hasLostSession, terminal, complete } = input;
   const workingCount = sessions.filter((session) => session.state === "working").length;
   const hasFailure = sessions.some((session) => session.state === "error");
   const state = workingCount ? "working"
@@ -63,7 +62,7 @@ export function evaluateTaskActivity(input: {
     : sessions.some((session) => session.state === "queued") ? "queued"
     : hasFailure ? "error"
     : sessions.length ? "attached"
-    : complete && hasWorked && hasLostSession && !terminal && executionTarget !== "owner" ? "abandoned" : null;
+    : complete && hasWorked && hasLostSession && !terminal ? "abandoned" : null;
   const explanation = state === "working" ? "An attached session is actively executing."
     : state === "waiting-owner" ? "An attached session has a pending owner interaction."
     : state === "queued" ? "A dispatched request for this task is still in a session's queue."
@@ -72,7 +71,6 @@ export function evaluateTaskActivity(input: {
     : state === "abandoned" ? "Previous work is recorded, no live sessions remain attached, and the task is neither done nor canceled."
     : !complete ? "Activity could not be verified because session data is unavailable."
     : terminal ? "No current activity; done and canceled tasks are not marked Abandoned."
-    : executionTarget === "owner" ? "No current activity; owner actions are not marked Abandoned."
     : "No assigned session. Previous comments alone do not establish an assignment.";
   return { state, workingCount, attachedCount: sessions.length, sessions, terminalWarning: terminal && workingCount > 0, hasFailure,
     diagnostics: { explanation, hasWorked, complete, checkedAt: new Date().toISOString(), inactiveSessions: input.inactiveSessions ?? [] } };

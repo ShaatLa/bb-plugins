@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,truncate,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {createServer} from 'node:http';
+import type {AddressInfo} from 'node:net';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {shimSource} from './shim.ts';
 import {startModelsServer} from './test/models-server.ts';
 
-function startShim(file:string,env:Record<string,string>){
-  const child=spawn(process.execPath,[file,'--bb-permission-mode=accept-edits'],{env:{...process.env,...env},stdio:['pipe','pipe','pipe']});
+function startShim(file:string,env:Record<string,string>,mode='accept-edits'){
+  const child=spawn(process.execPath,[file,'--bb-permission-mode='+mode],{env:{...process.env,...env},stdio:['pipe','pipe','pipe']});
   const updates:any[]=[],permissions:any[]=[];
   const pending=new Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void}>();let id=0;
   const write=(value:any)=>child.stdin.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
@@ -51,6 +53,9 @@ test('runs a native tool loop against chat completions, persists sessions and fa
     assert.equal(shim.updates.filter(u=>u.sessionUpdate==='agent_message_chunk').map(u=>u.content.text).join(''),'fixture reply');
     assert.ok(shim.updates.some(u=>u.sessionUpdate==='agent_thought_chunk'&&u.content.text==='thinking'));
     assert.deepEqual(shim.updates.filter(u=>u.sessionUpdate==='usage_update').map(({used,size})=>({used,size})),[{used:4831,size:65536}]);
+    const [logged]=(await readFile(path.join(dir,'usage.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    assert.equal(logged.source,'thread');assert.equal(logged.providerThreadId,session.sessionId);assert.equal(logged.model,'ggml-org/gpt-oss-20b-GGUF:MXFP4');assert.equal(logged.engine,'llama');
+    assert.equal(logged.promptTokens+logged.completionTokens,4831);assert.ok(logged.durationMs>=0);
 
     // Shell needs approval in accept-edits; the workspace edit and the pre-approved MCP tool do not.
     assert.deepEqual(await shim.request('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'tool-fixture'}]}),{stopReason:'end_turn'});
@@ -125,5 +130,139 @@ test('maps discovered caps, guards repeated tools, trims context and reports wai
     await writeFile(storedPath,JSON.stringify(stored));
     await shim.request('session/load',{sessionId:id,cwd:dir,mcpServers:[]});await prompt('hello');
     assert.equal(server.chats.at(-1).messages[3].content,'[old tool output removed to save context]');
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('labels Splash variants and caches failed props probes for the session', {timeout:10000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-splash-shim-')),id='splash/org/Flint-GGUF:Q4';
+  const server=await startModelsServer({data:[{id,context_length:8192}]}),file=path.join(dir,'shim.mjs');
+  await writeFile(file,shimSource);const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl});
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    assert.deepEqual(session.configOptions[0].options,[{value:id,name:'Flint (Q4) · Splash'}]);
+    for(let i=0;i<2;i++)assert.deepEqual(await shim.request('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'hello'}]}),{stopReason:'end_turn'});
+    assert.deepEqual(server.props,[id]);
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('shim hides Llama duplicates for new choices and routes a stored hidden Llama selection to its original server',{timeout:10000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-preference-')),id='org/Flint-GGUF:Q4';
+  const llama=await startModelsServer({data:[{id,context_length:8192},{id:'org/Muse:Q4'}]}),splash=await startModelsServer({data:[{id:'splash/'+id,context_length:4096}]}),file=path.join(dir,'shim.mjs');
+  await writeFile(file,shimSource);const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:llama.baseUrl+','+splash.baseUrl,LM_SPLASH:'1',LM_DEFAULT_MODEL:id});
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    assert.deepEqual(session.configOptions[0].options.map((m:any)=>m.value),['org/Muse:Q4','splash/'+id]);
+    assert.equal(session.configOptions[0].currentValue,'splash/'+id);
+    const storedPath=path.join(dir,'sessions',session.sessionId+'.json'),stored=JSON.parse(await readFile(storedPath,'utf8'));stored.selected=id;
+    await writeFile(storedPath,JSON.stringify(stored));
+    const resumed=await shim.request('session/load',{sessionId:session.sessionId,cwd:dir,mcpServers:[]});assert.equal(resumed.configOptions[0].currentValue,id);
+    await shim.request('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'hello'}]});
+    assert.equal(llama.chats.at(-1).model,id);assert.equal(splash.chats.length,0);
+  }finally{shim.child.kill();await llama.close();await splash.close();await rm(dir,{recursive:true,force:true});}
+});
+
+// Minimal chat-completions server: each request is answered by the next scripted reply (the last one repeats).
+type Delta=Record<string,unknown>;
+const sse=(deltas:Delta[],finish:string)=>deltas.map((delta,i)=>'data: '+JSON.stringify({choices:[{index:0,delta,finish_reason:i===deltas.length-1?finish:null}]})+'\n\n').join('')+'data: '+JSON.stringify({choices:[],usage:{prompt_tokens:90,completion_tokens:5}})+'\n\ndata: [DONE]\n\n';
+const toolCall=(name:string,args:unknown)=>({tool_calls:[{index:0,id:'call_'+name,type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+async function scriptedServer(replies:string[]){
+  const chats:any[]=[];
+  const server=createServer((request,response)=>{
+    if(request.url==='/v1/models'){response.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({data:[{id:'m',context_length:100}]}));return;}
+    if(request.method!=='POST'||request.url!=='/v1/chat/completions'){response.writeHead(404).end('{}');return;}
+    let raw='';request.on('data',part=>raw+=part);
+    request.on('end',()=>{chats.push(JSON.parse(raw));response.writeHead(200,{'content-type':'text/event-stream'}).end(replies[Math.min(chats.length,replies.length)-1]);});
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  return {chats,baseUrl:`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,close:()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);})};
+}
+const promptOf=(shim:ReturnType<typeof startShim>,sessionId:string,text='go')=>shim.request('session/prompt',{sessionId,prompt:[{type:'text',text}]});
+const toolResults=(server:{chats:any[]})=>server.chats.at(-1).messages.filter((m:any)=>m.role==='tool').map((m:any)=>m.content);
+
+test('shell tool returns when the shell exits even if a background child holds the pipes',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-bg-'));
+  const server=await scriptedServer([sse([toolCall('shell',{command:'sleep 3 & echo hi'})],'tool_calls'),sse([{content:'ok'}],'stop')]);
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl},'full');
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    const started=Date.now();
+    assert.deepEqual(await promptOf(shim,session.sessionId),{stopReason:'end_turn'});
+    assert.ok(Date.now()-started<1500,'the turn does not wait for the background sleep');
+    assert.equal(toolResults(server)[0],'hi\n[exit code 0]');
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('streamed text is coalesced, keeps its order and is flushed before the next tool call',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-batch-'));
+  const think=Array.from({length:60},(_,i)=>'t'+i+' '),words=Array.from({length:100},(_,i)=>'w'+i+' ');
+  const server=await scriptedServer([sse([...think.map(reasoning_content=>({reasoning_content})),...words.map(content=>({content})),toolCall('shell',{command:'true'})],'tool_calls'),sse([{content:'END'}],'stop')]);
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl},'full');
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    assert.deepEqual(await promptOf(shim,session.sessionId),{stopReason:'end_turn'});
+    const text=(kind:string,list=shim.updates)=>list.filter(u=>u.sessionUpdate===kind).map(u=>u.content.text).join('');
+    assert.equal(text('agent_thought_chunk'),think.join(''));
+    assert.equal(text('agent_message_chunk'),words.join('')+'\n\nEND');
+    assert.ok(shim.updates.filter(u=>u.sessionUpdate==='agent_message_chunk').length<=4,'160 deltas collapse into a few updates');
+    assert.ok(shim.updates.filter(u=>u.sessionUpdate==='agent_thought_chunk').length<=2);
+    const call=shim.updates.findIndex(u=>u.sessionUpdate==='tool_call');
+    assert.ok(call>0);
+    assert.equal(text('agent_message_chunk',shim.updates.slice(0,call)),words.join(''),'text is flushed before the tool_call');
+    assert.equal(text('agent_thought_chunk',shim.updates.slice(0,call)),think.join(''));
+    const lastThought=shim.updates.map(u=>u.sessionUpdate).lastIndexOf('agent_thought_chunk'),firstMessage=shim.updates.findIndex(u=>u.sessionUpdate==='agent_message_chunk');
+    assert.ok(lastThought<firstMessage,'thought and message text keep their relative order');
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('saves each step once and does not rewrite a session that was only loaded',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-saves-'));
+  const log=path.join(dir,'writes.log'),hook=path.join(dir,'count-writes.mjs');
+  // Preload: records every session file write so the test can count them from outside the process.
+  await writeFile(hook,`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const real=fs.writeFileSync;fs.writeFileSync=(file,...rest)=>{if(String(file).includes('/sessions/'))fs.appendFileSync(${JSON.stringify(log)},'w\\n');return real(file,...rest);};syncBuiltinESMExports();`);
+  const writes=async()=>(await readFile(log,'utf8').catch(()=>'')).split('\n').filter(Boolean).length;
+  // used 95 of 100 context tokens: compaction runs on every step after the first.
+  const server=await scriptedServer([sse([toolCall('shell',{command:'echo 1'})],'tool_calls'),sse([toolCall('shell',{command:'echo 2'})],'tool_calls'),sse([{content:'done'}],'stop')]);
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const env={LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl,NODE_OPTIONS:'--import='+hook};
+  const shim=startShim(file,env,'full');let second:ReturnType<typeof startShim>|undefined;
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    assert.equal(await writes(),1,'a new session is saved once');
+    await promptOf(shim,session.sessionId);
+    assert.equal(await writes(),1+3,'two tool batches and the turn end');
+    shim.child.kill();
+    second=startShim(file,env,'full');
+    const before=await writes();
+    await second.request('session/load',{sessionId:session.sessionId,cwd:dir,mcpServers:[]});
+    assert.equal(await writes(),before,'load does not rewrite the stored file');
+  }finally{shim.child.kill();second?.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('read_file refuses files over 5 MB',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-big-'));
+  await truncate(path.join(dir,'big.bin'),6e6).catch(()=>writeFile(path.join(dir,'big.bin'),Buffer.alloc(6e6)));
+  const server=await scriptedServer([sse([toolCall('read_file',{path:'big.bin'})],'tool_calls'),sse([{content:'ok'}],'stop')]);
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl},'full');
+  try{
+    const session=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    await promptOf(shim,session.sessionId);
+    assert.match(toolResults(server)[0],/larger than 5 MB.*sed -n, head, grep/);
+    assert.ok(shim.updates.some(u=>u.sessionUpdate==='tool_call_update'&&u.status==='failed'));
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('an MCP tools/call that never answers times out into an error result',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-mcp-timeout-'));
+  const server=await scriptedServer([sse([toolCall('mcp__hang__echo',{})],'tool_calls'),sse([{content:'ok'}],'stop')]);
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl,LM_MCP_TIMEOUT_MS:'300'},'full');
+  try{
+    const mcpServers=[{name:'hang',command:process.execPath,args:[fileURLToPath(new URL('./test/hang-mcp.mjs',import.meta.url))],env:[]}];
+    const session=await shim.request('session/new',{cwd:dir,mcpServers});
+    assert.deepEqual(await promptOf(shim,session.sessionId),{stopReason:'end_turn'});
+    assert.match(toolResults(server)[0],/^Error: MCP server hang did not answer tools\/call\.$/);
   }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
 });

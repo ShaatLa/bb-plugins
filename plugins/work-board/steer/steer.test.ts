@@ -4,7 +4,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createTasksStore } from "../db";
-import { deliverCommentToLatestAgent } from ".";
+import { deliverCommentToLatestAgent, QUEUED_NOTICE_SEPARATOR } from ".";
 
 function setup(
   getThread: (threadId: string) => ReturnType<typeof makeThreadResponse> = (
@@ -214,6 +214,78 @@ describe("comment notification delivery", () => {
       level: "warn",
       message:
         "failed to deliver comment 01J00000000000000000000000 to thread thr_latest: thread awaiting interaction",
+    });
+  });
+
+  describe("queued notice merging", () => {
+    const row = (overrides: Record<string, unknown> = {}) => ({
+      id: "q1",
+      content: [{ type: "text", text: "Earlier notice", mentions: [] }],
+      originPluginId: "work-board",
+      state: "queued",
+      editable: true,
+      updatedAt: 42,
+      ...overrides,
+    });
+    function withLatest() {
+      const f = setup();
+      f.store.createComment({
+        taskId: f.task.id,
+        kind: "agent",
+        authorName: "Latest agent",
+        threadId: "thr_latest",
+        body: "Latest reply",
+      });
+      return f;
+    }
+
+    it("extends the last queued Work Board notice instead of sending another", async () => {
+      const { bb, harness, store, task } = withLatest();
+      harness.sdk.stub("threads.queuedMessages.list", async () => [row()] as never);
+      harness.sdk.stub("threads.queuedMessages.update", async () => row() as never);
+
+      await expect(
+        deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input }),
+      ).resolves.toBe(1);
+      expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+      const [update] = harness.sdk.callsTo("threads.queuedMessages.update") as [
+        { input: { text: string }[]; expectedUpdatedAt: number; queuedMessageId: string },
+      ][];
+      expect(update[0]).toMatchObject({
+        threadId: "thr_latest",
+        queuedMessageId: "q1",
+        expectedUpdatedAt: 42,
+      });
+      expect(update[0].input[0].text).toMatch(
+        new RegExp(`^Earlier notice${QUEUED_NOTICE_SEPARATOR}\\*\\*Work Board\\*\\*`),
+      );
+      expect(update[0].input[0].text).toContain(input.body);
+    });
+
+    it.each([
+      ["someone else's message is last", { originPluginId: null }],
+      ["the row is already being sent", { state: "claimed" }],
+      ["the row is held for editing", { editable: false }],
+    ])("sends a new message when %s", async (_label, overrides) => {
+      const { bb, harness, store, task } = withLatest();
+      harness.sdk.stub("threads.queuedMessages.list", async () => [row(overrides)] as never);
+
+      await deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input });
+      expect(harness.sdk.callsTo("threads.queuedMessages.update")).toEqual([]);
+      expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
+    });
+
+    it("sends a new message when the queued row changed before the update", async () => {
+      const { bb, harness, store, task } = withLatest();
+      harness.sdk.stub("threads.queuedMessages.list", async () => [row()] as never);
+      harness.sdk.stub("threads.queuedMessages.update", async () => {
+        throw Object.assign(new Error("stale"), { status: 409 });
+      });
+
+      await expect(
+        deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input }),
+      ).resolves.toBe(1);
+      expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
     });
   });
 });

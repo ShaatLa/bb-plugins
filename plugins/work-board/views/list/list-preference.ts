@@ -94,10 +94,6 @@ export function sanitizeListPreference(raw: unknown): ListPreference {
       : record;
   return {
     filters: {
-      ...(filtersRaw.executionTarget === "agent" ||
-      filtersRaw.executionTarget === "owner"
-        ? { executionTarget: filtersRaw.executionTarget }
-        : {}),
       ...(filtersRaw.unansweredOnly === true ? { unansweredOnly: true } : {}),
       statuses: Array.isArray(filtersRaw.statuses) ? [...new Set(filtersRaw.statuses.filter((value): value is string => taskStatusSchema.safeParse(value).success))] : [],
       priorities: uniqueValidValues<TaskPriority>(

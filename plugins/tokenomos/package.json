@@ -1,0 +1,80 @@
+{
+  "name": "bb-plugin-tokenomos",
+  "version": "0.3.1",
+  "description": "Token usage and API-equivalent cost across Claude, Codex, local and Antigravity threads in BB.",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/ShaatLa/bb-plugins/tree/main/plugins/tokenomos",
+  "bugs": {
+    "url": "https://github.com/ShaatLa/bb-plugins/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShaatLa/bb-plugins.git",
+    "directory": "plugins/tokenomos"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "server.ts",
+    "app.tsx",
+    "skills",
+    "README.md",
+    "assets"
+  ],
+  "engines": {
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Tokenomos",
+    "description": "Token usage and API-equivalent cost across all BB threads: charts by provider and model, top threads, compaction and local-model savings, provider usage limits.",
+    "branding": {
+      "icon": "./assets/icon.svg",
+      "experimental_icons": {
+        "mark": "./assets/icon.svg"
+      }
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ]
+  },
+  "keywords": [
+    "bb-plugin"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@radix-ui/react-tooltip": "^1.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.10.6",
+    "hono": "^4.13.18",
+    "jsdom": "^30.1.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sonner": "^1.7.4",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "@radix-ui/react-select": "^2.4.1",
+    "@radix-ui/react-slot": "^1.5.0",
+    "@radix-ui/react-tabs": "^1.2.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "recharts": "^3.10.1",
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.3.6"
+  }
+}

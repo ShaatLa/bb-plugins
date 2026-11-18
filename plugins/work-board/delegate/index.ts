@@ -80,7 +80,7 @@ function formatSubtasks(subtasks: readonly Task[]): string {
   return subtasks
     .map(
       (subtask) =>
-        `- ${subtask.key} · ${subtask.title} (${subtask.status})${subtask.executionTarget === "owner" ? " · Owner action: the owner must perform it; do not dispatch or complete it on their behalf" : ""}`,
+        `- ${subtask.key} · ${subtask.title} (${subtask.status})`,
     )
     .join("\n");
 }
@@ -347,8 +347,6 @@ export function handlers(
     async delegateToThread(input) {
       const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
-      if (task.executionTarget === "owner")
-        throw new Error("Owner actions cannot be dispatched to an agent");
       const project = requireProject(store.tasks, task.projectId);
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
       if (
@@ -412,8 +410,6 @@ export function handlers(
     async delegate(input) {
       const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
-      if (task.executionTarget === "owner")
-        throw new Error("Owner actions cannot be dispatched to an agent");
       const project = requireProject(store.tasks, task.projectId);
       const linkedBbProjectId = requireLinkedBbProject(project);
       const preset = requirePreset(store.tasks, input.presetId);
@@ -521,8 +517,6 @@ export function handlers(
     async taskThreadsAttach(input) {
       const task = dispatchableTask(input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
-      if (task.executionTarget === "owner")
-        throw new Error("Owner actions cannot be dispatched to an agent");
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
       if (
         thread.archivedAt != null ||
@@ -565,8 +559,6 @@ export function handlers(
     async taskThreadsDetach(input) {
       const task = requireTask(store.tasks, input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
-      if (task.executionTarget === "owner")
-        throw new Error("Owner actions cannot be dispatched to an agent");
       const taskThread = store.tasks.getTaskThreadByThreadId(
         task.id,
         input.threadId,

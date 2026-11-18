@@ -1,17 +1,21 @@
+import { BbLink } from "./bb-link";
 import { useEffect, useState } from "react";
 import { experimental_Icon as Icon, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useTasksNavigation } from "../shell/routes";
 import { advisoryText, type TaskAdvisory } from "../shared/task-advisories";
 
+// The view rechecks expired advice (useAdvisoryRecheck); keep the last answer visible meanwhile so the warning does not blink.
+const RECHECK_GRACE_MS = 60_000;
+
 export function TaskAdvisories({ items, compact = false }: { items?: readonly TaskAdvisory[]; compact?: boolean }) {
   const navigation = useTasksNavigation(), navigate = useBbNavigate();
   const [clock, setClock] = useState(Date.now);
   const now = Math.max(clock, Date.now());
-  const current = items?.filter(item => Date.parse(item.validUntil) > now) ?? [];
+  const current = items?.filter(item => Date.parse(item.validUntil) + RECHECK_GRACE_MS > now) ?? [];
   useEffect(() => {
-    const expiry = Math.min(...(items ?? []).map(item => Date.parse(item.validUntil)).filter(at => at > Date.now()));
+    const expiry = Math.min(...(items ?? []).map(item => Date.parse(item.validUntil) + RECHECK_GRACE_MS).filter(at => at > Date.now()));
     if (!Number.isFinite(expiry)) return;
-    // Expire cached advice once, without adding a polling loop or a network request per card.
+    // Drop advice the view failed to recheck, without a polling loop or a network request per card.
     const timer = setTimeout(() => setClock(Date.now()), Math.min(expiry - Date.now() + 1, 2_147_483_647));
     return () => clearTimeout(timer);
   }, [items, clock]);
@@ -28,7 +32,7 @@ export function TaskAdvisories({ items, compact = false }: { items?: readonly Ta
       <p>{item.kind === "merged-predecessor" ? "Predecessor has a merged delivery PR. Check acceptance criteria or remaining work before marking it Done." : "In Progress without a live attached session. Consider reassigning or queueing."}</p>
       {item.kind === "merged-predecessor" ? <>
         <button type="button" className="block text-left underline" onClick={() => navigation.go({ kind: "task", taskKey: item.predecessor.key })}>{item.predecessor.key} · {item.predecessor.title} ({item.predecessor.status})</button>
-        <a className="block underline" href={item.pr.url} target="_blank" rel="noreferrer">{item.pr.repository}#{item.pr.number}</a>
+        <BbLink className="block underline" href={item.pr.url}>{item.pr.repository}#{item.pr.number}</BbLink>
         <p className="break-all text-muted-foreground">Merge {item.pr.mergeSha} · {item.pr.mergedAt}</p>
       </> : <>
         {item.lastAttachment ? <button type="button" className="block text-left underline" onClick={() => navigate.toThread(item.lastAttachment!.threadId)}>Last attachment: {item.lastAttachment.title || item.lastAttachment.threadId} · {item.lastAttachment.attachedAt}</button> : <p>No attachment history retained.</p>}

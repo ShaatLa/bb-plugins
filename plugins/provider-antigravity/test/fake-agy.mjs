@@ -32,6 +32,6 @@ else {
  console.log(JSON.stringify({event:'init',conversation_id:'native-conversation'}));
  console.log(JSON.stringify({event:'step_update',step_update:{step_type:'tool',step_index:1,state:'ACTIVE',tool_name:'fixture_tool'}}));
  console.log(JSON.stringify({event:'step_update',step_update:{step_type:'tool',step_index:1,state:'DONE',tool_name:'fixture_tool',tool_info:{output:'fixture tool result'}}}));
- console.log(JSON.stringify({event:'step_update',step_update:{step_type:'agent_response',text_delta:'fixture reply'}}));
+ console.log(JSON.stringify({event:'step_update',step_update:{step_type:'agent_response',step_index:2,state:'DONE',text_delta:'fixture reply',duration_seconds:1.863959,usage:{input_tokens:2255,output_tokens:1,thinking_tokens:0,cache_read_tokens:7555,total_tokens:2256}}}));
  console.log(JSON.stringify({event:'result',result:{conversation_id:'native-conversation',status:'SUCCESS',response:'fixture reply'}}));
 }

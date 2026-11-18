@@ -11,10 +11,11 @@ const text=(content:any)=>typeof content==='string'?content:Array.isArray(conten
 
 // Scripted /v1/chat/completions: the last user message picks the scenario, tool results advance it.
 export async function startModelsServer(body:unknown=routerModels){
-  const chats:any[]=[];const aborted:string[]=[];let loading=0;
+  const props:string[]=[];const chats:any[]=[];const aborted:string[]=[];let loading=0;
   const server=createServer((request,response)=>{
     if(request.url?.startsWith('/props?')){
-      const id=new URL(request.url,'http://fake').searchParams.get('model');
+      const id=new URL(request.url,'http://fake').searchParams.get('model');props.push(id??'');
+      if(id?.startsWith('splash/')){response.writeHead(404).end('{}');return;}
       if(id==='broken'){response.writeHead(500).end('{}');return;}
       const caps=id==='lfm'?{chat_template:''}:id==='muse'?{chat_template:'reasoning_strength'}:{chat_template:'enable_thinking',chat_template_caps:{supports_reasoning_effort:true,reasoning_effort_levels:['low','medium','xhigh']}};
       response.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(caps));return;
@@ -56,5 +57,5 @@ export async function startModelsServer(body:unknown=routerModels){
     response.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(body));
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
-  return {baseUrl:`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,chats,aborted,close:()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);})};
+  return {baseUrl:`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,chats,aborted,props,close:()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);})};
 }

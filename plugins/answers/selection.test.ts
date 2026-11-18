@@ -15,6 +15,23 @@ describe('selection snapshots', () => {
     const { body, range } = selected('<ol start="4"><li>first</li><li>second</li></ol>', 'li:nth-child(2)', 1, 5);
     expect(selectionMarkdown(range, body)).toBe('5.  econ');
   });
+  it('quotes text from one nested bullet without list markers, and a multi-item selection as one list level', () => {
+    document.body.innerHTML = '<main><ul><li>outer<ul><li><strong>Bold</strong> inner text</li><li>next item</li></ul></li></ul></main>';
+    const body = document.querySelector('main')!, [first, second] = Array.from(body.querySelectorAll('li li'));
+    const bold = first.querySelector('strong')!.firstChild!, rest = first.lastChild!, next = second.firstChild!;
+    const one = document.createRange(); one.setStart(bold, 0); one.setEnd(rest, 6);
+    expect(selectionMarkdown(one, body)).toBe('**Bold** inner');
+    const two = document.createRange(); two.setStart(rest, 1); two.setEnd(next, 4);
+    expect(selectionMarkdown(two, body)).toMatch(/^- +inner text\n- +next$/);
+  });
+  it('quotes a table row as its cells joined by a bar, not glued together', () => {
+    document.body.innerHTML = '<main><table><tbody><tr><td><strong>Tasks / Work Board</strong></td><td>No, not embeddable</td></tr><tr><td>Info</td><td>Yes</td></tr></tbody></table></main>';
+    const body = document.querySelector('main')!, cells = body.querySelectorAll('td');
+    const row = document.createRange(); row.setStart(cells[0]!.querySelector('strong')!.firstChild!, 0); row.setEnd(cells[1]!.firstChild!, cells[1]!.textContent!.length);
+    expect(selectionMarkdown(row, body)).toBe('**Tasks / Work Board** | No, not embeddable');
+    const both = document.createRange(); both.selectNodeContents(body.querySelector('tbody')!);
+    expect(selectionMarkdown(both, body)).toBe('**Tasks / Work Board** | No, not embeddable\n\nInfo | Yes');
+  });
   it('drops renderer chrome and falls back when conversion is empty', () => {
     const { body, range } = selected('<div>text<button>Copy</button><svg>icon</svg><i aria-hidden="true">hidden</i></div>', 'div');
     range.selectNodeContents(body); expect(selectionMarkdown(range, body)).toBe('text');

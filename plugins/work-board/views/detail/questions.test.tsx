@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { registerAttachments, saveAttachmentFromBytes } from "../../attachments";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -21,12 +22,14 @@ const app = await loadPluginApp(() => import("../../app"));
 const harnesses: FakePluginHarness[] = [];
 afterEach(async () => {
   cleanup();
+  vi.unstubAllGlobals();
   await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()));
 });
 function setup() {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   harnesses.push(harness);
   const store = createStore(bb);
+  registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   const project = store.tasks.createProject({
     name: "Questions",
@@ -56,6 +59,55 @@ function setup() {
 }
 
 describe("question and evidence UI", () => {
+  it.each([false, true])("uploads selected/pasted/dropped files before answering and cleans up on failure=%s", async fails => {
+    const { task, rpc, structured, store } = setup();
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Approve files?", mode: "single", options: ["Yes"] });
+    const uploaded: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/token")) return { ok: true, json: async () => ({ token: "test" }) };
+      if (url.includes("/attachments/upload")) {
+        const file = init!.body as File;
+        const attachment = await saveAttachmentFromBytes(store.tasks, new Uint8Array(file.size), { taskId: task.id, fileName: file.name, mime: file.type });
+        uploaded.push(attachment.id);
+        return { ok: true, json: async () => ({ attachmentId: attachment.id, url: "/download" }) };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const save = rpc.answerQuestion!;
+    rpc.answerQuestion = async input => {
+      expect(uploaded).toHaveLength(3);
+      if (fails) throw new Error("Answer failed");
+      return save(input);
+    };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const answer = await slot.findByRole("textbox", { name: "Your answer" });
+    const image = new File(["png"], "screen.png", { type: "image/png" });
+    fireEvent.change(slot.getByLabelText("Answer files"), { target: { files: [image] } });
+    expect(slot.getByRole("button", { name: "Attach files" })).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Preview screen.png" }));
+    // The SDK lightbox renders the full image next to the thumbnail.
+    expect(slot.getAllByRole("img", { name: "screen.png" })).toHaveLength(2);
+    fireEvent.paste(answer, { clipboardData: { files: [new File(["log"], "log.txt", { type: "text/plain" })] } });
+    fireEvent.drop(answer, { dataTransfer: { files: [new File(["drop"], "drop.txt", { type: "text/plain" })] } });
+    expect(slot.getByRole("button", { name: "Save answer" })).toHaveProperty("disabled", true);
+    fireEvent.click(slot.getByRole("radio", { name: "Yes" }));
+    fireEvent.click(slot.getByRole("button", { name: "Save answer" }));
+    if (fails) {
+      await slot.findByText("Answer failed");
+      await waitFor(() => expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]));
+      expect(uploaded.every(id => !store.tasks.getAttachment(id))).toBe(true);
+    } else {
+      await slot.findByText("Earlier (1)");
+      const section = slot.getByRole("region", { name: "Questions" });
+      await waitFor(() => expect(within(section).getByRole("img", { name: "screen.png", hidden: true })).toBeTruthy());
+      expect(within(section).getByText("log.txt").closest("a")?.getAttribute("download")).toBe("log.txt");
+      fireEvent.click(within(section).getByRole("img", { name: "screen.png", hidden: true }));
+      expect(slot.getByRole("dialog", { name: "screen.png" })).toBeTruthy();
+      expect(structured.listQuestions(task.id)[0]?.answeredBy).toBe("You");
+      expect(store.tasks.listAttachmentsForTask(task.id)).toEqual([]);
+    }
+  });
+
   it("creates and edits bold recommendations without preselecting an answer", async () => {
     const { task, rpc, structured } = setup();
     const slot = renderSlot(
@@ -123,7 +175,7 @@ describe("question and evidence UI", () => {
 
   it("renders explicit legacy recommendation suffixes in bold without changing their stored labels", async () => {
     const { task, rpc, structured } = setup();
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Legacy?",
       mode: "single",
@@ -145,9 +197,21 @@ describe("question and evidence UI", () => {
     );
   });
 
+  it("links bare URLs in a question prompt without the trailing punctuation", async () => {
+    const { task, rpc, structured } = setup();
+    const prompt = "Open http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark. Correct?";
+    await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt, mode: "single", options: [] });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const group = await slot.findByRole("group", { name: prompt });
+    const link = within(group).getByRole("link", { name: "http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark" });
+    expect(link.getAttribute("href")).toBe("http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark");
+    fireEvent.click(link);
+    expect(slot.navigateCalls).toContainEqual(expect.objectContaining({ method: "openUrl", url: "http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark" }));
+  });
+
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
-    const { question } = await structured.handlers.createQuestion({
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Original question",
       mode: "single",
@@ -198,9 +262,51 @@ describe("question and evidence UI", () => {
     expect(current.options[0]!.id).toBe(question.options[0]!.id);
   });
 
+  it("keeps an unsaved answer across leaving the task until it is saved", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Draft?", mode: "single", options: ["Now", "Later"] });
+    const open = () => renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const first = open();
+    fireEvent.change(within(await first.findByRole("group", { name: "Draft?" })).getByRole("textbox", { name: "Your answer" }), { target: { value: "Half written" } });
+    first.lifecycle.unmount();
+    const second = open();
+    const group = await second.findByRole("group", { name: "Draft?" });
+    expect(within(group).getByRole("textbox", { name: "Your answer" })).toHaveProperty("value", "Half written");
+    fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+    await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answerText).toBe("Half written"));
+    expect(Object.keys(window.localStorage).filter(key => key.startsWith("bb-work-board:answer-draft:"))).toEqual([]);
+    window.localStorage.clear();
+  });
+
+  it("hides the unanswered snapshot an answer replaces and labels versions replaced before an answer", async () => {
+    const { task, rpc, structured } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "First wording?", mode: "single", options: [] });
+    const revised = (await structured.handlers.updateQuestion({ questionId: question.id, revision: question.revision, prompt: "Second wording?", mode: "single", options: question.options, authorName: "Agent" })).question;
+    await structured.handlers.answerQuestion({ questionId: question.id, revision: revised.revision, selectedOptionIds: [revised.options[0]!.id], authorName: "You" });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    fireEvent.click(await slot.findByText("Earlier (1)"));
+    const history = await slot.findByText("History · 1");
+    const entries = history.closest("details")!.querySelectorAll("ol > li");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.textContent).toContain("First wording?");
+    expect(entries[0]!.textContent).toContain("none, replaced before an answer");
+  });
+
+  it("withdraws a saved answer after a confirming second click and records it for the agent", async () => {
+    const { task, rpc, structured, store } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Accept?", mode: "single", options: [] });
+    await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    fireEvent.click(await slot.findByText("Earlier (1)"));
+    fireEvent.click(await slot.findByRole("button", { name: "Withdraw answer" }));
+    fireEvent.click(slot.getByRole("button", { name: "Confirm: withdraw and notify the agent" }));
+    await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBeNull());
+    expect(store.tasks.listComments(task.id).map(comment => comment.body).join("\n")).toContain("Answer withdrawn (was: Confirmed)");
+  });
+
   it("saves an allowed custom answer and restores it in the card", async () => {
     const { task, rpc, structured } = setup();
-    await structured.handlers.createQuestion({
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
       taskId: task.id,
       prompt: "Delivery?",
       mode: "single",
@@ -213,7 +319,6 @@ describe("question and evidence UI", () => {
       { rpc },
     );
     const group = await slot.findByRole("group", { name: "Delivery?" });
-    fireEvent.click(within(group).getByLabelText("Other answer"));
     expect(
       within(group).getByRole("button", { name: "Save answer" }),
     ).toHaveProperty("disabled", true);
@@ -233,6 +338,7 @@ describe("question and evidence UI", () => {
       { subPath: `task/${task.key}` },
       { rpc },
     );
+    fireEvent.click(await restored.findByText("Earlier (1)"));
     expect(
       await restored.findByRole("textbox", { name: "Your answer" }),
     ).toHaveProperty("value", "After review");
@@ -247,7 +353,7 @@ describe("question and evidence UI", () => {
         projectId: project.id,
         title: "No decision needed",
       });
-      const { question } = await structured.handlers.createQuestion({
+      const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
         taskId: task.id,
         prompt: "Proceed?",
         mode: "single",
@@ -275,7 +381,7 @@ describe("question and evidence UI", () => {
       const slot = mount();
       await slot.findByRole("img", { name: "1 unanswered question" });
       await slot.findByText("No decision needed");
-      fireEvent.click(slot.getByRole("button", { name: "Needs answer" }));
+      fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
       await waitFor(() =>
         expect(slot.queryByText("No decision needed")).toBeNull(),
       );
@@ -289,7 +395,7 @@ describe("question and evidence UI", () => {
       slot.lifecycle.unmount();
       const restored = mount();
       const filter = await restored.findByRole("button", {
-        name: "Needs answer",
+        name: "Waiting on me",
       });
       expect(filter.getAttribute("aria-pressed")).toBe("true");
       await waitFor(() => expect(restored.queryByText(task.title)).toBeNull());
@@ -429,4 +535,39 @@ describe("question and evidence UI", () => {
       headings.indexOf("Activity"),
     );
   });
+});
+
+it("omits the redundant waiting banner", async () => {
+  const { task, rpc, structured } = setup();
+  await structured.handlers.createQuestion({kind: "check", askedByThread: null, taskId: task.id, prompt: "Validate", mode: "single", options: [] });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await slot.findByText(task.title);
+  expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
+});
+
+it("orders open questions newest first and moves a check under Earlier after answering", async () => {
+  const { task, rpc, structured, bb } = setup();
+  const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
+    const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
+    bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE id=?").run(createdAt, question.id);
+    return question;
+  };
+  const earlier = await add("Old answer", "decision", "2026-01-01T00:00:00Z");
+  await structured.handlers.answerQuestion({ questionId: earlier.id, revision: 1, selectedOptionIds: [earlier.options[0]!.id], authorName: "Owner" });
+  await add("Older open", "decision", "2026-01-02T00:00:00Z");
+  const newest = await add("Newest check", "check", "2026-01-03T00:00:00Z");
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const newestGroup = await slot.findByRole("group", { name: newest.prompt });
+  const section = newestGroup.closest('section[aria-label="Questions"]')!;
+  const groups = [...section.querySelectorAll("fieldset")];
+  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Newest check", "Older open", "Old answer"]);
+  expect(slot.getByText("Earlier (1)").closest("details")?.open).toBe(false);
+  expect(within(newestGroup).getByText("Check")).toBeTruthy();
+  expect(within(newestGroup).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
+  fireEvent.click(within(newestGroup).getByLabelText("Proceed"));
+  fireEvent.click(within(newestGroup).getByRole("button", { name: "Save answer" }));
+  await slot.findByText("Earlier (2)");
+  const currentGroups = [...section.querySelectorAll("fieldset")];
+  expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Old answer", "Newest check"]);
+  expect(currentGroups[2]?.closest("details")?.open).toBe(false);
 });

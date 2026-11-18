@@ -71,8 +71,8 @@ async function populate(h: Host, tasks: number, perTask: { rich: boolean }, pref
     createGitSyncStore(db).saveLink(
       prLinkSchema.parse({ taskId: task.id, repository, number: i + 1, url: `https://github.com/${repository}/pull/${i + 1}`, source: "manual", confirmed: true, createdAt: "2026-11-05T00:00:00.000Z", updatedAt: "2026-11-05T00:00:00.000Z" }),
     );
-    await structured.handlers.createQuestion({ taskId: task.id, prompt: `Question ${i}?`, mode: "multiple", allowOther: true, options: [{ label: "One", recommended: true, recommendationReason: "Why" }, "Two"] });
-    await structured.handlers.createQuestion({ taskId: task.id, prompt: `Second ${i}?`, mode: "single", options: ["Yes", "No"] });
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: `Question ${i}?`, mode: "multiple", allowOther: true, options: [{ label: "One", recommended: true, recommendationReason: "Why" }, "Two"] });
+    await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: `Second ${i}?`, mode: "single", options: ["Yes", "No"] });
   }
   return project;
 }

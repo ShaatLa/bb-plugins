@@ -1,0 +1,254 @@
+[
+  {
+    "id": "evt_example01",
+    "thread_id": "thr_example",
+    "sequence": 10,
+    "type": "client/turn/requested",
+    "turn_id": null,
+    "parent_tool_call_id": null,
+    "created_at": 1790000000000,
+    "data": {
+      "direction": "outbound",
+      "source": "tell",
+      "initiator": "user",
+      "request": {
+        "method": "turn/start",
+        "params": {}
+      },
+      "requestId": "creq_example1",
+      "senderThreadId": null,
+      "input": [
+        {
+          "type": "text",
+          "text": "/compact",
+          "mentions": [
+            {
+              "start": 0,
+              "end": 8,
+              "resource": {
+                "kind": "command",
+                "trigger": "/",
+                "name": "compact",
+                "source": "command",
+                "origin": "builtin",
+                "label": "compact",
+                "argumentHint": null
+              }
+            }
+          ]
+        }
+      ],
+      "target": {
+        "kind": "new-turn"
+      },
+      "execution": {
+        "model": "claude-opus-5-5",
+        "permissionMode": "auto",
+        "reasoningLevel": "high",
+        "serviceTier": "default",
+        "source": "client/turn/requested"
+      }
+    }
+  },
+  {
+    "id": "evt_example02",
+    "thread_id": "thr_example",
+    "sequence": 20,
+    "type": "turn/started",
+    "turn_id": "turn-example-1",
+    "parent_tool_call_id": null,
+    "created_at": 1790614000586,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "id": "evt_example03",
+    "thread_id": "thr_example",
+    "sequence": 30,
+    "type": "turn/input/accepted",
+    "turn_id": "turn-example-1",
+    "parent_tool_call_id": null,
+    "created_at": 1790614000586,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example2"
+    }
+  },
+  {
+    "id": "evt_example04",
+    "thread_id": "thr_example",
+    "sequence": 40,
+    "type": "thread/compacted",
+    "turn_id": "turn-example-1",
+    "parent_tool_call_id": null,
+    "created_at": 1790614099443,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "id": "evt_example05",
+    "thread_id": "thr_example",
+    "sequence": 50,
+    "type": "turn/input/accepted",
+    "turn_id": "turn-example-1",
+    "parent_tool_call_id": null,
+    "created_at": 1790614470035,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example3"
+    }
+  },
+  {
+    "id": "evt_example06",
+    "thread_id": "thr_example",
+    "sequence": 60,
+    "type": "thread/compacted",
+    "turn_id": "turn-example-1",
+    "parent_tool_call_id": null,
+    "created_at": 1790615207542,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "id": "evt_example07",
+    "thread_id": "thr_example",
+    "sequence": 70,
+    "type": "client/turn/requested",
+    "turn_id": null,
+    "parent_tool_call_id": null,
+    "created_at": 1790620929009,
+    "data": {
+      "direction": "outbound",
+      "source": "tell",
+      "initiator": "user",
+      "request": {
+        "method": "turn/start",
+        "params": {}
+      },
+      "requestId": "creq_example4",
+      "senderThreadId": null,
+      "input": [
+        {
+          "type": "text",
+          "text": "/compact",
+          "mentions": [
+            {
+              "start": 0,
+              "end": 8,
+              "resource": {
+                "kind": "command",
+                "trigger": "/",
+                "name": "compact",
+                "source": "command",
+                "origin": "builtin",
+                "label": "compact",
+                "argumentHint": null
+              }
+            }
+          ]
+        }
+      ],
+      "target": {
+        "kind": "new-turn"
+      },
+      "execution": {
+        "model": "claude-opus-5-5",
+        "permissionMode": "auto",
+        "reasoningLevel": "high",
+        "serviceTier": "default",
+        "source": "client/turn/requested"
+      }
+    }
+  },
+  {
+    "id": "evt_example08",
+    "thread_id": "thr_example",
+    "sequence": 80,
+    "type": "turn/started",
+    "turn_id": "turn-example-2",
+    "parent_tool_call_id": null,
+    "created_at": 1790620929202,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "id": "evt_example09",
+    "thread_id": "thr_example",
+    "sequence": 90,
+    "type": "turn/input/accepted",
+    "turn_id": "turn-example-2",
+    "parent_tool_call_id": null,
+    "created_at": 1790620929202,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "clientRequestId": "creq_example4"
+    }
+  },
+  {
+    "id": "evt_example10",
+    "thread_id": "thr_example",
+    "sequence": 100,
+    "type": "thread/compacted",
+    "turn_id": "turn-example-2",
+    "parent_tool_call_id": null,
+    "created_at": 1790621012186,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  {
+    "id": "evt_example11",
+    "thread_id": "thr_example",
+    "sequence": 110,
+    "type": "thread/tokenUsage/updated",
+    "turn_id": "turn-example-3",
+    "parent_tool_call_id": null,
+    "created_at": 1790659666815,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 17705200,
+          "inputTokens": 200,
+          "cachedInputTokens": 17650000,
+          "cacheReadInputTokens": 17500000,
+          "cacheWriteInputTokens": 150000,
+          "outputTokens": 55000,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 6142060,
+          "inputTokens": 60,
+          "cachedInputTokens": 6130000,
+          "cacheReadInputTokens": 6100000,
+          "cacheWriteInputTokens": 30000,
+          "outputTokens": 12000,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 1000000,
+        "promptCacheTtlMs": 3600000
+      }
+    }
+  },
+  {
+    "id": "evt_example12",
+    "thread_id": "thr_example",
+    "sequence": 120,
+    "type": "thread/contextWindowUsage/updated",
+    "turn_id": "turn-example-3",
+    "parent_tool_call_id": null,
+    "created_at": 1790659668482,
+    "data": {
+      "providerThreadId": "00000000-0000-4000-8000-000000000001",
+      "contextWindowUsage": {
+        "usedTokens": 230000,
+        "modelContextWindow": 1000000,
+        "estimated": true
+      }
+    }
+  }
+]

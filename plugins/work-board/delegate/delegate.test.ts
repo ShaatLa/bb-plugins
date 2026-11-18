@@ -519,6 +519,9 @@ describe("delegation seed prompt", () => {
       number: 1,
       key: "TASK-1",
       title: "Delegate work",
+      progressNote: null,
+      progressUpdatedAt: null,
+      progressUpdatedBy: null,
       description:
         "Implement **preset-driven** delegation.\n\nKeep the prompt useful.",
       status: "todo",
@@ -526,8 +529,6 @@ describe("delegation seed prompt", () => {
       dueDate: null,
       parentTaskId: null,
       type: "task",
-      executionTarget: "agent",
-      requesterThreadId: null,
       epicId: null,
       position: 1_024,
       createdAt: "2026-07-15T17:01:00.000Z",

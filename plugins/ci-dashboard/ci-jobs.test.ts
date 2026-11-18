@@ -224,6 +224,7 @@ test("failed test names come from the matching artifacts only, FAILED entries on
   const jobs = [job({ conclusion: "failure" })], globs = [/^test-results-/];
   expect(await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal())).toEqual(["pkg.A.breaks"]);
   expect(downloads).toEqual(["/repos/o/r/actions/artifacts/7/zip"]);
+  expect(backfill.cachedFailureMessages("o/r", { id: 1, attempt: 1 }, globs)).toEqual({ "pkg.A.breaks": "boom | env: SECRET=…" });
   await backfill.failedTests("o/r", { id: 1, attempt: 1 }, jobs, globs, signal());
   expect(paths).toHaveLength(1);
   expect(await backfill.failedTests("o/r", { id: 2, attempt: 1 }, jobs, [], signal())).toBeNull();
@@ -352,4 +353,16 @@ test("the lookup is charged to the budget; without budget the job stays unchecke
   expect(await resolve()).toBe(2);
   expect(of(51).job.inheritedFrom).toEqual({ pullRequest: 7, runId: 50 });
   expect(calls).toHaveLength(2);
+});
+
+test("deployment landing lookup requires a default-branch push and uses its earliest time", () => {
+  const { store } = setup(), repository = "owner/repo";
+  store.saveAttempt(repository, 1, 1, [job({ repository, runId: 1, event: "merge_group", headBranch: "gh-readonly-queue/main/pr-12-abc", headSha: "landing" })], true);
+  expect(store.landedPullRequest(repository, "landing")).toBe(12);
+  expect(store.landedPullRequest(repository, "unknown")).toBeNull();
+  expect(store.landingSha(repository, 12, "main")).toBeNull();
+  store.saveAttempt(repository, 2, 1, [job({ repository, runId: 2, event: "push", headBranch: "main", headSha: "landing", createdAt: at(2) })], true);
+  expect(store.landingSha(repository, 12, "main")).toBe("landing");
+  expect(store.pushAt(repository, "landing", "main")).toBe(at(2));
+  expect(store.pushAt(repository, "landing", "other")).toBeNull();
 });

@@ -38,7 +38,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
   if(input.enabled&&input.target.kind==="unassigned")throw new Error("Choose an execution target before enabling this schedule");
   return store.transaction(()=>{
    if(input.enabled&&input.rule.kind==="once"&&new Date(input.rule.at)<new Date(now.valueOf()-30*60_000))throw new Error("One-time date is more than 30 minutes in the past");
-   const task=store.tasks.createTask({projectId:input.projectId,title:input.title,description:input.description,priority:input.priority,executionTarget:"agent"});
+   const task=store.tasks.createTask({projectId:input.projectId,title:input.title,description:input.description,priority:input.priority});
    const id=randomUUID(),stamp=now.toISOString();
    const due=input.rule.kind==="once"?new Date(input.rule.at).toISOString():nextOccurrence(input.rule,now)?.toISOString()??null;
    db.prepare("INSERT INTO task_schedules(id,project_id,template_task_id,rule,target,enabled,next_due_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id,input.projectId,task.id,JSON.stringify(input.rule),JSON.stringify(input.target),Number(input.enabled),input.enabled?due:null,stamp,stamp);
@@ -123,7 +123,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
   return store.transaction(()=>{
    const r=run(runId);if(r.taskId)return requireTask(r.taskId);
    const s=get(r.scheduleId),template=requireTask(s.templateTaskId);
-   const task=store.tasks.createTask({projectId:s.projectId,title:template.title,description:template.description,priority:template.priority,executionTarget:"agent",type:"task"});
+   const task=store.tasks.createTask({projectId:s.projectId,title:template.title,description:template.description,priority:template.priority,type:"task"});
    let description=template.description;
    for(const a of store.tasks.listAttachmentsForTask(template.id)) {
     const clone=store.tasks.createAttachment({taskId:task.id,fileName:a.fileName,mime:a.mime,sizeBytes:a.sizeBytes,blobPath:a.blobPath,isImage:a.isImage});

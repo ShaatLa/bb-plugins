@@ -1,3 +1,5 @@
+import { isQuestionOpen } from "../shared/questions";
+import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
@@ -41,13 +43,15 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       )
       .all(taskId)
       .map((row) => questionSchema.parse(JSON.parse(row.payload)));
+  // Keep the association in the exported system comment, without changing the archive schema.
+  const answerCommentId = (question: TaskQuestion) => question.answeredBy ? db.prepare<[string, string], { id: string }>(
+    "SELECT id FROM comments WHERE task_id = ? AND kind = 'system' AND body LIKE ? ORDER BY id DESC LIMIT 1",
+  ).get(question.taskId, `%\nQuestion ID: ${question.id}; revision: %`)?.id ?? null : null;
   const syncDecisionLabel = (taskId: string) => {
     const task = store.tasks.getTask(taskId)!;
     const name = getWorkflowPolicy(store.tasks.getProject(task.projectId)!).ownerDecisionLabel;
     if (!name) return;
-    const open = listQuestions(taskId).some(
-      (question) => question.selectedOptionIds.length === 0 && !question.answerText,
-    );
+    const open = listQuestions(taskId).some(isQuestionOpen);
     let label = store.tasks.listLabels(task.projectId).find((item) => item.name === name);
     if (open) {
       label ??= store.tasks.createLabel({ projectId: task.projectId, name, color: "blue" });
@@ -133,19 +137,21 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     | "setTemplate"
     | "deleteTemplate"
   > = {
-    listQuestions: ({ taskId }) => ({ questions: listQuestions(taskId) }),
+    listQuestions: ({ taskId }) => ({ questions: listQuestions(taskId).map(question => {
+      const commentId = answerCommentId(question);
+      return { ...question, answerCommentId: commentId,
+        answerAttachments: commentId ? store.tasks.listAttachmentsForComment(commentId).map(({ id, fileName, mime, sizeBytes }) => ({ id, fileName, mime, sizeBytes })) : [] };
+    }) }),
     questionCounts: ({ taskIds }) => ({
-      counts: taskIds.length
-        ? db
-            .prepare<string[], { taskId: string; unanswered: number }>(
-              `SELECT task_id AS taskId, COUNT(*) AS unanswered FROM task_questions
-         WHERE task_id IN (${taskIds.map(() => "?").join(",")})
-           AND json_array_length(payload, '$.selectedOptionIds') = 0
-           AND COALESCE(json_extract(payload, '$.answerText'), '') = ''
-         GROUP BY task_id`,
-            )
-            .all(...taskIds)
-        : [],
+      counts: taskIds.length ? db.prepare<string[], { taskId: string; unanswered: number; decisions: number; checks: number; waitingOnOwner: number; newestUnansweredAt: string | null }>(`
+        SELECT t.id AS taskId,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS unanswered,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION} AND COALESCE(json_extract(q.payload, '$.kind'), 'decision')='decision') AS decisions,
+          (SELECT COUNT(*) FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION} AND json_extract(q.payload, '$.kind')='check') AS checks,
+          (${WAITING_ON_OWNER}) AS waitingOnOwner,
+          ${NEWEST_UNANSWERED} AS newestUnansweredAt
+        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})
+      `).all(...taskIds).map(row => ({ ...row, waitingOnOwner: Boolean(row.waitingOnOwner) })) : [],
     }),
     createQuestion(input) {
       requireTask(input.taskId);
@@ -153,10 +159,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const question = questionSchema.parse({
         id: createUlid(),
         taskId: input.taskId,
+        kind: input.kind ?? "decision",
+        askedByThread: input.askedByThread ?? null,
         prompt: input.prompt,
         mode: input.mode,
-        allowOther: input.allowOther ?? false,
-        options: input.options.map((option) => ({
+        allowOther: true,
+        options: (input.kind === "check" && !input.options.length ? ["Confirmed", "Problem found"] : input.options).map((option) => ({
           ...(typeof option === "string" ? { label: option } : option),
           id: createUlid(),
         })),
@@ -177,17 +185,30 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       return { question };
     },
     async answerQuestion(input) {
+      let withdrawn = false;
+      let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
+        const attachmentIds = input.attachmentIds ?? [];
+        if (new Set(attachmentIds).size !== attachmentIds.length) throw new Error("Duplicate attachment IDs");
+        for (const id of attachmentIds) {
+          const attachment = store.tasks.getAttachment(id);
+          if (!attachment || attachment.taskId !== current.taskId || attachment.commentId)
+            throw new Error("Attachment must belong to this task and not to a comment");
+        }
+        if (attachmentIds.length && !input.selectedOptionIds.length && !input.answerText?.trim())
+          throw new Error("Attachments require an answer");
         if (input.revision !== current.revision)
           throw new Error("Question changed; reload it before answering");
         const next = questionSchema.parse({
           ...current,
+          // Free text is always allowed now; stamping it keeps answered records valid under the pre-0.33 rule.
+          allowOther: true,
           selectedOptionIds: input.selectedOptionIds,
           answerText: input.answerText?.trim() || null,
           answeredBy:
-            input.selectedOptionIds.length || input.answerText?.trim()
+            (input.selectedOptionIds.length || input.answerText?.trim())
               ? input.authorName
               : null,
           revision: current.revision + 1,
@@ -197,7 +218,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         if (
           JSON.stringify([...current.selectedOptionIds].sort()) ===
             JSON.stringify([...next.selectedOptionIds].sort()) &&
-          current.answerText === next.answerText
+          current.answerText === next.answerText && !attachmentIds.length
         )
           return current;
         const { id, taskId, createdAt, history, ...snapshot } = current;
@@ -206,38 +227,60 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
-        const selected = next.options.filter((option) =>
-          next.selectedOptionIds.includes(option.id),
-        );
+        const answerOf = (state: typeof current) => [
+          ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
+          ...(state.answerText ? [state.answerText] : []),
+        ].join("; ");
+        const answer = answerOf(next), previous = answerOf(current);
+        withdrawn = !answer && Boolean(previous);
         comment = store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
           authorName: input.authorName,
-          body: `Question: ${next.prompt}\nAnswer: ${[...selected.map((option) => option.label), ...(next.answerText ? [next.answerText] : [])].join("; ") || "(cleared)"}`,
+          body: `Question: ${next.prompt}\n${answer ? `Answer: ${answer}` : withdrawn ? `Answer withdrawn (was: ${previous})` : "Answer: (cleared)"}\nQuestion ID: ${next.id}; revision: ${next.revision}`,
         });
+        // Delivered as Markdown, so each part is its own paragraph instead of one run-on line.
+        notice = [
+          `**Question:** ${next.prompt}`,
+          answer ? `**Answer:** ${answer}` : withdrawn ? `**Answer withdrawn** (was: ${previous})` : "**Answer:** (cleared)",
+          `Question ID: ${next.id}; revision: ${next.revision}`,
+        ].join("\n\n");
+        for (const id of attachmentIds) db.prepare<[string, string]>(
+          "UPDATE attachments SET task_id = NULL, comment_id = ? WHERE id = ?",
+        ).run(comment.id, id);
         return next;
       });
+      const commentId = comment?.id ?? answerCommentId(question);
+      const attachments = commentId ? store.tasks.listAttachmentsForComment(commentId) : [];
+      const result = { commentId, attachmentIds: attachments.map(a => a.id) };
       changed(question.taskId);
-      if (!comment) return { question, notification: "unchanged" as const };
+      if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      const threadId =
+      const threadId = question.askedByThread ??
         store.tasks.listTaskThreads(question.taskId)[0]?.threadId ??
         store.tasks.getLatestAgentComment(question.taskId, comment.id)
           ?.threadId;
-      if (!threadId) return { question, notification: "none" as const };
+      if (!threadId) return { ...result, question, notification: "none" as const };
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
-        body: `${comment.body}\nQuestion ID: ${question.id}; revision: ${question.revision}. Read the current saved decision with bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json before continuing.`,
+        body: [
+          notice,
+          ...(withdrawn ? ["The owner withdrew this answer. Treat the question as open again, do not act on the earlier answer, and undo or report anything you already did because of it (for example, move the task back if you changed its status)."] : []),
+          ...attachments.map(a => `Attachment: ${a.fileName} (${a.sizeBytes} bytes) — \`bb work-board attachment get ${a.id} --out <path>\``),
+          `Read the current saved decision with \`bb work-board question list ${store.tasks.getTask(question.taskId)!.key} --json\` before continuing.`,
+        ].join("\n\n"),
         authorName: input.authorName,
         threadId,
         mode: "queue-if-active",
+        replyHint: false,
       });
       store.transaction(() =>
         store.tasks.updateComment(comment!.id, { notifiedCount }),
       );
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
       return {
+        ...result,
         question,
         notification: notifiedCount ? ("sent" as const) : ("failed" as const),
       };
@@ -264,7 +307,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           prompt: input.prompt.trim(),
           mode: input.mode,
           options,
-          allowOther: input.allowOther ?? current.allowOther,
+          allowOther: true,
         };
         const unchanged = Object.entries(content).every(
           ([key, value]) =>

@@ -46,7 +46,7 @@ function ruleState(state: CiState, rule: RequiredRule, readyAt: number): RuleSta
  * The verdict for a head that is the judged SHA. It waits while any workflow run started after the PR became ready
  * is still going, then judges every required check GitHub lists for the base branch.
  */
-export function assessCiChecks(state: CiState, sinceStartMs: number, sinceHeadMs: number, now: number): Wait | CiVerdict {
+export function assessCiChecks(state: CiState, sinceStartMs: number, sinceHeadMs: number, now: number, ignored: readonly string[] = []): Wait | CiVerdict {
   if (state.state === "closed") return verdict(CI_EXIT.noVerdict, "the PR is closed");
   if (state.state === "draft")
     return sinceStartMs < CI_GRACE_MS
@@ -55,12 +55,18 @@ export function assessCiChecks(state: CiState, sinceStartMs: number, sinceHeadMs
   if (state.dirty) return verdict(CI_EXIT.noVerdict, "the PR conflicts with its base (DIRTY), so CI cannot pass: rebase it");
   if (state.required === null)
     return verdict(CI_EXIT.noVerdict, "the required check set is unknown: the server's GitHub token cannot read branch protection or rulesets");
-  if (!state.required.length) return verdict(CI_EXIT.noVerdict, "the base branch requires no status checks, so there is nothing to wait for");
+  const outside = state.required.filter((rule) => ignored.includes(rule.context));
+  const required = state.required.filter((rule) => !ignored.includes(rule.context));
+  if (!required.length) return verdict(CI_EXIT.noVerdict, "the base branch requires no status checks, so there is nothing to wait for");
   const readyAt = state.readyAt ? Date.parse(state.readyAt) : 0;
-  const runs = state.runs.filter((run) => Date.parse(run.createdAt) >= readyAt);
+  // Per workflow only the newest run counts: a draft-time run cancelled by its successor must not judge the head.
+  const newest = new Map<number, CiState["runs"][number]>();
+  for (const run of state.runs)
+    if (Date.parse(run.createdAt) >= readyAt && (newest.get(run.workflowId)?.id ?? -1) < run.id) newest.set(run.workflowId, run);
+  const runs = [...newest.values()];
   const active = runs.find((run) => run.status !== "completed");
   if (active) return { wait: `run ${active.name ?? active.id} ${active.status}: ${active.url}` };
-  const rules = state.required.map((rule) => ({ name: rule.context, state: ruleState(state, rule, readyAt) }));
+  const rules = required.map((rule) => ({ name: rule.context, state: ruleState(state, rule, readyAt) }));
   const named = (wanted: RuleState) => rules.filter((rule) => rule.state === wanted).map((rule) => rule.name);
   if (named("failed").length) return verdict(CI_EXIT.red, `red: required checks failed: ${named("failed").join(", ")}`, named("failed"));
   if (named("cancelled").length) return verdict(CI_EXIT.cancelled, `cancelled: ${named("cancelled").join(", ")}`);
@@ -75,7 +81,8 @@ export function assessCiChecks(state: CiState, sinceStartMs: number, sinceHeadMs
       ? `the runs on this head finished without reporting ${missing.join(", ")}`
       : `no CI run for this head ${CI_GRACE_MS / 60_000} min after it was first seen${state.readyAt ? " or marked ready" : ""}`);
   }
-  return verdict(CI_EXIT.green, `green: ${rules.length} required check${rules.length === 1 ? "" : "s"} passed (${rules.map((rule) => rule.name).join(", ")})`);
+  const note = outside.length ? `; outside CI, not judged: ${outside.map((rule) => `${rule.context} ${ruleState(state, rule, readyAt)}`).join(", ")}` : "";
+  return verdict(CI_EXIT.green, `green: ${rules.length} required check${rules.length === 1 ? "" : "s"} passed (${rules.map((rule) => rule.name).join(", ")})${note}`);
 }
 
 export type CiWaitResult = CiVerdict & { url: string; sha: string; waitedMs: number; last: string };
@@ -83,7 +90,7 @@ export type CiWaitResult = CiVerdict & { url: string; sha: string; waitedMs: num
 /** Poll a PR until its required checks give a verdict for one head, or the timeout passes. */
 export async function waitForPrCi(
   client: { ciState(repository: string, number: number): Promise<CiState> },
-  input: { repository: string; number: number; head?: string; timeoutMs: number },
+  input: { repository: string; number: number; head?: string; timeoutMs: number; ignored?: readonly string[] },
   signal: AbortSignal,
   clock: { now: () => number; sleep: (ms: number, signal: AbortSignal) => Promise<unknown> } = { now: Date.now, sleep: (ms, s) => sleep(ms, undefined, { signal: s }) },
 ): Promise<CiWaitResult> {
@@ -101,7 +108,7 @@ export async function waitForPrCi(
         if (!matched) headAt = clock.now();
         matched = true;
         expected = sha = head.sha;
-        const step = assessCiChecks(state, clock.now() - started, clock.now() - headAt, clock.now());
+        const step = assessCiChecks(state, clock.now() - started, clock.now() - headAt, clock.now(), input.ignored);
         if ("exitCode" in step) return done(step);
         last = step.wait;
       }

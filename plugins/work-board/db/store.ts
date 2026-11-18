@@ -1,3 +1,4 @@
+import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
@@ -102,14 +103,15 @@ interface TaskRow {
   project_prefix: string;
   title: string;
   description: string;
+  progress_note: string | null;
+  progress_updated_at: string | null;
+  progress_updated_by: string | null;
   status: Task["status"];
   priority: Task["priority"];
   due_date: string | null;
   parent_task_id: string | null;
   type: Task["type"];
   epic_id: string | null;
-  execution_target: Task["executionTarget"];
-  requester_thread_id: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -249,12 +251,12 @@ function taskQueryFingerprint(
     labelIds: normalizedFilterValues(filters.labelIds),
     activeOnly: filters.activeOnly === true,
     ...(filters.staleStatus ? { staleStatus: true } : {}),
+    ...(filters.waitingOnOwner ? { waitingOnOwner: true } : {}),
     parentTaskId:
       filters.parentTaskId === undefined
         ? { specified: false, value: null }
         : { specified: true, value: filters.parentTaskId },
     type: filters.type ?? null,
-    executionTarget: filters.executionTarget ?? null,
     epicId:
       filters.epicId === undefined
         ? { specified: false }
@@ -413,14 +415,15 @@ function taskFromRow(row: TaskRow): Task {
     key: `${row.project_prefix}-${row.number}`,
     title: row.title,
     description: row.description,
+    progressNote: row.progress_note,
+    progressUpdatedAt: row.progress_updated_at,
+    progressUpdatedBy: row.progress_updated_by,
     status: row.status,
     priority: row.priority,
     dueDate: row.due_date,
     parentTaskId: row.parent_task_id,
     type: row.type,
     epicId: row.epic_id,
-    executionTarget: row.execution_target,
-    requesterThreadId: row.requester_thread_id,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -968,8 +971,6 @@ export function createTasksStore(db: PluginDatabase) {
           string | null,
           Task["type"],
           string | null,
-          Task["executionTarget"],
-          string | null,
           number,
           string,
           string,
@@ -978,8 +979,8 @@ export function createTasksStore(db: PluginDatabase) {
         `
       INSERT INTO tasks (
         id, project_id, number, title, description, status, priority, due_date,
-        parent_task_id, type, epic_id, execution_target, requester_thread_id, position, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_task_id, type, epic_id, position, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       ).run(
         id,
@@ -993,8 +994,6 @@ export function createTasksStore(db: PluginDatabase) {
         parentTaskId,
         type,
         epicId,
-        input.executionTarget ?? "agent",
-        input.requesterThreadId ?? null,
         position,
         createdAt,
         createdAt,
@@ -1006,24 +1005,15 @@ export function createTasksStore(db: PluginDatabase) {
   function createTask(input: CreateTaskInput): Task {
     assertNoSecrets(input.title, "title");
     assertNoSecrets(input.description, "description");
-    if (
-      input.executionTarget !== undefined &&
-      !["agent", "owner"].includes(input.executionTarget)
-    )
-      throw new Error("Invalid execution target");
-    if (
-      input.requesterThreadId != null &&
-      !/^thr_[A-Za-z0-9_-]+$/.test(input.requesterThreadId)
-    )
-      throw new Error("Invalid requester thread id");
     return createTaskTransaction(input);
   }
 
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string): Map<string, string[]> {
     const policies = new Map(listProjects().map((project) => [project.id, getWorkflowPolicy(project)]));
-    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; open_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
+    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; held: number; open_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
       SELECT t.id, t.project_id, t.status,
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
+        EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
         EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_pr,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
@@ -1038,7 +1028,8 @@ export function createTasksStore(db: PluginDatabase) {
       const policy = policies.get(row.project_id);
       if (!policy) continue;
       const flags: string[] = [];
-      if (row.status === policy.inProgressStatus && !row.active) flags.push("no_active_thread");
+      // A card held behind an unfinished predecessor is waiting by rule, not abandoned.
+      if (row.status === policy.inProgressStatus && !row.active && !row.held) flags.push("no_active_thread");
       if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !row.open_pr) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
       if (row.closed_pr) flags.push("closed_unmerged_pr");
@@ -1081,6 +1072,7 @@ export function createTasksStore(db: PluginDatabase) {
     const dateField = filters.dateField ?? (filters.archive === "archived" ? "archived" : "created");
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
+    if (filters.waitingOnOwner) clauses.push(WAITING_ON_OWNER);
     if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
@@ -1163,10 +1155,6 @@ export function createTasksStore(db: PluginDatabase) {
         parameters.parentTaskId = filters.parentTaskId;
       }
     }
-    if (filters.executionTarget !== undefined) {
-      clauses.push("t.execution_target = @executionTarget");
-      parameters.executionTarget = filters.executionTarget;
-    }
     if (filters.type !== undefined) {
       clauses.push("t.type = @type");
       parameters.type = filters.type;
@@ -1202,8 +1190,12 @@ export function createTasksStore(db: PluginDatabase) {
         `Task page limit must be an integer from 1 to ${TASKS_PAGE_MAX_LIMIT}`,
       );
     }
-    const sort = filters.sort ?? "manual";
-    const baseQuery = taskQueryFingerprint(filters, sort);
+    const waitingOrder = filters.waitingOnOwner && (!filters.sort || filters.sort === "manual");
+    const sort = waitingOrder ? "newest" : filters.sort ?? "manual";
+    // Question edits can change waiting order without changing the task-list revision.
+    const questionRevision = filters.waitingOnOwner ? JSON.stringify(db.prepare("SELECT id, json_extract(payload, '$.revision') AS revision FROM task_questions ORDER BY id").all()) : "";
+    const fingerprint = taskQueryFingerprint(filters, sort);
+    const baseQuery = filters.waitingOnOwner ? createHash("sha256").update(fingerprint).update(questionRevision).digest("base64url") : fingerprint;
     const query = filters.staleStatus ? createHash("sha256").update(baseQuery).update(String(parameters.staleIds)).digest("base64url") : baseQuery;
     const cursor =
       filters.cursor === undefined ? null : decodeTaskCursor(filters.cursor);
@@ -1277,7 +1269,7 @@ export function createTasksStore(db: PluginDatabase) {
                 t.*,
                 CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
                 (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role,
-                COALESCE(${dateColumn}, '') AS cursor_date,
+                ${waitingOrder ? `CASE WHEN ${NEWEST_UNANSWERED} IS NOT NULL THEN '1' || ${NEWEST_UNANSWERED} ELSE '0' || t.updated_at END` : `COALESCE(${dateColumn}, '')`} AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
                   WHEN 'urgent' THEN 0
@@ -1375,7 +1367,7 @@ export function createTasksStore(db: PluginDatabase) {
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
-      if (current.scheduledRole === "template" && (input.status !== undefined || input.executionTarget === "owner" || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
+      if (current.scheduledRole === "template" && (input.status !== undefined || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
         throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
       validateTaskStatus(current.projectId, status);
@@ -1412,8 +1404,6 @@ export function createTasksStore(db: PluginDatabase) {
           string | null,
           Task["type"],
           string | null,
-          Task["executionTarget"],
-          string | null,
           number,
           string,
           string,
@@ -1422,7 +1412,7 @@ export function createTasksStore(db: PluginDatabase) {
         `
         UPDATE tasks SET
           title = ?, description = ?, status = ?, priority = ?, due_date = ?,
-          parent_task_id = ?, type = ?, epic_id = ?, execution_target = ?, requester_thread_id = ?, position = ?, updated_at = ?
+          parent_task_id = ?, type = ?, epic_id = ?, position = ?, updated_at = ?
         WHERE id = ?
       `,
       ).run(
@@ -1438,14 +1428,14 @@ export function createTasksStore(db: PluginDatabase) {
         parentTaskId,
         type,
         epicId,
-        input.executionTarget ?? current.executionTarget,
-        input.requesterThreadId === undefined
-          ? current.requesterThreadId
-          : input.requesterThreadId,
         position,
         nowIso(),
         id,
       );
+      if (input.progressNote !== undefined) {
+        db.prepare("UPDATE tasks SET progress_note=?, progress_updated_at=?, progress_updated_by=? WHERE id=?")
+          .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
+      }
       return requireTask(id);
     },
   );
@@ -1453,16 +1443,9 @@ export function createTasksStore(db: PluginDatabase) {
   function updateTask(id: string, input: UpdateTaskInput): Task {
     assertNoSecrets(input.title, "title");
     assertNoSecrets(input.description, "description");
-    if (
-      input.executionTarget !== undefined &&
-      !["agent", "owner"].includes(input.executionTarget)
-    )
-      throw new Error("Invalid execution target");
-    if (
-      input.requesterThreadId != null &&
-      !/^thr_[A-Za-z0-9_-]+$/.test(input.requesterThreadId)
-    )
-      throw new Error("Invalid requester thread id");
+    assertNoSecrets(input.progressNote ?? undefined, "current state");
+    if (input.progressNote != null && Buffer.byteLength(input.progressNote, "utf8") > 4096)
+      throw new Error("Current state exceeds 4 KB; keep it to current state and move details to a comment or attachment");
     return updateTaskTransaction(id, input);
   }
 
@@ -2166,13 +2149,13 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   // Status plus the latest task-level update: the task row itself or a non-system comment (evidence lives on comments).
-  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; executionTarget: Task["executionTarget"]; lastActivityAt: string }> {
+  function listTaskActivity(taskIds: readonly string[]): Map<string, { projectId: string; status: string; lastActivityAt: string }> {
     if (!taskIds.length) return new Map();
-    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; execution_target: Task["executionTarget"]; at: string }>(
-      `SELECT t.id, t.project_id, t.status, t.execution_target, MAX(t.updated_at, COALESCE(
+    return new Map(db.prepare<string[], { id: string; project_id: string; status: string; at: string }>(
+      `SELECT t.id, t.project_id, t.status, MAX(t.updated_at, COALESCE(
          (SELECT MAX(c.created_at) FROM comments c WHERE c.task_id = t.id AND c.kind <> 'system'), '')) AS at
        FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})`,
-    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, executionTarget: row.execution_target, lastActivityAt: row.at }]));
+    ).all(...taskIds).map((row) => [row.id, { projectId: row.project_id, status: row.status, lastActivityAt: row.at }]));
   }
 
   function listTaskThreadsForProject(projectId: string): TaskThread[] {

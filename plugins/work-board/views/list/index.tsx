@@ -1,3 +1,4 @@
+import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
 import { usePrSummaries } from "../../components/pr-summary";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -126,7 +127,6 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
 
   const tasksQuery = useListTasks(projectId, activeOnly, {
     type: filters.type,
-    executionTarget: filters.executionTarget,
     statuses: filters.statuses,
     priorities: filters.priorities,
     labelIds,
@@ -176,7 +176,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     return editedTasks(tasksQuery.data, edits.entries).filter(
       (task) =>
         (!filters.unansweredOnly ||
-          (questionCounts.data?.get(task.id) ?? 0) > 0) &&
+          waitingOnOwner(task, questionCounts.data?.get(task.id) ?? 0)) &&
         matchesFilters(
           task,
           filters.statuses,
@@ -194,8 +194,8 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     questionCounts.data,
   ]);
   const groups = useMemo(
-    () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort), statusIds),
-    [displayTasks, sort, statusIds],
+    () => groupTasksByStatus(filters.unansweredOnly && sort === "manual" ? [...(displayTasks ?? [])].sort((a, b) => waitingOrder(a, b, questionCounts.details)) : sortTasks(displayTasks ?? [], sort), statusIds),
+    [displayTasks, sort, statusIds, filters.unansweredOnly, questionCounts.details],
   );
 
   const showProject = projectId === null;
@@ -291,6 +291,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
       );
     }
   } else {
+    const keyChars = Math.max(0, ...groups.flatMap((group) => group.tasks.map((task) => task.key.length)));
     body = groups.map((group, groupIndex) => {
       const [start, end] = ranges[groupIndex] ?? [0, group.tasks.length];
       const hiddenAbove = start * viewport.rowHeight;
@@ -316,6 +317,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               task={task}
               meta={meta.data?.get(task.id)}
               prSummary={prSummaries.data?.get(task.id)}
+              questionKinds={questionCounts.details?.get(task.id)}
               unansweredQuestions={questionCounts.data?.get(task.id)}
               project={projectsById.get(task.projectId)}
               showProject={showProject}
@@ -326,6 +328,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               onEdit={edits.edit}
               onOpen={openTask}
               pending={edits.pending.has(task.id)}
+              keyChars={keyChars}
             />
           ))}
           {hiddenBelow > 0 ? (

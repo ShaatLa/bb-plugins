@@ -7,8 +7,8 @@ import { migrations } from './schema';
 import Database from 'better-sqlite3';
 const cleanup: (()=>Promise<void>)[]=[];
 afterEach(async()=>{for (const dispose of cleanup.splice(0)) await dispose(); vi.useRealTimers();});
-function setup(send = vi.fn(async (_args:unknown)=>({ok:true as const,delivery:'sent' as const}))) {
- const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list:async()=>[],get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
+function setup(send = vi.fn(async (_args:unknown)=>({ok:true as const,delivery:'sent' as const})), list:(args:any)=>Promise<any[]> = async()=>[]) {
+ const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{list,get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p',title:'Thread title'}),events:{list:async()=>[]},send},projects:{list:async()=>[]}}});
  plugin(host.bb); cleanup.push(()=>host.harness.lifecycle.dispose());
  return {...host,db:host.bb.storage.database(),send};
 }
@@ -17,6 +17,56 @@ function seed(db:Database.Database,id='ans_one',kind='for_me',thread='t') {
 }
 const deferred=<T>()=>{let resolve!:(v:T)=>void; const promise=new Promise<T>(r=>resolve=r); return {promise,resolve};};
 describe('server',()=>{
+ it('caches display metadata across list and recipients with independent TTLs',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_cache','mine');
+  db.prepare("UPDATE items SET project_id='p'").run();
+  const threads=vi.fn(async()=>[makeThreadResponse({id:'t',title:'T',projectId:'p'})]);
+  const projects=vi.fn(async()=>[{id:'p',name:'P'}]);
+  harness.sdk.stub('threads.list',threads); harness.sdk.stub('projects.list',projects as any);
+  const now=vi.spyOn(Date,'now').mockReturnValue(100000);
+  try {
+   await harness.behavior.callRpc('list',{view:'all'}); await harness.behavior.callRpc('recipients',{});
+   expect(threads).toHaveBeenCalledTimes(1); expect(projects).toHaveBeenCalledTimes(1);
+   now.mockReturnValue(130001); await harness.behavior.callRpc('recipients',{});
+   expect(threads).toHaveBeenCalledTimes(2); expect(projects).toHaveBeenCalledTimes(1);
+   now.mockReturnValue(160001); await harness.behavior.callRpc('list',{view:'all'});
+   expect(threads).toHaveBeenCalledTimes(3); expect(projects).toHaveBeenCalledTimes(2);
+   db.prepare("UPDATE items SET status='answered',answer='A',answered_at=1").run();
+   threads.mockImplementation(async()=>[makeThreadResponse({id:'t',lastReadAt:10})]);
+   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(0);
+   expect(threads).toHaveBeenCalledTimes(4);
+  } finally {now.mockRestore();}
+ });
+ it('clears bb\'s unread mark when a thread has nothing left unread in Answers, and restores it on undo',async()=>{
+  const {harness,db}=setup(), read=vi.fn(async(_a:unknown)=>({})), unread=vi.fn(async(_a:unknown)=>({}));
+  harness.sdk.stub('threads.markRead',read as any); harness.sdk.stub('threads.markUnread',unread as any);
+  seed(db,'ans_x','for_me','t'); seed(db,'ans_y','for_me','t'); seed(db,'ans_z','for_me','u'); db.prepare("UPDATE items SET kind='mine',status='answered',answer='a'").run();
+  await harness.behavior.callRpc('markRead',{ids:['ans_x']}); expect(read).not.toHaveBeenCalled();
+  await harness.behavior.callRpc('markRead',{ids:['ans_y']}); expect(read).toHaveBeenCalledWith({threadId:'t'});
+  const all=await harness.behavior.callRpc('markRead',{all:true}) as any; expect(read).toHaveBeenLastCalledWith({threadId:'u'});
+  await harness.behavior.callRpc('undoRead',{batch:all.batch}); await vi.waitFor(()=>expect(unread).toHaveBeenCalledWith({threadId:'u'}));
+ });
+ it('marks answers read when the thread was read in bb after they arrived',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_old','mine','t'); seed(db,'ans_new','mine','t');
+  db.prepare("UPDATE items SET status='answered',answer='a',answered_at=? WHERE id=?").run(1000,'ans_old');
+  db.prepare("UPDATE items SET status='answered',answer='b',answered_at=? WHERE id=?").run(3000,'ans_new');
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:2000} as any)]);
+  const result=await harness.behavior.callRpc('recipients',{}) as any;
+  expect(result.recipients[0].unread).toBe(1);
+  expect(db.prepare("SELECT id FROM items WHERE read_at IS NOT NULL").all()).toEqual([{id:'ans_old'}]);
+ });
+ it('does not take bb marking a thread read on a send (a queued message going out at turn end) as the owner reading it',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_new','mine','t'); db.prepare("UPDATE items SET status='answered',answer='b',answered_at=? WHERE id=?").run(3000,'ans_new');
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:5001} as any)]);
+  harness.sdk.stub('threads.events.list',async()=>[{seq:9,createdAt:5000,type:'client/turn/requested',data:{initiator:'user'}}] as any);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(1);
+  expect(db.prepare("SELECT id FROM items WHERE read_at IS NOT NULL").all()).toEqual([]);
+  // A real read in bb later still counts.
+  harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:9000} as any)]);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(0);
+ });
  it('validates every RPC boundary and tags both reads',async()=>{
   const {harness}=setup();
   for (const [name,input] of Object.entries({list:{view:'wrong'},counts:{extra:1},markRead:{ids:['bad']},setPinned:{id:'ans_a',pinned:1},setDismissed:{id:'bad',dismissed:true},reply:{id:'ans_a',text:'x'.repeat(8001)},save:{threadId:'t',seq:-1,role:'user',text:'x'}})) await expect(harness.behavior.callRpc(name,input)).rejects.toThrow();
@@ -24,6 +74,17 @@ describe('server',()=>{
   expect(inputs.reply.safeParse({id:'ans_a',text:' '}).success).toBe(false);
   expect(rpcContract.list.tags).toBeDefined(); expect(rpcContract.counts.tags).toBeDefined();
   expect(INSTRUCTIONS.length).toBeLessThanOrEqual(600);
+ });
+ it('orders a conversation by latest activity, so a late answer pages in at its answer time',async()=>{
+  const {harness,db}=setup();
+  seed(db,'ans_q','mine'); seed(db,'ans_u','update'); seed(db,'ans_n');
+  db.prepare("UPDATE items SET status='answered',answer='late',answered_at=30 WHERE id='ans_q'").run();
+  db.prepare("UPDATE items SET created_at=20 WHERE id='ans_u'").run(); db.prepare("UPDATE items SET created_at=10 WHERE id='ans_n'").run();
+  const first=await harness.behavior.callRpc('list',{view:'all',threadId:'t',order:'activity',limit:2}) as any;
+  expect(first.items.map((i:any)=>i.id)).toEqual(['ans_q','ans_u']); expect(first.items[0]).toMatchObject({createdAt:1,answeredAt:30}); expect(first.nextCursor).toBe('20|ans_u');
+  const next=await harness.behavior.callRpc('list',{view:'all',threadId:'t',order:'activity',limit:2,cursor:first.nextCursor}) as any;
+  expect(next.items.map((i:any)=>i.id)).toEqual(['ans_n']); expect(next.nextCursor).toBeNull();
+  expect((await harness.behavior.callRpc('list',{view:'all',threadId:'t'}) as any).items.map((i:any)=>i.id)).toEqual(['ans_u','ans_n','ans_q']);
  });
  it('lists with filters, stable pagination, titles, counts and orthogonal flags',async()=>{
   const {harness,db}=setup();
@@ -58,9 +119,30 @@ describe('server',()=>{
   db.prepare("UPDATE threads_state SET active_turn_id='turn' WHERE thread_id='t'").run();
   await call('answers_resolve',{id:'ans_mine'});
   expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_mine'").get()).toEqual({resolve_turn_id:'turn'});
+  await call('answers_report',{}); await call('answers_report',{});
+  expect(db.prepare("SELECT turn_id,report FROM turn_updates WHERE thread_id='t'").all()).toEqual([{turn_id:'turn',report:1}]);
   const list=await call('answers_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
   const id=await call('answers_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});
+  expect(String(await call('answers_list',{}))).toContain(`Your open questions to the user:\n${id} `);
+  await expect(harness.behavior.callAgentTool('answers_withdraw',{id,reason:'x'},{threadId:'other'})).rejects.toThrow('open question not found');
+  await expect(call('answers_withdraw',{id:'ans_mine',reason:'x'})).rejects.toThrow('open question not found');
+  db.prepare('UPDATE items SET notify_state=1 WHERE id=?').run(id);
+  await call('answers_withdraw',{id,reason:' Found it '});
+  expect(db.prepare('SELECT status,answer_source,note,notify_state,dismissed_at IS NOT NULL AS gone FROM items WHERE id=?').get(id)).toEqual({status:'open',answer_source:'agent',note:'Found it',notify_state:0,gone:1});
+  expect(String(await call('answers_list',{}))).not.toContain(id);
+  await expect(call('answers_withdraw',{id,reason:'again'})).rejects.toThrow('open question not found');
+ });
+ it('defers and resolves the owner messages of one turn together, so its reply is not an answer to one and an interim to another',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_q','mine','t'); seed(db,'ans_steer','mine','t'); seed(db,'ans_other','mine','t');
+  db.prepare("UPDATE items SET turn_id='u',question_seq=CASE id WHEN 'ans_q' THEN 1 ELSE 2 END WHERE id IN ('ans_q','ans_steer')").run();
+  db.prepare("UPDATE items SET turn_id='v',question_seq=0 WHERE id='ans_other'").run();
+  const call=(name:string,p:object)=>harness.behavior.callAgentTool(name,p,{threadId:'t',projectId:'p'});
+  await call('answers_defer',{id:'ans_steer'});
+  expect(db.prepare("SELECT id,status FROM items ORDER BY id").all()).toEqual([{id:'ans_other',status:'waiting'},{id:'ans_q',status:'deferred'},{id:'ans_steer',status:'deferred'}]);
+  db.prepare("UPDATE threads_state SET active_turn_id='w' WHERE thread_id='t'").run();
+  await call('answers_resolve',{id:'ans_q'});
+  expect(db.prepare("SELECT id,resolve_turn_id FROM items ORDER BY id").all()).toEqual([{id:'ans_other',resolve_turn_id:null},{id:'ans_q',resolve_turn_id:'w'},{id:'ans_steer',resolve_turn_id:'w'}]);
  });
  it('rejects concurrent and second for_me replies, exposing queued delivery',async()=>{
   const gate=deferred<{ok:true;delivery:'queued'}>(); const entered=deferred<void>();
@@ -72,7 +154,7 @@ describe('server',()=>{
   gate.resolve({ok:true,delivery:'queued'}); expect(await first).toEqual({delivery:'queued'});
   await expect(harness.behavior.callRpc('reply',{id:'ans_one',text:'duplicate'})).rejects.toThrow('already replied');
   expect(send).toHaveBeenCalledTimes(1);
-  expect(send.mock.calls[0][0]).toMatchObject({threadId:'t',mode:'queue-if-active',input:[{type:'text',text:'Re: "Question"\n\nresponse',mentions:[]}]});
+  expect(send.mock.calls[0][0]).toMatchObject({threadId:'t',mode:'queue-if-active',input:[{type:'text',text:'> Question\n\nresponse',mentions:[]}]});
  });
  it('leaves a failed send open, releases its guard and never retries automatically',async()=>{
   const send=vi.fn(async()=>{throw new Error('network');}); const {harness,db}=setup(send); seed(db);
@@ -103,8 +185,44 @@ describe('server',()=>{
   await harness.behavior.callRpc('reply',{id:'ans_one',text:'yes'}); expect(seen.at(-1)).toBe('replied');
   await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'t'});
   await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
-  expect(seen.at(-1)).toBe('deleted');
+  await vi.waitFor(()=>expect(seen.at(-1)).toBe('deleted')); // the burst collapses into one trailing invalidate
   expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
+ });
+ it('coalesces a burst of invalidations into a leading and one trailing call',async()=>{
+  const {harness}=setup();
+  for(const q of ['a','b','c']) await harness.behavior.callAgentTool('answers_ask',{question:q},{threadId:'t'});
+  const n=harness.inspection.experimental_rpcInvalidations.length;
+  expect(n).toBe(1); await vi.waitFor(()=>expect(harness.inspection.experimental_rpcInvalidations.length).toBe(2));
+ });
+ it('ignores child threads in the events hook, but their tools still work',async()=>{
+  const {harness,db}=setup(); const list=vi.fn(async()=>[]);
+  harness.sdk.stub('threads.events.list',list as any);
+  harness.sdk.stub('threads.get',async({threadId}:any)=>makeThreadResponse({id:threadId,projectId:'p',parentThreadId:'parent'} as any));
+  await harness.behavior.emitThreadEvent('experimental_thread.events',{thread:makeThreadResponse({id:'kid',parentThreadId:'parent'} as any),sequence:5} as any);
+  expect(db.prepare("SELECT 1 FROM threads_state WHERE thread_id='kid'").get()).toBeUndefined();
+  const id=await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'kid'});
+  expect(db.prepare("SELECT kind FROM items WHERE thread_id='kid'").all()).toEqual([{kind:'for_me'}]); expect(id).toBeTruthy();
+  expect(list).not.toHaveBeenCalled();
+ });
+ it('passes the hook payload thread to the driver (no threads.get)',async()=>{
+  const {harness}=setup();
+  await harness.behavior.emitThreadEvent('experimental_thread.events',{thread:makeThreadResponse({id:'top'}),sequence:5} as any);
+  await vi.waitFor(()=>expect(harness.inspection.sdk.callsTo('threads.events.list').length).toBeGreaterThan(0));
+  expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
+ });
+ it('does not invalidate when an empty thread is archived, unarchived or deleted',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','for_me','a');
+  const count=()=>harness.inspection.experimental_rpcInvalidations.length;
+  for(const ev of ['thread.archived','thread.unarchived','thread.deleted']) await harness.behavior.emitThreadEvent(ev as any,{thread:makeThreadResponse({id:'empty'})});
+  expect(count()).toBe(0);
+  await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})}); expect(count()).toBe(1);
+ });
+ it('bumps the queue stamp of a thread on bb queue events',async()=>{
+  const {harness}=setup(); const stamp=async(threadId:string)=>((await harness.behavior.callRpc('queueStamp',{threadId})) as any).stamp;
+  expect(await stamp('thr_q')).toBe(0);
+  for(const ev of ['message.queued','message.dispatched','message.cancelled']) await harness.behavior.emitThreadEvent(ev as any,{entry:{id:'q1',threadId:'thr_q'}} as any);
+  expect(await stamp('thr_q')).toBe(3); expect(await stamp('thr_other')).toBe(0);
+  expect(harness.inspection.experimental_rpcInvalidations.length).toBe(3);
  });
  it('provides list/read/status CLI commands',async()=>{
   const {harness,db}=setup(); seed(db,'ans_one','mine'); db.prepare("UPDATE items SET status='answered'").run();
@@ -121,11 +239,59 @@ describe('reply pools and inbox',()=>{
   expect(db.prepare('SELECT question FROM items').get()).toEqual({question:'Question'});
   expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]); db.close();
  });
- it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-1).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-1)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
+ it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-2).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-2)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
+ it('uses wake and pending notification indexes',()=>{
+  const db=new Database(':memory:'); db.exec(migrations.join('\n'));
+  const insert=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,created_at,updated_at,notify_state,snoozed_until) VALUES (?,'mine','t','waiting','q',1,1,?,?)");
+  db.transaction(()=>{for(let i=0;i<1000;i++) insert.run('ans_'+i,Number(i===500),i===500?100:null);})();
+  db.exec('ANALYZE');
+  const plan=(sql:string)=>db.prepare('EXPLAIN QUERY PLAN '+sql).all().map((r:any)=>r.detail).join(' ');
+  expect(plan('SELECT min(snoozed_until) FROM items WHERE snoozed_until IS NOT NULL')).toContain('items_snoozed_until');
+  expect(plan('SELECT id FROM items WHERE notify_state=1 ORDER BY rowid')).toContain('items_notify_pending');
+  db.close();
+ });
  it('builds exact Markdown, with empty lines and notes, and enforces caps',()=>{
   expect(buildReplyMessage([{quote:'**bold**\n\nlast',note:'note'},{quote:'only',note:''}])).toBe('> **bold**\n>\n> last\n\nnote\n\n> only');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20001),note:''}])).toThrow('20,000');
   expect(()=>buildReplyMessage([{quote:'x'.repeat(20000),note:'x'.repeat(12000)}])).toThrow('32,000');
+ });
+ it('previews another thread\'s message as "Sender: text", not its [bb message from …] header',async()=>{
+  const {harness,db}=setup(undefined,async (args:any)=>(args?.threadIds ?? []).filter((id:string)=>id==='thr_c').map(()=>makeThreadResponse({id:'thr_c',projectId:'p',title:'Manager'})));
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_w','update','t','waiting','[bb message from thread:thr_c] **Review** done',1,'agent','thr_c',1,1)").run();
+  expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review done');
+ });
+ it('cleans contact previews with full thread ids, links, emphasis and sender headers',async()=>{
+  const {harness,db}=setup(undefined,async (args:any)=>(args?.threadIds ?? []).map((id:string)=>makeThreadResponse({id,projectId:'p',title:id==='thr_manager-one' ? 'Manager' : 'Worker'})));
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_inline','update','t','waiting',?,1,'agent','thr_manager-one',1,1)").run('[bb message from thread:thr_manager-one] **Review** [docs](https://example.com) @thread:thr_worker_two#msg=4 /optimize');
+  expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review docs @Worker /optimize');
+ });
+ it('counts an update as unread in contacts and views, never as waiting or saved, and refuses replies to it',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,answer_seq,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_u','update','t','answered','[bb system] done','Report',5,'system','thr_c',1,1)").run();
+  expect(await call('counts')).toMatchObject({unread:1,waiting:0,inbox:1});
+  expect((await call('recipients')).recipients[0]).toMatchObject({threadId:'t',unread:1,preview:'Report'});
+  expect((await call('list',{view:'unread'})).items[0]).toMatchObject({kind:'update',trigger:{kind:'system',sourceId:'thr_c',sourceTitle:'Thread title'}});
+  for (const view of ['waiting','saved']) expect((await call('list',{view})).items).toHaveLength(0);
+  expect((await call('list',{view:'all'})).items).toHaveLength(1);
+  await expect(call('reply',{id:'ans_u',text:'ok'})).rejects.toThrow('cannot receive replies');
+  await call('markThreadRead',{threadId:'t'}); expect((await call('counts')).inbox).toBe(0);
+ });
+ it('the badge drops answers already read in bb, keeps open agent questions, and ignores deleted threads',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  seed(db,'ans_a','mine','a'); db.prepare("UPDATE items SET status='answered',answer='x',answered_at=5 WHERE id='ans_a'").run();
+  seed(db,'ans_q','for_me','a'); db.prepare("UPDATE items SET created_at=1 WHERE id='ans_q'").run();
+  seed(db,'ans_gone','mine','gone'); db.prepare("UPDATE items SET status='answered',answer='y',thread_deleted=1 WHERE id='ans_gone'").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,lastReadAt:10} as any)));
+  expect(await call('counts')).toMatchObject({inbox:1,unread:0,forMe:1});
+  expect(db.prepare("SELECT read_at FROM items WHERE id='ans_q'").get()).toEqual({read_at:null});
+ });
+ it('previews a quote reply by its note and a bare quote by its text, without Markdown markers',async()=>{
+  const {harness,db}=setup(), call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
+  seed(db,'ans_a','mine','a'); db.prepare("UPDATE items SET question=? WHERE id='ans_a'").run('> Include the board export?\n> yes or no\n\nДа');
+  seed(db,'ans_b','mine','b'); db.prepare("UPDATE items SET question=? WHERE id='ans_b'").run('> Only a quote');
+  seed(db,'ans_c','mine','c'); db.prepare("UPDATE items SET question=? WHERE id='ans_c'").run('## Plan\n- first step');
+  const previews=Object.fromEntries((await call('recipients')).recipients.map((r:any)=>[r.threadId,r.preview]));
+  expect(previews).toEqual({a:'Да',b:'Only a quote',c:'Plan first step'});
  });
  it('groups unread recipients, orders them, keeps selected, and reads only inbox kinds',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b'); seed(db,'ans_c','for_me','b'); seed(db,'ans_wait','mine','b'); seed(db,'ans_save','saved','b');
@@ -134,13 +300,35 @@ describe('reply pools and inbox',()=>{
   const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
   expect(await call('counts')).toMatchObject({inbox:3});
   const recipients=(await call('recipients')).recipients;
+  // Open agent questions count on the contact too, so contacts add up to the nav badge.
   expect(recipients.map((r:any)=>[r.threadId,r.unread,r.lastAt])).toEqual([['b',2,20],['a',1,10]]);
   expect(recipients[1].preview).toHaveLength(160);
-  await call('markThreadRead',{threadId:'b'});
-  expect((await call('counts')).inbox).toBe(1);
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['a','b']);
-  expect((await call('recipients',{selected:'b'})).recipients.find((r:any)=>r.threadId==='b').unread).toBe(0);
+  // Reading a thread does not answer its open questions; they stay counted.
+  await call('markThreadRead',{threadId:'a'});
+  expect((await call('counts')).inbox).toBe(2);
+  expect((await call('recipients')).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['b',2],['a',0]]);
   expect(db.prepare("SELECT read_at FROM items WHERE id IN ('ans_wait','ans_save')").all()).toEqual([{read_at:null},{read_at:null}]);
+ });
+ it('keeps the open chat listed without items, but not once its thread is archived',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','a');
+  const ids=async(selected:string)=>((await harness.behavior.callRpc('recipients',{selected})) as any).recipients.map((r:any)=>r.threadId);
+  expect(await ids('fresh')).toEqual(['a','fresh']);
+  db.prepare("INSERT INTO archived_threads VALUES ('fresh')").run();
+  expect(await ids('fresh')).toEqual(['a']);
+ });
+ it('keeps recipient output across threads and projects',async()=>{
+  const {harness,db}=setup();
+  for(const [id,kind,thread,project] of [['ans_a','mine','a','p1'],['ans_b','for_me','b','p2'],['ans_c','mine','b','p2'],['ans_d','for_me','c','p1']] as const) {
+    seed(db,id,kind,thread); db.prepare('UPDATE items SET project_id=?,updated_at=? WHERE id=?').run(project,{ans_a:10,ans_b:20,ans_c:30,ans_d:5}[id],id);
+  }
+  db.prepare("UPDATE items SET status='answered',answer='A answer' WHERE id='ans_a'").run();
+  db.prepare("UPDATE items SET question='B question?' WHERE id='ans_b'").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,title:id.toUpperCase(),projectId:id==='b'?'p2':'p1'})));
+  harness.sdk.stub('projects.list',async()=>[{id:'p1',name:'One'},{id:'p2',name:'Two'}] as any);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
+    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,lastAt:30,preview:'B question?'},
+    {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
+  ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
   const {harness}=setup();
@@ -151,9 +339,9 @@ describe('reply pools and inbox',()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b');
   db.prepare("UPDATE items SET status='answered',answer='x' WHERE id='ans_a'").run();
   const call=(name:string,p:object={})=>harness.behavior.callRpc(name,p) as Promise<any>;
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','b']);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a']); // b only asked a question: no contact
   expect((await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})})).errors).toEqual([]);
-  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual(['b']);
+  expect((await call('recipients')).recipients.map((r:any)=>r.threadId)).toEqual([]);
   expect(await call('counts')).toMatchObject({unread:0,inbox:1});
   expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id)).toEqual(['ans_b']);
   expect((await call('list',{view:'all'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_a','ans_b']);
@@ -228,14 +416,17 @@ describe('reply pools and inbox',()=>{
   expect((send.mock.calls[1] as any[])[0].input.slice(1)).toEqual([{type:'localImage',path:img.path},{type:'localFile',path:doc.path,name:'b.txt',sizeBytes:5,sourceProjectId:'p'}]);
   await expect(call('quoteReply',{threadId:'t',quote:'q',text:'',attachments:Array(11).fill(doc)})).rejects.toBeDefined();
  });
- it('filters recipients and lists to questions, counting agent questions',async()=>{
+ it('counts an opened contact\'s open agent questions and drops the old questions filter',async()=>{
   const {harness,db}=setup();
   const call=(name:string,p:object)=>harness.behavior.callRpc(name,p) as Promise<any>;
-  const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,'a',1,1)");
-  add.run('ans_q','mine','a','answered','Ready?'); add.run('ans_n','mine','b','answered','Do it'); add.run('ans_f','for_me','c','open','Pick one');
-  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['a','c']);
-  expect((await call('recipients',{})).recipients).toHaveLength(3);
-  expect((await call('list',{view:'all',questions:true})).items.map((i:any)=>i.id).sort()).toEqual(['ans_f','ans_q']);
+  const add=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,created_at,updated_at) VALUES (?,?,?,?,?,?,1,1)");
+  add.run('ans_q','mine','a','answered','Ready?','a'); add.run('ans_f','for_me','c','open','Pick one',null); add.run('ans_r','for_me','d','replied','Pick two','B');
+  // Threads that only asked the owner something are no contacts (they live in Questions), unless opened.
+  expect((await call('recipients',{})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1]]);
+  expect((await call('recipients',{selected:'c'})).recipients.map((r:any)=>[r.threadId,r.unread])).toEqual([['a',1],['c',1]]);
+  expect((await call('counts',{})).inbox).toBe(2);
+  await expect(call('recipients',{questions:true})).rejects.toBeDefined();
+  await expect(call('list',{view:'all',questions:true})).rejects.toBeDefined();
  });
  it('sends free pool messages without a quote and refuses an empty pool',async()=>{
   expect(buildReplyMessage([{quote:'q',note:'reply'},{quote:'',note:'extra'},{quote:'',note:'  '}])).toBe('> q\n\nreply\n\nextra');
@@ -335,6 +526,20 @@ describe('ingestion driver',()=>{
   phase=1; await driver.schedule('t');
   expect(db.prepare('SELECT notify_state FROM items ORDER BY question_seq').all()).toEqual([{notify_state:0},{notify_state:1}]);
  });
+ it('tells the open chat to reread its context ring when bb reports context usage, and only then',async()=>{
+  const host=createFakePluginHost({pluginId:'answers',sdk:{threads:{get:async({threadId})=>makeThreadResponse({id:threadId,projectId:'p'}),list:async()=>[],events:{list:async()=>[]}}}});
+  const db=host.bb.storage.database(); db.exec(migrations.join("\n")); const onContext=vi.fn();
+  const driver=createDriver(host.bb,db,()=>{},onContext);
+  cleanup.push(async()=>{await driver.dispose(); await host.harness.lifecycle.dispose();});
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',5,0)").run();
+  let next:any[]=[{seq:6,type:'item/completed',createdAt:1,data:{},scope:{kind:'thread'}}];
+  host.harness.sdk.stub('threads.events.list',async(args:any)=>{ if (args.order!=='asc') return []; const page=next; next=[]; return page; });
+  await driver.schedule('t'); expect(onContext).not.toHaveBeenCalled();
+  next=[{seq:7,type:'thread/contextWindowUsage/updated',createdAt:2,data:{},scope:{kind:'thread'}}];
+  await driver.schedule('t'); expect(onContext).toHaveBeenLastCalledWith('t',undefined);
+  next=[{seq:8,type:'thread/compacted',createdAt:42,data:{},scope:{kind:'thread'}}];
+  await driver.schedule('t'); expect(onContext).toHaveBeenLastCalledWith('t',42);
+ });
  it('backfills descending pages then drains ascending, halving 413 pages at the same cursor',async()=>{
   const {harness,db,driver,invalidate}=driverSetup();
   const calls:any[]=[];
@@ -346,10 +551,50 @@ describe('ingestion driver',()=>{
   });
   await driver.schedule('t');
   expect(calls.map(c=>[c.order,c.limit,c.afterSeq])).toEqual([['desc','100',undefined],['desc','50',undefined],['asc','100','100']]);
-  expect(calls.every(c=>c.types.length===6)).toBe(true);
+  // First sight reads only what ingest needs; catching up also reads context-usage events (they bump the ring's stamp).
+  expect(calls.map(c=>c.types.includes('thread/contextWindowUsage/updated'))).toEqual([false,false,true]);
   expect(db.prepare('SELECT last_seq FROM threads_state').get()).toEqual({last_seq:100});
   expect(db.prepare('SELECT project_id,created_at FROM items').get()).toEqual({project_id:'p',created_at:123});
   expect(invalidate).toHaveBeenCalled();
+ });
+ it('invalidates once after a multi-page drain',async()=>{
+  const {harness,db,driver,invalidate}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',1,0)").run();
+  const events=Array.from({length:101},(_,i)=>({seq:i+2,type:'client/turn/requested',data:{initiator:'user',requestId:'r'+i,input:[{type:'text',text:'Question '+i}]}}));
+  harness.sdk.stub('threads.events.list',async(args:any)=>events.filter(e=>e.seq>Number(args.afterSeq)).slice(0,100));
+  await driver.schedule('t');
+  expect(db.prepare('SELECT count(*) n FROM items').get()).toEqual({n:101});
+  expect(invalidate).toHaveBeenCalledTimes(1);
+  expect(harness.inspection.sdk.callsTo('threads.events.list')).toHaveLength(2);
+ });
+ // Only answers_defer defers: a reply stays the answer even while sub-sessions its turn started still run.
+ it('keeps a turn answer while the children it started still run',async()=>{
+  const kids=[{id:'k',createdAt:2000,status:'active'}], backfill=false;
+  const {harness,db,driver}=driverSetup();
+  const events=[
+   {seq:1,type:'client/turn/requested',createdAt:1000,data:{initiator:'user',requestId:'r',input:[{type:'text',text:'Research?'}]}},
+   {seq:2,type:'turn/started',scope:{turnId:'u'},data:{}},
+   {seq:3,type:'turn/input/accepted',scope:{turnId:'u'},data:{clientRequestId:'r'}},
+   {seq:4,type:'item/completed',scope:{turnId:'u'},data:{item:{type:'agentMessage',text:'Research started, I will report'}}},
+   {seq:5,type:'turn/completed',scope:{turnId:'u'},data:{status:'completed'}},
+  ];
+  let shown=backfill?events:[];
+  harness.sdk.stub('threads.events.list',async(args:any)=>args.order==='desc' ? [...shown].reverse() : shown.filter(e=>e.seq>Number(args.afterSeq ?? 0)));
+  harness.sdk.stub('threads.list',async(args:any)=>args.parentThreadId==='t' ? kids.map(k=>makeThreadResponse({parentThreadId:'t',...k} as any)) : []);
+  await driver.schedule('t'); shown=events; await driver.schedule('t');
+  const item=db.prepare("SELECT status,interim,answer,read_at,wait_children FROM items").get();
+  expect(item).toEqual(expect.objectContaining({status:'answered',answer:'Research started, I will report',wait_children:null}));
+ });
+ it('skips archived and unchanged tracked threads using reconcile metadata',async()=>{
+  const {harness,db,driver}=driverSetup();
+  const eventThreads:string[]=[];
+  for(const id of ['archived','unchanged','changed']) db.prepare('INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES (?,1,0,100)').run(id);
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'archived',updatedAt:200,archivedAt:1}),makeThreadResponse({id:'unchanged',updatedAt:100}),makeThreadResponse({id:'changed',updatedAt:101,projectId:'p'})] : []);
+  harness.sdk.stub('threads.events.list',async(args:any)=>{eventThreads.push(args.threadId);return [];});
+  await driver.reconcile();
+  expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
+  expect(eventThreads).toEqual(['changed']);
+  expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
  });
  it('persists oversized errors without moving the cursor and retries without another event',async()=>{
   vi.useFakeTimers(); const {harness,db,driver}=driverSetup();
@@ -422,11 +667,11 @@ describe('0.3 server attention',()=>{
   expect((await call('counts')).inbox).toBe(2);
   expect((await call('list',{view:'unread'})).items.map((i:any)=>i.id).sort()).toEqual(['ans_ask','ans_fail']);
   const recipients=(await call('recipients')).recipients;
-  expect(recipients).toHaveLength(4); expect(recipients.slice(0,2).every((r:any)=>r.unread===1)).toBe(true);
+  expect(recipients).toHaveLength(2); expect(recipients.map((r:any)=>r.unread)).toEqual([1,0]);
   expect(recipients.find((r:any)=>r.threadId==='failed').preview).toBe('Turn failed: Question');
-  expect((await call('recipients',{questions:true})).recipients.map((r:any)=>r.threadId).sort()).toEqual(['asked','sleep']);
-  const batch=await call('markRead',{all:true}); expect(batch.count).toBe(2);
-  expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:2});
+  // The open agent question stays until answered.
+  const batch=await call('markRead',{all:true}); expect(batch.count).toBe(1);
+  expect(await call('undoRead',{batch:batch.batch})).toEqual({ok:true,count:1});
   const threadBatch=await call('markThreadRead',{threadId:'failed'}); expect(threadBatch.count).toBe(1);
   db.prepare('UPDATE items SET read_at=? WHERE read_batch=?').run(Date.now()-600001,threadBatch.batch);
   expect((await call('undoRead',{batch:threadBatch.batch})).count).toBe(0);
@@ -447,6 +692,17 @@ describe('0.3 server attention',()=>{
   const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','x'.repeat(200)],recommended:' Yes',reason:'Cheaper'},{threadId:'t'});
   expect(db.prepare('SELECT options,recommended,recommend_reason,notify_state FROM items WHERE id=?').get(id)).toEqual({options:JSON.stringify(['Yes','x'.repeat(200)]),recommended:'Yes',recommend_reason:'Cheaper',notify_state:0});
   expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0]).toMatchObject({recommended:'Yes',recommendReason:'Cheaper'});
+ });
+ it('asks several questions at once or with checkboxes through one form',async()=>{
+  const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+  for(const bad of [{question:'Pick',multiSelect:true},{question:'Pick',questions:[{question:'One'}]},{question:'Pick',options:['a'],questions:[{question:'One'},{question:'Two'}]},
+    {question:'Pick',questions:[{question:'One',multiSelect:true},{question:'Two'}]},{question:'Pick',questions:[{question:'One',options:['a'],recommended:'b'},{question:'Two'}]}]) await expect(ask(bad)).rejects.toThrow();
+  const multi=await ask({question:'Which?',options:['A','B'],multiSelect:'true',recommended:'B'});
+  expect(db.prepare('SELECT question,options,questions FROM items WHERE id=?').get(multi)).toEqual({question:'Which?',options:'null',questions:JSON.stringify([{id:'q1',prompt:'Which?',options:[{value:'A',label:'A'},{value:'B',label:'B',description:'Recommended'},{value:'Your call',label:'Your call',description:'Let the agent decide'}],multiSelect:true,allowFreeText:true,required:false}])});
+  const composite=await ask({question:'Setup',questions:[{question:'Name?',header:'Name'},{question:'Colors?',options:['Red','Blue'],multiSelect:true}]});
+  expect(db.prepare('SELECT question FROM items WHERE id=?').get(composite)).toEqual({question:'Setup\n\n1. **Name.** Name?\n2. Colors?'});
+  const item=(await harness.behavior.callRpc('list',{view:'for_me'}) as any).items.find((i:any)=>i.id===composite);
+  expect(item.questions.map((q:any)=>[q.id,q.shortLabel,q.multiSelect,q.options?.length])).toEqual([['q1','Name',false,1],['q2',undefined,true,3]]);
  });
  it('retries the latest attempt and handles live pre-acceptance failures',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine');
@@ -514,4 +770,138 @@ it('updates pool attachments with revision checks and forwards steer', async () 
   expect((await call('pools', {})).pools[0].entries[0].attachments).toEqual(attachments);
   await call('poolSend', { threadId: 't', ids: [id], send: { mode: 'steer' } });
   expect((send.mock.calls[0] as any[])[0]).toMatchObject({ mode: 'steer-if-active', input: [{ type: 'text' }, { type: 'localFile', path: 'file.txt' }] });
+});
+
+it('reads a thread\'s cost from Tokenomos and stays quiet when it is missing', async () => {
+  const {harness}=setup(), cost={usd:1.5,tokens:{freshIn:1,cacheRead:2,cacheWrite:3,output:4},estimated:false,partial:false};
+  let input:any; harness.sdk.stub('plugins.callRpc',async(args:any)=>{input=args;return {priceVersion:'v1',threads:[{threadId:'thr_a',own:cost,total:{...cost,usd:2},descendantCount:2,updatedAt:1}]};});
+  expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:true,own:cost,total:{...cost,usd:2},descendantCount:2});
+  expect(input).toMatchObject({pluginId:'tokenomos',method:'costs.threads',input:{threadIds:['thr_a'],includeDescendants:true}});
+  harness.sdk.stub('plugins.callRpc',async()=>{throw new Error('Plugin tokenomos is not installed');});
+  expect(await harness.behavior.callRpc('threadCost',{threadId:'thr_a'})).toEqual({available:false,own:null,total:null,descendantCount:0});
+});
+
+describe('owed answers', () => {
+ const day=24*60*60*1000, now=10*day;
+ function owedSeed(db:Database.Database,id:string,at=now-1000) {
+  seed(db,id,'mine');
+  db.prepare("UPDATE items SET status='deferred',created_at=?,updated_at=? WHERE id=?").run(at,at,id);
+ }
+ it('lists oldest first, omits dismissed and expired, and keeps history',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup();
+  owedSeed(db,'ans_new'); owedSeed(db,'ans_old',now-day); owedSeed(db,'ans_expired',now-3*day); owedSeed(db,'ans_dismissed');
+  db.prepare("UPDATE items SET interim='Working',updated_at=? WHERE id='ans_old'").run(now-day);
+  db.prepare("UPDATE items SET dismissed_at=? WHERE id='ans_dismissed'").run(now);
+  expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[
+   {id:'ans_old',question:'Question',createdAt:now-day,interim:true},
+   {id:'ans_new',question:'Question',createdAt:now-1000,interim:false},
+  ]});
+  expect(db.prepare("SELECT status,dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({status:'deferred',dismissed_at:now});
+  expect((await harness.behavior.callRpc('list',{view:'all',threadId:'t'}) as any).items).toHaveLength(4);
+ });
+ it('settles answered and dismissed, validates kind and invalidates lists and counts',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup(); owedSeed(db,'ans_answer'); owedSeed(db,'ans_drop'); seed(db,'ans_wrong');
+  await harness.behavior.callRpc('settleOwed',{id:'ans_answer',action:'answered'});
+  expect(db.prepare("SELECT status,answered_at,answer_source FROM items WHERE id='ans_answer'").get()).toEqual({status:'answered',answered_at:now,answer_source:'user'});
+  await harness.behavior.callRpc('settleOwed',{id:'ans_drop',action:'dismissed'});
+  expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_drop'").get()).toEqual({dismissed_at:now});
+  await expect(harness.behavior.callRpc('settleOwed',{id:'ans_wrong',action:'answered'})).rejects.toThrow('not owed');
+  // The agent's later report still resolves the question the owner settled by hand; deferring it again is refused.
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,active_turn_id) VALUES ('t',0,0,'late') ON CONFLICT(thread_id) DO UPDATE SET active_turn_id='late'").run();
+  await harness.behavior.callAgentTool('answers_resolve',{id:'ans_answer'},{threadId:'t',projectId:'p'});
+  expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_answer'").get()).toEqual({resolve_turn_id:'late'});
+  await expect(harness.behavior.callAgentTool('answers_defer',{id:'ans_answer'},{threadId:'t',projectId:'p'})).rejects.toThrow('not found');
+  expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[]});
+  await vi.advanceTimersByTimeAsync(150);
+  expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(ITEMS_TAG);
+  expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(COUNTS_TAG);
+ });
+ it('expires at three days despite pins and reads; interim and status movement restart the clock',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup();
+  for (const id of ['ans_stale','ans_interim','ans_status']) owedSeed(db,id,now-3*day+1);
+  await harness.behavior.callRpc('setPinned',{id:'ans_stale',pinned:true});
+  db.prepare("UPDATE items SET failed_at=? WHERE id='ans_stale'").run(now);
+  await harness.behavior.callRpc('markThreadRead',{threadId:'t'});
+  expect(db.prepare("SELECT read_at FROM items WHERE id='ans_stale'").get()).toEqual({read_at:now});
+  db.prepare("UPDATE items SET interim='New interim',interim_seq=10,updated_at=? WHERE id='ans_interim'").run(now);
+  db.prepare("UPDATE items SET status='waiting',updated_at=? WHERE id='ans_status'").run(now);
+  db.prepare("UPDATE items SET status='deferred',updated_at=? WHERE id='ans_status'").run(now);
+  expect((await harness.behavior.callRpc('owed',{threadId:'t'}) as any).items).toHaveLength(3);
+  vi.setSystemTime(now+1);
+  expect((await harness.behavior.callRpc('owed',{threadId:'t'}) as any).items.map((r:any)=>r.id)).toEqual(['ans_interim','ans_status']);
+ });
+ it('agent list excludes dismissed and expires deferred items, retaining waiting and fresh items',async()=>{
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const {db,harness}=setup(); owedSeed(db,'ans_expired',now-3*day); owedSeed(db,'ans_fresh'); seed(db,'ans_waiting','mine'); seed(db,'ans_dismissed','mine');
+  db.prepare("UPDATE items SET dismissed_at=? WHERE id='ans_dismissed'").run(now);
+  const result=await harness.behavior.callAgentTool('answers_list',{}, {threadId:'t'});
+  expect(String(result)).toContain('ans_fresh'); expect(String(result)).toContain('ans_waiting');
+  expect(String(result)).not.toContain('ans_expired'); expect(String(result)).not.toContain('ans_dismissed');
+  expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({dismissed_at:now});
+ });
+});
+
+it('defaults deadlines once and lets an earlier owner reply win',async()=>{
+ vi.useFakeTimers(); const {harness,db,send}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ for(const deadlineMinutes of [4,10081,5.5]) await expect(ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes})).rejects.toThrow();
+ await expect(ask({question:'Pick',deadlineMinutes:5})).rejects.toThrow();
+ const id=await ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes:5});
+ await vi.advanceTimersByTimeAsync(300000);
+ expect(db.prepare('SELECT status,answer_source,answer FROM items WHERE id=?').get(id)).toEqual({status:'replied',answer_source:'agent',answer:'No answer by the deadline, so going with the default:\nA'});
+ const owner=await ask({question:'Pick again',options:['B'],recommended:'B',deadlineMinutes:5}); await harness.behavior.callRpc('reply',{id:owner,text:'Mine'}); await vi.advanceTimersByTimeAsync(300000);
+ expect(db.prepare('SELECT answer_source FROM items WHERE id=?').get(owner)).toEqual({answer_source:'user'});expect(send).toHaveBeenCalledTimes(2);
+ const failed=await ask({question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5}); send.mockRejectedValueOnce(new Error('offline'));
+ await vi.advanceTimersByTimeAsync(300000); expect(db.prepare('SELECT status,deadline_at FROM items WHERE id=?').get(failed)).toEqual({status:'open',deadline_at:null});
+ await vi.advanceTimersByTimeAsync(300000);expect(send).toHaveBeenCalledTimes(3);
+});
+
+it('restores composite deadlines after restart',async()=>{
+ vi.useFakeTimers();const h=setup();
+ const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5},{threadId:'t'});
+ const next=await h.harness.lifecycle.reload(plugin); cleanup.push(()=>next.harness.lifecycle.dispose());
+ await vi.advanceTimersByTimeAsync(300000);
+ expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. **One** — A\n2. **Two** — Your call (decide yourself)');
+});
+
+it('stores urgency and keeps low questions visible without a push',async()=>{
+ const {harness,db}=setup();const id=await harness.behavior.callAgentTool('answers_ask',{question:'Later?',urgency:'low'},{threadId:'t'});
+ expect(db.prepare('SELECT urgency,notify_state FROM items WHERE id=?').get(id)).toEqual({urgency:'low',notify_state:0});
+ expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0].urgency).toBe('low');
+ await expect(harness.behavior.callAgentTool('answers_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
+});
+
+it('merges same-turn asks preserving choices, reasons, intro and limits',async()=>{
+ const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ await ask({question:'Earlier turn'});db.prepare("UPDATE threads_state SET active_turn_id='turn1' WHERE thread_id='t'").run();
+ const id=await ask({question:'Pick',options:['A','B'],recommended:'A',reason:'Cheap',deadlineMinutes:10,urgency:'low'});
+ const result=await ask({question:'Which?',options:['C','D'],multiSelect:true,recommended:'D',reason:'Fast',deadlineMinutes:5,urgency:'blocking'});expect(String(result).split('\n')[0]).toBe(id);
+ const row=db.prepare('SELECT * FROM items WHERE id=?').get(id) as any,parts=JSON.parse(row.questions);
+ expect(row).toMatchObject({options:null,recommend_reason:null,turn_id:'turn1',urgency:'blocking'});expect(row.deadline_at).toBeLessThan(Date.now()+301000);
+ expect(parts[0].options[0].description).toBe('Recommended: Cheap');expect(parts[1]).toMatchObject({id:'q2',multiSelect:true});expect(parts[1].options[1].description).toBe('Recommended: Fast');expect(row.question).toBe('1. Pick\n2. Which?');
+ await ask({question:'More',questions:Array.from({length:8},(_,i)=>({question:`Part ${i}`}))});expect(JSON.parse((db.prepare('SELECT questions FROM items WHERE id=?').get(id) as any).questions)).toHaveLength(10);
+ const separate=await ask({question:'New intro',questions:[{question:'First',header:'One'},{question:'Second'}]});expect(separate).not.toBe(id);
+ await ask({question:'Third'});expect((db.prepare('SELECT question FROM items WHERE id=?').get(separate) as any).question).toBe('New intro\n\n1. **One.** First\n2. Second\n3. Third');
+ db.prepare("UPDATE items SET dismissed_at=1 WHERE id=?").run(separate);expect(String(await ask({question:'Separate'}))).not.toContain('Merged');
+});
+
+it('reminds blocking questions at the configured interval, at most three times',async()=>{
+ vi.useFakeTimers();const {harness,db}=setup();await harness.behavior.setSettings({remindHours:1});
+ const ask=(question:string,urgency='blocking')=>harness.behavior.callAgentTool('answers_ask',{question,urgency},{threadId:'t'});
+ const id=await ask('Waiting?');const normal=await ask('Normal?','normal');
+ await vi.advanceTimersByTimeAsync(3600000);expect(db.prepare('SELECT reminders,reminded_at FROM items WHERE id=?').get(id)).toEqual({reminders:1,reminded_at:Date.now()});
+ await vi.advanceTimersByTimeAsync(3*3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:3});expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(normal)).toEqual({reminders:0});
+ const off=await ask('Off?');await harness.behavior.setSettings({remindHours:0});await vi.advanceTimersByTimeAsync(4*3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(off)).toEqual({reminders:0});
+ await harness.behavior.callRpc('setDismissed',{id:off,dismissed:true});await harness.behavior.setSettings({remindHours:1});await vi.advanceTimersByTimeAsync(3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(off)).toEqual({reminders:0});
+});
+
+it('restores reminder timing after restart and honors disabled saved settings',async()=>{
+ vi.useFakeTimers();const h=setup();await h.harness.behavior.setSettings({remindHours:0});
+ const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Waiting?',urgency:'blocking'},{threadId:'t'});
+ await vi.advanceTimersByTimeAsync(4*3600000);
+ const next=await h.harness.lifecycle.reload(plugin);cleanup.push(()=>next.harness.lifecycle.dispose());await vi.advanceTimersByTimeAsync(1000);
+ const db=next.bb.storage.database();expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:0});
+ await next.harness.behavior.setSettings({remindHours:3});await vi.advanceTimersByTimeAsync(1000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:1});
 });

@@ -1,5 +1,8 @@
 import TurndownService from 'turndown';
 const markdown = new TurndownService({ codeBlockStyle: 'fenced', headingStyle: 'atx', bulletListMarker: '-' });
+// Turndown has no table rules and glued cells together ("**Name**Value"); a quoted row reads as its cells joined by " | ".
+markdown.addRule('tableCell', { filter: ['th', 'td'], replacement: (content, node) => `${(node as Element).previousElementSibling ? ' | ' : ''}${content.replace(/\s*\n+\s*/g, ' ').trim()}` });
+markdown.addRule('tableRow', { filter: 'tr', replacement: content => `\n\n${content}\n\n` });
 export function clipSelection(range: Range, body: HTMLElement) {
   if (!range.intersectsNode(body)) return null;
   const clipped = range.cloneRange(), bounds = document.createRange();
@@ -15,8 +18,14 @@ export function selectionMarkdown(range: Range, body: HTMLElement) {
     let fragment: Node = clipped.cloneContents();
     let ancestor = clipped.commonAncestorContainer;
     if (ancestor.nodeType !== Node.ELEMENT_NODE) ancestor = ancestor.parentNode!;
+    // Only the nearest list level is kept: outer levels of a nested list would quote as '- - text', and a bullet around
+    // text from a single item is noise (an ordered item keeps its number).
+    let inItem = false, listed = false;
     while (ancestor && ancestor !== body) {
-      if (ancestor instanceof HTMLElement && /^(STRONG|B|EM|I|A|CODE|PRE|LI|OL|UL|BLOCKQUOTE|H[1-6])$/.test(ancestor.tagName)) {
+      const tag = ancestor instanceof HTMLElement ? ancestor.tagName : '';
+      const skip = /^(LI|OL|UL)$/.test(tag) && (listed || (tag === 'LI' && ancestor.parentElement?.tagName !== 'OL') || (tag === 'UL' && inItem));
+      if (tag === 'LI') inItem = true; else if (tag === 'OL' || tag === 'UL') listed = true;
+      if (!skip && ancestor instanceof HTMLElement && /^(STRONG|B|EM|I|A|CODE|PRE|LI|OL|UL|BLOCKQUOTE|H[1-6])$/.test(ancestor.tagName)) {
         const wrapper = ancestor.cloneNode(false) as HTMLElement;
         if (wrapper.tagName === 'OL') {
           const li = clipped.startContainer.nodeType === Node.ELEMENT_NODE ? clipped.startContainer as Element : clipped.startContainer.parentElement;
@@ -26,6 +35,14 @@ export function selectionMarkdown(range: Range, body: HTMLElement) {
         wrapper.append(fragment); fragment = wrapper;
       }
       ancestor = ancestor.parentNode!;
+    }
+    // Cells or rows cut out of a table lose their tags when the HTML is parsed again outside one, so put the table back.
+    const top = Array.from(fragment.childNodes).find(node => node.nodeType === Node.ELEMENT_NODE) as Element | undefined;
+    if (top && /^(TD|TH|TR|TBODY|THEAD|TFOOT)$/.test(top.tagName)) {
+      const table = document.createElement('table'); let into: Element = table;
+      if (top.tagName !== 'TBODY' && top.tagName !== 'THEAD' && top.tagName !== 'TFOOT') into = into.appendChild(document.createElement('tbody'));
+      if (top.tagName === 'TD' || top.tagName === 'TH') into = into.appendChild(document.createElement('tr'));
+      into.append(fragment); fragment = table;
     }
     const container = document.createElement('div'); container.append(fragment);
     container.querySelectorAll('button,[aria-hidden="true"],[data-copy],svg').forEach(node => node.remove());

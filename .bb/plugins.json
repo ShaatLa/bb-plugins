@@ -30,6 +30,22 @@
     {
       "name": "answers",
       "source": "./plugins/answers"
+    },
+    {
+      "name": "idle-compact",
+      "source": "./plugins/idle-compact"
+    },
+    {
+      "name": "tokenomos",
+      "source": "./plugins/tokenomos"
+    },
+    {
+      "name": "agent-spawn-gate",
+      "source": "./plugins/agent-spawn-gate"
+    },
+    {
+      "name": "sweep",
+      "source": "./plugins/bb-plugin-sweep"
     }
   ]
 }

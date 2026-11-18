@@ -11,20 +11,73 @@ interface DeliverCommentInput {
   authorName: string;
   threadId?: string;
   mode?: "steer-if-active" | "queue-if-active";
+  /** Question answers carry their own next step, so they skip the reply hint. */
+  replyHint?: boolean;
 }
 
 function steerPrompt(
   taskKey: string,
   authorName: string,
   body: string,
+  replyHint = true,
 ): string {
   return (
     "**Work Board** · `New comment`\n" +
     `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
-    `- From: ${authorName}\n\n${body}\n\n` +
-    "Treat this as updated context for your work on this task; " +
-    `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+    `- From: ${authorName}\n\n${body}` +
+    (replyHint
+      ? "\n\nTreat this as updated context for your work on this task; " +
+        `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+      : "")
   );
+}
+
+export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
+
+// Extend our own notice when it is still the last queued row, so a busy thread
+// gets one message instead of a stack of them. Any doubt falls back to send.
+async function appendToQueuedNotice(
+  bb: BbPluginApi,
+  threadId: string,
+  text: string,
+): Promise<boolean> {
+  try {
+    const last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
+    const part = last?.content.length === 1 ? last.content[0] : undefined;
+    if (
+      !last ||
+      !part ||
+      part.type !== "text" ||
+      last.originPluginId !== bb.pluginId ||
+      last.state !== "queued" ||
+      !last.editable
+    )
+      return false;
+    await bb.sdk.threads.queuedMessages.update({
+      threadId,
+      queuedMessageId: last.id,
+      expectedUpdatedAt: last.updatedAt,
+      input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. */
+export async function notifyThread(
+  bb: BbPluginApi,
+  threadId: string,
+  text: string,
+): Promise<void> {
+  if (await appendToQueuedNotice(bb, threadId, text)) return;
+  await bb.sdk.threads.send({
+    threadId,
+    originPluginId: bb.pluginId,
+    input: [{ type: "text", text, mentions: [] }],
+    mode: "queue-if-active",
+  });
 }
 
 export async function deliverCommentToLatestAgent(
@@ -46,9 +99,8 @@ export async function deliverCommentToLatestAgent(
       (comment) =>
         comment.kind === "system" && comment.body.startsWith("Thread detached"),
     );
-  const ownerRequester = task.executionTarget === "owner" && input.threadId;
   const canUsePreferred =
-    ownerRequester ||
+    input.threadId ||
     (!detached.some((comment) => comment.threadId === preferred) &&
       (links.length > 0 || (previous.length === 0 && detached.length === 0)));
   const candidates = [
@@ -57,7 +109,7 @@ export async function deliverCommentToLatestAgent(
       ...links.map((link) => link.threadId),
     ]),
   ];
-  const prompt = steerPrompt(task.key, input.authorName, input.body);
+  const prompt = steerPrompt(task.key, input.authorName, input.body, input.replyHint);
   for (const threadId of candidates) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
@@ -68,6 +120,7 @@ export async function deliverCommentToLatestAgent(
         thread.status === "stopping"
       )
         continue;
+      if (await appendToQueuedNotice(bb, threadId, prompt)) return 1;
       await bb.sdk.threads.send({
         threadId,
         originPluginId: bb.pluginId,

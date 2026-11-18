@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyJobs, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
-import { acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
+import { deploymentMode, acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
 import { at, classify, failed, failure, job, LOSS, REPO } from "./test-support";
 import { parseRef } from "./ci-refs";
 
@@ -32,6 +32,13 @@ describe("merge queue removal", () => {
     expect(text(event!, ["a.One", "b.Two"])).toBe(`PR #7 removed from merge queue · Unit tests: real, Integration: flake FLAKE-1, CI summary: consequence, Lint: runner_loss (1 on this head) · failed tests: a.One, b.Two · inspect \`queue:50:1\`${RUN_LINK}`);
     expect(text(event!)).not.toContain("failed tests");
     expect(text(event!, [])).not.toContain("failed tests");
+  });
+  it("adds the first failure message of each shown test, only when a job failed real", () => {
+    const [real] = queueRemovalEvents(REPO, [classify(queueJob(), "real")]), [flake] = queueRemovalEvents(REPO, [classify(queueJob(), "flake")]);
+    const messages = { "a.One": "AssertionError: expected 1 to be 2" };
+    expect(real!.render(["a.One", "b.Two"], undefined, messages)).toMatch(/· inspect `queue:50:1`.*\n {2}- a\.One: AssertionError: expected 1 to be 2$/);
+    expect(flake!.render(["a.One"], undefined, messages)).not.toContain("AssertionError");
+    expect(real!.render(["a.One"], undefined, null)).not.toContain("\n");
   });
   it("shows at most three tests then +K, at most four jobs then +K, and keeps the link inside 400 characters", () => {
     const jobs = Array.from({ length: 6 }, (_, i) => classify(queueJob({ jobName: `Job ${i}`, jobId: 600 + i }), "real"));
@@ -344,12 +351,34 @@ describe("deployments", () => {
     const state = emptyRepoState();
     const events = await deploymentEvents({ request: github.request, repository: REPO, state, since, now, runOutcome: deployRunOutcome(classified) });
     expect(events.map((event) => text(event)).sort()).toEqual([
-      "Deploy production failure · \`abcdef0\` · deployment 2 · [job 1](https://github.com/acme/widgets/actions/runs/42/job/1)",
-      "Deploy production refused (Admit gate) · \`abcdef0\` · deployment 1 · [job 1](https://github.com/acme/widgets/actions/runs/41/job/1)"]);
-    // Run 43 has no stored jobs yet: not sent and not remembered, so it is looked at again; after the wait it goes out as a failure.
+      "Deploy production failure · \`abcdef0\` · deployment 2 · [job 1](https://github.com/acme/widgets/actions/runs/42/job/1)"]);
+    // Run 43 has no stored jobs yet and the refusal has no newer deployment yet: neither is sent or remembered, so both are looked at again.
+    expect(state.deploys["1"]).toBeUndefined();
     expect(state.deploys["3"]).toBeUndefined();
     const later = await deploymentEvents({ request: github.request, repository: REPO, state, since, now: now + 11 * 60_000, runOutcome: deployRunOutcome(classified) });
-    expect(later.map((event) => text(event))).toEqual(["Deploy production failure · \`abcdef0\` · deployment 3 · [job 1](https://github.com/acme/widgets/actions/runs/43/job/1)"]);
+    expect(later.map((event) => text(event)).sort()).toEqual([
+      "Deploy production failure · \`abcdef0\` · deployment 3 · [job 1](https://github.com/acme/widgets/actions/runs/43/job/1)",
+      "Deploy production refused (Admit gate) · \`abcdef0\` · deployment 1 · [job 1](https://github.com/acme/widgets/actions/runs/41/job/1)"]);
+  });
+  it("treats a refusal as superseded when a newer commit is deploying or deployed to the same environment", async () => {
+    const refused = [{ ...classify(job({ runId: 41, jobId: 7, conclusion: "failure", failedSteps: ["Admit gate"] }), "refused"), evidence: "Admit gate" }];
+    const refusal = { state: "failure", created_at: "2026-11-06T11:55:00Z", log_url: "https://github.com/acme/widgets/actions/runs/41/job/1" };
+    const newer = { ...row(2, "2026-11-06T11:56:00Z"), sha: "1234567890abcdef" };
+    const run = (statuses: Record<number, object[]>, deployments: object[] = [newer, row(1)]) => {
+      const state = emptyRepoState();
+      return deploymentEvents({ request: api(deployments, { 1: [refusal], ...statuses }).request, repository: REPO, state, since, now, runOutcome: deployRunOutcome(refused) }).then((events) => ({ events, state }));
+    };
+    // Newer deployment just created (no status) or running: sent to nobody and remembered.
+    for (const statuses of [{}, { 2: [{ state: "in_progress", created_at: "2026-11-06T11:57:00Z" }] }] as Record<number, object[]>[]) {
+      const { events, state } = await run(statuses);
+      expect(events.filter((event) => event.key.startsWith("deploy:1:"))).toEqual([]);
+      expect(state.deploys["1"]).toBe(Date.parse(refusal.created_at));
+    }
+    // The newer one failed: the refusal is real.
+    expect((await run({ 2: [{ state: "failure", created_at: "2026-11-06T11:57:00Z" }] })).events.map((event) => event.key)).toContain("deploy:1:failure");
+    // A newer deployment of the same commit or to another environment does not supersede it.
+    expect((await run({}, [{ ...newer, sha: row(1).sha }, row(1)])).state.deploys["1"]).toBeUndefined();
+    expect((await run({}, [{ ...newer, environment: "staging" }, row(1)])).state.deploys["1"]).toBeUndefined();
   });
   it("reports a deployment once, when its newest status is final", async () => {
     const state = emptyRepoState();
@@ -561,3 +590,37 @@ describe("inherited merge queue failures", () => {
   });
 });
 
+
+it("normalizes legacy deployment modes", () => {
+  for (const value of [true, "true", "all", "garbage", undefined]) expect(deploymentMode(value)).toBe("all");
+  for (const value of [false, "false", "off"]) expect(deploymentMode(value)).toBe("off");
+  expect(deploymentMode("failures")).toBe("failures");
+  expect(enabledEvents({ observeDeployments: "off" }).deploy).toBe(false);
+});
+it("resolves deployment PR locally before fallback and ignores lookup errors", async () => {
+  for (const local of [12, null]) {
+    const paths: string[] = [];
+    const request = async (path: string) => {
+      paths.push(path);
+      return { body: path.includes("/statuses") ? [{ state: "success", created_at: at(5) }] : path.includes("/commits/") ? [{ number: 13, merge_commit_sha: "abcdef0", merged_at: at(1) }] : [{ id: 1, sha: "abcdef0", environment: "production", created_at: at(1) }], headers: new Headers(), status: 200, hasNext: false };
+    };
+    const events = await deploymentEvents({ request, repository: "owner/repo", state: emptyRepoState(), since: 0, now: Date.parse(at(6)), landedPullRequest: () => local });
+    expect(events[0]!.render()).toContain(` · #${local ?? 13} · `);
+    expect(paths.filter((p) => p.includes("/commits/"))).toHaveLength(local === null ? 1 : 0);
+  }
+});
+
+it("looks up PRs only for final deployments and continues after budget errors", async () => {
+  const paths: string[] = [];
+  const request = async (path: string) => {
+    paths.push(path);
+    if (path.includes("/commits/")) throw new Error("429 Budget exhausted");
+    return { body: path.includes("/statuses") ? [{ state: path.includes("/1/") ? "in_progress" : "success", created_at: at(5) }] : [1, 2, 3].map((id) => ({ id, sha: `sha${id}`, created_at: at(1) })), hasNext: false };
+  };
+  const events = await deploymentEvents({ request, repository: "owner/repo", state: emptyRepoState(), since: 0, now: Date.parse(at(6)) });
+  expect(events).toHaveLength(2);
+  expect(paths.filter((path) => path.includes("/commits/"))).toHaveLength(2);
+  expect(paths.some((path) => path.includes("/commits/sha1/"))).toBe(false);
+  expect(events.every((event) => event.deploy?.pullRequest === null)).toBe(true);
+  expect(subscriptionNotice([], enabledEvents({}), 0, 0, "failures")).toContain("deployment failures");
+});

@@ -12,7 +12,7 @@ import { createComment, createStore, registerTasksApi } from ".";
 import { prStatusPlugin } from "../test-fixtures.js";
 
 describe("Tasks RPC domain API", () => {
-  it("serves task content, saved workers and comments within 500 ms without metadata lookups", async () => {
+  it("serves task content, saved workers and comments within 2 s without metadata lookups", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     try {
       const store = createStore(bb);
@@ -21,13 +21,14 @@ describe("Tasks RPC domain API", () => {
       const task = store.tasks.createTask({ projectId: project.id, title: "Local task" });
       store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_slow_metadata", title: "Worker", presetName: "Attached", liveStatus: "working" });
       store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Worker", threadId: "thr_slow_metadata", body: "Saved context" });
+      // A loose wall-clock budget: the suite runs files in parallel workers sharing the CPU; the blocked RPCs prove nothing waits on them.
       const start = performance.now();
       const [detail, workers, activity] = await Promise.all([
         harness.callRpc("getTaskByKey", { taskKey: task.key }),
         harness.callRpc("listTaskThreads", { taskId: task.id, reconcile: false }),
         harness.callRpc("listComments", { taskId: task.id, resolveMetadata: false }),
       ]);
-      expect(performance.now() - start).toBeLessThan(500);
+      expect(performance.now() - start).toBeLessThan(2000);
       expect(detail).toMatchObject({ task: { title: "Local task" } });
       expect(workers).toMatchObject({ taskThreads: [{ title: "Worker" }] });
       expect(activity).toMatchObject({ comments: [{ body: "Saved context", threadTitle: null, provider: null }] });

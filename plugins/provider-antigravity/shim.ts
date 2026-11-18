@@ -1,8 +1,10 @@
+import { tokenUsageShimSource } from "./token-usage.ts";
 import { reviewMcpSource } from "./review-mcp.ts";
 import { GOOGLE_MODEL_PREFIX } from "./models.ts";
 
 // Materialized on each execution host so the host artifact is self-contained.
 export const shimSource = String.raw`
+import {appendFile,stat,rename} from 'node:fs/promises';
 import {spawn,execFile,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomUUID} from 'node:crypto';
@@ -18,6 +20,7 @@ const permissionMode=process.argv.slice(2).find(arg=>arg.startsWith('--bb-permis
 if(!['full','accept-edits'].includes(permissionMode))throw Error('Unsupported or missing permission mode.');
 mkdirSync(join(dataDir,'sessions'),{recursive:true,mode:0o700});
 const sessions=new Map(),pendingRoots=new Set();
+${tokenUsageShimSource}
 const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
 const fail=(id,message,code=-32602)=>send({id,error:{code,message}});
 const update=(sessionId,value)=>send({method:'session/update',params:{sessionId,update:value}});
@@ -101,7 +104,7 @@ function runPrompt(id,session,prompt,denialRecovery=false){
   const child=spawn(agy,args,{cwd:session.cwd,stdio:['pipe','pipe','pipe'],detached:process.platform!=='win32'});session.child=child;session.cancelled=false;
   child.stdin.on('error',()=>{});
   child.stdin.end(JSON.stringify({event:'user',message:{content:text}})+'\n');
-  const tools=new Map(),seenTools=new Set();let hadText=false,final,answered=false,permissionDenied=false;
+  const tools=new Map(),seenTools=new Set();let hadText=false,final,answered=false,permissionDenied=false,usageModel=session.selected;
   createInterface({input:child.stderr}).on('line',line=>{
     if(/soft.denied|requires approval|permission.{0,40}denied|not allowed in headless/i.test(line))permissionDenied=true;
   });
@@ -123,9 +126,10 @@ function runPrompt(id,session,prompt,denialRecovery=false){
   };
   createInterface({input:child.stdout}).on('line',line=>{
     let event;try{event=JSON.parse(line);}catch{return;}
-    if(event.event==='init'&&event.conversation_id)session.conversationId=event.conversation_id;
+    if(event.event==='init'&&event.conversation_id){session.conversationId=event.conversation_id;if(typeof event.init?.model==='string')usageModel=event.init.model;}
     if(event.event==='result'){final=event.result;return;}
     const step=event.step_update;if(event.event!=='step_update'||!step)return;
+    recordUsage(session,step,usageModel);
     if(step.step_type==='agent_response'&&typeof step.text_delta==='string'){
       hadText=true;update(session.id,{sessionUpdate:'agent_message_chunk',content:{type:'text',text:step.text_delta}});
     }
@@ -147,7 +151,7 @@ function runPrompt(id,session,prompt,denialRecovery=false){
 }
 async function handle(request){
   const {id,method,params:p={}}=request;
-  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-antigravity',version:'0.3.0'}}});
+  if(method==='initialize')return send({id,result:{protocolVersion:1,agentCapabilities:{loadSession:true,promptCapabilities:{image:true},mcpCapabilities:{http:false,sse:false}},authMethods:[],agentInfo:{name:'bb-antigravity',version:'0.4.0'}}});
   if(method==='authenticate')return send({id,result:{}});
   if(method==='session/new'){
     if(!models.length||typeof p.cwd!=='string')throw Error('No CLI models or workspace available.');
@@ -206,6 +210,6 @@ function stopChild(child,signal){
     try{process.kill(-child.pid,signal);}catch{}
   }
 }
-function shutdown(){for(const session of sessions.values())stopChild(session.child,'SIGTERM');for(const root of pendingRoots)rmSync(root,{recursive:true,force:true});process.exit(0);}
+function shutdown(){for(const session of sessions.values())stopChild(session.child,'SIGTERM');for(const root of pendingRoots)rmSync(root,{recursive:true,force:true});setTimeout(()=>process.exit(0),500).unref();void usageWrites.finally(()=>process.exit(0));}
 for(const signal of ['SIGTERM','SIGINT'])process.on(signal,shutdown);
 `;

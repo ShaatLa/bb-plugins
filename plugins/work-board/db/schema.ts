@@ -430,6 +430,32 @@ const MIGRATIONS = [
    CREATE TRIGGER task_parent_fallback_release AFTER UPDATE OF status ON tasks
    WHEN NEW.status IN ('done','canceled') AND OLD.status <> NEW.status
    BEGIN DELETE FROM task_threads WHERE task_id=NEW.id AND preset_name='Parent thread'; END;`,
+  `ALTER TABLE tasks ADD COLUMN progress_note TEXT;
+   ALTER TABLE tasks ADD COLUMN progress_updated_at TEXT;
+   ALTER TABLE tasks ADD COLUMN progress_updated_by TEXT;`,
+  // Adds the 3-day auto-archive interval; SQLite can only change a CHECK by rebuilding the table (as in version 12).
+  (db: PluginDatabase) => {
+    const table = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get()!;
+    const objects = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE tbl_name = 'projects' AND type IN ('index', 'trigger') AND sql IS NOT NULL").all();
+    const sql = table.sql.replace("CHECK (auto_archive_after_days IN ('off', '7', '14', '30'))", "CHECK (auto_archive_after_days IN ('off', '3', '7', '14', '30'))");
+    if (sql === table.sql) throw new Error("Could not migrate the auto-archive constraint");
+    db.exec("CREATE TEMP TABLE projects_archive_backup AS SELECT * FROM projects");
+    db.exec("DROP TABLE projects");
+    db.exec(sql);
+    db.exec("INSERT INTO projects SELECT * FROM projects_archive_backup");
+    db.exec("DROP TABLE projects_archive_backup");
+    for (const object of objects) db.exec(object.sql);
+    if (db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Foreign key check failed during auto-archive migration");
+  },
+  (db: PluginDatabase) => {
+    db.exec("ALTER TABLE tasks DROP COLUMN execution_target; ALTER TABLE tasks DROP COLUMN requester_thread_id;");
+    if (db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Foreign key check failed during executor removal");
+  },
+  `ALTER TABLE projects ADD COLUMN question_link_hosts TEXT;`,
+  // 0.43.0 shipped question link hosts and 0.43.1 withdrew them; the column goes with the setting.
+  `ALTER TABLE projects DROP COLUMN question_link_hosts;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {
@@ -462,9 +488,9 @@ export function initializeTasksSchema(db: PluginDatabase): void {
     }
   });
 
-  // Rebuilding tasks must preserve the rows referenced by comments, threads and attachments.
-  const rebuildingTasks = !hasVersion.get(12);
-  if (rebuildingTasks) db.pragma("foreign_keys = OFF");
+  // Rebuilding tasks (12) or projects (29) must preserve the rows that reference them.
+  const rebuilding = !hasVersion.get(12) || !hasVersion.get(29);
+  if (rebuilding) db.pragma("foreign_keys = OFF");
   try {
     migrate();
   } finally {

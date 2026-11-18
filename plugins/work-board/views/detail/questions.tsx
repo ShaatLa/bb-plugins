@@ -1,10 +1,87 @@
-import { useEffect, useState } from "react";
+import { isQuestionOpen } from "../../shared/questions";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
+import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import type { TaskQuestion } from "../../shared/contract";
 import { errorMessage } from "../../shared/errors";
+import { LinkedText } from "../../components/linked-text";
+import { clearAnswerDraft, readAnswerDraft, readAnswerFiles, sweepAnswerDrafts, writeAnswerDraft, writeAnswerFiles } from "./answer-draft";
+
+import { uploadAttachment, Lightbox } from "./attachments";
+import { AttachmentTracks } from "../activity/task-activity";
+import { formatFileSize } from "../activity/time";
+import { MAX_ATTACHMENT_SIZE_BYTES } from "../../shared/attachments";
+import type { Attachment } from "../../shared/contract";
+
+/** Files chosen for an answer, shown inside the answer box like bb's chat composer. */
+function PendingFiles({ files, onRemove }: { files: readonly File[]; onRemove: (index: number) => void }) {
+  const urls = useMemo(() => files.map(file => file.type.startsWith("image/") ? URL.createObjectURL(file) : null), [files]);
+  useEffect(() => () => urls.forEach(url => url && URL.revokeObjectURL(url)), [urls]);
+  const images = files.map((_, index) => index).filter(index => urls[index]);
+  const [open, setOpen] = useState<number | null>(null);
+  const at = open === null ? -1 : images.indexOf(open);
+  return (
+    <div className="flex flex-wrap gap-2 px-2 pt-2">
+      {files.map((file, index) => (
+        <span key={`${index}:${file.name}`} className="group relative inline-flex items-center">
+          {urls[index] ? (
+            <button type="button" className="block size-14 overflow-hidden rounded-md border border-border" aria-label={`Preview ${file.name}`} onClick={() => setOpen(index)}>
+              <img src={urls[index]!} alt={file.name} className="size-full object-cover" />
+            </button>
+          ) : (
+            <span className="inline-flex h-14 max-w-48 items-center gap-1.5 rounded-md border border-border px-2 text-xs">
+              <Icon name="File" className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0"><span className="block truncate">{file.name}</span><span className="text-muted-foreground">{formatFileSize(file.size)}</span></span>
+            </span>
+          )}
+          <button type="button" aria-label={`Remove ${file.name}`} title={`Remove ${file.name}`}
+            className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full border border-border bg-background text-[10px] leading-none text-muted-foreground hover:text-foreground"
+            onClick={() => onRemove(index)}>×</button>
+        </span>
+      ))}
+      {open !== null && urls[open] ? (
+        <ImageLightbox
+          isOpen
+          imageSrc={urls[open]!}
+          imageAlt={files[open]!.name}
+          title={files[open]!.name}
+          hasMultipleImages={images.length > 1}
+          previousDisabled={at <= 0}
+          nextDisabled={at >= images.length - 1}
+          onPrevious={() => setOpen(images[at - 1] ?? open)}
+          onNext={() => setOpen(images[at + 1] ?? open)}
+          onClose={() => setOpen(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Saving an answer snapshots the unanswered state it replaces; that snapshot repeats the
+ * current question, so only versions that were answered or worded differently are shown.
+ */
+function meaningfulHistory(question: TaskQuestion) {
+  const states = [...question.history, question];
+  return question.history.filter((entry, index) => {
+    const next = states[index + 1]!;
+    return Boolean(entry.answeredBy) || entry.prompt !== next.prompt || entry.mode !== next.mode ||
+      JSON.stringify(entry.options.map(option => option.label)) !== JSON.stringify(next.options.map(option => option.label));
+  });
+}
+
+function AnswerAttachments({ commentId }: { commentId: string }) {
+  const query = useTasksQuery(async rpc => (await rpc.call("listAttachments", { commentId })).attachments, ["tasks:changed", "comments:changed"], [commentId]);
+  const [image, setImage] = useState<Attachment | null>(null);
+  return <>
+    <AttachmentTracks attachments={query.data ?? []} onOpenImage={setImage} />
+    {image ? <Lightbox attachment={image} onClose={() => setImage(null)} /> : null}
+  </>;
+}
 
 // shortcut: Honor explicit legacy suffixes until old questions carry recommendation metadata.
 const LEGACY_RECOMMENDATION = /\s*\((?:рекомендую|recommended)\)\s*$/i;
@@ -39,14 +116,43 @@ function QuestionAnswer({
   onError,
 }: {
   question: TaskQuestion;
-  onSave: (ids: string[], answerText: string | null) => Promise<void>;
+  onSave: (ids: string[], answerText: string | null, files: File[]) => Promise<void>;
   onEdit: () => void;
   onError: (message: string) => void;
 }) {
-  const [selected, setSelected] = useState(question.selectedOptionIds);
-  const [other, setOther] = useState(question.answerText !== null);
-  const [text, setText] = useState(question.answerText ?? "");
+  const [files, setFiles] = useState<File[]>([]);
+  const filesLoaded = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void readAnswerFiles(question.id, question.revision).then(saved => {
+      if (!live) return;
+      filesLoaded.current = true;
+      if (saved.length) setFiles(current => current.length ? current : saved);
+    });
+    return () => { live = false; };
+  }, [question.id, question.revision]);
+  useEffect(() => {
+    if (filesLoaded.current) void writeAnswerFiles(question.id, question.revision, files);
+  }, [files, question.id, question.revision]);
+  const picker = useRef<HTMLInputElement>(null);
+  const addFiles = (chosen: File[]) => {
+    const valid = chosen.filter(file => {
+      if (file.size <= MAX_ATTACHMENT_SIZE_BYTES) return true;
+      onError(`File "${file.name}" exceeds the 25 MB attachment limit`);
+      return false;
+    });
+    setFiles(current => [...current, ...valid]);
+  };
+  const [draft] = useState(() => readAnswerDraft(question.id, question.revision));
+  const [selected, setSelected] = useState(draft?.selected ?? question.selectedOptionIds);
+  const [other, setOther] = useState(draft?.other ?? question.answerText !== null);
+  const [text, setText] = useState(draft?.text ?? question.answerText ?? "");
+  useEffect(() => {
+    const saved = JSON.stringify([...selected].sort()) === JSON.stringify([...question.selectedOptionIds].sort()) && text === (question.answerText ?? "");
+    writeAnswerDraft(question.id, question.revision, saved ? null : { selected, other, text });
+  }, [selected, other, text, question.id, question.revision, question.selectedOptionIds, question.answerText]);
   const answerText = other ? text.trim() || null : null;
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
   const [saving, setSaving] = useState(false);
   const unchanged =
     JSON.stringify([...selected].sort()) ===
@@ -54,11 +160,12 @@ function QuestionAnswer({
     answerText === question.answerText;
   return (
     <fieldset
+      aria-label={question.prompt}
       className="space-y-2 rounded-md border border-border p-3"
       disabled={saving}
     >
       <legend className="max-w-full px-1 text-sm font-medium break-words">
-        {question.prompt}
+        <LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
       </legend>
       <p className="text-xs text-muted-foreground">
         {question.mode === "single"
@@ -76,7 +183,7 @@ function QuestionAnswer({
             name={question.id}
             checked={selected.includes(option.id)}
             onChange={(event) => {
-              if (question.mode === "single") setOther(false);
+              if (question.mode === "single") { setOther(false); setText(""); }
               setSelected(
                 question.mode === "single"
                   ? [option.id]
@@ -89,31 +196,40 @@ function QuestionAnswer({
           <OptionText option={option} />
         </label>
       ))}
-      {question.allowOther ? (
-        <div className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type={question.mode === "single" ? "radio" : "checkbox"}
-              name={question.id}
-              checked={other}
-              onChange={(event) => {
-                setOther(event.target.checked);
-                if (question.mode === "single") setSelected([]);
-              }}
-            />
-            Other answer
-          </label>
-          {other ? (
-            <Textarea
-              aria-label="Your answer"
-              value={text}
-              maxLength={10_000}
-              required
-              onChange={(event) => setText(event.target.value)}
-            />
-          ) : null}
+      <div
+        className="rounded-md border border-input focus-within:ring-1 focus-within:ring-ring"
+        onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+        onDrop={event => {
+          if (event.dataTransfer.files.length) { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }
+        }}
+      >
+        {files.length ? <PendingFiles files={files} onRemove={index => setFiles(current => current.filter((_, at) => at !== index))} /> : null}
+        <Textarea
+          className="border-0 shadow-none focus-visible:ring-0"
+          onPaste={event => {
+            const pasted = Array.from(event.clipboardData.files);
+            if (pasted.length) { event.preventDefault(); addFiles(pasted); }
+          }}
+          aria-label="Your answer"
+          placeholder="Your answer (optional)"
+          value={text}
+          maxLength={10_000}
+          onChange={(event) => {
+            setText(event.target.value);
+            setOther(Boolean(event.target.value.trim()));
+            if (question.mode === "single") setSelected([]);
+          }}
+        />
+        <div className="flex px-1.5 pb-1.5">
+          <input ref={picker} type="file" multiple hidden aria-label="Answer files" onChange={event => {
+            addFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+          }} />
+          <Button type="button" size="icon" variant="ghost" className="size-7" aria-label="Attach files" onClick={() => picker.current?.click()}>
+            <Icon name="Paperclip" className="size-4" />
+          </Button>
         </div>
-      ) : null}
+      </div>
+      {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
           Answered by {question.answeredBy}
@@ -128,11 +244,13 @@ function QuestionAnswer({
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          disabled={unchanged || saving || (other && !answerText)}
+          disabled={(unchanged && !files.length) || saving || (other && !answerText) || (files.length > 0 && !selected.length && !answerText)}
           onClick={async () => {
             setSaving(true);
             try {
-              await onSave(selected, answerText);
+              await onSave(selected, answerText, files);
+              clearAnswerDraft(question.id);
+              setFiles([]);
             } catch (error) {
               onError(errorMessage(error));
             } finally {
@@ -154,32 +272,53 @@ function QuestionAnswer({
         >
           Clear selection
         </Button>
+        {question.answeredBy ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={saving}
+            onClick={async () => {
+              if (!confirmWithdraw) { setConfirmWithdraw(true); return; }
+              setSaving(true);
+              try {
+                await onSave([], null, []);
+                setSelected([]); setOther(false); setText("");
+              } catch (error) {
+                onError(errorMessage(error));
+              } finally {
+                setSaving(false);
+                setConfirmWithdraw(false);
+              }
+            }}
+          >
+            {confirmWithdraw ? "Confirm: withdraw and notify the agent" : "Withdraw answer"}
+          </Button>
+        ) : null}
       </div>
       <Button size="sm" variant="ghost" onClick={onEdit}>
         Edit question
       </Button>
-      {question.history.length ? (
+      {meaningfulHistory(question).length ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">
-            History · {question.history.length}
+            History · {meaningfulHistory(question).length}
           </summary>
           <ol className="mt-2 space-y-3">
-            {[...question.history].reverse().map((entry) => (
+            {[...meaningfulHistory(question)].reverse().map((entry) => (
               <li
                 key={entry.revision}
                 className="space-y-1 border-t border-border pt-2"
               >
                 <p>
-                  Revision {entry.revision} · {entry.updatedAt}
+                  Revision {entry.revision} · {new Date(entry.updatedAt).toLocaleString()}
                 </p>
                 <p className="whitespace-pre-wrap break-words">
-                  {entry.prompt}
+                  <LinkedText text={entry.prompt} />
                 </p>
                 <p>
                   {entry.mode === "single"
                     ? "Single choice"
                     : "Multiple choice"}
-                  {entry.allowOther ? " · Other answer allowed" : ""}
                 </p>
                 <ul>
                   {entry.options.map((option) => (
@@ -200,7 +339,7 @@ function QuestionAnswer({
                       )
                       .map((option) => option.label),
                     ...(entry.answerText ? [entry.answerText] : []),
-                  ].join("; ") || "(unanswered)"}
+                  ].join("; ") || "none, replaced before an answer"}
                   {entry.answeredBy ? ` · ${entry.answeredBy}` : ""}
                 </p>
               </li>
@@ -214,29 +353,25 @@ function QuestionAnswer({
 
 export function QuestionsSection({
   taskId,
+  query,
   adding,
   onAddingChange,
   onError,
 }: {
   taskId: string;
+  query: ReturnType<typeof useTasksQuery<TaskQuestion[]>>;
   adding: boolean;
   onAddingChange: (adding: boolean) => void;
   onError: (message: string) => void;
 }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery(
-    async (client) =>
-      (await client.call("listQuestions", { taskId })).questions,
-    ["tasks:changed"],
-    [taskId],
-    { relevantTaskIds: [taskId] },
-  );
+  useEffect(() => { void sweepAnswerDrafts(); }, []);
   const [prompt, setPrompt] = useState("");
   const [options, setOptions] = useState<
     (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]
   >([{ label: "" }, { label: "" }]);
   const [multiple, setMultiple] = useState(false);
-  const [allowOther, setAllowOther] = useState(false);
+  const [kind, setKind] = useState<"decision" | "check">("decision");
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<TaskQuestion | null>(null);
   const [reopen, setReopen] = useState(false);
@@ -246,13 +381,56 @@ export function QuestionsSection({
     setPrompt("");
     setOptions([{ label: "" }, { label: "" }]);
     setMultiple(false);
-    setAllowOther(false);
+    setKind("decision");
     setReopen(false);
   }, [adding]);
   const closeForm = () => {
     setEditing(null);
     onAddingChange(false);
   };
+  const renderQuestion = (question: TaskQuestion) => (
+        <QuestionAnswer
+          key={`${question.id}:${question.revision}`}
+          question={question}
+          onError={onError}
+          onEdit={() => {
+            onAddingChange(false);
+            setEditing(question);
+            setPrompt(question.prompt);
+            setOptions(question.options);
+            setMultiple(question.mode === "multiple");
+            setKind(question.kind);
+            setReopen(false);
+          }}
+          onSave={async (selectedOptionIds, answerText, files) => {
+            const attachmentIds: string[] = [];
+            let result;
+            try {
+              for (const file of files) attachmentIds.push((await uploadAttachment(file, { taskId })).attachmentId);
+              result = await rpc.call("answerQuestion", {
+              attachmentIds,
+              questionId: question.id,
+              revision: question.revision,
+              selectedOptionIds,
+              answerText,
+              authorName: "You",
+            });
+            } catch (error) {
+              await Promise.allSettled(attachmentIds.map(attachmentId => rpc.call("deleteAttachment", { attachmentId })));
+              throw error;
+            }
+            query.refresh();
+            if (result.notification === "failed")
+              onError(
+                "Answer saved, but the agent could not be notified. Notify its thread manually.",
+              );
+          }}
+        />
+  );
+  const open = (query.data ?? []).filter(isQuestionOpen)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  const earlier = (query.data ?? []).filter(question => !isQuestionOpen(question))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
     <section aria-label="Questions" className="mt-5 space-y-3">
@@ -277,36 +455,15 @@ export function QuestionsSection({
           </Button>
         </div>
       ) : null}
-      {(query.data ?? []).map((question) => (
-        <QuestionAnswer
-          key={`${question.id}:${question.revision}`}
-          question={question}
-          onError={onError}
-          onEdit={() => {
-            onAddingChange(false);
-            setEditing(question);
-            setPrompt(question.prompt);
-            setOptions(question.options);
-            setMultiple(question.mode === "multiple");
-            setAllowOther(question.allowOther);
-            setReopen(false);
-          }}
-          onSave={async (selectedOptionIds, answerText) => {
-            const result = await rpc.call("answerQuestion", {
-              questionId: question.id,
-              revision: question.revision,
-              selectedOptionIds,
-              answerText,
-              authorName: "You",
-            });
-            query.refresh();
-            if (result.notification === "failed")
-              onError(
-                "Answer saved, but the agent could not be notified. Notify its thread manually.",
-              );
-          }}
-        />
-      ))}
+      {open.map(renderQuestion)}
+      {earlier.length ? (
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            Earlier ({earlier.length})
+          </summary>
+          <div className="mt-3 space-y-3">{earlier.map(renderQuestion)}</div>
+        </details>
+      ) : null}
       {adding || editing ? (
         <form
           className="space-y-3 rounded-md border border-border p-3"
@@ -331,7 +488,6 @@ export function QuestionsSection({
                   prompt,
                   mode: multiple ? "multiple" : "single",
                   options: normalizedOptions,
-                  allowOther,
                   reopen,
                   authorName: "You",
                 });
@@ -341,7 +497,7 @@ export function QuestionsSection({
                   prompt,
                   mode: multiple ? "multiple" : "single",
                   options: normalizedOptions.map(({ id, ...option }) => option),
-                  allowOther,
+                  kind,
                 });
               }
               closeForm();
@@ -353,6 +509,23 @@ export function QuestionsSection({
             }
           }}
         >
+          {!editing ? (
+            <label className="block text-sm">
+              Type
+              <select aria-label="Question type" value={kind} disabled={saving}
+                onChange={event => {
+                  const next = event.target.value as "decision" | "check";
+                  setKind(next);
+                  setOptions(next === "check"
+                    ? [{ label: "Confirmed" }, { label: "Problem found" }]
+                    : [{ label: "" }]);
+                }}
+              >
+                <option value="decision">Decision</option>
+                <option value="check">Check</option>
+              </select>
+            </label>
+          ) : null}
           <Textarea
             autoFocus
             aria-label="Question"
@@ -414,7 +587,7 @@ export function QuestionsSection({
                   />
                   Recommend
                 </label>
-                {options.length > 2 ? (
+                {options.length > 1 ? (
                   <Button
                     type="button"
                     variant="ghost"
@@ -496,15 +669,6 @@ export function QuestionsSection({
                 }}
               />
               Allow multiple answers
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={allowOther}
-                disabled={saving}
-                onChange={(event) => setAllowOther(event.target.checked)}
-              />
-              Allow other answer
             </label>
             {editing?.answeredBy ? (
               <label className="flex items-start gap-2 text-sm text-warning">

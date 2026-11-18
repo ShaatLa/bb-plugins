@@ -1,5 +1,8 @@
+import { isQuestionOpen } from "../shared/questions";
+import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
+import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
@@ -17,6 +20,10 @@ import { z } from "zod";
 
 import {
   createComment,
+  REPORT_KINDS,
+  cardRole,
+  reportToParent,
+  childrenCards,
   publishProjectsChanged,
   registerHandlers,
   type TasksApiStore,
@@ -34,7 +41,6 @@ import {
   PRESET_PERMISSION_MODES,
   TASK_PRIORITIES,
   TASK_TYPES,
-  EXECUTION_TARGETS,
   ULID_PATTERN,
   EVIDENCE_KINDS,
   evidenceSchema,
@@ -137,6 +143,16 @@ function friendlyError(error: unknown): string {
   return message;
 }
 
+const COMMENTS_PAGE_MAX = 500;
+
+function commentsTable(comments: readonly { id: string; createdAt: string; kind: string; threadTitle: string | null; authorName: string; provider: { name: string } | null; body: string }[]): string {
+  return table(
+    ["ID", "TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
+    comments.map((comment) => [comment.id, comment.createdAt, comment.kind, comment.threadTitle ?? comment.authorName, comment.provider?.name ?? "-", comment.body]),
+    "(none)",
+  );
+}
+
 async function guard(
   action: () => Promise<string | PluginCliResult>,
 ): Promise<PluginCliResult> {
@@ -158,6 +174,11 @@ function normalizePrefix(value: string): string {
 function unwrapTask(result: TaskMutationResult): Task {
   if (!result.ok) throw new CliError(result.error.message);
   return result.task;
+}
+
+function rejectExecutors(options: { executor?: unknown; "requester-thread"?: unknown }) {
+  if (options.executor !== undefined || options["requester-thread"] !== undefined)
+    throw new CliError("Work Board no longer has executors: ask the owner with `bb work-board question add KEY --kind check --prompt ...` (or `--kind decision` with options)");
 }
 
 async function resolveClientHostId(
@@ -852,6 +873,17 @@ export function registerTasksCli(
   status: PluginStatus,
 ): void {
   const domain = registerHandlers(bb, store);
+  // A session that took its card by message is never attached by title; its first report or state note attaches it.
+  const attachCardSession = async (taskId: string, threadId: string): Promise<{ attached: boolean; warnings: string[] }> => {
+    try {
+      const role = await cardRole(bb, store, taskId, threadId);
+      if (!role.parentThreadId || role.attached || role.helper) return { attached: false, warnings: [] };
+      await delegationHandlers(bb, store).taskThreadsAttach({ taskId, threadId });
+      return { attached: true, warnings: [] };
+    } catch (error) {
+      return { attached: false, warnings: [`Could not attach ${threadId} to the card: ${errorMessage(error)}; run bb work-board attach KEY`] };
+    }
+  };
   const templateReadCommands = Object.fromEntries(
     (["list", "show", "delete"] as const).map((action) => [
       `template ${action}`,
@@ -1013,6 +1045,7 @@ export function registerTasksCli(
             url: { type: "string", required: true, description: "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123" },
             head: { type: "string", description: "Full 40-character head SHA to judge (default: the PR head when the wait starts)" },
             timeout: { type: "duration", defaultUnit: "m", default: 45 * 60_000, min: 60_000, max: 60 * 60_000, description: "How long to wait, 1 to 60 min (default 45 min)" },
+            "ignore-context": { type: "string", repeatable: true, description: "Required check posted after CI by a gate; reported, never waited for. Adds to the project's Git setting; repeatable" },
             json: JSON_OPTION,
           },
           run(input, ctx) { return guard(async () => {
@@ -1027,12 +1060,17 @@ export function registerTasksCli(
               if (!token || Date.now() - token.at > 60_000) token = { at: Date.now(), value: githubToken(signal) };
               return token.value;
             } });
-            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout }, signal);
+            const ignored = new Set<string>(input.options["ignore-context"] ?? []);
+            for (const project of await listProjects(domain)) {
+              const config = gitSyncConfigSchema.parse((await domain.getGitSyncConfig({ projectId: project.id })).config);
+              if (config.repositories.some((repository) => repository.toLowerCase() === match[1]!.toLowerCase())) config.prWaitIgnoredChecks.forEach((name) => ignored.add(name));
+            }
+            const result = await waitForPrCi(client, { repository: match[1]!, number: Number(match[2]), head, timeoutMs: input.options.timeout, ignored: [...ignored] }, signal);
             const from = head ? "--head" : "the PR head";
             return {
               exitCode: result.exitCode,
               stdout: input.options.json
-                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], waitedMs: result.waitedMs })
+                ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], ignored: [...ignored], waitedMs: result.waitedMs })
                 : `${match[1]}#${match[2]} at ${result.sha || "unknown head"} (from ${from}), waited ${Math.round(result.waitedMs / 60_000)} min\n${result.message}`,
             };
           }); },
@@ -1165,26 +1203,23 @@ export function registerTasksCli(
           ],
         ),
         "question add": cliCommand({
-          summary: "Add a question with stable option IDs",
+          summary: "Ask the owner one decision or one check (short, one link; details go in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
+            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
             prompt: {
               type: "string",
               required: true,
-              description: "Question text",
+              description: "One or two short sentences, at most one link; evidence and history go in a task comment",
             },
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat at least twice",
+              description: "Option text; repeat at least once",
             },
             multiple: {
               type: "boolean",
               description: "Allow multiple answers",
-            },
-            "allow-other": {
-              type: "boolean",
-              description: "Allow a free-text answer",
             },
             recommend: {
               type: "string",
@@ -1198,18 +1233,19 @@ export function registerTasksCli(
             },
             json: JSON_OPTION,
           },
-          run(input) {
+          run(input, ctx) {
             return guard(async () => {
               const task = await resolveTask(
                 domain,
                 input.positionals["key-or-id"],
               );
+              const optionLabels = input.options.option.length ? input.options.option : input.options.kind === "check" ? ["Confirmed", "Problem found"] : [];
               const recommended = input.options.recommend.map((value) =>
                 z.coerce.number().int().min(1).max(20).parse(value),
               );
               if (
                 recommended.some(
-                  (number) => number > input.options.option.length,
+                  (number) => number > optionLabels.length,
                 )
               )
                 throw new CliError(
@@ -1225,8 +1261,10 @@ export function registerTasksCli(
               const result = await domain.createQuestion(
                 tasksRpcContract.createQuestion.input.parse({
                   taskId: task.id,
+                  kind: input.options.kind ?? "decision",
+                  askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
-                  options: input.options.option.map((label, index) =>
+                  options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
                       ? {
                           label,
@@ -1237,12 +1275,17 @@ export function registerTasksCli(
                       : label,
                   ),
                   mode: input.options.multiple ? "multiple" : "single",
-                  allowOther: input.options["allow-other"],
                 }),
               );
+              const warnings = [
+                ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
+                  ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
+                ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
+                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+              ];
               return input.options.json
-                ? JSON.stringify(result)
-                : JSON.stringify(result.question, null, 2);
+                ? JSON.stringify({ ...result, warnings })
+                : { exitCode: 0, stdout: JSON.stringify(result.question, null, 2), stderr: warnings.join("\n") };
             });
           },
         }),
@@ -1282,7 +1325,7 @@ export function registerTasksCli(
             clear: { type: "boolean", description: "Clear the answer" },
             text: {
               type: "string",
-              description: "Free-text answer when the creator allows it",
+              description: "Free-text answer",
             },
             revision: {
               type: "integer",
@@ -1291,6 +1334,8 @@ export function registerTasksCli(
               required: true,
               description: "Question revision returned by list",
             },
+            file: { type: "string", repeatable: true, description: "Answer attachment file (at most 25 MB); repeat for multiple files" },
+            machine: MACHINE_OPTION,
             json: JSON_OPTION,
           },
           run(input, ctx) {
@@ -1315,8 +1360,20 @@ export function registerTasksCli(
                 throw new CliError(
                   "Use --answer/--text or --clear, exclusively",
                 );
-              const result = await domain.answerQuestion(
+              if (input.options.clear && input.options.file.length) throw new CliError("Files require an answer");
+              const attachmentIds: string[] = [];
+              let result;
+              try {
+                const hostId = input.options.file.length ? await resolveClientHostId(bb, domain, input.options.machine, ctx) : undefined;
+                for (const file of input.options.file) {
+                  const path = resolve(ctx.cwd ?? process.cwd(), file);
+                  const attachment = await saveAttachmentFromBytes(store.tasks, await readAttachmentSource(bb, hostId, path), { taskId: task.id, fileName: attachmentFileName(path) });
+                  attachmentIds.push(attachment.id);
+                  publishAttachmentChanged(bb, store.tasks, attachment);
+                }
+                result = await domain.answerQuestion(
                 tasksRpcContract.answerQuestion.input.parse({
+                  attachmentIds,
                   questionId: input.options.question,
                   selectedOptionIds: input.options.clear
                     ? []
@@ -1326,6 +1383,10 @@ export function registerTasksCli(
                   authorName: taskAuthor(ctx),
                 }),
               );
+              } catch (error) {
+                await Promise.allSettled(attachmentIds.map(attachmentId => domain.deleteAttachment({ attachmentId, removeDescriptionReferences: false })));
+                throw error;
+              }
               return input.options.json
                 ? JSON.stringify(result)
                 : `Saved answer to ${result.question.id}`;
@@ -1376,14 +1437,6 @@ export function registerTasksCli(
               type: "string",
               description: "Optional reason; requires --recommend",
             },
-            "allow-other": {
-              type: "boolean",
-              description: "Allow a free-text answer",
-            },
-            "no-other": {
-              type: "boolean",
-              description: "Disallow a free-text answer",
-            },
             reopen: {
               type: "boolean",
               description:
@@ -1405,10 +1458,6 @@ export function registerTasksCli(
               );
               if (!current)
                 throw new CliError("Question does not belong to this task");
-              if (input.options["allow-other"] && input.options["no-other"])
-                throw new CliError(
-                  "Use --allow-other or --no-other, exclusively",
-                );
               let options: unknown = current.options;
               if (input.options["options-file"]) {
                 const hostId = await resolveClientHostId(
@@ -1438,11 +1487,6 @@ export function registerTasksCli(
                 prompt: input.options.prompt ?? current.prompt,
                 mode: input.options.mode ?? current.mode,
                 options,
-                allowOther: input.options["no-other"]
-                  ? false
-                  : input.options["allow-other"]
-                    ? true
-                    : current.allowOther,
                 reopen: input.options.reopen,
                 authorName: taskAuthor(ctx),
               });
@@ -1846,7 +1890,7 @@ export function registerTasksCli(
           options: {
             "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
             "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
-            "auto-archive": { type: "enum", values: ["off", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
+            "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
             machine: MACHINE_OPTION,
@@ -2198,12 +2242,11 @@ export function registerTasksCli(
           options: {
             "requester-thread": {
               type: "string",
-              description: "BB thread to notify when an Owner action is done",
+              description: "Removed: ask the owner with a task question",
             },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2288,6 +2331,7 @@ export function registerTasksCli(
           ],
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const attachPaths = input.options.attach.map((path) =>
                 resolve(ctx.cwd ?? process.cwd(), path),
               );
@@ -2334,13 +2378,7 @@ export function registerTasksCli(
                 title: input.options.title,
                 status: input.options.status,
                 template: input.options.template,
-                requesterThreadId:
-                  input.options["requester-thread"] ??
-                  (input.options.executor === "owner"
-                    ? (ctx.threadId ?? process.env.BB_THREAD_ID ?? null)
-                    : null),
                 type: input.options.type,
-                executionTarget: input.options.executor,
                 epicId: input.options.epic
                   ? (await resolveTask(domain, input.options.epic)).id
                   : null,
@@ -2423,9 +2461,8 @@ export function registerTasksCli(
             archived: { type: "boolean", description: "List only archived tasks" },
             "include-archived": { type: "boolean", description: "Include archived and unarchived tasks" },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2478,6 +2515,7 @@ export function registerTasksCli(
               type: "boolean",
               description: "Keep only tasks with a live agent thread",
             },
+            "waiting-on-owner": { type: "boolean", description: "Keep only tasks waiting on you" },
             "include-scheduled": {
               type: "boolean",
               description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
@@ -2511,6 +2549,7 @@ export function registerTasksCli(
           },
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const project = await selectedProject(
                 domain,
                 ctx,
@@ -2558,7 +2597,6 @@ export function registerTasksCli(
                     archive: input.options.archived ? "archived" : input.options["include-archived"] ? "all" : "active",
                     projectId: project?.id,
                     type: input.options.type,
-                    executionTarget: input.options.executor,
                     epicId: input.options.epic
                       ? (await resolveTask(domain, input.options.epic)).id
                       : undefined,
@@ -2574,6 +2612,7 @@ export function registerTasksCli(
                     labelIds: labelIds.length > 0 ? labelIds : undefined,
                     activeOnly: input.options.active,
                     staleStatus: input.options["stale-status"],
+                    waitingOnOwner: input.options["waiting-on-owner"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2591,10 +2630,12 @@ export function registerTasksCli(
                   (row) => [row.taskId, threadHealthJson(row.threadHealth, Date.now())],
                 ),
               );
+              const waiting = new Map((await domain.questionCounts({ taskIds: result.tasks.map(task => task.id) })).counts.map(row => [row.taskId, row.waitingOnOwner]));
               const tasks = [];
               for (const task of result.tasks) {
                 tasks.push({
                   ...task,
+                  waitingOnOwner: waiting.get(task.id) ?? false,
                   labels: task.labelIds.map(
                     (id) => labelById.get(id)?.name ?? id,
                   ),
@@ -2616,7 +2657,6 @@ export function registerTasksCli(
                 [
                   "KEY",
                   "STATUS",
-                  "EXECUTOR",
                   "PRIORITY",
                   "DUE",
                   "TITLE",
@@ -2629,7 +2669,6 @@ export function registerTasksCli(
                 tasks.map((task) => [
                   task.key,
                   task.status,
-                  task.executionTarget,
                   task.priority,
                   task.dueDate ?? "-",
                   task.title,
@@ -2653,7 +2692,11 @@ export function registerTasksCli(
           aliases: ["get"],
           suggestFor: ["view", "read", "info", "detail", "details", "describe"],
           positionals: [KEY_POSITIONAL],
-          options: { json: JSON_OPTION },
+          options: {
+            brief: { type: "boolean", description: "Leave out comments, evidence records, question history and per-check PR details; counts stay" },
+            comments: { type: "integer", min: 0, max: COMMENTS_PAGE_MAX, description: "Include only the latest N comments (default: all, or none with --brief)" },
+            json: JSON_OPTION,
+          },
           run(input) {
             return guard(async () => {
               const task = await resolveTask(
@@ -2694,12 +2737,24 @@ export function registerTasksCli(
               const { questions } = await domain.listQuestions({
                 taskId: task.id,
               });
+              const newestQuestion = newestOpenQuestion(tasksRpcContract.listQuestions.output.parse({ questions }).questions);
+              const waiting = waitingOnOwner(task, newestQuestion ? 1 : 0);
               const evidence = evidenceIndex(comments);
               const attachments = await listTaskAttachments(
                 domain,
                 task.id,
                 comments,
               );
+              const brief = input.options.brief === true;
+              const keep = input.options.comments ?? (brief ? 0 : comments.length);
+              const shownComments = keep ? comments.slice(-keep) : [];
+              const omittedComments = comments.length - shownComments.length;
+              const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => !isQuestionOpen(question) ? {
+                id: question.id, prompt: question.prompt, kind: question.kind, askedByThread: question.askedByThread,
+                answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
+                answeredBy: question.answeredBy, updatedAt: question.updatedAt,
+              } : question) : questions;
+              const latestCommentId = comments.at(-1)?.id ?? null;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
               const activity = cardMeta.activity;
               const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
@@ -2711,13 +2766,21 @@ export function registerTasksCli(
                     }),
                   ),
                 );
-              const { links: prLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const { links: allPrLinks, overlaps } = await domain.listPrLinks({ taskId: task.id });
+              const prLinks = brief
+                ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
+                : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
+              const more: Record<string, string> = {};
+              if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
+              if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
+              if (brief && questions.some(q => !isQuestionOpen(q) || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
+              if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
                   overlaps,
-                  task,
+                  task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
                   project,
                   labels,
@@ -2733,9 +2796,13 @@ export function registerTasksCli(
                   blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
-                  comments,
-                  questions,
-                  evidence: evidence.records,
+                  latestCommentId,
+                  ...(Object.keys(more).length ? { more } : {}),
+                  comments: shownComments,
+                  commentCount: comments.length,
+                  ...(omittedComments ? { commentsOmitted: omittedComments } : {}),
+                  questions: shownQuestions,
+                  ...(brief ? {} : { evidence: evidence.records }),
                   evidenceSummary: evidence.summary,
                   evidenceFlags: evidenceFlags(evidence.records, pullRequests, prLinks),
                 });
@@ -2750,13 +2817,6 @@ export function registerTasksCli(
                     "Epic",
                     task.epicId
                       ? (await resolveTask(domain, task.epicId)).key
-                      : "-",
-                  ],
-                  ["Executor", task.executionTarget],
-                  [
-                    "Requester",
-                    task.requesterThreadId
-                      ? `@thread:${task.requesterThreadId}`
                       : "-",
                   ],
                   ["ID", task.id],
@@ -2782,7 +2842,9 @@ ${activity.diagnostics?.explanation ?? "Diagnostic details unavailable."}${activ
 ${activity.sessions.map((session) => `${ACTIVITY_LABELS[session.state]} · @thread:${session.threadId} · ${session.title}\n${session.diagnostics?.explanation ?? ""}${session.diagnostics ? `\nThread ${session.diagnostics.threadStatus ?? "unknown"}; runtime ${session.diagnostics.runtimeStatus ?? "unknown"}; focus ${session.diagnostics.focusedTaskKey ?? session.diagnostics.focusedTaskId ?? "none"}; turn ${session.diagnostics.turnId ?? "unknown"}; request ${session.diagnostics.requestId ?? "unknown"}; queue ${session.diagnostics.queueIds.join(", ") || "none"}; interactions ${session.diagnostics.interactionIds.join(", ") || "none"}` : ""}`).join("\n")}
 ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.threadId} · ${session.title} · ${session.reason}; excluded from current activity`).join("\n") ?? ""}`] : []),
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
+                ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],
                   subtasks.map((subtask) => [
@@ -2826,19 +2888,10 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
-                `Questions\n${JSON.stringify(questions, null, 2)}`,
-                `Evidence\n${evidenceText(evidence)}`,
-                `Comments\n${table(
-                  ["TIME", "KIND", "AUTHOR", "PROVIDER", "BODY"],
-                  comments.map((comment) => [
-                    comment.createdAt,
-                    comment.kind,
-                    comment.threadTitle ?? comment.authorName,
-                    comment.provider?.name ?? "-",
-                    comment.body,
-                  ]),
-                  "(none)",
-                )}`,
+                `Questions\n${brief ? shownQuestions.map(q => "answer" in q ? `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})` : JSON.stringify(q)).join("\n") : JSON.stringify(shownQuestions, null, 2)}`,
+                brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
+                `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
+                ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),
               ].join("\n\n");
             });
           },
@@ -2850,12 +2903,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
           options: {
             "requester-thread": {
               type: "string",
-              description: "BB thread to notify when an Owner action is done",
+              description: "Removed: ask the owner with a task question",
             },
             executor: {
-              type: "enum",
-              values: EXECUTION_TARGETS,
-              description: "Who performs the action: agent or owner",
+              type: "string",
+              description: "Removed: ask the owner with a task question",
             },
             type: {
               type: "enum",
@@ -2897,6 +2949,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               description:
                 "Read the replacement description from this UTF-8 file on the invoking machine",
             },
+            progress: { type: "string", description: "Replace the current state note (4 KB maximum)" },
+            "progress-file": { type: "string", description: "Read current state from a UTF-8 file on the invoking machine" },
+            "clear-progress": { type: "boolean", description: "Clear the current state note" },
             due: {
               type: "string",
               placeholder: "YYYY-MM-DD",
@@ -2937,6 +2992,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             json: JSON_OPTION,
           },
           constraints: [
+            { kind: "at-most-one", options: ["progress", "progress-file", "clear-progress"] },
             {
               kind: "at-most-one",
               options: ["description", "description-file"],
@@ -2944,14 +3000,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             { kind: "at-most-one", options: ["due", "no-due"] },
             { kind: "at-most-one", options: ["parent", "no-parent"] },
             { kind: "at-most-one", options: ["epic", "no-epic"] },
-            {
-              kind: "requires",
-              option: "machine",
-              needs: ["description-file"],
-            },
+
           ],
           run(input, ctx) {
             return guard(async () => {
+              rejectExecutors(input.options);
               const task = await resolveTask(
                 domain,
                 input.positionals["key-or-id"],
@@ -2965,8 +3018,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   ? undefined
                   : await resolveTask(domain, parentAddress);
               const descriptionFile = input.options["description-file"];
+              if (input.options.machine && !descriptionFile && !input.options["progress-file"]) throw new CliError("--machine requires --description-file or --progress-file");
               const clientHostId =
-                descriptionFile !== undefined
+                (descriptionFile !== undefined || input.options["progress-file"] !== undefined)
                   ? await resolveClientHostId(
                       bb,
                       domain,
@@ -2981,6 +3035,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.description,
                 descriptionFile,
               );
+              const progressNote = input.options["clear-progress"] ? null : await readTextOption(bb, ctx, clientHostId, input.options.progress, input.options["progress-file"]);
               const labels = await projectLabels(domain, task.projectId);
               const nextLabels = new Set(task.labelIds);
               for (const name of input.options["add-label"]) {
@@ -2997,6 +3052,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.priority === undefined &&
                 input.options.title === undefined &&
                 description === undefined &&
+                progressNote === undefined &&
                 dueDate === undefined &&
                 !noDue &&
                 parentAddress === undefined &&
@@ -3016,14 +3072,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 await domain.updateTask(
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
-                    requesterThreadId:
-                      input.options["requester-thread"] ??
-                      (input.options.executor === "owner" &&
-                      !task.requesterThreadId
-                        ? (ctx.threadId ?? process.env.BB_THREAD_ID)
-                        : undefined),
+                    agentThreadId: ctx.threadId ?? null,
                     type: input.options.type,
-                    executionTarget: input.options.executor,
                     epicId: input.options["no-epic"]
                       ? null
                       : input.options.epic
@@ -3033,25 +3083,26 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     priority: input.options.priority,
                     title: input.options.title,
                     description,
+                    progressNote,
                     dueDate: noDue ? null : dueDate,
                     parentTaskId:
                       parentAddress === undefined && !noParent
                         ? undefined
                         : (parent?.id ?? null),
                     labelIds: labelsChanged ? [...nextLabels] : undefined,
-                    authorName: taskAuthor(ctx),
+                    authorName: progressNote !== undefined ? ctx.threadId ?? taskAuthor(ctx) : taskAuthor(ctx),
                   }),
                 ),
               );
               const updated = unwrapTask(result);
+              const attach = progressNote != null && ctx.threadId ? await attachCardSession(updated.id, ctx.threadId) : { attached: false, warnings: [] };
               return input.options.json
                 ? JSON.stringify({
                     task: updated,
-                    ...(result.ok && result.notification
-                      ? { notification: result.notification }
-                      : {}),
+                    ...(attach.attached ? { attached: true } : {}),
+                    ...(attach.warnings.length ? { warnings: attach.warnings } : {}),
                   })
-                : `Updated ${updated.key}  ${updated.title}${result.ok && result.notification === "not_sent" ? "\nWarning: requester thread could not be notified; notify it manually." : ""}`;
+                : { exitCode: 0, stdout: `Updated ${updated.key}  ${updated.title}${attach.attached ? `; attached ${ctx.threadId}` : ""}`, stderr: attach.warnings.join("\n") };
             });
           },
         }),
@@ -3092,6 +3143,71 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               return moved.key === task.key
                 ? `${task.key} is already in ${project.prefix}`
                 : `Moved ${task.key} to ${moved.key}  ${moved.title}`;
+            });
+          },
+        }),
+
+        "comment show": cliCommand({
+          summary: "Read a full comment and its attachments",
+          positionals: [{ name: "comment-id", description: "Comment ID from comment list", required: true }],
+          options: { json: JSON_OPTION },
+          run(input) {
+            return guard(async () => {
+              const id = input.positionals["comment-id"]!.trim().toUpperCase();
+              const stored = store.tasks.getComment(id);
+              if (!stored) throw new CliError(`comment not found: ${id}`);
+              const { comments } = await domain.listComments({ taskId: stored.taskId });
+              const comment = comments.find(comment => comment.id === id)!;
+              const { attachments } = await domain.listAttachments({ commentId: id });
+              if (input.options.json) return JSON.stringify({ comment, attachments });
+              return `${detail([["ID", comment.id], ["Task", comment.taskId], ["Time", comment.createdAt], ["Kind", comment.kind], ["Author", comment.authorName], ["Preset", comment.presetName ?? "-"], ["Notified", comment.notifiedCount], ["Thread", comment.threadId ?? "-"], ["Thread title", comment.threadTitle ?? "-"], ["Provider", comment.provider?.name ?? "-"]])}\n\n${comment.body}\n\n${comment.evidence ? `Evidence\n${JSON.stringify(comment.evidence, null, 2)}\n\n` : ""}Attachments\n${table(["ID", "NAME", "SIZE"], attachments.map(a => [a.id, a.fileName, bytes(a.sizeBytes)]), "(none)")}`;
+            });
+          },
+        }),
+
+        "comment list": cliCommand({
+          summary: "List a task's comments one page at a time, newest page first",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            limit: { type: "integer", min: 1, max: COMMENTS_PAGE_MAX, description: "Comments per page (default 20)" },
+            cursor: { type: "string", description: "nextCursor from the previous page: comments older than that one" },
+            after: { type: "string", description: "Only comments strictly newer than this comment ID" },
+            preview: { type: "boolean", description: "Show a 200-character index; use comment show ID for full text and attachments" },
+            kind: { type: "enum", values: ["user", "agent", "system"] as const, repeatable: true, description: "Only these comment kinds; default user and agent" },
+            json: JSON_OPTION,
+          },
+          run(input) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const kinds: readonly string[] = input.options.kind.length ? input.options.kind : ["user", "agent"];
+              const all = tasksRpcContract.listComments.output.parse(
+                await domain.listComments({ taskId: task.id }),
+              ).comments;
+              const boundary = (option: "after" | "cursor", fallback: number) => {
+                const id = input.options[option];
+                if (!id) return fallback;
+                const index = all.findIndex(comment => comment.id === id);
+                if (index < 0) throw new CliError(`${option} not found: ${id}; restart without --${option}`);
+                return index;
+              };
+              const window = all.slice(boundary("after", -1) + 1, boundary("cursor", all.length));
+              const hiddenSystem = kinds.includes("system") ? 0 : window.filter(c => c.kind === "system").length;
+              const comments = window.filter(comment => kinds.includes(comment.kind));
+              const page = comments.slice(-(input.options.limit ?? 20));
+              const nextCursor = comments.length > page.length ? page[0]!.id : null;
+              const latestCommentId = all.at(-1)?.id ?? null;
+              const previews = page.map(comment => ({
+                id: comment.id, createdAt: comment.createdAt, kind: comment.kind,
+                author: comment.threadTitle ?? comment.authorName,
+                bytes: Buffer.byteLength(comment.body, "utf8"),
+                preview: oneLine(comment.body).slice(0, 200),
+                truncated: oneLine(comment.body).length > 200,
+              }));
+              const more: Record<string, string> = input.options.preview && page.length ? { comment: "bb work-board comment show <ID>" } : {};
+              if (hiddenSystem) more.system = `bb work-board comment list ${task.key} --kind system${input.options.after ? ` --after ${input.options.after}` : ""}${input.options.cursor ? ` --cursor ${input.options.cursor}` : ""}`;
+              if (input.options.json) return JSON.stringify({ comments: input.options.preview ? previews : page, total: comments.length, nextCursor, latestCommentId, hiddenSystem, ...(Object.keys(more).length ? { more } : {}) });
+              const rendered = input.options.preview ? table(["ID", "TIME", "KIND", "AUTHOR", "SIZE", "PREVIEW"], previews.map(c => [c.id, c.createdAt, c.kind, c.author, bytes(c.bytes), c.preview]), "(none)") : commentsTable(page);
+              return `${rendered}${nextCursor ? `\n\nOlder comments: add --cursor ${nextCursor}` : ""}${hiddenSystem ? `\n${hiddenSystem} system comment(s) hidden; read with \`${more.system}\`` : ""}${more.comment ? `\nFull comment and attachments: \`${more.comment}\`` : ""}`;
             });
           },
         }),
@@ -3250,6 +3366,98 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               return input.options.json
                 ? JSON.stringify({ comment })
                 : `Commented on ${task.key}  ${comment.id}`;
+            });
+          },
+        }),
+
+        report: cliCommand({
+          summary: "Report ready, a question or a blocker on a card and wake your parent thread",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            kind: {
+              type: "enum",
+              values: REPORT_KINDS,
+              required: true,
+              description: "ready, question or blocker; progress goes to `update --progress` and wakes nobody",
+            },
+            body: {
+              type: "string",
+              placeholder: "markdown",
+              aliases: ["message", "text", "content"],
+              description: "Report markdown; use --body-file for long text (exactly one of the two)",
+            },
+            "body-file": {
+              type: "string",
+              placeholder: "path",
+              description: "Read the report from this UTF-8 file on the invoking machine",
+            },
+            machine: MACHINE_OPTION,
+            json: JSON_OPTION,
+          },
+          constraints: [
+            { kind: "exactly-one", options: ["body", "body-file"] },
+            { kind: "requires", option: "machine", needs: ["body-file"] },
+          ],
+          run(input, ctx) {
+            return guard(async () => {
+              const threadId = ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!threadId)
+                throw new CliError("report must run inside a bb thread; its parent thread is the recipient", { code: "missing_thread" });
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const bodyFile = input.options["body-file"];
+              const clientHostId = bodyFile !== undefined
+                ? await resolveClientHostId(bb, domain, input.options.machine, ctx)
+                : undefined;
+              const body = await readTextOption(bb, ctx, clientHostId, input.options.body, bodyFile);
+              if (!body?.trim()) throw new CliError("report body must not be blank");
+              const result = await reportToParent(bb, store, {
+                taskId: task.id,
+                threadId,
+                kind: input.options.kind,
+                body,
+              });
+              const attach = await attachCardSession(task.id, threadId);
+              if (!result.notified)
+                throw new CliError(
+                  `${result.stateUpdated ? `Saved the ${input.options.kind} report as Current state of ${task.key}` : `Did not save the ${input.options.kind} report`}, but could not wake parent ${result.parentThreadId}`,
+                  { hint: `Tell it yourself: bb thread tell ${result.parentThreadId}` },
+                );
+              return input.options.json
+                ? JSON.stringify({ ...result, ...attach })
+                : { exitCode: 0, stdout: `Reported ${input.options.kind} on ${task.key} to @thread:${result.parentThreadId}${result.stateUpdated ? "; Current state replaced" : ""}`, stderr: attach.warnings.join("\n") };
+            });
+          },
+        }),
+
+        children: cliCommand({
+          summary: "Show your child threads, their cards and each card's current state note",
+          options: {
+            thread: {
+              type: "string",
+              placeholder: "thr_...",
+              description: "Parent thread to inspect; defaults to the invoking thread",
+            },
+            all: {
+              type: "boolean",
+              description: "Include Done and Canceled cards, hidden by default",
+            },
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const parent = input.options.thread ?? ctx.threadId ?? process.env.BB_THREAD_ID;
+              if (!parent)
+                throw new CliError("children needs --thread outside a bb thread", { code: "missing_thread" });
+              const result = await childrenCards(bb, store, parent, input.options.all ?? false);
+              if (input.options.json) return JSON.stringify(result);
+              if (!result.children.length) return `No open child threads under ${parent}`;
+              return result.children.map((child) => [
+                `${child.threadId}  ${child.status}  ${child.title ?? ""}`,
+                ...(child.cards.length ? child.cards.map((card) =>
+                  `  ${card.key}  ${card.status}  ${card.progressNote ? `state ${card.progressUpdatedAt}: ${oneLine(card.progressNote).slice(0, 200)}` : "no state note"}`)
+                  : [child.hiddenFinishedCards ? "  (no open cards)" : "  (no linked cards)"]),
+                ...(child.hiddenFinishedCards ? [`  +${child.hiddenFinishedCards} Done/Canceled (--all)`] : []),
+              ].join("\n")).join("\n") + (result.truncated ? "\nOnly the first 200 children are shown." : "") + "\nFull notes: add --json";
             });
           },
         }),

@@ -1,8 +1,10 @@
-import { useActivityPoll } from "../../shell/activity-poll.js";
+import { CurrentState } from "./current-state";
+import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
+import { TaskCostSection } from "../../components/task-cost";
 import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links";
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
@@ -306,6 +308,8 @@ function TaskDetail({
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
   const rpc = useTasksRpc();
+  const questionsRef = useRef<HTMLDivElement>(null);
+  const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
   const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
@@ -405,6 +409,7 @@ function TaskDetail({
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
   );
   useActivityPoll(activity.refresh, activity.isFetching, !!activity.data?.activity?.attachedCount || !!activity.data?.taskThreads.some(isActiveThread));
+  useAdvisoryRecheck(activity.data ? [activity.data] : undefined, () => activity.refresh());
   const presets = useTasksQuery(
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
@@ -441,10 +446,6 @@ function TaskDetail({
         ...input,
       });
       if (!result.ok) push(result.error.message);
-      else if (result.notification === "not_sent")
-        push(
-          "Saved as Done, but the requester thread could not be notified. Notify it manually.",
-        );
     } catch (error) {
       push(errorMessage(error));
     }
@@ -529,7 +530,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = task.scheduledRole === "template" ? null : <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    {task.executionTarget !== "owner" && !task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
+    {!task.archivedAt && task.ordinaryVisible !== false ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}
   </>;
@@ -538,7 +539,7 @@ function TaskDetail({
     <PrLinksProvider taskId={task.id}>
     <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
       <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
-        <div className="mx-auto w-full min-w-0 max-w-[55rem] flex-1 px-7 pb-16 pt-8 @3xl:px-13 @3xl:pt-11">
+        <div className="mx-auto w-full min-w-0 max-w-[72rem] flex-1 px-7 pb-16 pt-8 @3xl:pl-13 @3xl:pr-8 @3xl:pt-11">
           {header(
             <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
@@ -621,16 +622,14 @@ function TaskDetail({
             deferChange
             variant="doc"
             className="min-h-24"
-            placeholder={
-              task.executionTarget === "owner"
-                ? "Action to take, why the owner is needed, and how to verify completion…"
-                : "Add a description… rich text: headings, lists, code, checkboxes, @mentions"
-            }
+            placeholder="Add a description… rich text: headings, lists, code, checkboxes, @mentions"
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
             onOpenThread={(threadId) => navigate.toThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
+
+          <CurrentState key={task.id} task={task} />
 
           <div className="mb-1 mt-3 flex items-center gap-1">
             <button
@@ -708,10 +707,11 @@ function TaskDetail({
             </div>
           ) : null}
 
-          <div className="mt-1">
+          <div className="mt-1" ref={questionsRef}>
             <QuestionsSection
               key={task.id}
               taskId={task.id}
+              query={questions}
               adding={addingQuestion === task.id}
               onAddingChange={(adding) =>
                 setAddingQuestion(adding ? task.id : null)
@@ -736,6 +736,7 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
+          <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
           <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
         </PropertiesRail>

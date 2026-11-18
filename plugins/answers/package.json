@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-answers",
-  "version": "0.3.56",
+  "version": "0.3.233",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -22,6 +22,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@radix-ui/react-slot": "^1.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -60,6 +63,10 @@
     "skills",
     "README.md",
     "inbox.tsx",
-    "selection.ts"
+    "contacts.tsx",
+    "selection.ts",
+    "open-chat.ts",
+    "chat-tabs.tsx",
+    "tab-contracts.ts"
   ]
 }

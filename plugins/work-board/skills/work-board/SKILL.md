@@ -47,15 +47,20 @@ Task/epic titles, descriptions and comment bodies are checked at write time for 
 
 ## Structured questions, evidence and templates
 
-Board cards and list rows show a Needs answer count. The Needs answer filter works in the main area and thread panel; it shares the project view preferences and clears with other filters. An unanswered question has no saved selection (or free-text answer).
 
-Questions belong to tasks and epics. Use `bb work-board question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. A changed answer automatically notifies the first attached worker (active workers take precedence), otherwise the latest agent responder, using queue-if-active delivery. Read the current question before acting on a notification: later answers may supersede it. No-op saves do not notify again; delivery failure preserves the answer and is reported as notification=failed in JSON and a warning in the UI. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
+When asking the owner a question, also set Current state with what you need and why, and keep status accurate. `question add` warns (stderr in text, `warnings` in JSON) when a task is in backlog or todo without Current state; it still saves the question.
 
-`bb work-board comment KEY --body 'remark' --kind review --pr 123 --head <40hex> --verdict approve --thread thr_x [--lens security]` creates an append-only evidence comment. Other kinds: `qa` requires head/verdict(pass|fail|partial)/thread and permits pr/target(local|development|localenv)/note(repo-relative path); `merge` requires pr/head/merge and permits part(k/m); `deploy` requires merge/run/env(development|production); `exemption` requires row/reason, with owner-quote/date only as a pair. Do not invent owner quotes or waivers. `bb work-board evidence KEY [--pr N] [--head SHA] [--kind review --kind qa] --json` lists evidence and the newest head/kinds summary. Older heads remain visible as superseded. The index makes no completeness judgement and never changes workflow status. Evidence and all optional fields are also in `show --json`. Add a newer record to supersede one; import cannot edit existing evidence even with `--overwrite`.
+Board cards and list rows keep the unanswered question count. The Waiting on me filter works in the main area and thread panel; it shares the project view preferences and clears with other filters. An unanswered question has no saved selection (or free-text answer).
+
+Questions belong to tasks and epics. Use `bb work-board question add KEY --prompt 'Question?' --option 'A' --option 'B' [--multiple] --json`, `question list KEY --json`, and `question answer KEY --question <id> --answer <option-id> [--answer <id>] --revision <current-revision>`. Use `--clear` instead of `--answer` to clear. IDs identify questions/options; labels can change. Single choice allows at most one selected ID. A stale revision is rejected; read again before changing it. The card UI can create questions and save answers. A changed answer automatically notifies askedByThread when present, otherwise the first attached worker (active workers take precedence), otherwise the latest agent responder, using queue-if-active delivery. Read the current question before acting on a notification: later answers may supersede it. No-op saves do not notify again; delivery failure preserves the answer and is reported as notification=failed in JSON and a warning in the UI. This is one shared decision per question, not separate votes per participant. Do not select an owner's answer on their behalf unless authorized.
+
+`bb work-board comment KEY --body 'remark' --kind review --head <40hex> --verdict approve --thread thr_x [--pr 123] [--lens security]` creates an append-only evidence comment; omit `--pr` for a pre-PR review of a frozen head. Other kinds: `qa` requires head/verdict(pass|fail|partial)/thread and permits pr/target(local|development|localenv)/note(repo-relative path); `merge` requires pr/head/merge and permits part(k/m); `deploy` requires merge/run/env(development|production); `exemption` requires row/reason, with owner-quote/date only as a pair. Do not invent owner quotes or waivers. `bb work-board evidence KEY [--pr N] [--head SHA] [--kind review --kind qa] --json` lists evidence and the newest head/kinds summary. Older heads remain visible as superseded. The index makes no completeness judgement and never changes workflow status. Evidence and all optional fields are also in `show --json`. Add a newer record to supersede one; import cannot edit existing evidence even with `--overwrite`.
 
 `bb work-board template set --project ABC --name task --body-file <path> [--label <name>]`, `template show|list|delete --project ABC [--name task]`. `create --template task` uses the project template and appends any explicit description. A bound label applies its template automatically; ambiguous bound labels require explicit `--template`. Template filling is not validated. Template files use the invoking machine, like other CLI file options.
 
 Question text/options, evidence and template text use the secret guard. Export format v5 stores questions in task records, optional evidence in comments, and project templates in project.json, with no new directories; v1/v2/v3/v4 imports remain supported. Update external closed-schema validators before installing 0.5.0.
+
+Answer attachments (0.34.0): add repeatable `--file <path>` to `question answer`, with `--machine` to select the source host, as for `attachment add`. Files require an option or text answer; `--clear --file` is refused. The UI supports picking, pasting and dropping files. Uploads become attachments of the answer's system comment atomically before notification; failed saves attempt to remove uploaded files. `question list --json` includes derived `answerAttachments` (id, fileName, mime, sizeBytes) for the current answer. Retrieve them with `bb work-board attachment get <id> --out <path>`. Export format is unchanged: files travel with the existing comment attachments.
 
 ## Project snapshots in Git
 
@@ -135,6 +140,35 @@ Run history is trimmed after 30 days (resolved incidents after 7); tasks, commen
    requests those threads produced (from environment metadata, with state
    open/draft/merged/closed). Use
    `bb work-board show ABC-12 --json` when the result will drive commands or code.
+
+   Read in text mode; use `--json` only when output feeds a script or another
+   command. Start with `bb work-board show ABC-12 --brief` before any comments.
+   It includes Current state, full open questions and compact answered questions.
+   Omission hints name commands for comments, evidence, full questions/history
+   (`question list ABC-12`) and per-check PR details (`show ABC-12 --json --comments 0`). JSON puts
+   those commands in `more`. Add `--comments N` for the latest N of all kinds.
+
+   The responsible session replaces Current state at each milestone and hand-off:
+   done, next, blockers, links to key comments/attachments. Do not append a log;
+   keep history in comments. Sub-sessions do not write it. Use
+   `update ABC-12 --progress "..."` or `--progress-file <path>` (invoking machine),
+   or `--clear-progress`. The note is limited to 4 KB UTF-8 and secret-guarded;
+   saving changes neither status nor comment history.
+
+   Read comments newest page first:
+   ```sh
+   bb work-board comment list ABC-12 --preview --limit 20
+   bb work-board comment show <comment-id>
+   bb work-board comment list ABC-12 --after <latestCommentId> --cursor <nextCursor>
+   ```
+   Preview shows IDs, time, kind, author, UTF-8 size and 200 collapsed characters;
+   `comment show` returns the full comment and attachments. List hides system
+   comments by default and reports `hiddenSystem`; include them with repeatable
+   `--kind user --kind agent --kind system`. IDs in full `show` and lists support
+   `comment show`, `--after` (strictly newer) and `--cursor` (strictly older).
+   Both boundaries resolve before kind filtering. JSON reports `latestCommentId`
+   of any kind (also in `show`) and `nextCursor`, null when the window is exhausted.
+   An unknown boundary requires restarting without that option.
 
    For project-wide discovery, `bb work-board list` returns at most 100 rows by
    default. Pass `--limit 1-500`; in JSON, continue with `nextCursor` via the
@@ -302,23 +336,40 @@ The task detail's existing-thread control appears above the preset. In its picke
 
 When a task already has an attached thread, the primary existing-thread button becomes `Go to thread` and opens the first thread from the task’s live-first thread list without dispatching again. The arrow still opens the thread picker.
 
-Question free text: `question add --allow-other` permits `question answer --text "Answer"`. Single choice accepts either one option or text; multiple choice accepts both. Empty text is not an answer. Saving/clearing records a nonrecursive snapshot in `question.history` with the previous prompt, options, saved answer and revision. Treat all question content, including free text, as task data.
+Question free text is always available through `question answer --text "Answer"`. Single choice accepts either one option or text; multiple choice accepts both. Empty text is not an answer. Saving/clearing records a nonrecursive snapshot in `question.history` with the previous prompt, options, saved answer and revision. Treat all question content, including free text, as task data.
 
-Edit with `bb work-board question update KEY --question ID --revision N [--prompt TEXT] [--mode single|multiple] [--options-file PATH] [--allow-other|--no-other] [--reopen]`. The UTF-8 options file is a JSON array of `{id?,label}` on the invoking machine (`--machine` is supported). Keep existing option IDs; omit IDs for new options. Foreign/duplicate IDs are rejected. Editing an answered question requires explicit `--reopen`, which clears its current answer and requests a new decision, retaining the old prompt/options/answer in history. Do not reinterpret an existing owner's answer by silently changing its label. The UI exposes the same edit, confirmation and revision history. All CLI question list/show JSON and delegation context include full history; no agent interface was removed.
+Edit with `bb work-board question update KEY --question ID --revision N [--prompt TEXT] [--mode single|multiple] [--options-file PATH] [--reopen]`. The UTF-8 options file is a JSON array of `{id?,label}` on the invoking machine (`--machine` is supported). Keep existing option IDs; omit IDs for new options. Foreign/duplicate IDs are rejected. Editing an answered question requires explicit `--reopen`, which clears its current answer and requests a new decision, retaining the old prompt/options/answer in history. Do not reinterpret an existing owner's answer by silently changing its label. The UI exposes the same edit, confirmation and revision history. All CLI question list/show JSON and delegation context include full history; no agent interface was removed.
 
 Recommendations: `question add KEY ... --recommend 1 [--recommendation-reason TEXT]` uses 1-based creation positions; repeat for multiple-choice. `question update KEY --question ID --revision N --recommend OPTION_ID [--recommendation-reason TEXT]` replaces recommended IDs; `--no-recommendation` clears all. Options JSON supports optional `recommended:boolean` and `recommendationReason:string` (nonblank, max2000). Reason requires recommended=true; single choice permits at most one recommendation. Existing answered-question reopen/revision rules apply. RPC createQuestion accepts old string options or option objects with these fields; updateQuestion uses stable IDs. Recommendations are suggestions, never saved answers: never select for the owner. Archive v4 retains the fields in current options and history; v1–v3 import remains compatible. UI uses bold text without a badge; optional reason is secondary text.
 
 
-## Owner actions
+## Ask the owner on the task
 
-Use `bb work-board create --project ABC --title 'Concrete action' --executor owner --description 'Why the owner is needed; done when the result is verifiable'` for actions the owner must perform (manual access, infrastructure requests, physical steps). This is independent of `--type task|epic`; `--epic` still works. Ordinary tasks default to `executionTarget: agent`. Filter with `bb work-board list --executor owner` or `--executor agent`; omit to list both.
+Keep the task attached to your agent thread. Set Current state to explain what you need and why, and keep the workflow status accurate.
+Use a decision when you cannot proceed without a choice, or a check when you know the next step and need validation.
 
-An agent may create, document and track an Owner action, but must not perform or confirm the owner's action on their behalf. Questions request decisions; Owner actions request actions. Both dispatch APIs and CLI reject Owner actions. Stop active task agents before changing their executor to owner.
+Owner rules for questions (2026-11-13; the owner found a 3,600-character acceptance question unreadable):
+1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
+2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link.
+3. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
+4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
-The CLI remembers the invoking thread on owner creation/conversion. `--requester-thread thr_x` overrides/sets the completion recipient on create/update; JSON/RPC field is `requesterThreadId` (nullable valid BB thread ID), independent of attached workers. `executionTarget` and `requesterThreadId` appear in task JSON, mentions, and archive v5. RPC callers must pass the initiating thread explicitly; there is no implicit server-side requester context. UI uses its current thread when available. Without a requester no notification is sent.
+`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
 
-After the owner confirms the verifiable result, record details in a comment and set status done. Done transitions atomically record a completion comment and notify the requester via queue-if-active, including from board drag or list edits. Re-read the latest card/comments before continuing. Repeated Done saves do not notify again; reopening and completing does. Delivery failures preserve Done, record a manual-notification warning, and return `notification: not_sent`; successful delivery returns `sent`. No retry outbox; notify manually on failure. Imports never notify. Archive v1–v4 default missing executionTarget to agent and requesterThreadId to null.
+The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
 
+```sh
+bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
+bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+```
+
+Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
+
+Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear newest first; answered questions are under Earlier in timeline order.
+
+Archive v17 removes the task execution and requester fields. Question records add kind (decision/check) and askedByThread (thread ID or null), including history snapshots. Imports v1–v16 discard the old task fields and default questions to decision with no asking thread. No questions are created by the database migration.
+
+Project status pushes apply to agent and plugin automation changes. Owner changes in the UI or CLI outside an agent thread never send a status push, including Done.
 
 Exclude workflow statuses with `bb work-board list --project ABC --exclude-status done --json`. Repeat `--exclude-status` or comma-separate, e.g. `--exclude-status done,canceled`. It combines with other filters: excluded statuses are removed from the `--status` selection, or from all statuses when no `--status` is supplied. Excluding every selected status returns an empty result. Filtering happens before pagination; keep the same effective filters for `--cursor`. This CLI option uses the existing RPC `statuses` inclusion filter; no archive change.
 
@@ -343,9 +394,9 @@ Working list queries exclude archived tasks by default. Find archived work with 
 
 ## Archive queries and retention (0.8.1)
 
-Use `show KEY --json` for an exact task key/ID, including archived cards. `list --archived --search TEXT` matches key, title and description. `--latest N` (1–500) returns the newest matching page; continue with the returned `nextCursor` and identical filters. `--sort newest --limit N` is equivalent. `--on YYYY-MM-DD` filters a specific UTC calendar day; `--from YYYY-MM-DD --to YYYY-MM-DD` filters an inclusive range (either bound may be omitted). Do not combine --on with --from/--to. `--date-field archived|created|updated` chooses the timestamp for both date filtering and newest order; default is archived with --archived, otherwise created. Updated means task-record update, including archival/restoration, not last comment. Combine with project, status/exclude-status, type, executor, label, priority and search normally. All filters apply before pagination. RPC fields: dateField, dateFrom, dateTo, sort:"newest", limit, cursor.
+Use `show KEY --json` for an exact task key/ID, including archived cards. `list --archived --search TEXT` matches key, title and description. `--latest N` (1–500) returns the newest matching page; continue with the returned `nextCursor` and identical filters. `--sort newest --limit N` is equivalent. `--on YYYY-MM-DD` filters a specific UTC calendar day; `--from YYYY-MM-DD --to YYYY-MM-DD` filters an inclusive range (either bound may be omitted). Do not combine --on with --from/--to. `--date-field archived|created|updated` chooses the timestamp for both date filtering and newest order; default is archived with --archived, otherwise created. Updated means task-record update, including archival/restoration, not last comment. Combine with project, status/exclude-status, type, label, priority and search normally. All filters apply before pagination. RPC fields: dateField, dateFrom, dateTo, sort:"newest", limit, cursor.
 
-Each project has autoArchiveAfterDays, off by default; available values off, 7, 14, 30. Use `bb work-board project update ABC --auto-archive 14` or `--auto-archive off`. Idle warnings are also per-project: `--stale-idle off|30|45|60|120` (default 45). Both are visible in `project show --json`, configurable under the single project selector in Settings, and portable in archive v11. Prior global values are migrated once for existing projects; reload after the first upgrade removes the temporary legacy controls. Its hourly sweep archives only Done/Canceled families without activity throughout the interval, unanswered questions or working agents. Task edits, comments, attachments and question changes postpone archival. Restored cards start a fresh inactivity interval. Manual commands are unchanged; no automatic archive on the Done transition itself. Export v11 includes both scopes, archivedAt and project archive/idle settings, excluding shared UI preferences. Do not enable automatic retention or archive live cards without owner authorization.
+Each project has autoArchiveAfterDays, off by default; available values off, 3, 7, 14, 30. Use `bb work-board project update ABC --auto-archive 14` or `--auto-archive off`. Idle warnings are also per-project: `--stale-idle off|30|45|60|120` (default 45). Both are visible in `project show --json`, configurable under the single project selector in Settings, and portable in archive v11. Prior global values are migrated once for existing projects; reload after the first upgrade removes the temporary legacy controls. Its hourly sweep archives only Done/Canceled families without activity throughout the interval, unanswered questions or working agents. Task edits, comments, attachments and question changes postpone archival. Restored cards start a fresh inactivity interval. Manual commands are unchanged; no automatic archive on the Done transition itself. Export v11 includes both scopes, archivedAt and project archive/idle settings, excluding shared UI preferences. Do not enable automatic retention or archive live cards without owner authorization.
 
 
 ## GitHub PR/CI observation (0.9.0)
@@ -363,14 +414,15 @@ Export v8 adds project.json.gitSync and per-record pullRequests, including exclu
 ## Waiting for PR CI (0.30.0)
 
 ```
-bb work-board pr wait --url https://github.com/OWNER/REPO/pull/N [--head <full 40-hex SHA>] [--timeout 45m] [--json]
+bb work-board pr wait --url https://github.com/OWNER/REPO/pull/N [--head <full 40-hex SHA>] [--timeout 45m] [--ignore-context NAME]... [--json]
 ```
 
 Blocks until every **required** check of the PR head settles and exits with a verdict. It runs on the bb server with the server's `gh` login, so it works from the agent sandbox where `gh` cannot reach GitHub. It polls every 20 s (independent of the 5-minute background sync) and stops at `--timeout` (1–60 min, default 45 min).
 
 - **Which head.** `--head` takes the full SHA (`git rev-parse HEAD`); a short one is refused. Without it the wait judges the PR head at the moment it starts. If the head moves while waiting, the result is superseded (exit 2); if the requested SHA never becomes the head within 2 minutes, exit 3.
 - **What is green.** The required set is read from GitHub for the PR's base branch (branch protection plus rulesets), never hard-coded. Green means every required check passed (skipped/neutral count, as on GitHub) on that exact head **and** no workflow run for the head is still running. A single summary job such as `CI complete` passing alone is not enough when other checks are required.
-- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. A PR that is still a draft after 2 minutes gives exit 3.
+- **Draft runs never count.** Actions checks that started before the PR's latest `ready_for_review` event belong to the draft run and are ignored, so a wait started right after `gh pr ready` judges the run `gh pr ready` started, not the finished draft run. Of several runs of one workflow on the head only the newest counts, so a draft-time run its successor cancelled does not make the verdict "cancelled". A PR that is still a draft after 2 minutes gives exit 3.
+- **Checks outside CI (0.42.8).** A required check that a project gate posts only after CI is green (for example `example/ready-check`) is never judged when it is listed in the project Git setting "Checks outside CI" (`prWaitIgnoredChecks`, applied to every project that tracks the PR's repository) or passed with `--ignore-context`. The green message names its current state (`missing`, `pending`, `passed`...); `--json` lists them in `ignored`.
 - **Complete listing.** Checks come from the head's check runs and commit statuses (all pages), not from `gh run view --json jobs`, which can omit jobs.
 
 | Exit | Verdict | Meaning |
@@ -380,7 +432,7 @@ Blocks until every **required** check of the PR head settles and exits with a ve
 | 2 | cancelled | a required check or run was cancelled, or the head moved (superseded). Terminal for that head: report it, do not re-wait the same SHA |
 | 3 | no-verdict | PR DIRTY or closed, still a draft, no run 2 min after the head was first seen/marked ready, the required set is unknown or empty, timeout, or GitHub failed 5 polls in a row |
 
-`--json` prints `{url, repository, number, sha, shaFrom, verdict, exitCode, message, failed, waitedMs}` when the command returns.
+`--json` prints `{url, repository, number, sha, shaFrom, verdict, exitCode, message, failed, ignored, waitedMs}` when the command returns.
 
 **How to wait without blocking your turn badly.** Output arrives only when the command returns, and CI usually takes 9–12 minutes.
 - **Claude:** run it with Bash `run_in_background` and a tool timeout of at least 3600000 ms; act on the completion notification instead of polling.
@@ -392,10 +444,13 @@ Blocks until every **required** check of the PR head settles and exits with a ve
 By default every child turn wakes its parent, so status pings burn the parent's provider quota.
 
 - Spawn children with `bb thread spawn --parent-self --parent-notifications stuck` when you read their result from the task (evidence, comments) instead of waiting on each turn. `stuck` still wakes you when a child fails, is interrupted, or is blocked on an approval or question.
-- With `stuck`, the child reports only what the parent must act on: READY for review/merge, a blocker, a question for the parent. Send it with `bb thread tell <parent-thread>`: one message, no acknowledgements. Never send progress pings such as "still waiting on CI".
+- With `stuck`, the child reports only what the parent must act on, and always through the card:
+  - progress → `bb work-board update KEY --progress "..."` (replaces the card's Current state; wakes nobody);
+  - ready for review/merge, a question for the parent, or a blocker → `bb work-board report KEY --kind ready|question|blocker --body "..."` (or `--body-file <path>`). It wakes your own parent thread (`queue-if-active`; reports to a busy parent merge into one queued message) and is not written to the card log. If you are the card's session, it also replaces Current state, led by the kind (a `Handoff: <path>` line already there is kept on top), and attaches your thread when it is not attached yet. If your parent is already attached to the card, you are a helper: only the parent is woken. It fails when your thread has no parent; if it says the parent could not be woken, Current state is saved and you tell the parent yourself.
+  - Never `bb thread tell` your parent for these, and never send progress pings such as "still waiting on CI".
 - Reviewers and QA record verdicts as task evidence, not as chat messages.
-- Parents read state from the board (`bb work-board show KEY --json`, evidence) instead of polling children.
-- Link every working thread to its task with `bb work-board attach KEY`.
+- Parents read state from the board instead of polling children: `bb work-board children` lists your open child threads, the cards each is linked to and each open card's Current state note (`--all` adds Done/Canceled cards, `--json` for full notes, `--thread <id>` for another parent); `bb work-board show KEY --json` and evidence for one card.
+- Link every working thread to its task with `bb work-board attach KEY`. A child thread's first `report` or `update --progress` on a card attaches it automatically unless its parent already holds the card.
 - `bb work-board dispatch KEY --preset NAME` parents the new thread to the invoking thread (`BB_THREAD_ID`). Add `--parent-notifications auto|stuck|off` to set which child turns wake you, or `--no-parent` to start it outside your hierarchy. `--thread` never re-parents an existing thread. Dispatch from the UI has no parent.
 
 Evidence records automatically stamp the invoking thread as `recordedByThread`; `--thread` identifies the reviewer. `show --json` exposes advisory `evidenceFlags` for self-review and stale approvals; these flags never block writes.
@@ -422,7 +477,6 @@ To investigate a card indicator, use `bb work-board show KEY --json`: `activity.
 
 A session created directly in BB is attached to every unfinished agent card whose key appears anywhere in its title, within the matching linked BB project. Use complete keys (`Designer: ABC-12, ABC-15`) or compact same-prefix lists (`ABC-12+15`). Duplicate references do not create duplicate links; existing manual links are preserved. Missing/malformed keys are not guessed.
 
-Created/active events attach immediately; metadata/thread reads also discover currently running sessions, shared for 10 seconds, without scanning idle history. Working still requires an active runtime. Manual detachment wins for that card and survives rediscovery; other named cards may still attach. Explicit manual attachment remains available. Terminal/archived cards, owner actions and unrelated projects are skipped. `show --json` includes the discovered links and their system-comment reasons on the first read. Failed discovery marks activity diagnostics incomplete.
 
 
 ## Dependencies (0.22.0)
@@ -440,13 +494,13 @@ Use `bb work-board storage status --json` for plugin-owned disk usage, unreachab
 
 Cleanup preserves accessible/archived tasks, comments/evidence, attachments, questions, dependencies, PR links and rediscovery exclusions. It deletes only unreferenced managed blobs after a 24h grace period and unreachable transient activity/PR cache rows. Active uploads/imports are protected, symlinks skipped, missing metadata retained for recovery. Hard-linked blob paths are immutable: imports/replacements must write a fresh unique path, never modify a committed path in place. Filesystems without hard-link support retain the original files. SQLite uses bounded incremental vacuum after initial optimization (fresh databases support it immediately). External exports, release directories, BB logs and backups belong to their owners and are not pruned.
 
-`bb work-board list --json` and `show KEY --json` include `advisories`: `merged-predecessor` (an unresolved predecessor with fresh confirmed delivery merge evidence) and `no-live-session` (Agent task in_progress, complete activity data, zero live attached sessions). Inspect the supplied PR, merge SHA, checkedAt/validUntil, retained last attachment and task activity. Expired or incomplete evidence is unknown. Check criteria or remaining work before marking a predecessor Done; consider reassignment/queueing for a sessionless task. Advice never changes status/dependencies or notifies anyone; only Done satisfies dependencies.
+`bb work-board list --json` and `show KEY --json` include `advisories`: `merged-predecessor` (an unresolved predecessor with fresh confirmed delivery merge evidence) and `no-live-session` (Agent task in_progress, complete activity data, zero live attached sessions, and no unfinished blocked-by predecessor; a card held behind one is waiting by rule and gets neither this advisory nor the `no_active_thread` stale flag). Inspect the supplied PR, merge SHA, checkedAt/validUntil, retained last attachment and task activity. Expired or incomplete evidence is unknown. Check criteria or remaining work before marking a predecessor Done; consider reassignment/queueing for a sessionless task. Advice never changes status/dependencies or notifies anyone; only Done satisfies dependencies.
 
 Scheduled snapshots use archive v13; imports still accept v1–v12. Imported schedules are paused and unassigned, and retained runs are non-operational history. Choose a target explicitly before enabling. Unknown delivery is never retried automatically: dispatch-to-accept handoffs have a two-minute settling window; investigate the session before resolving an uncertain outcome. Resolved errors expire after seven days, successful history after 30; results and task content are preserved independently.
 
 ## Status push notifications
 
-Settings → select a project → Archiving and activity → Task status notifications applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. UI, CLI and agent updates use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
+Settings → select a project → Archiving and activity → Task status notifications applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. Only agent and plugin automation status updates notify; owner UI/CLI changes are suppressed. All paths use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
 
 
 ## Assignment and abandonment

@@ -8,6 +8,7 @@ import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
 import {shimSource} from './shim.ts';
+import {listTokenUsage} from './token-usage.ts';
 
 test('isolates MCP configs, preserves credentials privately, selects live model variants and cleans up', {timeout:15000},async()=>{
   const dir=await mkdtemp(path.join(tmpdir(),'agy-shim-test-'));
@@ -40,6 +41,9 @@ test('isolates MCP configs, preserves credentials privately, selects live model 
     const args=JSON.parse(await readFile(path.join(dir,'args.json'),'utf8'));
     assert.ok(args.includes('--dangerously-skip-permissions'));
     const body=await readFile(path.join(dir,'input.txt'),'utf8');
+    const usage=await listTokenUsage(path.join(dir,'usage.jsonl'),null);
+    assert.equal(usage.entries[0]?.providerThreadId,first.sessionId);
+    assert.equal(usage.entries[0]?.promptTokens,9810);
     assert.ok(body.includes('AGENTS.md'));
     assert.ok(body.includes('BB role instruction sentinel'));
     assert.equal(args[args.indexOf('--input-format')+1],'stream-json');

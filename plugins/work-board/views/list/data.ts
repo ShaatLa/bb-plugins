@@ -1,5 +1,5 @@
 import type { TaskAdvisory } from "../../shared/task-advisories";
-import { samePolledMetadata, useActivityPoll } from "../../shell/activity-poll";
+import { samePolledMetadata, useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll";
 import { tasksRpcContract } from "../../shared/contract";
 import { useEffect, useMemo, useRef } from "react";
 import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
@@ -29,7 +29,6 @@ import type { TaskActivity } from "../../shared/task-activity.js";
 
 interface ListTaskFilters {
   type?: Task["type"];
-  executionTarget?: Task["executionTarget"];
   statuses: readonly TaskStatus[];
   priorities: readonly TaskPriority[];
   labelIds: readonly string[] | null;
@@ -41,11 +40,6 @@ function belongsToList(
   filters: ListTaskFilters,
 ): boolean {
   if (task.parentTaskId !== null || task.archivedAt) return false;
-  if (
-    filters.executionTarget !== undefined &&
-    task.executionTarget !== filters.executionTarget
-  )
-    return false;
   if (filters.type !== undefined && task.type !== filters.type) return false;
   if (projectId !== null && task.projectId !== projectId) return false;
   if (filters.statuses.length > 0 && !filters.statuses.includes(task.status)) {
@@ -77,9 +71,6 @@ export function listTasksQuery(
       : {}),
     ...(filters.labelIds !== null ? { labelIds: [...filters.labelIds] } : {}),
     activeOnly,
-    ...(filters.executionTarget === undefined
-      ? {}
-      : { executionTarget: filters.executionTarget }),
     ...(filters.type === undefined ? {} : { type: filters.type }),
     parentTaskId: null,
   };
@@ -104,7 +95,7 @@ export function useListTasks(
     },
   );
   const data = useMemo(() => query.data?.filter((task) => belongsToList(task, projectId, filters)), [
-    query.data, projectId, filters.type, filters.executionTarget, filters.statuses.join(), filters.priorities.join(), filters.labelIds?.join(),
+    query.data, projectId, filters.type, filters.statuses.join(), filters.priorities.join(), filters.labelIds?.join(),
   ]);
   return { ...query, data };
 }
@@ -175,13 +166,15 @@ export function useTaskListMeta(projectId: string | null, tasks: readonly Task[]
   const activeIds = [...(query.data ?? new Map()).entries()]
     .filter(([, meta]) => (meta.activity?.attachedCount ?? 0) > 0 || meta.activeThreads.length > 0)
     .map(([id]) => id);
-  useActivityPoll(() => {
+  const refreshRows = (taskIds: string[]) => {
     void query.patch(async (rpc, current) => {
       const next = new Map(current);
-      for (const id of activeIds) next.delete(id);
-      for (const [id, meta] of await readListMeta(rpc, activeIds)) next.set(id, meta);
+      for (const id of taskIds) next.delete(id);
+      for (const [id, meta] of await readListMeta(rpc, taskIds)) next.set(id, meta);
       return samePolledMetadata([...next], [...current]) ? current : next;
     }).catch(() => query.refresh());
-  }, query.isFetching, activeIds.length > 0);
+  };
+  useActivityPoll(() => refreshRows(activeIds), query.isFetching, activeIds.length > 0);
+  useAdvisoryRecheck([...(query.data ?? new Map()).entries()].map(([taskId, meta]) => ({ taskId, advisories: meta.advisories })), refreshRows);
   return query;
 }

@@ -152,7 +152,6 @@ async function reconcile(
         parent &&
         removed &&
         store.listTaskThreads(taskId).length === 0 &&
-        store.getTask(taskId)?.executionTarget !== "owner" &&
         // A finished task needs no responsible session; the fallback only keeps open work accountable.
         !["done", "canceled"].includes(store.getTask(taskId)?.status ?? "")
       ) {
