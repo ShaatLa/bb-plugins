@@ -50,7 +50,7 @@ export async function builderEnvironment(env: NodeJS.ProcessEnv = process.env) {
 }
 
 // All paths here belong to this plugin's server-local checkout, never the caller's cwd.
-function run(command: string, args: string[], cwd: string, signal: AbortSignal, input = "", env = process.env, onExitFailure?: (stderr: string) => void): Promise<string> {
+function run(command: string, args: string[], cwd: string, signal: AbortSignal, input = "", env = process.env, diagnostics?: { stderr: string; exitCode?: number | null }): Promise<string> {
   return new Promise((resolve, reject) => {
     let stdout = "", stderr = "", bytes = 0;
     const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"] });
@@ -58,7 +58,11 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
     const collect = (chunk: string, output: boolean) => {
       bytes += Buffer.byteLength(chunk, "utf8");
       if (bytes > 1_048_576) { child.kill("SIGKILL"); reject(new Error(`${command} output exceeds 1 MiB`)); return; }
-      if (output) stdout += chunk; else stderr += chunk;
+      if (output) stdout += chunk;
+      else {
+        stderr += chunk;
+        if (diagnostics) diagnostics.stderr = stderr;
+      }
     };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -68,24 +72,33 @@ function run(command: string, args: string[], cwd: string, signal: AbortSignal, 
     child.on("error", error => { clearTimeout(timer); reject(error); });
     child.on("close", code => {
       clearTimeout(timer);
+      if (diagnostics) diagnostics.exitCode = code;
       if (code === 0) resolve(stdout);
-      else {
-        if (code !== null) onExitFailure?.(stderr);
-        reject(new Error(`${command} exited ${code}: ${stderr.slice(-16_000)}`));
-      }
+      else reject(new Error(`${command} exited ${code}: ${stderr.slice(-16_000)}`));
     });
     child.stdin.end(input);
   });
 }
 
 const builderRefusal = z.object({ reasonCode: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/) }).strict();
-function builderFailureReason(stderr: string) {
-  const lastLine = stderr.trimEnd().split("\n").at(-1) ?? "";
+function readBuilderReason(line: string) {
   try {
-    const result = builderRefusal.safeParse(JSON.parse(lastLine));
-    if (result.success) return `builder:${result.data.reasonCode}`;
+    const result = builderRefusal.safeParse(JSON.parse(line));
+    if (result.success) return result.data.reasonCode;
   } catch { /* Plain stderr remains a generic builder error. */ }
-  return "builder_error";
+}
+
+function builderCard(args: string[]) {
+  const separator = args.indexOf("--");
+  const named = separator < 0 ? args : args.slice(0, separator);
+  for (let index = named.length - 1; index >= 0; index--) {
+    const arg = named[index];
+    if (arg === "--card" || arg.startsWith("--card=")) {
+      const card = arg === "--card" ? named[index + 1] : arg.slice("--card=".length);
+      return card && /^[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}$/.test(card) ? card : null;
+    }
+  }
+  return null;
 }
 
 export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void, record: RecordMetric) {
@@ -97,6 +110,8 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
     const request = startInput.parse(raw);
     const mode = request.dryRun ? "dry-run" : "start";
     let tracked = false, reason = "request_error";
+    let sourceCommit: string | null = null;
+    const diagnostics: { stderr: string; exitCode?: number | null } = { stderr: "" };
     const operation = async () => {
       signal.throwIfAborted();
       const parent = await bb.sdk.threads.get({ threadId: request.parentThreadId });
@@ -122,7 +137,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const branch = /^ref: (refs\/heads\/[^\s]+)\s+HEAD$/m.exec(head)?.[1];
       if (!branch) throw new Error("Remote HEAD must identify a default branch");
       await git(["fetch", "--depth=1", "origin", branch]);
-      const sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
+      sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
       await git(["checkout", "--force", "--detach", sourceCommit]);
       await git(["clean", "-ffdx"]);
       const candidate = join(root, rules.script), lexical = relative(root, candidate);
@@ -135,7 +150,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
       bb.log.info(`Builder runtime: BB_CLI=${env.BB_CLI}; python3=${python ?? "not used"}`);
       const stdout = await run(python ?? script, [...(python ? [script] : []), ...request.args], root, signal,
-        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n", env, stderr => { reason = builderFailureReason(stderr); });
+        JSON.stringify({ version: 1, projectId: request.projectId, parentThreadId: request.parentThreadId }) + "\n", env, diagnostics);
       reason = "invalid_builder_output";
       let parsed: unknown;
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
@@ -172,7 +187,18 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       record(request.projectId, mode, "success");
       return result;
     } catch (error) {
-      if (tracked) record(request.projectId, mode, signal.aborted ? "cancelled" : reason);
+      if (tracked) {
+        if (reason === "builder_error" && diagnostics.exitCode) {
+          const code = readBuilderReason(diagnostics.stderr.trimEnd().split("\n").at(-1) ?? "");
+          if (code) reason = `builder:${code}`;
+        }
+        // A free-form diagnostic can echo the task or a credential.
+        const firstCode = readBuilderReason(diagnostics.stderr.split("\n", 1)[0] ?? "");
+        record(request.projectId, mode, signal.aborted ? "cancelled" : reason, {
+          parentThreadId: request.parentThreadId, sourceCommit, card: builderCard(request.args),
+          stderr: firstCode ? JSON.stringify({ reasonCode: firstCode }) : null,
+        });
+      }
       throw error;
     } finally {
       if (queues.get(request.projectId) === next) queues.delete(request.projectId);

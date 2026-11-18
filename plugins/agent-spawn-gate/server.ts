@@ -138,7 +138,7 @@ The brief may be plain task text; no Work Board card or marker is required.`;
     lines.splice(1, 1);
     if (parent && token && parent === ctx.parentThreadId && consume(token, ctx.project.id, parent, lines.join("\n"), ctx.thread.id))
       return { action: "proceed" };
-    metrics.record(ctx.project.id, "dispatch", hasMarker ? "invalid_admission" : "missing_admission");
+    metrics.record(ctx.project.id, "dispatch", hasMarker ? "invalid_admission" : "missing_admission", { parentThreadId: ctx.parentThreadId });
     bb.log.info(`Rejected start ${ctx.thread.id} in ${ctx.project.id} (${ctx.thread.providerId}, ${ctx.initiator})`);
     return { action: "reject", message: `Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? `bb agent-spawn-gate start -- (${rules.script})` : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh agent-spawn-gate mint admission for this project, parent and exact brief.` };
   });

@@ -59,15 +59,27 @@ it("dry-runs fresh remote main without minting, then starts the exact brief with
   expect(JSON.parse(cli.stdout!)).toMatchObject({ dryRun: true, sourceCommit: second });
   const report = await f.harness.behavior.runCli(["report", "--project", "proj_example"]);
   expect(report.exitCode).toBe(0);
+  expect(JSON.parse(report.stdout!)).not.toHaveProperty("events");
   expect(JSON.parse(report.stdout!).projects).toMatchObject([
     { projectId: "proj_example", starts: 1, dryRuns: 2, blockedStarts: 0, refusals: [] },
   ]);
 });
 it("fails closed on malformed JSON, changed parent, checkout escape, instruction mode or a failed fetch", async () => {
   const f = await fixture();
-  await writeFile(join(f.repo, "builder.py"), 'print("not JSON")\n');
+  await writeFile(join(f.repo, "builder.py"), `import sys
+print("not JSON")
+print('{"reasonCode":"stdout_not_json"}', file=sys.stderr)
+print("private diagnostic", file=sys.stderr)
+`);
   f.git("add", "."); f.git("commit", "-m", "broken");
-  await expect(f.start(f.request)).rejects.toThrow("Builder stdout");
+  const sourceCommit = f.git("rev-parse", "HEAD");
+  await expect(f.start({ ...f.request, args: ["--card=EXA-1"] })).rejects.toThrow("Builder stdout");
+  const report = await f.harness.behavior.runCli(["report", "--project", "proj_example", "--events"]);
+  expect(report.exitCode).toBe(0);
+  expect(JSON.parse(report.stdout!).events).toEqual([{
+    timestamp: expect.any(String), projectId: "proj_example", operation: "start", reason: "invalid_builder_output",
+    sourceCommit, parentThreadId: "thr_parent", card: "EXA-1", stderr: '{"reasonCode":"stdout_not_json"}',
+  }]);
   await writeFile(join(f.repo, "builder.py"), 'import json\nprint(json.dumps({"version":1,"brief":"task","spawn":{"parentThreadId":"thr_wrong"}}))\n');
   f.git("add", "."); f.git("commit", "-m", "wrong parent");
   await expect(f.start(f.request)).rejects.toThrow("Builder parent");
@@ -133,7 +145,7 @@ it("rejects a new workspace with no resolvable host before minting", async () =>
   expect(f.mint).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
 });
 
-it("counts coded and uncoded builder exits without retaining their diagnostics", async () => {
+it("counts coded and uncoded builder exits without retaining free-form diagnostics", async () => {
   const f = await fixture();
   const fail = async (lastLine: string) => {
     await writeFile(join(f.repo, "builder.py"), `import sys\nprint("private diagnostic", file=sys.stderr)\nprint(${JSON.stringify(lastLine)}, file=sys.stderr)\nsys.exit(1)\n`);
@@ -143,9 +155,14 @@ it("counts coded and uncoded builder exits without retaining their diagnostics",
   await expect(f.start(f.request)).rejects.toThrow("private diagnostic");
   await fail('{"reasonCode":"Not a code"}');
   await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("private diagnostic");
-  expect((await f.report({})).projects[0]?.refusals).toEqual([
+  const report = await f.report({ events: true });
+  expect(report.projects[0]?.refusals).toEqual([
     { operation: "dry-run", reason: "builder_error", count: 1 },
     { operation: "start", reason: "builder:missing_required_sections", count: 1 },
+  ]);
+  expect(report.events).toMatchObject([
+    { operation: "dry-run", reason: "builder_error", stderr: null },
+    { operation: "start", reason: "builder:missing_required_sections", stderr: null },
   ]);
   expect(f.mint).not.toHaveBeenCalled();
 });

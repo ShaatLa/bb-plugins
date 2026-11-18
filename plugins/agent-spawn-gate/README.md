@@ -104,7 +104,7 @@ view refusal reasons, and edit the selected project’s launch settings.
 bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07
 ```
 
-RPC `report` takes `{projectId?,from?,to?}`. Both return JSON. Dates are
+RPC `report` takes `{projectId?,from?,to?,events?}`. Both return JSON. Dates are
 inclusive UTC dates, defaulting to today and the preceding six days. Omit the
 project to report all projects. Each row counts successful Script-mode
 `start` calls, successful dry-runs, blocked admission dispatches and
@@ -116,6 +116,12 @@ The report includes `coverageStartedAt`. Counts start on first load of a
 version with metrics. Counters persist across reloads and contain only dates,
 project IDs, operations, reason codes and counts. Builder-defined refusals
 appear as `builder:<reasonCode>`. See [START-CONTRACT.md](START-CONTRACT.md).
+
+Pass `--events` or RPC `events: true` to also list individual refusals in the
+same window, newest first. Events include timestamp, project, operation,
+reason, parent thread, card, builder source commit and a structured stderr
+diagnostic when available. Events and totals have no automatic expiry.
+Earlier counts are preserved without reconstructing missing events.
 
 ## Mint RPC
 

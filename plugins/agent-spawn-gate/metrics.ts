@@ -8,6 +8,7 @@ const reportInput = z.object({
   projectId: projectId.optional(),
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
+  events: z.boolean().optional(),
 }).strict().refine(({ from, to }) => !from || !to || from <= to, "from must be on or before to");
 const projectReport = z.object({
   projectId,
@@ -17,11 +18,22 @@ const projectReport = z.object({
   blockedStarts: z.number(),
   refusals: z.array(z.object({ operation, reason: z.string(), count: z.number() })),
 });
+const refusalEvent = z.object({
+  timestamp: z.iso.datetime(),
+  projectId,
+  operation,
+  reason: z.string(),
+  parentThreadId: z.string().nullable(),
+  card: z.string().nullable(),
+  sourceCommit: z.string().nullable(),
+  stderr: z.string().nullable(),
+});
 const reportOutput = z.object({
   from: z.iso.date(),
   to: z.iso.date(),
   coverageStartedAt: z.iso.datetime(),
   projects: z.array(projectReport),
+  events: z.array(refusalEvent).optional(),
 });
 
 const reportTag = (projectId?: string) => projectId ? `report:${projectId}` : "report";
@@ -31,14 +43,21 @@ export const reportContract = defineRpcContract({
 
 type ProjectReport = z.infer<typeof projectReport>;
 type MetricRow = { projectId: string; operation: Operation; reason: string; count: number };
-export type RecordMetric = (projectId: string, operation: Operation, reason: string) => void;
+type RefusalEvent = z.infer<typeof refusalEvent>;
+type RefusalDetails = Partial<Pick<RefusalEvent, "parentThreadId" | "card" | "sourceCommit" | "stderr">>;
+export type RecordMetric = (projectId: string, operation: Operation, reason: string, details?: RefusalDetails) => void;
 
 export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi["storage"]["database"]>) {
   db.exec(`CREATE TABLE IF NOT EXISTS gate_daily_metrics (
     day TEXT NOT NULL, projectId TEXT NOT NULL, operation TEXT NOT NULL,
     reason TEXT NOT NULL, count INTEGER NOT NULL,
     PRIMARY KEY (day, projectId, operation, reason)
-  );`);
+  );
+  CREATE TABLE IF NOT EXISTS gate_refusal_events (
+    timestamp TEXT NOT NULL, projectId TEXT NOT NULL, operation TEXT NOT NULL, reason TEXT NOT NULL,
+    parentThreadId TEXT, card TEXT, sourceCommit TEXT, stderr TEXT
+  );
+  CREATE INDEX IF NOT EXISTS gate_refusal_events_timestamp ON gate_refusal_events(timestamp);`);
   const key = "metrics-coverage-start";
   let coverageStartedAt = await bb.storage.kv.get<string>(key);
   if (!coverageStartedAt) {
@@ -51,10 +70,24 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
     SELECT projectId, operation, reason, sum(count) AS count
     FROM gate_daily_metrics WHERE day BETWEEN ? AND ? AND (? IS NULL OR projectId = ?)
     GROUP BY projectId, operation, reason ORDER BY projectId, operation, reason`);
+  const insertEvent = db.prepare(`INSERT INTO gate_refusal_events
+    (timestamp, projectId, operation, reason, parentThreadId, card, sourceCommit, stderr)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const refusalEvents = db.prepare<[string, string, string | null, string | null], RefusalEvent>(`
+    SELECT timestamp, projectId, operation, reason, parentThreadId, card, sourceCommit, stderr
+    FROM gate_refusal_events WHERE timestamp BETWEEN ? AND ? AND (? IS NULL OR projectId = ?)
+    ORDER BY timestamp DESC, rowid DESC`);
+  const recordMetric = db.transaction((projectId: string, operation: Operation, reason: string, {
+    parentThreadId = null, card = null, sourceCommit = null, stderr = null,
+  }: RefusalDetails) => {
+    const timestamp = new Date().toISOString();
+    increment.run(timestamp.slice(0, 10), projectId, operation, reason);
+    if (reason !== "success") insertEvent.run(timestamp, projectId, operation, reason, parentThreadId, card, sourceCommit, stderr);
+  });
 
-  const record: RecordMetric = (projectId, operation, reason) => {
+  const record: RecordMetric = (projectId, operation, reason, details = {}) => {
     try {
-      increment.run(new Date().toISOString().slice(0, 10), projectId, operation, reason);
+      recordMetric(projectId, operation, reason, details);
     } catch {
       bb.log.warn("Could not record a gate metric");
       return;
@@ -62,7 +95,7 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
     bb.rpc.experimental_invalidate([reportTag(projectId), reportTag()]);
   };
   const report = async (raw: z.input<typeof reportInput>) => {
-    const { projectId, from: requestedFrom, to = new Date().toISOString().slice(0, 10) } = reportInput.parse(raw);
+    const { projectId, from: requestedFrom, to = new Date().toISOString().slice(0, 10), events } = reportInput.parse(raw);
     const from = requestedFrom ?? new Date(Date.parse(to) - 6 * 86_400_000).toISOString().slice(0, 10);
     if (from > to) throw new Error("from must be on or before to");
     const projects = new Map<string, ProjectReport>();
@@ -84,7 +117,10 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
       }
     }
     if (projectId && !projects.has(projectId)) throw new Error("Unknown project or no retained report data in this window");
-    return { from, to, coverageStartedAt, projects: [...projects.values()] };
+    return {
+      from, to, coverageStartedAt, projects: [...projects.values()],
+      ...(events ? { events: refusalEvents.all(`${from}T00:00:00.000Z`, `${to}T23:59:59.999Z`, projectId ?? null, projectId ?? null) } : {}),
+    };
   };
   return { record, report };
 }

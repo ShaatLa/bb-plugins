@@ -10,7 +10,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
   configSet: (input: unknown) => Promise<unknown>;
 }) {
   const usage = "bb agent-spawn-gate start [--project <id>] [--parent-thread <id>] [--dry-run] -- <builder args...>";
-  const reportUsage = "bb agent-spawn-gate report [--project <id>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]";
+  const reportUsage = "bb agent-spawn-gate report [--project <id>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--events] [--json]";
   const configUsage = "bb agent-spawn-gate config get [<key>] | set <key> <value> --project <id>";
   bb.cli.register({ name: "agent-spawn-gate", summary: "Start children with admission, configure projects, and report gate activity", rendersHelp: true,
     commands: [
@@ -26,9 +26,9 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
         }
         if (argv[0] === "report") {
           const { values } = parseArgs({ args: argv.slice(1), options: {
-            project: { type: "string" }, from: { type: "string" }, to: { type: "string" }, json: { type: "boolean" },
+            project: { type: "string" }, from: { type: "string" }, to: { type: "string" }, events: { type: "boolean" }, json: { type: "boolean" },
           } });
-          const result = await report({ projectId: values.project, from: values.from, to: values.to });
+          const result = await report({ projectId: values.project, from: values.from, to: values.to, events: values.events });
           return { exitCode: 0, stdout: JSON.stringify(result) };
         }
         if (argv[0] === "config") {

@@ -167,10 +167,14 @@ it("retains aggregated admission refusals across reloads and filters by UTC date
   );
   await h.reload();
   const report = (input: unknown) => h.harness.behavior.callRpc("report", input);
-  const first = await report({ from: "2025-01-01", to: "2025-01-01", projectId: PROJECT });
+  const first = await report({ from: "2025-01-01", to: "2025-01-01", projectId: PROJECT, events: true });
   expect(first).toMatchObject({
     coverageStartedAt: "2025-01-01T23:59:00.000Z",
     projects: [{ projectId: PROJECT, blockedStarts: 2, refusals: [{ operation: "dispatch", reason: "missing_admission", count: 2 }] }],
+    events: Array.from({ length: 2 }, () => ({
+      timestamp: "2025-01-01T23:59:00.000Z", projectId: PROJECT, operation: "dispatch", reason: "missing_admission",
+      parentThreadId: "thr_parent", card: null, sourceCommit: null, stderr: null,
+    })),
   });
   expect(await report({ from: "2025-01-02", to: "2025-01-02" })).toMatchObject({
     projects: [
