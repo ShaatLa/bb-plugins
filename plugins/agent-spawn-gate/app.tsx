@@ -81,35 +81,35 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
     return () => { active = false; };
   }, [rpc]);
   const project = projects?.find(p => p.id === selected);
-  const controls = project && projects ? <>
+  const projectSelect = project && projects && (
     <Select value={selected} onValueChange={setSelected} disabled={projects.length === 1}>
       <SelectTrigger aria-label="Project" className={showActivity ? "w-auto max-w-48" : "w-36 max-w-full"}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
     </Select>
-    <label className="flex items-center gap-2 text-sm">
-      Gate
-      <Switch
-        aria-label="Enable spawn gate for this project"
-        checked={project.values.enabled}
-        disabled={savingGate}
-        onCheckedChange={async enabled => {
-          if (enabled && project.values.method === "instruction" && !project.values.instruction.trim()) {
-            setSaveError("Add launch instructions before enabling Spawn Gate.");
-            return;
-          }
-          setSavingGate(true);
-          await save(project.id, { enabled });
-          setSavingGate(false);
-        }}
-      />
-    </label>
-  </> : null;
+  );
+  const gateSwitch = project && (
+    <Switch
+      aria-label="Enable spawn gate for this project"
+      checked={project.values.enabled}
+      disabled={savingGate}
+      onCheckedChange={async enabled => {
+        if (enabled && project.values.method === "instruction" && !project.values.instruction.trim()) {
+          setSaveError("Add launch instructions before enabling Spawn Gate.");
+          return;
+        }
+        setSavingGate(true);
+        await save(project.id, { enabled });
+        setSavingGate(false);
+      }}
+    />
+  );
   const header = showActivity ? <header className="flex flex-wrap items-center justify-between gap-3">
     <h1 className="text-xl font-semibold">Spawn Gate</h1>
     <div className="flex flex-wrap items-center gap-3">
-      {controls}
+      {projectSelect}
+      {gateSwitch && <label className="flex items-center gap-2 text-sm">Gate {gateSwitch}</label>}
       <Button asChild variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground">
         <UrlLink href="/settings/plugins/agent-spawn-gate" aria-label="Plugin settings" title="Plugin settings">
           <Icon name="Settings" />
@@ -117,7 +117,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
       </Button>
     </div>
   </header> : project && <SettingsSection title="Project">
-    <SettingsWithControl label="Project"><div className="flex flex-wrap items-center gap-3">{controls}</div></SettingsWithControl>
+    <SettingsWithControl label="Project">{projectSelect}</SettingsWithControl>
   </SettingsSection>;
 
   if (!project) return <div className="space-y-5">
@@ -140,7 +140,8 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
           <ProjectForm key={selected} project={project} onSave={save} />
         </div>
       </details>
-    </> : <SettingsSection title="Session launches">
+    </> : <SettingsSection title="Session launches" bodyClassName="space-y-5">
+      <SettingsWithControl label="Enable Spawn Gate">{gateSwitch}</SettingsWithControl>
       <ProjectForm key={selected} project={project} onSave={save} />
     </SettingsSection>}
   </div>;

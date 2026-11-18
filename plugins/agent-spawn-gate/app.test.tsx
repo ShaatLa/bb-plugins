@@ -14,7 +14,9 @@ it("renders one project form and saves only the selected project", async () => {
   ];
   const write = vi.fn(async ({ projectId, values }) => { const project = projects.find(p => p.id === projectId)!; project.values = { ...project.values, ...values }; return project.values; });
   const slot = renderSlot(app.settingsSections[0], {}, { rpc: { "settings.read": () => ({ projects }), "settings.write": write } });
-  await slot.findByRole("combobox", { name: "Project" });
+  const projectSelect = await slot.findByRole("combobox", { name: "Project" });
+  expect(projectSelect.closest("section")?.getAttribute("data-settings-anchor")).toBe("Project");
+  expect(slot.getByRole("switch").closest("section")?.getAttribute("data-settings-anchor")).toBe("Session launches");
   async function choose(name: string) {
     fireEvent.keyDown(slot.getByRole("combobox", { name: "Project" }), { key: "Enter" });
     const option = await slot.findByRole("option", { name });
