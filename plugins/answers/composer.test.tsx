@@ -332,3 +332,17 @@ it('draws a known command as bb’s command pill and leaves unknown ones as text
   expect(box.querySelector('[data-raw="/optimize"]')!.getAttribute('aria-label')).toContain('optimize');
   expect(box.querySelector('[data-raw="/unknown"]')).toBeNull();
 });
+it('makes Enter a line break on touch screens and keeps it sending with a mouse', () => {
+  const send = vi.fn(), change = vi.fn();
+  const render = () => renderSlot({ component: () => <Composer label="Note" value="Hi" onChange={change} attachments={[]} onAttachments={() => {}} projectId="proj_one" onSend={send} /> }, {}, { sidebarThreads: { threads: [thread], projects: [] } } as any);
+  const original = window.matchMedia;
+  try {
+    window.matchMedia = ((query: string) => ({ matches: query.includes('pointer: coarse'), media: query, addEventListener() {}, removeEventListener() {} })) as any;
+    const touch = render(); fireEvent.keyDown(touch.getByRole('textbox', { name: 'Note' }), { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled(); expect(change).toHaveBeenLastCalledWith('Hi\n');
+    cleanup();
+    window.matchMedia = ((query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} })) as any;
+    const mouse = render(); fireEvent.keyDown(mouse.getByRole('textbox', { name: 'Note' }), { key: 'Enter' });
+    expect(send).toHaveBeenCalledOnce();
+  } finally { window.matchMedia = original; }
+});
