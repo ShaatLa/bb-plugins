@@ -75,14 +75,16 @@ it('keeps a failed draft and edits made during a pending send', async () => {
   await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('First'));
   expect(slot.getByRole('alert').textContent).toContain('Delivery uncertain');
 });
-it('loads earlier pages when a search result is selected', async () => {
+it('jumps directly to a search result without fetching intermediate pages', async () => {
   const old = { ...base, id:'ans_old', question:'Ancient question', answer:'Ancient answer' };
-  const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.cursor ? { items:[old], nextCursor:null } : { items:[base], nextCursor:'1|ans_one' } });
+  const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_old' } : { items:[base], nextCursor:'1|ans_one' } });
   fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
   fireEvent.click(slot.getByRole('button', { name:'Search conversation' })); change(slot.getByRole('textbox', { name:'Search conversation' }), { target:{ value:'Ancient' } });
   fireEvent.click(await slot.findByRole('option', { name:/Ancient answer/ }));
-  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ cursor:'1|ans_one' })));
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ anchor:'ans_old' })));
   await waitFor(() => expect(document.querySelector('[data-history-ids~="ans_old"]')?.hasAttribute('data-flash')).toBe(true));
+  expect(list.mock.calls.some(([input]) => input.cursor)).toBe(false);
+  expect(slot.getByRole('button', {name:'Load newer'})).toBeTruthy();
 });
 
 it('retains a newer edit after the sent snapshot resolves', async () => {

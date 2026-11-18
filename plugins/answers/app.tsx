@@ -410,7 +410,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
 
 // Like bb's chat: earlier messages load by themselves when the reader nears the top, with a small spinner while they
 // come. Without IntersectionObserver (old browsers, tests) a plain Load earlier link stands in.
-export function EarlierLoader({ loading, enabled = true, onLoad }: { loading: boolean; enabled?: boolean; onLoad: () => void }) {
+export function EarlierLoader({ loading, enabled = true, onLoad, label = 'Load earlier' }: { loading: boolean; enabled?: boolean; onLoad: () => void; label?: string }) {
   const sentinel = useRef<HTMLDivElement>(null), load = useRef(onLoad); load.current = onLoad;
   const watch = typeof IntersectionObserver !== 'undefined';
   useEffect(() => {
@@ -418,7 +418,7 @@ export function EarlierLoader({ loading, enabled = true, onLoad }: { loading: bo
     const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) load.current(); }, { rootMargin: '600px 0px 0px 0px' });
     observer.observe(node); return () => observer.disconnect();
   }, [watch, enabled, loading]);
-  return <div ref={sentinel} className="flex min-h-8 items-center justify-center">{loading ? <Icon name="Spinner" aria-label="Loading earlier messages" className="size-4 animate-spin text-muted-foreground" /> : !watch && <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={onLoad}>Load earlier</Button>}</div>;
+  return <div ref={sentinel} className="flex min-h-8 items-center justify-center">{loading ? <Icon name="Spinner" aria-label={label === 'Load earlier' ? 'Loading earlier messages' : 'Loading newer messages'} className="size-4 animate-spin text-muted-foreground" /> : !watch && <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={onLoad}>{label}</Button>}</div>;
 }
 
 function Page({ threadId, view, projectId, query, cursor, orphans }: { threadId?: string; view: View; projectId?: string; query: string; cursor?: string; orphans?: Item[][] }) {

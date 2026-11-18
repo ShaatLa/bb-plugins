@@ -44,7 +44,7 @@ export const inputs = {
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
  poolUpdate:z.object({id:poolIdSchema,note:z.string().max(8000),attachments:attachments.optional(),revision:time}).strict(), poolRemove:z.object({id:poolIdSchema}).strict(),
  poolSend:z.object({threadId,ids:z.array(poolIdSchema).min(1).optional(),send:sendOptionsSchema.optional()}).strict(), quoteReply:z.object({threadId,quote,text:z.string().max(8000),itemId:idSchema.optional(),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict(),
- list: z.object({view: viewSchema, threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), order: z.enum(['created','activity']).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
+ list: z.object({anchor:z.union([idSchema,time]).optional(),after:z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(),view: viewSchema, threadId: threadId.optional(), projectId: z.string().min(1).max(200).optional(), query: z.string().max(4000).optional(), cursor: z.string().regex(/^\d+\|ans_[A-Za-z0-9_-]+$/).optional(), order: z.enum(['created','activity']).optional(), limit: z.number().int().min(1).max(50).optional()}).strict(), counts: z.object({}).strict(),
  markRead: z.union([z.object({ids: z.array(idSchema).min(1).max(1000)}).strict(), z.object({all:z.literal(true), threadId:threadId.optional()}).strict()]),
  setPinned: z.object({id:idSchema,pinned:z.boolean()}).strict(), setDismissed: z.object({id:idSchema,dismissed:z.boolean()}).strict(),
  reply: z.object({id:idSchema,text:z.string().trim().max(8000),attachments:attachments.optional(),send:sendOptionsSchema.optional()}).strict().refine(p=>p.text || p.attachments?.length,{message:'Write a reply or attach a file',path:['text']}), save: z.object({threadId,seq:time,role:z.string().min(1).max(100),text:z.string().trim().min(1).max(20000)}).strict(),
@@ -65,7 +65,7 @@ export const rpcContract=defineRpcContract({
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, queueStamp:{tags:()=>[QUEUE_TAG],input:inputs.queueStamp,output:z.object({stamp:z.number()})}, contextStamp:{tags:()=>[CONTEXT_TAG],input:inputs.contextStamp,output:z.object({stamp:z.number(),compactedAt:z.number().nullable().default(null)})}, logClientError:{input:inputs.logClientError,output:z.object({ok:z.literal(true)})}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
  poolSend:{input:inputs.poolSend,output:z.object({delivery:z.enum(['sent','queued']),sent:time,keptEdited:time})}, quoteReply:{input:inputs.quoteReply,output:z.object({delivery:z.enum(['sent','queued'])})},
- list:{tags:()=>[ITEMS_TAG],input:inputs.list,output:z.object({items:z.array(itemSchema),nextCursor:z.string().nullable()})}, counts:{tags:()=>[COUNTS_TAG],input:inputs.counts,output:z.object({unread:time,waiting:time,forMe:time,inbox:time})},
+ list:{tags:()=>[ITEMS_TAG],input:inputs.list,output:z.object({items:z.array(itemSchema),nextCursor:z.string().nullable(),newerCursor:z.string().nullable().optional()})}, counts:{tags:()=>[COUNTS_TAG],input:inputs.counts,output:z.object({unread:time,waiting:time,forMe:time,inbox:time})},
  markRead:{input:inputs.markRead,output:z.union([bulkRead,ok])},setPinned:{input:inputs.setPinned,output:ok},setDismissed:{input:inputs.setDismissed,output:ok}, reply:{input:inputs.reply,output:z.object({delivery:z.enum(['sent','queued'])})},save:{input:inputs.save,output:z.object({id:idSchema,created:z.boolean()})},
 });
 export type Item=z.infer<typeof itemSchema>;
@@ -74,7 +74,7 @@ export type AnswersRpcContract=typeof rpcContract;
 
 export type ListInput = z.infer<typeof inputs.list>;
 export type Counts = { unread: number; waiting: number; forMe: number; inbox: number };
-export type ListResult = { items: Item[]; nextCursor: string | null };
+export type ListResult = { items: Item[]; nextCursor: string | null; newerCursor?: string | null };
 
 export type PoolEntry = z.infer<typeof poolEntrySchema>;
 export type Recipient = z.infer<typeof recipientSchema>;

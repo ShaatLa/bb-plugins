@@ -1,5 +1,7 @@
 # Answers
 
+The thread table of contents button beside search lists your messages in order. Search results and ?msg= links open an anchored Answers window directly; scrolling loads earlier or newer windows as needed, and Scroll to latest returns to current history. Anchors missing from Answers’ stored history offer the full transcript.
+
 Expand a work-log step to load its command, output, exit code, tool arguments or file diff. Other payloads link to the full transcript. The current agent plan appears once below the conversation as a compact checklist when bb exposes todos.
 
 The @ menu searches workspace files and folders in the selected thread’s environment after a short debounce (up to eight paths and eight threads). Selecting a path inserts a native workspace mention pill and sends its typed metadata.

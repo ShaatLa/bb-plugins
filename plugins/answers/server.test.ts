@@ -952,3 +952,15 @@ it('restores reminder timing after restart and honors disabled saved settings',a
  const db=next.bb.storage.database();expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:0});
  await next.harness.behavior.setSettings({remindHours:3});await vi.advanceTimersByTimeAsync(1000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:1});
 });
+
+it('jumps directly to a stored sequence and pages newer history only on demand', async () => {
+  const {harness,db} = setup();
+  for (let i=1;i<=120;i++) { seed(db,`ans_example_${i}`,'mine','thr_example'); db.prepare('UPDATE items SET created_at=?,updated_at=?,question_seq=? WHERE id=?').run(i,i,i,`ans_example_${i}`); }
+  const page = await harness.behavior.callRpc('list',{view:'all',threadId:'thr_example',order:'activity',anchor:5,limit:3}) as any;
+  expect(page.items.map((item:any)=>item.questionSeq)).toEqual([5,4,3]);
+  expect(page.newerCursor).toBe('5|ans_example_5');
+  const newer = await harness.behavior.callRpc('list',{view:'all',threadId:'thr_example',order:'activity',after:page.newerCursor,limit:3}) as any;
+  expect(newer.items.map((item:any)=>item.questionSeq)).toEqual([8,7,6]);
+  expect(newer.newerCursor).toBe('8|ans_example_8');
+  expect(db.prepare('SELECT count(*) n FROM items WHERE read_at IS NOT NULL').get()).toEqual({n:0});
+});

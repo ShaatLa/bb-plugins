@@ -142,10 +142,17 @@ export default function plugin(bb: BbPluginApi) {
     if (p.query) {where.push("(instr(lower(question),lower(?))>0 OR instr(lower(coalesce(answer,'')),lower(?))>0)"); args.push(p.query,p.query);}
     // activity: conversations place an item at its latest activity, so a late answer pages in with its own time.
     const at = p.order === 'activity' ? 'coalesce(answered_at,created_at)' : 'created_at';
-    if (p.cursor) {const [time,id]=p.cursor.split('|'); where.push(`(${at}<? OR (${at}=? AND id<?))`); args.push(Number(time),Number(time),id);}
-    const limit = p.limit ?? 50;
-    const rows = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE ${where.join(' AND ')} ORDER BY ${at} DESC,id DESC LIMIT ?`).all(...args,limit+1) as Row[];
-    const more = rows.length>limit; rows.splice(limit);
+    if ((p.anchor !== undefined || p.after) && (!p.threadId || p.view !== 'all' || p.order !== 'activity' || p.cursor || p.query)) throw new Error('Anchored history requires one thread and activity order');
+    if (p.anchor !== undefined) {
+      const target = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${typeof p.anchor === 'number' ? '(question_seq=? OR answer_seq=? OR interim_seq=? OR candidate_seq=?)' : 'id=?'} LIMIT 1`).get(p.threadId, ...(typeof p.anchor === 'number' ? [p.anchor,p.anchor,p.anchor,p.anchor] : [p.anchor])) as Row | undefined;
+      if (!target) return {items:[],nextCursor:null,newerCursor:null};
+      where.push(`(${at}<? OR (${at}=? AND id<=?))`); args.push(target.list_at,target.list_at,target.id);
+    }
+    const cursor = p.after ?? p.cursor;
+    if (cursor) {const [time,id]=cursor.split('|'), op=p.after ? '>' : '<'; where.push(`(${at}${op}? OR (${at}=? AND id${op}?))`); args.push(Number(time),Number(time),id);}
+    const limit = p.limit ?? 50, direction = p.after ? 'ASC' : 'DESC';
+    const rows = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE ${where.join(' AND ')} ORDER BY ${at} ${direction},id ${direction} LIMIT ?`).all(...args,limit+1) as Row[];
+    const more = rows.length>limit; rows.splice(limit); if (p.after) rows.reverse();
     const titles = new Map<string,string>();
     const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
     if (ids.length) for (const t of await displayThreads(ids)) titles.set(t.id,t.title ?? t.id);
@@ -161,7 +168,8 @@ export default function plugin(bb: BbPluginApi) {
       return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
-    return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null};
+    const first = rows[0], newer = first && (p.anchor !== undefined || p.after) && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND (${at}>? OR (${at}=? AND id>?)) LIMIT 1`).get(p.threadId,first.list_at,first.list_at,first.id);
+    return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null,...(p.anchor !== undefined || p.after ? {newerCursor:newer ? `${first!.list_at}|${first!.id}` : null} : {})};
   }
   function markRead(raw: {all:true;threadId?:string}): {ok:true;batch:string|null;count:number};
   function markRead(raw: z.infer<typeof inputs.markRead>): {ok:true;batch?:string|null;count?:number};
