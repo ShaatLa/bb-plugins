@@ -9,15 +9,17 @@ export function evaluateThreadHealth(
   links: readonly TaskThread[],
   lastActivityAt: string,
   thresholdMinutes: number | null,
-  /** The project's review status (workflow policy); a task waiting for review is not idle. */
-  reviewStatus: string | null = "in_review",
+  /** The project's review and testing statuses (workflow policy): the task waits on someone else there. */
+  waitingStatuses: readonly (string | null)[] = ["in_review"],
+  /** An unanswered owner question: the agent is waiting for the owner, not stuck. */
+  waitingOnOwner = false,
 ): ThreadHealth {
   const failed = FAILED_EXEMPT_STATUSES.has(taskStatus) ? [] : links
     .filter((link) => link.liveStatus === "failed")
     .map((link) => ({ threadId: link.threadId, title: link.title, failedAt: link.updatedAt }));
   const idleLinks = links.filter((link) => link.liveStatus === "idle");
   const busy = links.some((link) => link.liveStatus === "working" || link.liveStatus === "starting");
-  if (thresholdMinutes === null || IDLE_EXEMPT_STATUSES.has(taskStatus) || taskStatus === reviewStatus || busy || idleLinks.length === 0) {
+  if (thresholdMinutes === null || IDLE_EXEMPT_STATUSES.has(taskStatus) || waitingStatuses.includes(taskStatus) || waitingOnOwner || busy || idleLinks.length === 0) {
     return { failed, idle: null };
   }
   // The most recently idled thread counts: the task is only stale once every idle thread has been quiet.

@@ -323,7 +323,7 @@ line; each renders its own card.
 
 ## Thread health (read-only)
 
-`show --json` and `list --json` include `threadHealth: {failed: [threadId...], staleIdle: {threadId, idleMinutes} | null}`. `failed` lists attached threads whose turn failed or was interrupted; `staleIdle` is set when an attached thread has been idle (no working thread) longer than the project's `staleIdleMinutes` setting (default 45) without a task update, comment or evidence; it is never set for done or canceled tasks or for tasks in the project's review status. Use it to find stalled workers; it sends nothing to them.
+`show --json` and `list --json` include `threadHealth: {failed: [threadId...], staleIdle: {threadId, idleMinutes} | null}`. `failed` lists attached threads whose turn failed or was interrupted; `staleIdle` is set when an attached thread has been idle (no working thread) longer than the project's `staleIdleMinutes` setting (default 45) without a task update, comment or evidence; it is never set for done or canceled tasks, for tasks in the project's review or testing status, or while the task has an unanswered owner question. Use it to find stalled workers; it sends nothing to them.
 
 ## Send a task to an existing thread
 

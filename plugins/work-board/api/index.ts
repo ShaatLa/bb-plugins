@@ -1,3 +1,4 @@
+import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
@@ -1260,7 +1261,10 @@ export function registerHandlers(
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();
       const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-      const reviewStatuses = new Map(projects.map((project) => [project.id, getWorkflowPolicy(project).reviewStatus]));
+      const waitingStatuses = new Map(projects.map((project) => { const policy = getWorkflowPolicy(project); return [project.id, [policy.reviewStatus, policy.testingStatus]]; }));
+      const waitingOnOwner = new Set(bb.storage.database().prepare<string[], { task_id: string }>(
+        `SELECT DISTINCT q.task_id FROM task_questions q WHERE q.task_id IN (${ids.map(() => "?").join(",")}) AND ${UNANSWERED_QUESTION}`,
+      ).all(...ids).map((row) => row.task_id));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
         const task = activity.get(taskId);
@@ -1272,7 +1276,7 @@ export function registerHandlers(
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? reviewStatuses.get(task.projectId) ?? null : null),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined, waitingOnOwner.has(taskId)),
         };
       }) };
     },

@@ -30,7 +30,7 @@ export function navigationBadgeCounts(
   const db = bb.storage.database();
   const projects = store.tasks.listProjects();
   const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-  const reviewStatuses = new Map(projects.map((project) => [project.id, getWorkflowPolicy(project).reviewStatus]));
+  const waitingStatuses = new Map(projects.map((project) => { const policy = getWorkflowPolicy(project); return [project.id, [policy.reviewStatus, policy.testingStatus]]; }));
   const ids = (where: string) =>
     db.prepare<[], { id: string }>(`SELECT t.id FROM tasks t WHERE ${where}`).all().map((row) => row.id);
   const union = new Set<string>();
@@ -39,7 +39,8 @@ export function navigationBadgeCounts(
     let matched: string[];
     if (criterion === "stale_idle") {
       // Only tasks with an idle thread can be stale, so the rule runs on a small candidate set.
-      const candidates = ids(`${ACTIVE}
+      // An open owner question means the agent waits for the owner, so it is not stale.
+      const candidates = ids(`${ACTIVE} AND NOT ${UNANSWERED}
         AND EXISTS (SELECT 1 FROM task_threads l WHERE l.task_id = t.id AND l.live_status = 'idle')`);
       const links = new Map<string, ReturnType<TasksApiStore["tasks"]["listTaskThreadsForTasks"]>>();
       for (const link of store.tasks.listTaskThreadsForTasks(candidates))
@@ -47,7 +48,7 @@ export function navigationBadgeCounts(
       const activity = store.tasks.listTaskActivity(candidates);
       matched = candidates.filter((taskId) => {
         const task = activity.get(taskId);
-        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? reviewStatuses.get(task.projectId) ?? null : null);
+        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined);
         return staleIdleMinutes(health.idle, now) !== null;
       });
     } else {
