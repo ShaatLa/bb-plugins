@@ -40,6 +40,10 @@ it('uses thread context and preserves plain owner formatting, unknown names and 
   await pills(slot); expect(slot.container.querySelector('[aria-label="command: reload"]')).toBeTruthy();
   expect(slot.container.textContent).toContain('**plain**'); expect(slot.container.querySelector('strong')).toBeNull();
 });
+it('hides HTML comment markers other plugins embed in message text', async () => {
+  const slot = renderSlot({ component:() => <UserText text={'<!-- work-board-task:EXA-1 -->\nPick up the task'} /> }, {}, { sdk } as any);
+  await waitFor(() => expect(slot.container.textContent).toBe('Pick up the task'));
+});
 it('draws commands in question form prompts and choices without an ambient thread', async () => {
   const slot = renderSlot({ component:QuestionForm }, { threadId:'thr_inline', questions:[{ id:'q', prompt:'/optimize this /tmp/x', required:true, multiSelect:false, allowFreeText:true, options:[{ value:'a', label:'/optimize option', description:'/optimize description' }] }], onSubmit:async () => {} }, { sdk } as any);
   await pills(slot, 3);

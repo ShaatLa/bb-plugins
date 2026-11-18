@@ -501,7 +501,8 @@ export function UserText({ text, prefixes, threadId }: { text: string; prefixes?
   });
   const inline = (content: string, key: string) => <Markdown key={key} content={content} className="inline-block align-baseline [&_p]:m-0" />;
   // A pasted bb thread link reads as that thread's mention pill, as bb's composer turns it into one.
-  return <>{text.replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
+  // HTML comments are hidden markers other plugins embed (e.g. a Work Board task id); Markdown never shows them either.
+  return <>{text.replace(/<!--[\s\S]*?-->\s*/g, '').replace(THREAD_URL, '@thread:$1').split(MENTION).flatMap((part, index) => index % 2 ? [inline(part, `m${index}`)]
     : task ? part.split(task).flatMap((piece, j) => j % 2 ? inline(`[${piece}](/plugins/work-board/work-board/task/${piece})`, `t${index}-${j}`) : plain(piece, index === 0 && j === 0)) : plain(part, index === 0))}</>;
 }
 
