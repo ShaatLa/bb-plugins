@@ -25,6 +25,9 @@ import {
   reportToParent,
   reportNeed,
   REPORT_NEED_HINT,
+  REPORT_WAIT_HINT,
+  recentOwnQuestion,
+  ownQuestionRefusal,
   childrenCards,
   publishProjectsChanged,
   registerHandlers,
@@ -3466,6 +3469,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 throw new CliError(errorMessage(error), { code: "missing_need", hint: REPORT_NEED_HINT });
               }
               const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              if (input.options.kind !== "ready" && recentOwnQuestion(bb, task.id, threadId))
+                throw new CliError(ownQuestionRefusal(input.options.kind, task.key), { code: "owner_question_open", hint: REPORT_WAIT_HINT });
               const bodyFile = input.options["body-file"];
               const clientHostId = bodyFile !== undefined
                 ? await resolveClientHostId(bb, domain, input.options.machine, ctx)

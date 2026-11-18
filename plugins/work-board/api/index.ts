@@ -527,6 +527,22 @@ export function reportNeed(kind: ReportKind, need: string | undefined): string |
   return text || null;
 }
 
+export const REPORT_WAIT_MINUTES = 30;
+export const REPORT_WAIT_HINT = 'Your parent already sees that wait on the card; post progress with bb work-board update KEY --progress "<text>", which wakes nobody.';
+
+/** The calling thread's own open owner question on the card, asked within the last 30 minutes. */
+export function recentOwnQuestion(bb: BbPluginApi, taskId: string, threadId: string): { id: string } | null {
+  const since = new Date(Date.now() - REPORT_WAIT_MINUTES * 60_000).toISOString();
+  return bb.storage.database().prepare<[string, string, string], { id: string }>(
+    `SELECT q.id FROM task_questions q WHERE q.task_id = ? AND json_extract(q.payload, '$.askedByThread') = ?
+      AND json_extract(q.payload, '$.createdAt') >= ? AND ${UNANSWERED_QUESTION} LIMIT 1`,
+  ).get(taskId, threadId, since) ?? null;
+}
+
+export function ownQuestionRefusal(kind: ReportKind, taskKey: string): string {
+  return `A ${kind} report on ${taskKey} is refused while your own owner question there, asked in the last ${REPORT_WAIT_MINUTES} minutes, is open`;
+}
+
 /** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
 export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
   const thread = await bb.sdk.threads.get({ threadId });
@@ -556,6 +572,8 @@ export async function reportToParent(
 ): Promise<{ parentThreadId: string; notified: boolean; stateUpdated: boolean }> {
   const need = reportNeed(input.kind, input.need);
   const body = need ? `Needed: ${need}\n\n${input.body}` : input.body;
+  if (input.kind !== "ready" && recentOwnQuestion(bb, input.taskId, input.threadId))
+    throw new Error(ownQuestionRefusal(input.kind, store.tasks.getTask(input.taskId)!.key));
   const role = await cardRole(bb, store, input.taskId, input.threadId);
   const parentThreadId = role.parentThreadId;
   if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);

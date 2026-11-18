@@ -319,6 +319,45 @@ describe("bb work-board CLI", () => {
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
   });
 
+  it("refuses a question or blocker while the reporter's own owner question on the card is fresh and open", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T10:00:00Z"));
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Wait", "--prefix", "WAI"]);
+    await harness.runCli(["create", "--project", "WAI", "--title", "Card"]);
+    const parents: Record<string, string | null> = { thr_child: "thr_parent", thr_other: "thr_parent", thr_parent: null };
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, title: threadId, status: "active", parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
+    harness.sdk.stub("threads.queuedMessages.list", async () => []);
+    harness.sdk.stub("threads.send", async () => ({}) as never);
+    const report = (thread: string, kind: string) => harness.runCli(["report", "WAI-1", "--kind", kind, "--need", "Decide.", "--body", "x"], { threadId: thread });
+    vi.stubEnv("BB_THREAD_ID", "");
+    try {
+      const question = JSON.parse(stdout(await harness.runCli(["question", "add", "WAI-1", "--prompt", "Ship it?", "--option", "Yes", "--option", "No", "--json"], { threadId: "thr_child" }))).question;
+      for (const kind of ["question", "blocker"]) {
+        const refused = await report("thr_child", kind);
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.stderr).toContain("own owner question");
+        expect(refused.stderr).toContain("update KEY --progress");
+      }
+      expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+      // Ready, progress and other threads are unaffected.
+      expect((await report("thr_child", "ready")).exitCode).toBe(0);
+      expect((await harness.runCli(["update", "WAI-1", "--progress", "Waiting"], { threadId: "thr_child" })).exitCode).toBe(0);
+      expect((await report("thr_other", "blocker")).exitCode).toBe(0);
+      // After 30 minutes the wait no longer blocks a report.
+      vi.setSystemTime(new Date("2026-01-01T10:31:00Z"));
+      expect((await report("thr_child", "question")).exitCode).toBe(0);
+      // An answered question never blocks.
+      vi.setSystemTime(new Date("2026-01-01T11:00:00Z"));
+      const fresh = JSON.parse(stdout(await harness.runCli(["question", "add", "WAI-1", "--prompt", "Again?", "--option", "Yes", "--option", "No", "--json"], { threadId: "thr_child" }))).question;
+      expect((await report("thr_child", "blocker")).exitCode).not.toBe(0);
+      await harness.runCli(["question", "answer", "WAI-1", "--question", fresh.id, "--answer", fresh.options[0].id, "--revision", String(fresh.revision)]);
+      expect((await report("thr_child", "blocker")).exitCode).toBe(0);
+      expect(question.askedByThread).toBe("thr_child");
+    } finally { vi.unstubAllEnvs(); vi.useRealTimers(); await harness.dispose(); }
+  });
+
   it("attaches an unattached child session that writes Current state, but not a helper or a top-level thread", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);
