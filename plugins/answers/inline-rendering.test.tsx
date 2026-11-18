@@ -86,3 +86,11 @@ it('keeps the card end in place when the group closes from its bottom bar, and t
   fireEvent.click(toggle); box.scrollTop = 1000; fireEvent.click(toggle);
   expect(box.scrollTop).toBe(1000);
 });
+it('insets a plugin message bubble from the edge of an open background updates group', () => {
+  const plugin = { ...item, id:'ans_plugin', kind:'update' as const, status:'answered' as const, question:'**EXA-1 · READY** from a lead', trigger:{ kind:'plugin' as const, sourceId:'work-board', label:null } } as any;
+  const slot = renderSlot({ component:UpdateGroup }, { items:[plugin, { ...plugin, id:'ans_plugin2' }], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
+  fireEvent.click(slot.getByRole('button', { name:/2 background updates/ }));
+  const list = slot.container.querySelector('[data-update-group] ul')!;
+  expect(list.querySelector('[data-bubble-row] [data-plugin-message]')).toBeTruthy();
+  expect(list.className).toContain('[&_[data-bubble-row]]:mr-2');
+});
