@@ -147,20 +147,27 @@ it("rejects a new workspace with no resolvable host before minting", async () =>
 
 it("counts coded and uncoded builder exits without retaining free-form diagnostics", async () => {
   const f = await fixture();
-  const fail = async (lastLine: string) => {
-    await writeFile(join(f.repo, "builder.py"), `import sys\nprint("private diagnostic", file=sys.stderr)\nprint(${JSON.stringify(lastLine)}, file=sys.stderr)\nsys.exit(1)\n`);
+  const fail = async (firstLine: string, lastLine: string) => {
+    await writeFile(join(f.repo, "builder.py"), `import sys\nprint(${JSON.stringify(firstLine)}, file=sys.stderr)\nprint(${JSON.stringify(lastLine)}, file=sys.stderr)\nsys.exit(1)\n`);
     f.git("add", "."); f.git("commit", "-m", "Update builder exit");
   };
-  await fail('{"reasonCode":"missing_required_sections"}');
+  await fail("private diagnostic", '{"reasonCode":"missing_required_sections"}');
   await expect(f.start(f.request)).rejects.toThrow("private diagnostic");
-  await fail('{"reasonCode":"Not a code"}');
+  await fail("private diagnostic", '{"reasonCode":"Not a code"}');
   await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("private diagnostic");
+  await fail('{"reasonCode":"unknown_role"}', "private diagnostic");
+  await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("private diagnostic");
+  await fail('{"reasonCode":"unknown_role"}', '{"reasonCode":"legacy_reason"}');
+  await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("legacy_reason");
   const report = await f.report({ events: true });
   expect(report.projects[0]?.refusals).toEqual([
+    { operation: "dry-run", reason: "builder:unknown_role", count: 2 },
     { operation: "dry-run", reason: "builder_error", count: 1 },
     { operation: "start", reason: "builder:missing_required_sections", count: 1 },
   ]);
   expect(report.events).toMatchObject([
+    { operation: "dry-run", reason: "builder:unknown_role", stderr: '{"reasonCode":"unknown_role"}' },
+    { operation: "dry-run", reason: "builder:unknown_role", stderr: '{"reasonCode":"unknown_role"}' },
     { operation: "dry-run", reason: "builder_error", stderr: null },
     { operation: "start", reason: "builder:missing_required_sections", stderr: null },
   ]);

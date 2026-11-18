@@ -188,12 +188,12 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       return result;
     } catch (error) {
       if (tracked) {
+        const firstCode = readBuilderReason(diagnostics.stderr.split("\n", 1)[0] ?? "");
         if (reason === "builder_error" && diagnostics.exitCode) {
-          const code = readBuilderReason(diagnostics.stderr.trimEnd().split("\n").at(-1) ?? "");
+          const code = firstCode ?? readBuilderReason(diagnostics.stderr.trimEnd().split("\n").at(-1) ?? "");
           if (code) reason = `builder:${code}`;
         }
         // A free-form diagnostic can echo the task or a credential.
-        const firstCode = readBuilderReason(diagnostics.stderr.split("\n", 1)[0] ?? "");
         record(request.projectId, mode, signal.aborted ? "cancelled" : reason, {
           parentThreadId: request.parentThreadId, sourceCommit, card: builderCard(request.args),
           stderr: firstCode ? JSON.stringify({ reasonCode: firstCode }) : null,
