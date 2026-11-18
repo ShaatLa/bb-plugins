@@ -27,3 +27,8 @@ it('maps copied plugin mention ids to the send schema', () => {
   rememberMention('@Plugin item', { kind: 'plugin', pluginId: 'sample', provider: 'items', id: 'one', label: 'Plugin item' });
   expect(mentionsForText('@Plugin item')[0].resource).toEqual({ kind: 'plugin', pluginId: 'sample', itemId: 'one', label: 'Plugin item', icon: undefined });
 });
+it('keeps a file mention distinct from its previously selected parent folder', () => {
+  rememberMention('@src/example', {kind:'path',source:'workspace',entryKind:'directory',path:'src/example',label:'src/example'});
+  rememberMention('@src/example/file.ts', {kind:'path',source:'workspace',entryKind:'file',path:'src/example/file.ts',label:'src/example/file.ts'});
+  expect(mentionsForText('@src/example/file.ts')[0]?.resource).toMatchObject({kind:'path',entryKind:'file',path:'src/example/file.ts'});
+});

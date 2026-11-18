@@ -1,3 +1,4 @@
+import { FullTranscriptContext } from './full-transcript';
 import { useContext, useEffect, useState, type ReactNode } from 'react';
 import { ActivityLabelContext } from './robot-loader';
 import { experimental_Icon as Icon, UrlLink, useSdk } from '@get-bb/plugin-sdk/app';
@@ -94,6 +95,7 @@ function WorkGroup({ rows, threadId }: { rows: Work[]; threadId: string }) {
 }
 
 function WorkStep({ row, threadId }: { row: Work; threadId: string }) {
+  const openTranscript = useContext(FullTranscriptContext);
   const sdk = useSdk(), [open, setOpen] = useState(false), [detail, setDetail] = useState<Work>(), [error, setError] = useState('');
   useEffect(() => {
     if (!open || detail || !row.turnId) return;
@@ -108,7 +110,7 @@ function WorkStep({ row, threadId }: { row: Work; threadId: string }) {
   const text = content?.workKind === 'command' ? [content.command, content.cwd, content.output, content.exitCode == null ? '' : `Exit code: ${content.exitCode}`].filter(Boolean).join('\n') : content?.workKind === 'tool' ? [JSON.stringify(content.toolArgs, null, 2), content.output].filter(Boolean).join('\n') : content?.workKind === 'file-change' ? content.change.diff : undefined;
   return <div className="min-w-0 py-0.5">
     <button type="button" aria-expanded={open} className="flex w-full min-w-0 items-center gap-1.5 text-left" onClick={() => setOpen(!open)}><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /><span className="truncate">{workLabel(row)}</span>{(row.status === 'error' || row.status === 'interrupted') && <span>{row.status}</span>}{'completedAt' in row && row.completedAt != null && <span className="shrink-0 text-subtle-foreground">{duration(row.completedAt - row.startedAt)}</span>}</button>
-    {open && <div className="ml-4 rounded-md border border-border-seam p-2">{error ? <p role="alert">{error}</p> : !content ? <span>Loading detail…</span> : text ? <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{text}</pre> : <span>Detail is available in the full transcript.</span>}<UrlLink className="mt-1 block text-xs" href={`/threads/${threadId}?msg=${row.sourceSeqStart}`}>Full transcript</UrlLink></div>}
+    {open && <div className="ml-4 rounded-md border border-border-seam p-2">{error ? <p role="alert">{error}</p> : !content ? <span>Loading detail…</span> : text ? <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{text}</pre> : <span>Detail is available in the full transcript.</span>}{openTranscript ? <button type="button" className="mt-1 block text-xs underline" onClick={openTranscript}>Full transcript</button> : <UrlLink className="mt-1 block text-xs" href={`/threads/${threadId}?msg=${row.sourceSeqStart}`}>Full transcript</UrlLink>}</div>}
   </div>;
 }
 

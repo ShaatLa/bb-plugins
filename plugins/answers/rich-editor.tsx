@@ -36,7 +36,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
   const threadById = useMemo(() => new Map(threads.map(thread => [thread.id, thread])), [threads]);
   const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
   const task = taskKeyRegex(workBoard?.projects.map(p => p.prefix) ?? []);
-  const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
+  const matcher = new RegExp(`${parts.source}|${task?.source ?? '((?!))'}|(${Array.from(pastedMentions().keys()).filter(key => !key.startsWith('@thread:')).sort((a,b) => b.length - a.length).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)'})`, 'g');
   const [fetched, setFetched] = useState<Record<string, ThreadLabel>>({}), [menu, setMenu] = useState<{ start: number; query: string; trigger: string } | null>(null), [active, setActive] = useState(0);
   const composerThread = useContext(ComposerThread), commands = useThreadCommands(composerThread);
   const [paths, setPaths] = useState<Awaited<ReturnType<typeof sdk.projects.paths>>['paths']>([]);
@@ -45,7 +45,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     if (!composerThread || menu?.trigger !== '@') return;
     let live = true; const controller = new AbortController();
     const timer = setTimeout(() => { void (async () => {
-      const thread = await sdk.threads.get({ threadId: composerThread, signal: controller.signal });
+      const thread = await sdk.threads.get({ threadId: composerThread, include: 'environment,host', signal: controller.signal });
       const result = await sdk.projects.paths({ projectId: thread.projectId, ...(thread.environmentId ? { environmentId: thread.environmentId } : 'host' in thread && thread.host?.id ? { hostId: thread.host.id } : {}), query: menu.query, includeFiles: 'true', includeDirectories: 'true', limit: '8', signal: controller.signal });
       if (live) setPaths(result.paths.slice(0, 8));
     })().catch(() => {}); }, 200);

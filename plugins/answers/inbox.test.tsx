@@ -7,7 +7,7 @@ const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(
 const cards = vi.hoisted(() => ({ renders: 0 }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, ThreadChat: ({threadId}: any) => <div data-thread-chat={threadId}>Raw thread transcript</div>, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
@@ -1258,4 +1258,18 @@ it('hands off to a new thread with source metadata and selects it; cancel restor
  await waitFor(()=>expect(spawn).toHaveBeenCalledWith(expect.objectContaining({projectId:'pr_one',environment:{type:'reuse',environmentId:'env_example'},providerId:'provider_other',model:'model-chosen',reasoningLevel:'high',serviceTier:'priority',input:[{type:'text',text:'Continue from @thread:thr_one\n\nContinue the work',mentions:[{start:14,end:29,resource:{kind:'thread',threadId:'thr_one',projectId:'pr_one',label:'One'}}]}]})));
  expect(send).not.toHaveBeenCalled();
  await waitFor(()=>expect(localStorage.getItem('bb-plugin-answers:page:selected')).toContain('thr_new_example'));
+});
+
+it('opens the selected full transcript and returns to the mounted feed at its scroll position', async () => {
+  const {slot,recipients} = setup();
+  fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
+  const feed = slot.getByRole('list', {name:'History'}), scroller = feed.closest('.overflow-auto') as HTMLElement;
+  scroller.scrollTop = 123;
+  fireEvent.click(slot.getByRole('button', {name:'Full transcript'}));
+  expect(slot.getByRole('region', {name:'Full transcript'}).querySelector('[data-thread-chat]')?.getAttribute('data-thread-chat')).toBe('thr_one');
+  expect(scroller.getAttribute('aria-hidden')).toBe('true');
+  fireEvent.click(slot.getByRole('button', {name:'Back to Answers'}));
+  await waitFor(() => expect(scroller.scrollTop).toBe(123));
+  expect(slot.getByRole('list', {name:'History'})).toBe(feed);
+  expect(slot.queryByRole('region', {name:'Full transcript'})).toBeNull();
 });

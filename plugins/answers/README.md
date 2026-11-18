@@ -1,5 +1,7 @@
 # Answers
 
+Open Full transcript from the conversation toolbar or an expanded work step. It embeds bb’s ThreadChat for the selected thread; Back to Answers restores the mounted feed and its scroll position. Transcript sends inherit the thread’s permission mode.
+
 The thread table of contents button beside search lists your messages in order. Search results and ?msg= links open an anchored Answers window directly; scrolling loads earlier or newer windows as needed, and Scroll to latest returns to current history. Anchors missing from Answers’ stored history offer the full transcript.
 
 Expand a work-log step to load its command, output, exit code, tool arguments or file diff. Other payloads link to the full transcript. The current agent plan appears once below the conversation as a compact checklist when bb exposes todos.

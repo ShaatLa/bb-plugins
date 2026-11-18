@@ -14,7 +14,7 @@ export function mentionsForText(text: string, lookup: (id: string) => ThreadLabe
     mentions.push({ start: match.index, end: match.index + match[0].length,
       resource: { kind: 'thread', threadId: match[1], ...(details?.projectId ? { projectId: details.projectId } : {}), label: details?.label ?? match[1] } });
   }
-  for (const [token, resource] of pasted) {
+  for (const [token, resource] of [...pasted].sort((a,b) => b[0].length - a[0].length)) {
     let at = text.indexOf(token);
     while (at !== -1) {
       if (!mentions.some(m => at < m.end && at + token.length > m.start)) mentions.push({ start: at, end: at + token.length, resource: resource.kind === 'plugin' ? { kind: 'plugin', pluginId: resource.pluginId, itemId: resource.id, label: resource.label, icon: resource.icon } : resource as SentResource });
