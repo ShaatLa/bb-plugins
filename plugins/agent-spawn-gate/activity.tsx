@@ -14,7 +14,7 @@ export function GateActivity({ projectId, days, onDaysChange }: { projectId: str
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h2 className="text-base font-semibold">Activity</h2>
       <Select value={days} onValueChange={onDaysChange}>
-        <SelectTrigger aria-label="Period" className="h-8 w-auto gap-2 px-2.5 py-1 text-xs"><SelectValue /></SelectTrigger>
+        <SelectTrigger aria-label="Period" className="h-7 w-auto gap-2 border-border/60 bg-card px-2 py-0 text-xs font-medium [&_[data-icon-root]]:text-muted-foreground [&_[data-icon-root]]:opacity-100"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="1">Today</SelectItem>
           <SelectItem value="7">Last 7 days</SelectItem>
