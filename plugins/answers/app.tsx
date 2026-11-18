@@ -4,7 +4,7 @@ import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelect
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
-import { Component, Fragment, createContext, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, useSettings, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AnswersRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
@@ -193,8 +193,12 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   // updates open above the latest, like older messages in a chat.
   // Opening shows the latest update whole: its end just above the composer, or its start under the chat's header when it
   // is taller than the view. Cards above it finish rendering (markdown, images) a little later, so this holds briefly.
+  const scrollBox = () => { let box = row.current?.parentElement ?? null; while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement; return box; };
+  // Closing from the bottom bar keeps the card's end where it was, so the chat below stays put and the group folds upward.
+  const anchor = useRef<number | null>(null);
+  useLayoutEffect(() => { const bottom = anchor.current, box = scrollBox(); anchor.current = null; if (bottom !== null && box && row.current) box.scrollTop += row.current.getBoundingClientRect().bottom - bottom; }, [open]);
   const showLatest = () => {
-    let box = row.current?.parentElement ?? null; while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+    const box = scrollBox();
     if (!box) return;
     const until = Date.now() + 400, hold = () => {
       const latest = row.current?.querySelector('ul')?.lastElementChild as HTMLElement | null | undefined; if (!latest) return;
@@ -214,8 +218,8 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
         <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
       {open ? <><ul className="divide-y divide-border-seam border-t border-border-hairline bg-background">{items.map(item => <Fragment key={item.id}>{children(item)}</Fragment>)}</ul>
-        {/* bb's queue-card collapse bar: a long open group can be closed from its end; the header is kept in view. */}
-        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { setOpen(false); requestAnimationFrame(() => row.current?.scrollIntoView({ block: 'nearest' })); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words"><UserText threadId={last.threadId} text={previewText} /></span></p>}
+        {/* bb's queue-card collapse bar: a long open group can be closed from its end, folding toward its header. */}
+        <button type="button" aria-label="Collapse background updates" className="flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center border-t border-border-hairline text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => { anchor.current = row.current?.getBoundingClientRect().bottom ?? null; setOpen(false); }}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></> : <p className="cursor-pointer px-3 pb-2 text-sm text-muted-foreground group-hover/card:bg-state-hover" onClick={expand}><span className="line-clamp-2 break-words"><UserText threadId={last.threadId} text={previewText} /></span></p>}
     </div>
   </li>;
 }

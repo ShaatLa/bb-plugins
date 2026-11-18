@@ -73,3 +73,16 @@ it('keeps Markdown in queue rows and quoted text, as bb renders them', async () 
   const quote = renderSlot({ component:InlineCommentText }, { text:'> **bold** quote\n\nreply', threadId:'thr_inline' }, { sdk } as any);
   expect(quote.container.querySelector('[data-testid="bb-markdown"]')?.textContent).toBe('**bold** quote');
 });
+it('keeps the card end in place when the group closes from its bottom bar, and the header when it closes from the top', () => {
+  const items = [{ ...item, id:'ans_a', answer:'First' }, { ...item, id:'ans_b', answer:'Second' }];
+  const slot = renderSlot({ component:() => <div data-scroll style={{ overflowY:'auto' }}><ul><UpdateGroup items={items}>{i => <li>{i.answer}</li>}</UpdateGroup></ul></div> }, {}, { sdk } as any);
+  const box = slot.container.querySelector<HTMLElement>('[data-scroll]')!, row = slot.container.querySelector<HTMLElement>('[data-update-group]')!;
+  const toggle = slot.getByRole('button', { name:/2 background updates/ });
+  fireEvent.click(toggle); box.scrollTop = 1000;
+  // Open, the card ends at 900; closed, it would end at 500 unless the view follows it.
+  row.getBoundingClientRect = () => ({ bottom: toggle.getAttribute('aria-expanded') === 'true' ? 900 : 500 } as DOMRect);
+  fireEvent.click(slot.getByRole('button', { name:'Collapse background updates' }));
+  expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(box.scrollTop).toBe(600);
+  fireEvent.click(toggle); box.scrollTop = 1000; fireEvent.click(toggle);
+  expect(box.scrollTop).toBe(1000);
+});
