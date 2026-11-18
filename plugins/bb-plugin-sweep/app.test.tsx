@@ -68,7 +68,9 @@ it('shows the selected project’s analytics and changes the reporting window', 
   expect(await slot.findByRole('heading', { name: 'Second' })).toBeTruthy();
   expect(await slot.findByText('Action · stale status')).toBeTruthy();
   expect(stats).toHaveBeenCalledWith({ projectId: 'proj_second', days: 1 });
-  fireEvent.click(slot.getByRole('button', { name: '7 days' }));
+  expect(slot.getByRole('button', { name: '24 hours', pressed: true })).toBeTruthy();
+  fireEvent.click(slot.getByRole('button', { name: '7 days', pressed: false }));
+  expect(slot.getByRole('button', { name: '7 days', pressed: true })).toBeTruthy();
   await waitFor(() => expect(stats).toHaveBeenLastCalledWith({ projectId: 'proj_second', days: 7 }));
 });
 

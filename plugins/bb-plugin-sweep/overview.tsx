@@ -142,8 +142,12 @@ export function SweepOverview({ subPath }: { subPath: string }) {
         <header className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="min-w-0 break-words text-lg font-semibold">{project.name}</h1>
           <div className="flex flex-wrap items-center gap-2">
-            <div role="group" aria-label="Statistics period" className="flex rounded-lg bg-muted p-0.5">
-              {ranges.map(([value, label]) => <Button key={value} size="sm" variant="ghost" aria-pressed={days === value} onClick={() => setDays(value)}>{label}</Button>)}
+            <div role="group" aria-label="Statistics period" className="inline-flex h-8 items-center rounded-lg bg-muted p-0.5">
+              {ranges.map(([value, label]) => (
+                <Button key={value} size="sm" className="h-7" variant={days === value ? 'default' : 'ghost'} aria-pressed={days === value} onClick={() => setDays(value)}>
+                  {label}
+                </Button>
+              ))}
             </div>
             <Button size="sm" variant="outline" disabled={stats.isFetching} onClick={stats.refetch}>Refresh</Button>
           </div>
