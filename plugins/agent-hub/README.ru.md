@@ -151,3 +151,5 @@ First start reads the old `plugins/answers/data.db` with SQLite online backup be
 `bb agent-hub migration status --json` returns `{ran, completedAt, kvKeys, secrets, error, oldItemCount, newItemCount, matchingItemIds}`. Counts are current; matching IDs sample up to twenty new rows. `completedAt` is an ISO timestamp or null; a missing old database has a null count.
 
 The question card header toggles the pending stack, keeping the header and count visible. Collapse is remembered per thread; tall stacks start collapsed on phones.
+
+Choose **Add to reply pool** from the main composer’s send menu to move its text and attachments into this thread’s pool and open the Pools tab. The action appears when the composer has content.

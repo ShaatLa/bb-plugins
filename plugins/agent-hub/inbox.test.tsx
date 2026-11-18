@@ -1316,3 +1316,15 @@ it('restores the thread\'s permission mode too when the owner leaves a handoff',
  fireEvent.click(slot.getByRole('button',{name:'Exit handoff'}));
  expect(await slot.findByRole('button',{name:'auto'})).toBeTruthy();
 });
+it('moves the main composer message into its thread reply pool and clears it', async () => {
+  const poolAdd = vi.fn(() => ({ id: 'pool_example' }));
+  const { slot, recipients, send } = setup({ rpc: { poolAdd } });
+  fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name: 'Send message' });
+  change(editor, { target: { value: 'Collect this message' } });
+  fireEvent.click(slot.getByRole('button', { name: 'More send options' }));
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Add to reply pool' }));
+  await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: 'thr_one', quote: '', note: 'Collect this message', attachments: [] }));
+  await waitFor(() => expect(editor.textContent).toBe(''));
+  expect(send).not.toHaveBeenCalled();
+});
