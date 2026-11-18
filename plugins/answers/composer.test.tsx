@@ -353,3 +353,7 @@ it('makes Enter a line break on touch screens and keeps it sending with a mouse'
     expect(send).toHaveBeenCalledOnce();
   } finally { window.matchMedia = original; }
 });
+it('keeps bb\'s voice button in the toolbar row: its wrapper fills the toolbar height', () => {
+  const { slot } = editor();
+  expect(slot.container.querySelector('[data-composer-toolbar] [data-composer-voice]')!.className).toContain('[&>.relative]:h-full');
+});
