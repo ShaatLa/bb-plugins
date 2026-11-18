@@ -284,15 +284,17 @@ describe("bb work-board CLI", () => {
 
       // A question or blocker that asks nothing is refused before anything is delivered.
       const sends = harness.sdk.callsTo("threads.send").length;
-      for (const need of [[], ["--need", "  "]]) {
+      for (const need of [[], ["--need", "  "], ...["Nothing unless you want to look", "none", "No action needed.", "N/A", "-"].map((text) => ["--need", text])]) {
         const refused = await report("thr_child", "--kind", "question", ...need, "--body", "Status update");
         expect(refused.exitCode).not.toBe(0);
-        expect(refused.stderr).toContain("needs --need");
+        expect(refused.stderr).toMatch(/needs --need|must ask the recipient/);
         expect(refused.stderr).toContain("update KEY --progress");
       }
       expect(harness.sdk.callsTo("threads.send")).toHaveLength(sends);
       expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
 
+      for (const need of ["Nonetheless pick A.", "- Pick A or B."])
+        expect((await report("thr_child", "--kind", "blocker", "--need", need, "--body", "x")).exitCode).toBe(0);
       const asked = await report("thr_child", "--kind", "question", "--need", "Pick option A or B.", "--body", "Details");
       expect(asked.exitCode).toBe(0);
       expect((harness.sdk.callsTo("threads.send").at(-1)![0] as { input: { text: string }[] }).input[0]!.text).toMatch(/^\*\*REP-1 · QUESTION\*\* from @thread:thr_child\n\nNeeded: Pick option A or B\.\n\nDetails/);

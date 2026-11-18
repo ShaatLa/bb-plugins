@@ -521,6 +521,9 @@ export const REPORT_NEED_HINT = 'Progress that asks nothing goes to bb work-boar
 export function reportNeed(kind: ReportKind, need: string | undefined): string | null {
   const text = need?.trim() ?? "";
   if (kind !== "ready" && !text) throw new Error(`A ${kind} report needs --need "<what the recipient must decide or do>"`);
+  // A dash alone is a placeholder; "- Decide X" is a bullet that still asks for something.
+  if (kind !== "ready" && /^(?:nothing|none|no action|n\/a)(?![a-z])|^-+(?!\s*\w)/i.test(text))
+    throw new Error(`A ${kind} report's --need must ask the recipient to decide or do something, not "${text.slice(0, 40)}"`);
   return text || null;
 }
 
