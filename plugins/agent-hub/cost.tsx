@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import { createPortal } from 'react-dom';
 import { useRpc } from '@get-bb/plugin-sdk/app';
 import type { AgentHubRpcContract, Cost } from './contract';
-import { openAppRoute } from './lib/app-route';
 
 type ThreadCost = { threadId: string; own: Cost; total: Cost; descendantCount: number };
 // Last known cost per thread, so switching chats paints at once while a fresh read runs.
@@ -34,6 +33,10 @@ export function useThreadCost(threadId: string | null | undefined, working: bool
 }
 
 type Details = { available: boolean; today: Cost | null; week: Cost | null; models: { provider: string; model: string; cost: Cost; calls: number }[] };
+// Tokenomos' series colors (components/colors.ts), slots 1..5; "Other" is the muted foreground.
+const SLOTS = ['light-dark(#ea580c, #fb923c)', 'light-dark(#2563eb, #60a5fa)', 'light-dark(#9333ea, #c084fc)', 'light-dark(#e11d48, #fb7185)', 'light-dark(#65a30d, #a3e635)'];
+type Slice = { name: string; label: string; usd: number; color: string; opacity?: number };
+const SIZE = 64, RING = 10, GAP = 2, R = (SIZE - RING) / 2, CIRC = 2 * Math.PI * R;
 const Row = ({ label, value }: { label: string; value: string }) => <div className="flex justify-between gap-3"><span className="text-muted-foreground">{label}</span><span className="text-foreground tabular-nums">{value}</span></div>;
 
 // Anchored under the chip, right-aligned to it; in a portal so the header cannot clip it.
@@ -60,16 +63,23 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
   const subs = cost.descendantCount, ready = details !== 'loading' && details.available ? details : null;
   const period = (c: Cost | null | undefined) => details === 'loading' ? '…' : c ? money(c) : '—';
   const total = ready?.models.reduce((n, m) => n + (m.cost.usd ?? 0), 0) ?? 0, top = ready?.models.slice(0, 5) ?? [], rest = ready?.models.slice(5) ?? [];
-  const share = (usd: number | null) => total > 0 && usd !== null ? ` · ${usd > 0 && usd / total < 0.005 ? '<1' : Math.round(usd / total * 100)}%` : '';
+  const pct = (usd: number | null) => total > 0 && usd !== null ? `${usd > 0 && usd / total < 0.005 ? '<1' : Math.round(usd / total * 100)}%` : '';
   const other = rest.reduce((n, m) => n + (m.cost.usd ?? 0), 0);
+  const slices: Slice[] = top.map((m, i) => ({ name: m.model, label: `${money(m.cost)}${pct(m.cost.usd) && ` · ${pct(m.cost.usd)}`}`, usd: m.cost.usd ?? 0, color: SLOTS[i] }));
+  if (rest.length > 0) slices.push({ name: 'Other', label: `${money({ ...rest[0].cost, usd: rest.every(m => m.cost.usd !== null) ? other : null })}${pct(other) && ` · ${pct(other)}`}`, usd: other, color: 'var(--color-muted-foreground)', opacity: 0.4 });
+  let from = 0;
+  const arcs = slices.map(x => { const len = total > 0 ? x.usd / total * CIRC : 0, start = from; from += len; return { x, start, dash: Math.max(0, len - GAP) }; });
   const group = 'mt-2 space-y-1 border-t border-border-hairline pt-2';
   const sub = cost.total.usd !== null && cost.own.usd !== null ? { ...cost.total, usd: Math.max(0, cost.total.usd - cost.own.usd) } : { ...cost.total, usd: null };
   return at && createPortal(<div ref={box} role="dialog" aria-label="Cost details" className="fixed z-[100] w-72 rounded-lg border border-border bg-background p-3 text-xs shadow-lg" style={at}>
     <div className="space-y-1"><Row label="This session" value={money(cost.own)} />{subs > 0 && <Row label={`Sub-sessions (${subs})`} value={money(sub)} />}<Row label="Total" value={money(cost.total)} /></div>
     <div className={group}>{details !== 'loading' && !details.available ? <p className="text-muted-foreground">Details unavailable</p> : <><Row label="Today" value={period(ready?.today)} /><Row label="Last 7 days" value={period(ready?.week)} /></>}</div>
-    {ready && ready.models.length > 0 && <div className={group}><p className="text-muted-foreground">Models</p>{top.map(m => <Row key={`${m.provider}/${m.model}`} label={m.model} value={`${money(m.cost)}${share(m.cost.usd)}`} />)}
-      {rest.length > 0 && <Row label="Other" value={`${money({ ...rest[0].cost, usd: rest.every(m => m.cost.usd !== null) ? other : null })}${share(other)}`} />}</div>}
-    <div className={group}><button type="button" className="text-primary hover:underline" onClick={() => { onClose(); openAppRoute('/plugins/tokenomos/tokenomos'); }}>Open Tokenomos</button></div>
+    {ready && ready.models.length > 0 && <div className={`${group} flex items-center gap-3`}>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} className="shrink-0" role="img" aria-label={`Cost by model: ${slices.map(x => `${x.name} ${x.label.split(' · ')[1] ?? ''}`.trim()).join(', ')}`}>
+        <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>{arcs.filter(a => a.x.usd > 0 && a.dash > 0).map(a => <circle key={a.x.name} cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" stroke={a.x.color} strokeOpacity={a.x.opacity} strokeWidth={RING} strokeDasharray={`${a.dash} ${CIRC - a.dash}`} strokeDashoffset={-a.start} />)}</g>
+      </svg>
+      <div className="min-w-0 flex-1 space-y-1">{slices.map(x => <div key={x.name} className="flex items-center gap-2"><span className="h-2 w-2 shrink-0 rounded-full" style={{ background: x.color, opacity: x.opacity }} /><span className="min-w-0 flex-1 truncate text-foreground">{x.name}</span><span className="tabular-nums text-muted-foreground">{x.label}</span></div>)}</div>
+    </div>}
   </div>, document.body);
 }
 

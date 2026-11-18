@@ -29,6 +29,9 @@ it('shows only the own cost on the chip and toggles the details dialog on click,
   expect(text()).toContain('This session$0.80'); expect(text()).toContain('Sub-sessions (3)$0.44'); expect(text()).toContain('Total$1.24');
   await waitFor(() => expect(text()).toContain('Today$0.30')); expect(text()).toContain('Last 7 days$2.50');
   expect(text()).toContain('model-1$1.00 · 4%'); expect(text()).not.toContain('model-6'); expect(text()).toContain('Other$13 · 46%');
+  expect(text()).not.toContain('Open Tokenomos'); expect(slot.queryByRole('button', { name: 'Open Tokenomos' })).toBeNull();
+  const donut = slot.getByRole('img', { name: /model-1 4%.*model-5 18%.*Other 46%/ });
+  expect(donut.querySelectorAll('circle')).toHaveLength(6); expect(donut.getAttribute('aria-label')).not.toContain('model-6');
   expect(rpc).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thr_a' }));
   fireEvent.click(chip); expect(slot.queryByRole('dialog')).toBeNull();
 });
