@@ -10,7 +10,7 @@
     "name": "Sweep",
     "description": "Scheduled project checks and reliable manager delivery.",
     "branding": {
-      "icon": "Activity"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx"
