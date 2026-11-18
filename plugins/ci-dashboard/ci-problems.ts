@@ -258,11 +258,11 @@ export function fitSections(context: ContextSection[], budget: number, lineCap =
 }
 
 /** Plain-text first message for the BB session that investigates one problem. Lists shrink to fit the cap; the instructions never do. */
-export function seedPrompt(repository: string, problem: ProblemLike, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() })) {
+export function seedPrompt(repository: string, problem: ProblemLike, context: ContextSection[] = problemContext(problem, { repository, classified: [], reruns: [], massCancels: [], pools: [], alerts: [], defaultBranch: null, coverage: null, analysisAt: null, polledAt: null, now: Date.now() }), pluginId = "delivery-dashboard") {
   const head = `Investigate a CI problem in ${repository}: ${problem.title}.`;
   const tail = [
     "", "## How to dig further (read-only)",
-    "- ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref> from the Refs section for one drill-down), or `bb plugin rpc call delivery-dashboard ci --input-file <json>`.",
+    `- ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref> from the Refs section for one drill-down), or \`bb plugin rpc call ${pluginId} ci --input-file <json>\`.`,
     `- gh run view <runId> --repo ${repository} --log-failed`, `- gh run view <runId> --repo ${repository} --json jobs`, `- gh api repos/${repository}/actions/jobs/<jobId>/logs`,
     "", "## Your task",
     "Classify the root cause: infrastructure, flaky test, real failure, or tool/network. Give the evidence, propose the fix and say who should act. Find the root cause and report back.",
