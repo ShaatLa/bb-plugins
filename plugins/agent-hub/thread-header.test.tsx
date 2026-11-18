@@ -16,7 +16,7 @@ it('renders host title, selects its parent and supplies the shared menu target',
   const onSelect = vi.fn();
   render(<ThreadHeader thread={thread} parent={parent} title="Fallback" onSelect={onSelect} />);
   expect(screen.getByText('Selected title')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: '↑ Parent title' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Parent title' }));
   expect(onSelect).toHaveBeenCalledWith('thr_parent');
   expect(vi.mocked(experimental_ThreadActionsMenu).mock.calls.at(-1)?.[0].thread).toEqual(threadTarget(thread));
   expect(threadTarget(thread).environment).toEqual({ id: 'env_example', path: '/example' });
