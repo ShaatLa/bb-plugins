@@ -10,7 +10,7 @@ import { projectForRoute } from "./kanban-view.js";
 import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -202,10 +202,6 @@ export function TasksTopbar({
 
   const breadcrumb = (() => {
     switch (route.kind) {
-      case "all":
-        return (
-          <span className="whitespace-nowrap font-semibold">All tasks</span>
-        );
       case "active":
         return (
           <span className="flex items-center gap-2">
@@ -245,6 +241,7 @@ export function TasksTopbar({
             </span>
           </span>
         );
+      case "all":
       case "project":
         return (
           <DropdownMenu>
@@ -262,16 +259,24 @@ export function TasksTopbar({
                   />
                 ) : null}
                 <span className="truncate font-semibold">
-                  {project?.name ?? "Project"}
+                  {route.kind === "all" ? "All tasks" : (project?.name ?? "Project")}
                 </span>
                 <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+              <DropdownMenuItem
+                disabled={route.kind === "all"}
+                onSelect={() => onNavigate({ kind: "all" })}
+              >
+                <Icon name="ListView" className="size-3.5 shrink-0 text-muted-foreground" />
+                All tasks
+              </DropdownMenuItem>
+              {(projects ?? []).length > 0 ? <DropdownMenuSeparator /> : null}
               {(projects ?? []).map((item) => (
                 <DropdownMenuItem
                   key={item.id}
-                  disabled={item.id === project?.id}
+                  disabled={route.kind === "project" && item.id === project?.id}
                   onSelect={() =>
                     onNavigate({ kind: "project", projectId: item.id, view: null })
                   }

@@ -76,7 +76,7 @@ To create a new thread, continue using `--preset`; both flags cannot be passed t
 
 In the **Work Board → Open by default** settings, you can choose the startup screen: the last project's Kanban (default), the last project's task list, all tasks, or active tasks. The last selected project is remembered on this device. If the project is deleted, the first available project opens. Direct links continue to navigate to the screen specified in them.
 
-Click the project name in the project header to switch to another project.
+Click the project name (or **All tasks**) in the header to switch to another project or to All tasks.
 
 The **List / Board** toggle in the project (or task) header controls the right-side **Kanban** tab: **Board** opens it, while **List** switches to the Navigation tab without closing the Browser, Terminal, or the panel itself. The toggle's state is synced with the panel, so switching tabs or hiding the panel immediately updates it. The main area always displays the task list or an individual task, allowing you to review task details alongside the board. The board header includes a **Scheduled** button that opens the schedule in the main area. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
 

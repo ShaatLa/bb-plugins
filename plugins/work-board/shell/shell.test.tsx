@@ -200,6 +200,29 @@ describe("project view preference", () => {
       path: "work-board",
       options: { subPath: OTHER_PROJECT_ID },
     });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(await slot.findByRole("menuitem", { name: "All tasks" }));
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: "all" },
+    });
+  });
+
+  it("switches from All tasks to a project in the top bar", async () => {
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "all" },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }) }) },
+    );
+    fireEvent.keyDown(await slot.findByRole("button", { name: "Switch project" }), { key: "Enter" });
+    expect(slot.getByRole("menuitem", { name: "All tasks" }).getAttribute("data-disabled")).not.toBeNull();
+    fireEvent.click(slot.getByRole("menuitem", { name: "Tasks Plugin" }));
+    expect(slot.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: PROJECT_ID },
+    });
   });
 
   it("Manage's Back returns to the view it was opened from", async () => {
