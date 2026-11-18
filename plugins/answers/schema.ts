@@ -119,4 +119,15 @@ ALTER TABLE items ADD COLUMN chat_asked INTEGER NOT NULL DEFAULT 0;`,
   `ALTER TABLE items ADD COLUMN urgency TEXT;`,
   `ALTER TABLE items ADD COLUMN reminded_at INTEGER;
 ALTER TABLE items ADD COLUMN reminders INTEGER NOT NULL DEFAULT 0;`,
+  `CREATE TABLE sub_threads(thread_id TEXT PRIMARY KEY);
+CREATE TRIGGER sub_items_read_insert AFTER INSERT ON items
+WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for_me' AND NEW.chat_asked=0)
+BEGIN
+  UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
+END;
+CREATE TRIGGER sub_items_read_update AFTER UPDATE OF read_at,notify_state,asks ON items
+WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for_me' AND NEW.chat_asked=0) AND (NEW.read_at IS NULL OR NEW.notify_state<>0 OR NEW.asks<>0)
+BEGIN
+  UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
+END;`,
 ];

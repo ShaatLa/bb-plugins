@@ -6,7 +6,9 @@ export const QUIET_SQL = "length(trim(question))<=60 AND instr(question,'?')=0 A
 export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)";
 // Archived threads leave the Inbox, counts and pushes; their items come back if the thread is unarchived.
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
-export const ATTENTION_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
+// Explicit asks still reach the owner when a sub-agent calls answers_ask.
+export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0))";
+export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Answers). A short one ("Хотите?") keeps the
 // sentence before it for context; table rows only list.
@@ -57,13 +59,14 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** Drops a finished child from every deferred item waiting for it; an emptied list ('[]') is settled by the driver, which
  * either waits for children started since (a later wave) or answers the question with the latest report. */
 /** Apply an ascending page inside the caller's transaction; returns whether anything the UI shows changed. */
-/** `trackQuestions` is false for agent-spawned threads, whose "user" turns come from agents and scripts. */
+/** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
  let hidden = 0;
+ if (!trackQuestions) hidden += db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(threadId).changes;
  hidden += db.prepare('INSERT OR IGNORE INTO threads_state(thread_id,last_seq,updated_at) VALUES (?,0,?)').run(threadId,now).changes;
  let state = db.prepare('SELECT last_seq,active_turn_id FROM threads_state WHERE thread_id=?').get(threadId) as {last_seq:number;active_turn_id:string|null};
  let cursor = state.last_seq, active = state.active_turn_id;
@@ -95,9 +98,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // Messages other plugins send are noise; the owner's own words sent through Answers (Reply, pool, quote popup) still count.
    // bb records a script's `bb thread tell` into its own thread as the user's; such scripts start the text with a [tag].
    const tag = SCRIPT_TAG.exec(text)?.[1] ?? null;
-   if (trackQuestions && !tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && (text || attachments.length > 0) && !command) {
+   if (!tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || d.originPluginId === 'answers') && (text || attachments.length > 0) && !command) {
     db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,e.createdAt ?? now,now);
-   } else if (trackQuestions && d.requestId) {
+   } else if (d.requestId) {
     // Remember what else can start a turn, so its final message can reach the owner as an update.
     const kind = d.senderThreadId ? 'agent' : d.originPluginId ? 'plugin' : d.initiator === 'system' ? 'system' : 'other';
     // A tagged script message is an 'other' trigger named by its tag.
@@ -108,7 +111,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    failRequest(db,threadId,d.requestId,e.createdAt ?? now,live);
   } else if (e.type === 'turn/started' && turn && !d.parentToolCallId) {
    active=turn;
-   if (trackQuestions) hidden += db.prepare('INSERT OR IGNORE INTO turn_updates(thread_id,turn_id,started_at) VALUES (?,?,?)').run(threadId,turn,e.createdAt ?? now).changes;
+   hidden += db.prepare('INSERT OR IGNORE INTO turn_updates(thread_id,turn_id,started_at) VALUES (?,?,?)').run(threadId,turn,e.createdAt ?? now).changes;
    // A steer the previous turn never showed the agent is read by this one (bb hands queued input to the next turn).
    hidden += db.prepare("UPDATE items SET turn_id=?,steer_seq=NULL WHERE thread_id=? AND kind='mine' AND status='waiting' AND steer_seq IS NOT NULL").run(turn,threadId).changes;
   }
@@ -141,10 +144,10 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
     // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
-    const asked = update?.answer && !update.asked ? chatQuestion(update.answer) : null;
+    const asked = trackQuestions && update?.answer && !update.asked ? chatQuestion(update.answer) : null;
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
-    const asks = !!update?.answer && (!!update.report || asksOwner(update.answer));
+    const asks = trackQuestions && !!update?.answer && (!!update.report || asksOwner(update.answer));
     const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);
     // The message shown at acceptance takes the turn's reply; with nothing to report it stays a read caption.
     if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);

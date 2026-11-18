@@ -1163,3 +1163,10 @@ it('keeps a dragged queue row inside the visible list', async () => {
   expect(keepInList(args(500))).toMatchObject({ y: 60 });
   expect(keepInList(args(-500))).toMatchObject({ y: -50 });
 });
+
+it('shows a sub-session title without a top-level contact', async () => {
+  localStorage.setItem('bb-plugin-answers:page:selected', JSON.stringify('thr_example_child'));
+  const { slot } = setup({ recipients: [], list: () => ({ items:[{...base,threadId:'thr_example_child',threadTitle:'Child session'}],nextCursor:null }) });
+  await waitFor(() => expect(slot.container.querySelector('[data-chat-column]')?.textContent).toContain('Child session'));
+  expect(slot.queryByText('Untitled thread')).toBeNull();
+});

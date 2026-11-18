@@ -73,10 +73,12 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     try { thread = listed ?? await bb.sdk.threads.get({threadId:id,signal}); projectId = thread.projectId; questions = !thread.parentThreadId; }
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
     let changed = false;
-    // Agent-spawned children store nothing: skip their events, keep only the row withThread needs.
-    if (!questions) { db.prepare('INSERT OR IGNORE INTO threads_state(thread_id,last_seq,updated_at) VALUES (?,0,?)').run(id,Date.now()); return; }
+    if (!questions) db.transaction(() => {
+      db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);
+      db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
+    })();
     try {
-    if (!state || (state.last_seq === 0 && state.last_error)) {
+    if (!state || state.last_seq === 0) {
       const events: Event[] = [];
       let before: number | undefined;
       // shortcut: first sight covers at most 1,500 events; expand if older history becomes a requirement.
@@ -140,7 +142,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         for (const t of found) db.prepare(t.archivedAt ? 'INSERT OR IGNORE INTO archived_threads VALUES (?)' : 'DELETE FROM archived_threads WHERE thread_id=?').run(t.id);
         await Promise.all(tracked.slice(i,i+200).map(async row => {
           const id=row.thread_id, thread=known.get(id);
-          if (thread?.archivedAt || thread?.parentThreadId) return;
+          if (thread?.archivedAt) return;
           if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at) return;
           if (!thread) {
             try {await bb.sdk.threads.get({threadId:id,signal});}

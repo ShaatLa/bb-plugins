@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { deliveryError } from './delivery';
 import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
-import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, failRequest } from './ingest';
+import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
@@ -97,7 +97,7 @@ export default function plugin(bb: BbPluginApi) {
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
       count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
-      FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL}`).get() as Counts;
+      FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).get() as Counts;
   }
   // bb has no "thread read" event, so the badge would keep counting answers already read in bb's chat until the Answers
   // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
@@ -126,6 +126,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   async function list(raw: ListInput) {
     const p = inputs.list.parse(raw);
+    if (p.threadId && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.threadId)) await driver.schedule(p.threadId);
     const views = {
       // Same set as the Inbox: unread answers and open agent questions.
       unread:ATTENTION_SQL,
@@ -133,6 +134,7 @@ export default function plugin(bb: BbPluginApi) {
       for_me:"kind='for_me' AND status='open'", pinned:'pinned=1', saved:"((kind='saved' AND dismissed_at IS NULL) OR pinned=1)", all:'1=1',
     };
     const where = [views[p.view]], args: (string | number)[] = [];
+    if (!p.threadId) where.push(OWNER_ITEM_SQL);
     if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL',ACTIVE_THREAD_SQL);
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
@@ -303,15 +305,16 @@ export default function plugin(bb: BbPluginApi) {
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
       const p=inputs.recipients.parse(raw);
-      // A contact's number counts its open agent questions too (shown above its composer), so contacts add up to the badge.
+      if (p.selected && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.selected)) await driver.schedule(p.selected);
+      // A contact counts its own open agent questions too; explicit sub-agent asks live only in Questions.
       const contactAttention = ATTENTION_SQL;
-      const chosenAttention=contactAttention.replace('thread_id NOT IN','chosen.thread_id NOT IN');
+      const chosenAttention=contactAttention.replaceAll('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
         SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
-        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL}
+        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
         GROUP BY thread_id
-        -- A thread that only ever asked the owner something (e.g. a sub-session bypassing its manager) is no contact; it lives in Questions. The open one stays.
+        -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
         HAVING sum(kind<>'for_me')>0 OR thread_id=?
         ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
       ) SELECT grouped.*,chosen.project_id,
@@ -320,10 +323,10 @@ export default function plugin(bb: BbPluginApi) {
              WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
         FROM grouped JOIN items chosen ON chosen.id=(
           SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
-          ORDER BY CASE WHEN ${contactAttention.replace('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
+          ORDER BY CASE WHEN ${contactAttention.replaceAll('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
         )`).all(p.selected ?? '',p.selected ?? '') as Row[];
       // The open chat stays listed even without items yet, unless it was archived or deleted.
-      if (p.selected && !rows.some(r=>r.thread_id===p.selected) && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM items WHERE thread_id=? AND thread_deleted=1').get(p.selected,p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
+      if (p.selected && !rows.some(r=>r.thread_id===p.selected) && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM items WHERE thread_id=? AND thread_deleted=1 UNION ALL SELECT 1 FROM sub_threads WHERE thread_id=?').get(p.selected,p.selected,p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
       const threads=rows.length ? await displayThreads(rows.map(r=>r.thread_id)) : [];
       const projects=rows.length ? await displayProjects() : [];
@@ -412,7 +415,7 @@ export default function plugin(bb: BbPluginApi) {
       const {threadId}=inputs.owed.parse(raw);
       return driver.withThread(threadId,() => {
         expireOwed(threadId);
-        const rows=db.prepare("SELECT id,question,created_at,interim FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND dismissed_at IS NULL ORDER BY created_at,id").all(threadId) as Row[];
+        const rows=db.prepare("SELECT id,question,created_at,interim FROM items WHERE thread_id=? AND kind='mine' AND status='deferred' AND dismissed_at IS NULL AND thread_id NOT IN (SELECT thread_id FROM sub_threads) ORDER BY created_at,id").all(threadId) as Row[];
         return {items:rows.map(r=>({id:r.id,question:r.question,createdAt:r.created_at,interim:!!r.interim}))};
       });
     },
@@ -490,6 +493,7 @@ export default function plugin(bb: BbPluginApi) {
             return id;
           }
           if (method==='report') {
+            if (db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(ctx.threadId)) return 'This sub-thread’s final message stays in its read chat history.';
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null} | undefined;
             if (!state?.active_turn_id) throw new Error('no active turn');
             commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,report) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET report=1',ctx.threadId,state.active_turn_id,now);
@@ -524,8 +528,8 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.agents.contributeInstructions(() => INSTRUCTIONS);
   registerCli(bb,{list,markRead,db,status:()=>({counts:counts(),trackedThreads:(db.prepare('SELECT count(*) AS n FROM threads_state').get() as {n:number}).n,errors:db.prepare('SELECT thread_id,last_error FROM threads_state WHERE last_error IS NOT NULL').all()})});
-  // Children (agent-spawned) store nothing, so their event streams are never fetched; the payload carries the thread, so no threads.get either.
-  bb.events.on('experimental_thread.events',({thread})=>thread.parentThreadId ? undefined : driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
+  // The event payload avoids a metadata lookup for both contacts and sub-sessions.
+  bb.events.on('experimental_thread.events',({thread})=>driver.schedule(thread.id,thread).catch(e=>bb.log.warn(`Answers ingest: ${String(e)}`)));
   // bb pushes no queue changes to plugin apps; a per-thread stamp lets an open chat re-read its queue as soon as a row
   // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
   for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});

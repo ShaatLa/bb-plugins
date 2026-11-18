@@ -1,4 +1,5 @@
 import { cliCommand, defineCli, type BbPluginApi } from '@get-bb/plugin-sdk';
+import { OWNER_ITEM_SQL } from './ingest';
 import { inputs, viewSchema, type ListInput, type ListResult } from './contract';
 import type { z } from 'zod';
 import type Database from 'better-sqlite3';
@@ -24,7 +25,7 @@ export function registerCli(bb: BbPluginApi, api: Api) {
       const raw=i.options.since ?? '24h', since=raw==='24h' ? Date.now()-86400000 : raw==='7d' ? Date.now()-7*86400000 : Date.parse(raw);
       if (!Number.isFinite(since) || (raw!=='24h' && raw!=='7d' && !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw))) throw new Error('Use --since 24h, 7d, or an ISO timestamp');
       type DigestRow={thread_id:string;question:string;answer:string|null;created_at:number;answered_at:number|null;failed_at:number|null};
-      const section=(where:string,order:string,params:(number|string)[]=[])=>({total:(api.db.prepare(`SELECT count(*) AS n FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${where}`).get(...params) as {n:number}).n,items:api.db.prepare(`SELECT thread_id,question,answer,created_at,answered_at,failed_at FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${where} ORDER BY ${order} LIMIT 20`).all(...params) as DigestRow[]});
+      const section=(where:string,order:string,params:(number|string)[]=[])=>({total:(api.db.prepare(`SELECT count(*) AS n FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${OWNER_ITEM_SQL} AND ${where}`).get(...params) as {n:number}).n,items:api.db.prepare(`SELECT thread_id,question,answer,created_at,answered_at,failed_at FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${OWNER_ITEM_SQL} AND ${where} ORDER BY ${order} LIMIT 20`).all(...params) as DigestRow[]});
       const newAnswers=section("kind='mine' AND status='answered' AND answered_at>=?",'read_at IS NOT NULL,answered_at DESC,id DESC',[since]);
       const waiting=section("kind='mine' AND status IN ('waiting','deferred')",'failed_at IS NULL,created_at DESC,id DESC');
       const askedOfYou=section("kind='for_me' AND status='open'",'created_at DESC,id DESC');
