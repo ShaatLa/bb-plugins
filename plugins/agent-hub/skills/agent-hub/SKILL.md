@@ -14,6 +14,8 @@ When handing work to the owner (ready for review, decisions awaiting them), call
 
 With `handoffWarnings` enabled (default), a live top-level completion that misses the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `answers_report` or `answers_ask`. Existing handoff guessing and **Asked in chat** filing remain as a safety net.
 
+To link the owner to a conversation in Agent Hub, use `/plugins/agent-hub/agent-hub?thread=<thread id>`.
+
 CLI:
 
 - `bb agent-hub list [--view unread|waiting|for_me|pinned|saved|all] [--thread ID] [--project ID] [--query TEXT] [--limit 1-50] [--cursor C] [--json]`
