@@ -114,11 +114,11 @@ describe('Answers app', () => {
     pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
-  it('marks an item or all items read and links to the answer sequence', async () => {
+  it('marks an item or all items read, with no link out of the chat it is already in', async () => {
     const { slot, markRead } = await setup();
     fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));
     await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: ['ans_one'] }));
-    expect(slot.getByRole('link', { name: 'Open in chat' }).getAttribute('href')).toBe('/projects/pr_one/threads/thr_one?msg=20');
+    expect(slot.queryByRole('link', { name: 'Open in chat' })).toBeNull();
     pickView(slot, 'Unread'); fireEvent.click(slot.getByRole('button', { name: 'Mark all read' }));
     await waitFor(() => expect(markRead).toHaveBeenCalledWith({ all: true, threadId: 'thr_one' }));
   });
