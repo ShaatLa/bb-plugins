@@ -156,6 +156,21 @@ it('reopens a chat from its cached copy at once, and marks a message that came m
   await slot.findByText('Unread reply');
   await waitFor(() => expect(document.querySelector('[data-new]')).not.toBeNull());
 });
+it('keeps a chat reopened at an older place hidden until its remembered pages are back, so it does not flash at the bottom', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:2 } }));
+  let release!: (value: object) => void;
+  const newest = { ...base, id:'ans_new', question:'Newest', createdAt:3 }, older = { ...base, id:'ans_old', question:'Older', createdAt:1 };
+  try {
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[newest], nextCursor:'1|ans_new' } });
+    fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Newest');
+    const scroller = () => slot.container.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    await waitFor(() => expect(scroller().style.visibility).toBe('hidden'));
+    release({ items:[older], nextCursor:null });
+    await slot.findByText('Older');
+    await waitFor(() => expect(scroller().style.visibility).toBe(''));
+  } finally { localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
 it('keeps the card a scrolled-up reader is on in place when something above it changes height', async () => {
   const observers: (() => void)[] = [];
   vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
