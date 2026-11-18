@@ -122,3 +122,5 @@ Copy link is in the existing More menu for agent messages; owner bubbles and int
 With a chat open on desktop, its avatar and title, section selector, inline search, Mark all read and thread actions share one toolbar row. Phones keep Back, title, inline search and thread actions in the chat header.
 
 Failed turns show the provider’s completion error when available and retain Retry. Interrupted turns have a quiet label and leave waiting and Owed, including deferred questions.
+
+The permission picker beside the model uses the thread’s resolved execution options. Choices stay in each thread’s draft and apply to send, steer, drafts and schedules; unknown modes are omitted. Queue edits retain their own request permission.

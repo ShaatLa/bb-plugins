@@ -7,16 +7,16 @@ const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(
 const cards = vi.hoisted(() => ({ renders: 0 }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
-vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
+vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
-function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any } = {}) {
+function setup(options: { recipients?: typeof one[]; list?: (input: any) => any; send?: (input: any) => any; queuedMessages?: any; interactions?: any; context?: any; sidebarThreads?: any; rpc?: any; plugins?: any; props?: Record<string, unknown>; events?: any; providers?: any; editMessage?: (input: any) => any; defaultExecutionOptions?: any } = {}) {
   const send = vi.fn(options.send ?? (() => Promise.resolve({}))), list = vi.fn(options.list ?? (() => ({ items:[base], nextCursor:null })));
-  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
+  const slot = renderSlot({ component: Inbox }, options.props ?? {}, { rpc: { recipients: () => ({ recipients: options.recipients ?? [one] }), list, markRead: () => ({ ok:true }), markThreadRead: () => ({ ok:true }), ...options.rpc }, sdk: { providers: options.providers, threads: { send, defaultExecutionOptions: options.defaultExecutionOptions, events: options.events, editMessage: options.editMessage, queuedMessages: options.queuedMessages, interactions: options.interactions, context: options.context }, ...(options.plugins ? { plugins: options.plugins } : {}) }, sidebarThreads: options.sidebarThreads } as any);
   const recipients = within(slot.getByRole('listbox', { name:'Recipients' }));
   return { slot, recipients, send, list };
 }
@@ -622,13 +622,14 @@ it('renews the edit hold lease while the queued message is being edited', async 
 it('edits queued text and attachments through the composer, holding it while edited', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Waiting text', mentions:[] }, { type:'localFile', path:'/old', name:'old.txt' }], model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', updatedAt:7 };
   const hold = vi.fn(() => Promise.resolve({})), update = vi.fn(() => Promise.resolve({})), release = vi.fn(() => Promise.resolve({}));
-  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit:hold, update, experimental_releaseEditHold:release } }); fireEvent.click(await recipients.findByRole('option'));
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[{ id:'thr_one', title:'One', projectId:'pr_one', providerId:'provider_example', status:'idle', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } }], projects:[] }, queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit:hold, update, experimental_releaseEditHold:release } }); fireEvent.click(await recipients.findByRole('option'));
   fireEvent.click(await slot.findByRole('button', { name:'Edit queued message 1' }));
   const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
   expect(hold).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' });
   expect(slot.getByText('old.txt')).toBeTruthy();
+  fireEvent.click(await slot.findByRole('button', { name:'auto' }));
   change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
-  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'full', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
   await waitFor(() => expect(release).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
   fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
   await waitFor(() => expect(release).toHaveBeenCalledTimes(2)); expect(update).toHaveBeenCalledTimes(1);
@@ -1104,16 +1105,18 @@ it('gives the history and the composer back the scroll bar width on the right, s
 it.each(['send', 'steer', 'draft', 'schedule'])('keeps model choices per thread and passes execution for %s', async mode => {
   const two = { ...one, threadId: 'thr_two', threadTitle: 'Two' };
   const thread = { activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, projectId: 'pr_one', providerId: 'provider_example', status: 'idle', environment: { id: 'env_example' } };
-  const { slot, recipients, send } = setup({ recipients: [one, two], sidebarThreads: { threads: [{ ...thread, id: 'thr_one', title: 'One' }, { ...thread, id: 'thr_two', title: 'Two' }], projects: [] }, events: { list: () => Promise.resolve([{ data: { execution: { model: 'model-current', reasoningLevel: 'medium', serviceTier: 'default' } } }]) } });
+  const { slot, recipients, send } = setup({ defaultExecutionOptions: async () => ({ permissionMode: 'auto' }), recipients: [one, two], sidebarThreads: { threads: [{ ...thread, id: 'thr_one', title: 'One' }, { ...thread, id: 'thr_two', title: 'Two' }], projects: [] }, events: { list: () => Promise.resolve([{ data: { execution: { model: 'model-current', reasoningLevel: 'medium', serviceTier: 'default' } } }]) } });
   fireEvent.click((await recipients.findAllByRole('option'))[0]);
   const picker = await slot.findByRole('button', { name: 'model-current' });
   expect(picker.closest('[data-composer-toolbar]')).toBeTruthy();
   expect(picker.getAttribute('data-provider-change')).toBe('false');
   expect(JSON.parse(picker.getAttribute('data-routing')!)).toEqual({ kind: 'environment', environmentId: 'env_example' });
+  fireEvent.click(await slot.findByRole('button', { name:'auto' }));
   fireEvent.click(picker);
   fireEvent.click(recipients.getAllByRole('option')[1]);
   await slot.findByRole('button', { name: 'model-current' });
   expect(slot.queryByRole('button', { name: 'model-chosen' })).toBeNull();
+  expect(await slot.findByRole('button', { name:'auto' })).toBeTruthy();
   fireEvent.click(recipients.getAllByRole('option')[0]);
   await slot.findByRole('button', { name: 'model-chosen' });
   change(slot.getByRole('textbox', { name: 'Send message' }), { target: { value: 'Hello' } });
@@ -1123,15 +1126,20 @@ it.each(['send', 'steer', 'draft', 'schedule'])('keeps model choices per thread 
     fireEvent.click(slot.getByRole('menuitem', { name: mode === 'steer' ? 'Steer' : mode === 'draft' ? 'Save draft' : 'Send later…' }));
     if (mode === 'schedule') { change(slot.getByLabelText('Send at'), { target: { value: '2099-01-01T12:00' } }); fireEvent.click(slot.getByRole('button', { name: 'Schedule' })); }
   }
-  await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })));
+  await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ permissionMode:'full', model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })));
   expect(slot.getByRole('button', { name: 'model-chosen' })).toBeTruthy();
   await waitFor(() => expect(JSON.parse(localStorage.getItem('bb-plugin-answers:page:compose')!).thr_one.execution.model).toBe('model-chosen'));
 });
 it('uses the provider default for a thread without a previous execution', async () => {
-  const { slot, recipients } = setup({ sidebarThreads: { threads: [{ activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, id: 'thr_one', title: 'One', providerId: 'provider_example', projectId: 'pr_one', status: 'idle', host: { id: 'host_example' } }], projects: [] }, events: { list: () => Promise.resolve([]) }, providers: { models: () => Promise.resolve({ models: [{ model: 'model-default', isDefault: true, defaultReasoningEffort: 'medium' }] }) } });
+  const { slot, recipients, send } = setup({ sidebarThreads: { threads: [{ activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, id: 'thr_one', title: 'One', providerId: 'provider_example', projectId: 'pr_one', status: 'idle', host: { id: 'host_example' } }], projects: [] }, events: { list: () => Promise.resolve([]) }, providers: { models: () => Promise.resolve({ models: [{ model: 'model-default', isDefault: true, defaultReasoningEffort: 'medium' }] }) } });
   fireEvent.click(await recipients.findByRole('option'));
   const picker = await slot.findByRole('button', { name: 'model-default' });
   expect(JSON.parse(picker.getAttribute('data-routing')!)).toEqual({ kind: 'host', hostId: 'host_example' });
+  expect(slot.container.querySelector('[data-permission-picker]')).toBeNull();
+  change(slot.getByRole('textbox', { name:'Send message' }), { target:{ value:'Hello' } });
+  fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  await waitFor(() => expect(send).toHaveBeenCalled());
+  expect(send.mock.calls[0][0]).not.toHaveProperty('permissionMode');
 });
 it('keeps the queue drag handle visible without hover, so touch screens and light themes show it', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Queued note', mentions:[] }], sendAt:null, updatedAt:1 };

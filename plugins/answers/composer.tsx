@@ -1,6 +1,6 @@
 import { RichEditor } from './rich-editor';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerProps, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
+import { experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerProps, experimental_PermissionModePicker as PermissionModePicker, type ExperimentalPermissionModePickerProps, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
 
@@ -28,10 +28,11 @@ type Props = {
   onStop?: () => void;
   poolFirst?: boolean;
   modelPicker?: ExperimentalProviderModelPickerProps;
+  permissionPicker?: ExperimentalPermissionModePickerProps;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker }: Props) {
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker, permissionPicker }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null);
   const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
@@ -94,6 +95,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
         <div className="flex min-w-0 items-center gap-1">
           <Button type="button" size="icon" variant="ghost" className="-ml-2 size-8 shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
           {modelPicker && <ProviderModelPicker {...modelPicker} />}
+          {permissionPicker && <PermissionModePicker {...permissionPicker} />}
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <div data-composer-voice className={`h-8 [&>.relative]:h-full [&_.absolute]:bottom-0 [&_.absolute]:right-0 ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
