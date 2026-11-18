@@ -91,6 +91,6 @@ it('gives an open background updates group the side inset the chat list has, for
   const slot = renderSlot({ component:UpdateGroup }, { items:[plugin, { ...plugin, id:'ans_plugin2' }], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
   fireEvent.click(slot.getByRole('button', { name:/2 background updates/ }));
   const list = slot.container.querySelector('[data-update-group] ul')!;
-  expect(list.querySelector('[data-plugin-message]')).toBeTruthy();
-  expect(list.className.split(' ')).toEqual(expect.arrayContaining(['px-2', '@container']));
+  expect(list.querySelector('[data-bubble-row] [data-plugin-message]')).toBeTruthy();
+  expect(list.className.split(' ')).toEqual(expect.arrayContaining(['px-2', '[&_[data-bubble-row]]:mr-2', '@container']));
 });
