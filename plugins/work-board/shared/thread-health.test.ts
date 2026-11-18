@@ -28,12 +28,12 @@ describe("thread health", () => {
     expect(stale(status, [link("thr_a", "idle", iso(300))], 300)).toBeNull();
   });
 
-  it("ignores tasks waiting in the project's review or testing status, or on an open owner question", () => {
+  it("ignores tasks in the project's review status or with an open owner question", () => {
     const idle = [link("thr_a", "idle", iso(300))];
-    expect(threadHealthJson(evaluateThreadHealth("in_testing", idle, iso(300), 45, ["in_review", "in_testing"]), T0).staleIdle).toBeNull();
+    expect(threadHealthJson(evaluateThreadHealth("in_testing", idle, iso(300), 45, ["in_review"]), T0).staleIdle).toEqual({ threadId: "thr_a", idleMinutes: 300 });
     expect(threadHealthJson(evaluateThreadHealth("code_review", idle, iso(300), 45, ["code_review", null]), T0).staleIdle).toBeNull();
     expect(threadHealthJson(evaluateThreadHealth("in_progress", idle, iso(300), 45, ["in_review"], true), T0).staleIdle).toBeNull();
-    expect(threadHealthJson(evaluateThreadHealth("in_progress", idle, iso(300), 45, ["in_review", "in_testing"]), T0).staleIdle).toEqual({ threadId: "thr_a", idleMinutes: 300 });
+    expect(threadHealthJson(evaluateThreadHealth("in_progress", idle, iso(300), 45, ["in_review"]), T0).staleIdle).toEqual({ threadId: "thr_a", idleMinutes: 300 });
   });
 
   it.each(["working", "starting"] as const)("is suppressed by a %s thread", (busy) => {

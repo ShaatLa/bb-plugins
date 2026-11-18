@@ -1261,7 +1261,7 @@ export function registerHandlers(
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();
       const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-      const waitingStatuses = new Map(projects.map((project) => { const policy = getWorkflowPolicy(project); return [project.id, [policy.reviewStatus, policy.testingStatus]]; }));
+      const waitingStatuses = new Map(projects.map((project) => [project.id, [getWorkflowPolicy(project).reviewStatus]]));
       const waitingOnOwner = new Set(bb.storage.database().prepare<string[], { task_id: string }>(
         `SELECT DISTINCT q.task_id FROM task_questions q WHERE q.task_id IN (${ids.map(() => "?").join(",")}) AND ${UNANSWERED_QUESTION}`,
       ).all(...ids).map((row) => row.task_id));

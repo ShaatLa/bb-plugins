@@ -30,7 +30,7 @@ export function navigationBadgeCounts(
   const db = bb.storage.database();
   const projects = store.tasks.listProjects();
   const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-  const waitingStatuses = new Map(projects.map((project) => { const policy = getWorkflowPolicy(project); return [project.id, [policy.reviewStatus, policy.testingStatus]]; }));
+  const waitingStatuses = new Map(projects.map((project) => [project.id, [getWorkflowPolicy(project).reviewStatus]]));
   const ids = (where: string) =>
     db.prepare<[], { id: string }>(`SELECT t.id FROM tasks t WHERE ${where}`).all().map((row) => row.id);
   const union = new Set<string>();

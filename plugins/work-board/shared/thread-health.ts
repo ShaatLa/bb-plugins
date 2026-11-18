@@ -9,7 +9,7 @@ export function evaluateThreadHealth(
   links: readonly TaskThread[],
   lastActivityAt: string,
   thresholdMinutes: number | null,
-  /** The project's review and testing statuses (workflow policy): the task waits on someone else there. */
+  /** The project's review status (workflow policy): the task waits for review there. */
   waitingStatuses: readonly (string | null)[] = ["in_review"],
   /** An unanswered owner question: the agent is waiting for the owner, not stuck. */
   waitingOnOwner = false,
