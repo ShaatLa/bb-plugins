@@ -89,19 +89,19 @@ describe("assessCiChecks", () => {
     expect(judge(value)).toMatchObject({ exitCode: CI_EXIT.cancelled });
   });
 
-  it("lets the newest run of a workflow decide, not an older cancelled one (PR #2205)", () => {
+  it("lets the newest run of a workflow decide, not an older cancelled one", () => {
     const cancelled = { ...state().runs[0]!, id: 1, conclusion: "cancelled" };
-    const gate = { context: "anvil/ready-check", appId: null };
+    const gate = { context: "example/ready-check", appId: null };
     const value = state({ required: [...REQUIRED, gate], runs: [cancelled, state().runs[0]!] });
-    expect(judge(value)).toMatchObject({ exitCode: CI_EXIT.noVerdict, message: expect.stringContaining("anvil/ready-check") });
+    expect(judge(value)).toMatchObject({ exitCode: CI_EXIT.noVerdict, message: expect.stringContaining("example/ready-check") });
     const newestCancelled = state({ required: [...REQUIRED, gate], runs: [state().runs[0]!, { ...cancelled, id: 3 }] });
     expect(judge(newestCancelled)).toMatchObject({ exitCode: CI_EXIT.cancelled });
   });
 
   it("does not judge required checks a gate posts after CI, but names their state", () => {
-    const value = state({ required: [...REQUIRED, { context: "anvil/ready-check", appId: null }] });
-    const ignored = ["anvil/ready-check"];
-    expect(assessCiChecks(value, 600_000, 600_000, T0 + 600_000, ignored)).toMatchObject({ exitCode: CI_EXIT.green, message: expect.stringContaining("anvil/ready-check missing") });
+    const value = state({ required: [...REQUIRED, { context: "example/ready-check", appId: null }] });
+    const ignored = ["example/ready-check"];
+    expect(assessCiChecks(value, 600_000, 600_000, T0 + 600_000, ignored)).toMatchObject({ exitCode: CI_EXIT.green, message: expect.stringContaining("example/ready-check missing") });
     const red = state({ ...value, checks: [{ ...state().checks[0]!, state: "failed" }, state().checks[1]!] });
     expect(assessCiChecks(red, 600_000, 600_000, T0 + 600_000, ignored)).toMatchObject({ exitCode: CI_EXIT.red });
   });
@@ -157,7 +157,7 @@ describe("ciState", () => {
         { id: 9, name: "CI complete", head_sha: A, status: "in_progress", conclusion: null, html_url: null, started_at: iso(T0 + 1000), completed_at: null, app: { id: 15368, slug: "github-actions" } },
       ] },
       [`/repos/o/r/commits/${A}/statuses?per_page=100&page=1`]: [{ context: "Wiz", state: "success", target_url: null }],
-      // Like simple-life-app/anvil: no classic protection (404), required checks come from a ruleset.
+      // A repository with no classic protection (404), required checks come from a ruleset.
       "/repos/o/r/rules/branches/main?per_page=100&page=1": [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "CI complete" }] } }],
       [`/repos/o/r/actions/runs?head_sha=${A}&per_page=100`]: { workflow_runs: [{ id: 3, workflow_id: 1, name: "CI", head_sha: A, head_branch: "x", event: "pull_request", status: "in_progress", conclusion: null, html_url: "https://github.com/o/r/actions/runs/3", created_at: iso(T0), head_repository: { id: 1 } }] },
       "/repos/o/r/issues/7/events?per_page=100&page=1": [{ event: "ready_for_review", created_at: iso(T0 - 5000) }, { event: "labeled", created_at: iso(T0) }, { event: "ready_for_review", created_at: iso(T0 - 1000) }],

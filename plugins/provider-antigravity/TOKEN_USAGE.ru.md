@@ -19,7 +19,7 @@
 | `gen_metadata` | Встроенные дескрипторы `ChatModelMetadata` содержат usage, model enum, response_model и response_model_full, timing, retry info. BLOB содержит вложенные структуры, включая prompt/context; собственный parser/backfill не добавлен. | Та же DB. Внутренний формат; токены `steps.metadata` уже достаточны для исследования. |
 | stderr, `cli.log`, `history.jsonl` | В stderr проб нет отдельного token record. В 149 локальных log-файлах нет полей input_tokens/output_tokens/thinking_output_tokens/cache_read_tokens/usage_update. History содержит display, timestamp, workspace, conversationId; токенов в проверенных записях нет. | History даёт conversation id, логи не дают пригодного ledger. Отсутствие в проверенных логах не гарантирует отсутствие во всех будущих версиях/режимах. |
 | `~/.gemini/antigravity` | Каталог conversations пуст на момент проверки; актуальные CLI DB находятся в `antigravity-cli`. | Не смешивать два каталога данных. |
-| `~/.bb/bb.db` | Для Antigravity нет tokenUsage/contextWindowUsage events в прочитанном snapshot. `thread/identity.data.providerThreadId` содержит ACP id. | Проверенная связка: thread `thr_hfnpz6vtia` → ACP `0a27d231-22b1-4c7a-b01e-2b9c805a57c3`. В shim ACP id **не равен** нативному agy conversation id. |
+| `~/.bb/bb.db` | Для Antigravity нет tokenUsage/contextWindowUsage events в прочитанном snapshot. `thread/identity.data.providerThreadId` содержит ACP id. | Проверенная связка: thread `thr_example` → ACP `00000000-0000-4000-8000-000000000000`. В shim ACP id **не равен** нативному agy conversation id. |
 
 SQLite читалась без записи (`immutable=1`); это snapshot основного файла без
 неприменённых WAL-изменений, не транзакционно полный снимок работающего BB.
