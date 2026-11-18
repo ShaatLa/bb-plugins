@@ -4,14 +4,17 @@ import { z } from 'zod';
 import { historyDays, projectInput } from './overview-contract.ts';
 import { summaryLine } from './reports.ts';
 
-const modeOutput = z.object({ projectId: z.string(), trackerId: z.string().min(1).nullish(), kinds: z.object({
+const modeOutput = z.object({ projectId: z.string(), trackerId: z.string().min(1), kinds: z.object({
   'stale-status': z.object({ effective: z.object({ mode: z.enum(['off', 'shadow', 'live']), generation: z.number().int().nonnegative() }) }).optional(),
 }) });
 export type ShadowRun = { trackerId: string; generation: number };
 const keyOutput = z.object({ resolved: z.record(z.string(), z.string().min(1)), unknown: z.array(z.string()) });
 const flagLine = /^ACTION stale-status ([A-Z][A-Z0-9_-]*-\d+): [\w-]+, board flags ([\w-]+(?:, [\w-]+)*)$/;
 const findingSchema = z.object({ taskKey: z.string(), taskId: z.string().nullable(), signal: z.string() });
-const receiptSchema = z.object({ mode: z.enum(['inline', 'queued', 'appended', 'notice']), destination: z.string(), id: z.string().optional() });
+const receiptSchema = z.union([
+  z.object({ mode: z.literal('inline'), destination: z.string() }),
+  z.object({ mode: z.enum(['queued', 'appended', 'notice']), destination: z.string(), id: z.string().min(1) }),
+]);
 type Receipt = z.infer<typeof receiptSchema>;
 const rowSchema = z.object({
   tickId: z.string(), at: z.number(), scanStartedAt: z.number().nullable(), trackerId: z.string(), generation: z.number(),
@@ -55,7 +58,7 @@ export function attentionStore(db: Database.Database, bb: BbPluginApi, signal: A
         if (result.projectId !== projectId) return undefined;
         const effective = result.kinds['stale-status']?.effective;
         if (effective?.mode !== 'shadow') return null;
-        return result.trackerId ? { trackerId: result.trackerId, generation: effective.generation } : undefined;
+        return { trackerId: result.trackerId, generation: effective.generation };
       } catch { return undefined; }
     },
     async observe(projectId: string, tickId: string, shadow: ShadowRun, scanStartedAt: number, output: string, issues: string[]) {
