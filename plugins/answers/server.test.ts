@@ -374,8 +374,8 @@ describe('reply pools and inbox',()=>{
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{
   const {harness}=setup();
-  expect(await harness.behavior.callRpc('setPreferences',{groupByProject:true,usage:'never'})).toEqual({ok:true});
-  for(const bad of [{usage:'sometimes'},{notify:'off'},{groupByProject:'yes'}]) await expect(harness.behavior.callRpc('setPreferences',bad)).rejects.toThrow();
+  expect(await harness.behavior.callRpc('setPreferences',{groupByProject:true})).toEqual({ok:true});
+  for(const bad of [{usage:'never'},{notify:'off'},{groupByProject:'yes'}]) await expect(harness.behavior.callRpc('setPreferences',bad)).rejects.toThrow();
  });
  it('hides archived threads from the Inbox, counts and views until unarchived',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a'); seed(db,'ans_b','for_me','b');

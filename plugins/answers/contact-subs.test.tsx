@@ -13,7 +13,7 @@ const idle = { projectId: null, parentThreadId: null, parentNotifications: 'all'
 function setup(open = false, sidebar = false, selected = parent) {
   if (open) localStorage.setItem(stored, JSON.stringify([parent]));
   const onSelect = vi.fn(), onNavigate = vi.fn(), markThreadRead = vi.fn(() => ({ batch: null, count: 1 }));
-  function Contacts() { return <ContactsList model={useContacts(selected)} selected={selected} onSelect={onSelect} onNavigate={onNavigate} footer={false} />; }
+  function Contacts() { return <ContactsList model={useContacts(selected)} selected={selected} onSelect={onSelect} onNavigate={onNavigate} />; }
   const slot = renderSlot({ component: sidebar ? AnswersContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent }], projects: [] } } as any);
   return { slot, onSelect, onNavigate, markThreadRead };
 }

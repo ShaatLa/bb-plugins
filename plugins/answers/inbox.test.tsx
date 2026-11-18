@@ -214,46 +214,6 @@ it('notes the files of an echoed question on its bubble', async () => {
   await slot.findByText('New question');
   expect(document.querySelector('button[title="Go to the question"]')?.textContent).toBe('Older question· 2 files');
 });
-it('keeps a provider\'s last usage, marked out of date, when its refresh fails, as bb does', async () => {
-  const ok = { codex:{ status:'ok', accountEmail:'me@example.com', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:42, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } };
-  const usageLimits = vi.fn(async () => ok as any);
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
-  expect(await slot.findByText('42%')).toBeTruthy(); expect(slot.queryByRole('img', { name:'Usage may be out of date' })).toBeNull();
-  usageLimits.mockImplementationOnce(async () => ({ codex:{ status:'error', message:'Provider unavailable', accountEmail:'me@example.com', planLabel:'Pro' } }));
-  fireEvent.click(slot.getByRole('button', { name:'Refresh usage' }));
-  const mark = await slot.findByRole('img', { name:'Usage may be out of date' });
-  expect(mark.getAttribute('title')).toContain('Provider unavailable'); expect(slot.getByText('42%')).toBeTruthy();
-  fireEvent.click(slot.getByRole('button', { name:'Refresh usage' }));
-  await waitFor(() => expect(slot.queryByRole('img', { name:'Usage may be out of date' })).toBeNull()); expect(slot.getByText('42%')).toBeTruthy();
-  localStorage.removeItem('bb-plugin-answers:page:usage-cache');
-});
-it('shows each provider\'s key limit on its tab when the usage panel is folded: weekly for Claude and Codex, Argon for Antigravity', async () => {
-  const at = new Date(Date.now() + 3600000).toISOString();
-  const usageLimits = vi.fn(async () => ({
-    claude:{ status:'ok', windows:[{ label:'5h', kind:'five-hour', usedPercent:70, resetsAt:at }, { label:'Weekly limit', kind:'weekly', usedPercent:59, resetsAt:at }, { label:'Opus', kind:'weekly', usedPercent:90, resetsAt:at }] },
-    antigravity:{ status:'ok', windows:[{ label:'Weekly', kind:'weekly', usedPercent:3, resetsAt:at }, { label:'Argon', kind:'weekly', usedPercent:96, resetsAt:at }] },
-  }) as any);
-  localStorage.setItem('bb-plugin-answers:page:usage-folded', 'true');
-  try {
-    const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
-    await slot.findByRole('button', { name:'Expand usage' });
-    await waitFor(() => expect(Array.from(document.querySelectorAll<HTMLElement>('[data-key-limit]'), node => [node.textContent, node.className.includes('text-destructive')])).toEqual([['59%', false], ['96%', true]]));
-    expect(slot.queryByRole('button', { name:'All' })).toBeNull();
-    fireEvent.click(slot.getByRole('button', { name:'Expand usage' }));
-    expect(document.querySelectorAll('[data-key-limit]')).toHaveLength(0);
-  } finally { localStorage.removeItem('bb-plugin-answers:page:usage-folded'); localStorage.removeItem('bb-plugin-answers:page:usage-cache'); }
-});
-it('spins the usage refresh icon until a manual refresh lands', async () => {
-  let land: (value: unknown) => void = () => {};
-  const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:10, resetsAt:new Date(Date.now() + 3600000).toISOString() }] } }));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
-  const button = await slot.findByRole('button', { name:'Refresh usage' });
-  await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('false'));
-  usageLimits.mockImplementationOnce(() => new Promise(resolve => { land = resolve; }) as any);
-  fireEvent.click(button);
-  await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('true')); expect(button.querySelector('.animate-spin')).not.toBeNull();
-  land(await usageLimits.getMockImplementation()!()); await waitFor(() => expect(slot.getByRole('button', { name:'Refresh usage' }).getAttribute('aria-busy')).toBe('false'));
-});
 it('shows the robot at the end of the chat while the agent works with nothing of the owner pending', async () => {
   const thread = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false } };
   const { slot, recipients } = setup({ sidebarThreads:{ threads:[thread], projects:[] } }); fireEvent.click(await recipients.findByRole('option'));
@@ -482,29 +442,7 @@ it('resizes the contact column with the keyboard and remembers the width', async
   fireEvent.doubleClick(handle);
   expect(handle.getAttribute('aria-valuenow')).toBe('230');
 });
-it('shows usage when set to always and changes contact preferences from the footer menu', async () => {
-  const setPreferences = vi.fn(() => ({ ok:true }));
-  const usageLimits = vi.fn(async () => ({ codex:{ status:'ok', planLabel:'Pro', windows:[{ label:'Weekly limit', usedPercent:91, resetsAt:new Date(Date.now() + 26 * 3600000).toISOString() }] }, 'local-models':{ status:'ok', windows:[{ label:'Flint', usedPercent:0, resetsAt:null }] } }));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }), setPreferences }, sdk: { system: { usageLimits } }, settings: { usage:'always', groupByProject:false } } as any);
-  const usage = await slot.findByLabelText('Usage');
-  expect(usage.textContent).toContain('Weekly limit');
-  expect(usage.textContent).toContain('91%');
-  expect(usage.textContent).toMatch(/1d [12]h/);
-  expect(usage.textContent).not.toContain('Flint');
-  fireEvent.click(slot.getByRole('button', { name:'Contact list settings' }));
-  fireEvent.click(slot.getByRole('menuitemcheckbox', { name:'Group by project' }));
-  await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ groupByProject:true }));
-  fireEvent.click(slot.getByRole('menuitemradio', { name:'Never' }));
-  await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ usage:'never' }));
-});
-it('names usage windows the way bb does', async () => {
-  const { windowLabel } = await import('./contacts-footer');
-  expect(windowLabel({ label:'Weekly limit', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d');
-  expect(windowLabel({ label:'Fable', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d · Fable');
-  expect(windowLabel({ label:'7d · Argon', kind:'weekly', usedPercent:0, resetsAt:null })).toBe('7d · Argon');
-  expect(windowLabel({ label:'5h', kind:'five-hour', usedPercent:0, resetsAt:null })).toBe('5h');
-  expect(windowLabel({ label:'Flint⁣', usedPercent:0, resetsAt:null })).toBe('Flint');
-});
+
 it('orders project groups and saves a dragged order in plugin settings', async () => {
   const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }, { ...one, threadId:'thr_b', threadTitle:'B', projectId:'pb', projectName:'Plugins' }];
   const setPreferences = vi.fn(() => ({ ok:true }));
@@ -1135,26 +1073,6 @@ it('rereads the queue after deletion without refreshing history', async () => {
   expect(list.mock.calls.length).toBe(calls);
 });
 
-it('shares usage polling between keeper and footer and pauses while hidden', async () => {
-  const { useUsageKeeper } = await import('./contacts-footer');
-  const usageLimits = vi.fn(async () => ({}));
-  function Page() { useUsageKeeper(); return <Inbox />; }
-  vi.useFakeTimers();
-  let visibility = 'visible';
-  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility as DocumentVisibilityState);
-  try {
-    renderSlot({ component: Page }, {}, { rpc: { recipients: () => ({ recipients: [] }), list: () => ({ items: [], nextCursor: null }) }, sdk: { system: { usageLimits } }, settings: { usage: 'always' } } as any);
-    await act(async () => {});
-    expect(usageLimits).toHaveBeenCalledTimes(1);
-    await act(async () => { vi.advanceTimersByTime(120000); });
-    expect(usageLimits).toHaveBeenCalledTimes(2);
-    visibility = 'hidden'; fireEvent(document, new Event('visibilitychange'));
-    await act(async () => { vi.advanceTimersByTime(600000); });
-    expect(usageLimits).toHaveBeenCalledTimes(2);
-    visibility = 'visible'; await act(async () => { fireEvent(document, new Event('visibilitychange')); });
-    expect(usageLimits).toHaveBeenCalledTimes(3);
-  } finally { cleanup(); vi.useRealTimers(); }
-});
 it('keeps a dragged queue row inside the visible list', async () => {
   const { keepInList } = await import('./inbox');
   const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 100, width: 100, height: bottom - top });

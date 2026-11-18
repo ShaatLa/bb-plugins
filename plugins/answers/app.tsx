@@ -14,7 +14,6 @@ import { ChatComment, COMMENT_EVENT } from './chat-comment';
 import { Composer } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { Button } from './components/ui/button';
-import { useUsageKeeper } from './contacts-footer';
 import { WorkLog } from './work-log';
 import { RobotLoader } from './robot-loader';
 import { AgentMarkdown } from './inline-vis';
@@ -92,7 +91,6 @@ export function useSteadyError<E>(error: E | null | undefined, ms = 3000): E | n
   return steady && error ? error : null;
 }
 export function useAnswersBadge() {
-  useUsageKeeper();
   const { data } = useQuery({ contract: rpcContract, method: 'counts', input: {} });
   const count = data ? data.inbox : 0;
   return count ? { count, label: `${count} unread answers and questions for you` } : null;

@@ -38,7 +38,7 @@ export const inputs = {
  undoRead:z.object({batch:z.string().min(1)}).strict(),
  keepWaiting:z.object({id:idSchema}).strict(), setInterim:z.object({id:idSchema,value:z.boolean()}).strict(),
  snooze:z.object({id:idSchema,until:time.nullable()}).strict(), retryTurn:z.object({id:idSchema}).strict(),
- workBoardProjects:z.object({}).strict(),threadCost:z.object({threadId}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),usage:z.enum(['auto','always','never']).optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
+ workBoardProjects:z.object({}).strict(),threadCost:z.object({threadId}).strict(),setPreferences:z.object({groupByProject:z.boolean().optional(),projectOrder:z.string().max(4000).optional()}).strict(),createTask:z.object({id:idSchema,projectId:z.string().min(1).max(200)}).strict(),
  inlinePreview:z.object({threadId,file:z.string().min(1).max(1000),source:z.enum(['workspace','thread-storage']).default('workspace')}).strict(),
  recipients:z.object({selected:threadId.optional()}).strict(), markThreadRead:z.object({threadId}).strict(), queueStamp:z.object({threadId}).strict(), contextStamp:z.object({threadId}).strict(), logClientError:z.object({where:z.string().max(100),message:z.string().max(2000),stack:z.string().max(8000).optional()}).strict(),
  pools:z.object({}).strict(), poolAdd:z.object({threadId,quote:poolQuote,quoteSeq:time.optional(),itemId:idSchema.optional(),note:z.string().max(8000).optional(),attachments:attachments.optional()}).strict(),
