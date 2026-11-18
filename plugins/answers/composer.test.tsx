@@ -19,13 +19,20 @@ it('blocks keyboard and send controls while voice input is active', () => {
   fireEvent.click(slot.getByRole('button', { name:'Stop voice' })); fireEvent.keyDown(editor, { key:'Enter' });
   expect(onSend).toHaveBeenCalledOnce();
 });
-it('starts as one row and opens for a second line or attachments', () => {
-  const view = (value: string, attachments: any[] = []) => renderSlot({ component: () => <Composer label="Reply" value={value} onChange={() => {}} attachments={attachments} onAttachments={() => {}} projectId="p" onSend={() => {}} /> }, {});
-  const open = (slot: ReturnType<typeof view>) => slot.getByRole('button', { name:'Attach files' }).className.includes('row-start-2');
-  expect(open(view(''))).toBe(false); cleanup();
-  expect(open(view('one line'))).toBe(false); cleanup();
-  expect(open(view('two\nlines'))).toBe(true); cleanup();
-  expect(open(view('', [{ type:'localFile', path:'/a', name:'a.txt' }]))).toBe(true);
+it('keeps editor above toolbar across newlines and separates voice from Send', () => {
+  const props = { label: 'Reply', onChange: () => {}, attachments: [], onAttachments: () => {}, projectId: 'proj_example', onSend: () => {} };
+  const slot = renderSlot({ component: Composer }, { ...props, value: 'one' });
+  const toolbar = slot.container.querySelector('[data-composer-toolbar]')!;
+  const attach = slot.getByRole('button', { name: 'Attach files' });
+  const voice = slot.getByRole('textbox', { name: 'Voice input' });
+  const send = slot.getByRole('button', { name: 'Send' });
+  expect(toolbar.contains(attach)).toBe(true); expect(toolbar.contains(voice)).toBe(true); expect(toolbar.contains(send)).toBe(true);
+  expect(toolbar.previousElementSibling?.contains(slot.getByRole('textbox', { name: 'Reply' }))).toBe(true);
+  expect(voice.closest('[data-composer-voice]')?.parentElement?.className).toContain('gap-3');
+  slot.rerender(<Composer {...props} value={'one\ntwo'} />);
+  expect(slot.container.querySelector('[data-composer-toolbar]')).toBe(toolbar);
+  expect(toolbar.contains(attach)).toBe(true); expect(toolbar.contains(voice)).toBe(true); expect(toolbar.contains(send)).toBe(true);
+  expect(slot.container.querySelector('[data-model-picker]')).toBeNull();
 });
 
 const thread = { id: 'thr_one', projectId: 'proj_one', title: 'Fix login', displayTitle: 'Fix login' };
@@ -283,7 +290,7 @@ it('keeps edit previews by path and revokes only removed images', async () => {
   slot.unmount(); expect(revoke).toHaveBeenCalledWith('blob:second');
 });
 
-it('updates composer geometry on size changes without measuring each render', () => {
+it('lays out the toolbar without measuring control widths', () => {
   const callbacks: (() => void)[] = [];
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { callbacks.push(callback); } observe() {} disconnect() {} });
   const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(80);
@@ -294,8 +301,8 @@ it('updates composer geometry on size changes without measuring each render', ()
     slot.rerender(<Composer {...props} value="two" />);
     expect(width).not.toHaveBeenCalled();
     callbacks.forEach(run => run());
-    expect(width).toHaveBeenCalled();
-    expect(slot.container.querySelector('form')?.style.getPropertyValue('--right-w')).toBe('80px');
+    expect(width).not.toHaveBeenCalled();
+    expect(slot.container.querySelector('form')?.style.getPropertyValue('--right-w')).toBe('');
   } finally { width.mockRestore(); vi.unstubAllGlobals(); }
 });
 

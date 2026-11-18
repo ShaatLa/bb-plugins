@@ -1,6 +1,6 @@
 import { RichEditor } from './rich-editor';
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerProps, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
 
@@ -27,12 +27,13 @@ type Props = {
   // The thread is working: like bb, an empty box turns Send into Stop.
   onStop?: () => void;
   poolFirst?: boolean;
+  modelPicker?: ExperimentalProviderModelPickerProps;
 };
 
 /** A reply box drawn like bb's prompt box: text, attachments, and an action row with Send at the right. */
-export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false }: Props) {
-  const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null), right = useRef<HTMLDivElement>(null);
-  const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), [grown, setGrown] = useState(false);
+export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker }: Props) {
+  const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null);
+  const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
   const urlOf = (path: string) => previews.get(path) ?? savedPreviews[path];
   const images = attachments.filter(file => file.type === 'localImage'), viewed = images.findIndex(file => file.path === viewing);
@@ -56,26 +57,6 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     if (editMode) attachments.filter(file => file.type === 'localImage').forEach(readPreview);
   }, [editMode, attachments, projectId, sdk]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; opened.current.forEach(url => URL.revokeObjectURL(url)); opened.current.clear(); shown.current.forEach(file => dropPreview(file.path)); }; }, []);
-  // Like bb: one row (attach, text, send) until the text wraps or there is more to show; it stays open until cleared,
-  // so a line that wraps only in the narrow one-row layout does not flip the layout back and forth.
-  const tall = !!editMode || grown || !!header || attachments.length > 0 || uploading > 0 || value.includes('\n');
-  useLayoutEffect(() => {
-    const node = editor.current; if (!node) return;
-    const style = getComputedStyle(node), oneLine = parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-    if (!value) setGrown(false); else if (node.scrollHeight > oneLine * 1.5) setGrown(true); // pills make a line a few px taller, so only a real second line opens the layout
-  }, [value, tall]);
-  // The send group can include extra actions; its width places bb's microphone just left of it in the open layout.
-  useLayoutEffect(() => {
-    const form = root.current, group = right.current; if (!form || !group) return;
-    const measure = () => {
-      const width = group.offsetWidth, mic = form.getBoundingClientRect().right - form.clientLeft - group.getBoundingClientRect().left;
-      form.style.setProperty('--right-w', `${width}px`);
-      form.style.setProperty('--mic-r', `${mic}px`);
-    };
-    measure();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure); observer?.observe(form); observer?.observe(group);
-    return () => observer?.disconnect();
-  }, [tall]);
   async function attach(files: File[]) {
     if (!files.length) return;
     if (!projectId) { setError('Attachments need a thread in a project'); return; }
@@ -107,15 +88,20 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     </ul>}
     {viewed >= 0 && <ImageLightbox isOpen imageSrc={urlOf(images[viewed]!.path) ?? null} imageAlt={images[viewed]!.name} title={images[viewed]!.name} hasMultipleImages={images.length > 1} previousDisabled={viewed === 0} nextDisabled={viewed === images.length - 1} onClose={() => setViewing(null)} onPrevious={() => view(images[viewed - 1]!.path)} onNext={() => view(images[viewed + 1]!.path)} />}
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
-    {/* The host voice control sits beside Send in both grid layouts. */}
-    <div className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 ${tall ? 'pb-2 pl-3.5 pr-[13px] pt-1.5 [&>.relative]:col-span-3 [&>.relative]:row-start-1 [&>.relative>.absolute]:-bottom-9 [&>.relative>.absolute]:right-[calc(var(--right-w)+4px)]' : 'min-h-12 px-2 [&>.relative>.absolute]:bottom-0'}`}>
-      <Button type="button" size="icon" variant="ghost" className={`size-8 text-muted-foreground ${tall ? 'col-start-1 row-start-2' : ''}`} aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
-      <RichEditor insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className={`block w-full overflow-y-auto bg-transparent py-1.5 text-sm leading-relaxed outline-none ${tall ? 'px-0' : 'px-2 pr-10'}`} />
-      {/* bb insets its mic 4px inside this box: that makes the 8px bottom of the other buttons and their 4px gap. */}
-      <div className={`absolute bottom-1 right-[var(--mic-r)] z-10 ${voiceActive ? 'left-2' : 'w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-8 opacity-0 pointer-events-none" tabIndex={-1} /></div>
-      <div ref={right} className={`flex items-center gap-1 ${tall ? 'col-start-3 row-start-2' : ''}`}>
+    <div className="px-3.5 pt-1.5 pb-2">
+      <RichEditor insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
+      <div data-composer-toolbar className="relative flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-1">
+          <Button type="button" size="icon" variant="ghost" className="size-8 shrink-0 text-muted-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
+          {modelPicker && <ProviderModelPicker {...modelPicker} />}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <div data-composer-voice className={`h-8 [&_.absolute]:bottom-0 [&_.absolute]:right-0 ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
+          <div className="flex items-center gap-1">
         {actions}
         {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+          </div>
+        </div>
       </div>
     </div>
     {error && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{error}</p>}

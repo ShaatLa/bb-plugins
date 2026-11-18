@@ -78,6 +78,8 @@ Select text from an agent’s reply, intermediate response, or question: a form 
 
 Drafts are preserved during data refreshes and recipient switches. Close it using **Close**, Esc, losing focus/clicking outside, or after a successful send.
 
+The composer always has two rows: a full-width editor above a toolbar with attachments and, in the main chat, bb’s model, reasoning level and service tier picker. Voice input is separated from Send by at least 12px. The picker starts from the latest run or provider default; choices are saved per thread with the compose draft and reused for sends, steers, schedules and drafts.
+
 Enter sends the reply; Shift+Enter adds a line break.
 
 Lines starting with `> ` in the input field are rendered as blockquotes. Pressing Shift+Enter inside a quote continues it, while an empty quote line exits back to regular text. Right-clicking selected text and choosing **Quote**, or pressing ⌘⇧9 (Ctrl+Shift+9), converts selected lines (or the line containing the cursor) into a quote; pressing it again removes the quote formatting. This is the Answers menu (Undo, Redo, Quote, Cut, Copy, Paste, Delete, Select All): the bb plugin cannot add items to this menu. If no text is selected, the standard bb menu with spell-check suggestions appears. The input field has its own undo functionality (⌘Z, ⇧⌘Z, and Edit → Undo/Redo): it covers text insertion, quotes, and thread links; typing without a one-second pause is undone in a single step.
