@@ -11,3 +11,7 @@ it('splits directive and fenced inline-vis pages out of a message, leaving other
   ]);
   expect(splitInlineVis('::inline-vis{file="demo.html"}')).toEqual([{ kind: 'file', file: 'demo.html', source: 'workspace' }]);
 });
+it('splits a Work Board ::task directive out as a task card, but not inside a code fence', () => {
+  expect(splitInlineVis('Plan ready.\n::task{key="EXA-4"}\nMore.')).toEqual([{ kind: 'markdown', text: 'Plan ready.' }, { kind: 'task', key: 'EXA-4' }, { kind: 'markdown', text: 'More.' }]);
+  expect(splitInlineVis('```\n::task{key="EXA-4"}\n```')).toEqual([{ kind: 'markdown', text: '```\n::task{key="EXA-4"}\n```' }]);
+});

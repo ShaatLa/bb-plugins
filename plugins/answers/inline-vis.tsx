@@ -1,14 +1,15 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
-import { Markdown, experimental_useRpcQuery as useQuery, useBbNavigate, useSdk } from '@get-bb/plugin-sdk/app';
+import { Markdown, UrlLink, experimental_Icon as Icon, experimental_useRpcQuery as useQuery, useBbNavigate, useSdk } from '@get-bb/plugin-sdk/app';
+import { z } from 'zod';
 import { rpcContract } from './contract';
 
 // bb's chat shows inline-vis pages (an ::inline-vis{file="…"} directive, or an ```inline-vis fenced page) through the
 // built-in inline-vis plugin, but the Markdown bb lends plugins leaves them as text. The chat here splits them out and
 // shows them the way inline-vis does: a sandboxed frame on the thread's background, in bb's theme, as tall as its page.
 
-export type Segment = { kind: 'markdown'; text: string } | { kind: 'file'; file: string; source: 'workspace' | 'thread-storage' } | { kind: 'page'; html: string };
+export type Segment = { kind: 'markdown'; text: string } | { kind: 'file'; file: string; source: 'workspace' | 'thread-storage' } | { kind: 'page'; html: string } | { kind: 'task'; key: string };
 
-const DIRECTIVE = /^::inline-vis\{([^}\n]*)\}\s*$/, FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
+const DIRECTIVE = /^::inline-vis\{([^}\n]*)\}\s*$/, TASK = /^::task\{key="([A-Za-z][A-Za-z0-9]*-\d+)"\}\s*$/, FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
 
 /** Splits a message into Markdown runs, directive pages and fenced pages; directives inside other fences stay text. */
 export function splitInlineVis(text: string): Segment[] {
@@ -23,6 +24,8 @@ export function splitInlineVis(text: string): Segment[] {
     }
     const open = FENCE.exec(line);
     if (open) { const page = open[2]!.toLowerCase() === 'inline-vis'; if (page) flush(); else markdown.push(line); fence = { marker: open[1]!, page: page ? [] : null }; continue; }
+    // Work Board's ::task card, which bb's chat draws and the lent Markdown leaves as text.
+    const task = TASK.exec(line.trim()); if (task) { flush(); segments.push({ kind: 'task', key: task[1]!.toUpperCase() }); continue; }
     const directive = DIRECTIVE.exec(line.trim());
     if (directive) {
       const attrs = Object.fromEntries([...directive[1]!.matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1]!, m[2]!]));
@@ -98,7 +101,25 @@ export function LocalLinks({ threadId, children }: { threadId: string; children:
   return <div className="contents" onClickCapture={onClick}>{children}</div>;
 }
 
+const taskSchema = z.object({ task: z.object({ key: z.string(), title: z.string(), status: z.string(), projectId: z.string() }).passthrough().nullable() });
+const projectsSchema = z.object({ projects: z.array(z.object({ id: z.string(), statuses: z.array(z.object({ id: z.string(), name: z.string() })).default([]) }).passthrough()) });
+let statusNames: Promise<Map<string, string>> | null = null;
+/** A Work Board task as a compact card (key, title, status) linking to it; a plain key link while it loads or without Work Board. */
+export function TaskCard({ taskKey }: { taskKey: string }) {
+  const sdk = useSdk(), [task, setTask] = useState<{ title: string; status: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    statusNames ??= sdk.plugins.callRpc({ pluginId: 'work-board', method: 'listProjects', input: {}, outputSchema: projectsSchema }).then(r => new Map(r.projects.flatMap(p => p.statuses.map(st => [`${p.id}:${st.id}`, st.name] as const)))).catch(() => { statusNames = null; return new Map(); });
+    void sdk.plugins.callRpc({ pluginId: 'work-board', method: 'getTaskByKey', input: { taskKey }, outputSchema: taskSchema }).then(async r => { if (!live || !r.task) return; const names = await statusNames!; if (live) setTask({ title: r.task.title, status: names.get(`${r.task.projectId}:${r.task.status}`) ?? r.task.status }); }).catch(() => {});
+    return () => { live = false; };
+  }, [sdk, taskKey]);
+  return <UrlLink href={`/plugins/work-board/work-board/task/${taskKey}`} className="my-2 flex w-fit max-w-full items-center gap-2 rounded-lg border border-border-seam px-3 py-2 text-sm no-underline hover:bg-state-hover">
+    <Icon name="ListTodo" aria-hidden className="size-4 shrink-0 text-muted-foreground" /><span className="shrink-0 font-medium">{taskKey}</span>
+    {task && <><span className="min-w-0 truncate text-foreground">{task.title}</span><span className="shrink-0 rounded-full bg-surface-recessed px-2 text-xs text-muted-foreground">{task.status}</span></>}
+  </UrlLink>;
+}
+
 export function AgentMarkdown({ content, threadId }: { content: string; threadId: string }) {
-  if (!content.includes('inline-vis')) return <LocalLinks threadId={threadId}><Markdown content={content} /></LocalLinks>;
-  return <LocalLinks threadId={threadId}>{splitInlineVis(content).map((segment, i) => <Fragment key={i}>{segment.kind === 'markdown' ? <Markdown content={segment.text} /> : segment.kind === 'page' ? <Page html={segment.html} /> : <FilePage threadId={threadId} file={segment.file} source={segment.source} />}</Fragment>)}</LocalLinks>;
+  if (!content.includes('inline-vis') && !content.includes('::task{')) return <LocalLinks threadId={threadId}><Markdown content={content} /></LocalLinks>;
+  return <LocalLinks threadId={threadId}>{splitInlineVis(content).map((segment, i) => <Fragment key={i}>{segment.kind === 'markdown' ? <Markdown content={segment.text} /> : segment.kind === 'page' ? <Page html={segment.html} /> : segment.kind === 'task' ? <TaskCard taskKey={segment.key} /> : <FilePage threadId={threadId} file={segment.file} source={segment.source} />}</Fragment>)}</LocalLinks>;
 }

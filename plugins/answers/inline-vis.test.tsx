@@ -26,3 +26,11 @@ it('opens a message’s local file links in bb’s file preview', async () => {
     { target: { kind: 'workspace', environmentId: 'env', path: 'docs/ui.md' }, location: null },
   ]);
 });
+it('draws a ::task directive as a card with the task title and status name, linking to the task', async () => {
+  const { AgentMarkdown } = await import('./inline-vis');
+  const callRpc = async ({ method }: { method: string }) => method === 'getTaskByKey' ? { task: { key: 'EXA-4', title: 'Example plan', status: 'todo', projectId: 'p1' } } : { projects: [{ id: 'p1', statuses: [{ id: 'todo', name: 'Todo' }] }] };
+  const slot = renderSlot({ component: AgentMarkdown }, { content: 'Plan:\n::task{key="EXA-4"}', threadId: 'thr_example' }, { sdk: { plugins: { callRpc } } } as any);
+  await waitFor(() => expect(slot.container.textContent).toContain('Example plan'));
+  expect(slot.container.textContent).toContain('Todo'); expect(slot.container.textContent).not.toContain('::task');
+  expect(slot.container.querySelector('a')?.getAttribute('href')).toBe('/plugins/work-board/work-board/task/EXA-4');
+});
