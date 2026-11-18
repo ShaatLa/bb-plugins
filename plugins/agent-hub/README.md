@@ -173,3 +173,5 @@ Drop files or images from the OS onto a reply pool header or its empty area to c
 If import fails, the empty database stays read-only and automatic ingestion pauses until restart, keeping retries safe. Preferences and migration status remain available. An already populated new database is preserved and reported as a migration conflict.
 
 While a bb window with Agent Hub is open and notification permission is granted, Agent Hub shows desktop/web notifications itself; clicking opens its conversation (or the Agent Hub page for a summary). One tab per browser holds the notifier lock. With no fresh notifier, delivery falls back to Push Notifications; phone clicks open bb chat. Permission is managed by Push Notifications.
+
+The last five opened conversations stay mounted. Hidden chats pause their subscriptions and effects; returning preserves scroll position, expanded cards, transcript and composer state immediately, then refreshes in place. Opening a sixth chat evicts the least recently opened; evicted chats and page reloads use remembered scroll restoration.

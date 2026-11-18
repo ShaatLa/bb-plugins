@@ -9,7 +9,7 @@ import { ContactsList, useContacts } from './contacts';
 import { useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Activity, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_ProviderIcon as ProviderIcon, experimental_resolveThreadStatus as resolveThreadStatus, experimental_useSidebarThreads, ThreadChat, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useRpcRefresh, experimental_useAppPanel, type ExperimentalProviderModelPickerValue, type ExperimentalPermissionModePickerProps } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AgentHubRpcContract, type Item, type Pool, type PoolEntry, type ListResult, type Attachment, type SendOptions } from './contract';
@@ -132,7 +132,7 @@ function Reveal({ show, id, children }: { show: boolean | null; id?: string; chi
   if (show && gone) still.current = !!id && revealed.has(id);
   useEffect(() => {
     if (show === null) return;
-    if (show) { setGone(false); if (id) revealed.add(id); return; }
+    if (show) { setGone(false); if (id) revealed.add(id); return () => { still.current = true; }; }
     // Hiding: a card that shows again before the slide ends reverses in place and stays known.
     const timer = setTimeout(() => { setGone(true); if (id) revealed.delete(id); }, 200);
     return () => { clearTimeout(timer); if (id) revealed.delete(id); };
@@ -335,19 +335,42 @@ export function Avatar({ id, title, provider }: { id: string; title: string | nu
   </span>;
 }
 // The page owns search state; desktop header controls portal into its toolbar.
-export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, search: searchProp, onSearch, onChat, toolbarTargets }: { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } }) {
+type InboxProps = { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } };
+export function Inbox(props: InboxProps) {
+  const { selected, select } = useContactSelection(), contacts = useContacts(selected);
+  const [kept, setKept] = useState<string[]>([]);
+  const next = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept;
+  if (next.join('\n') !== kept.join('\n')) setKept(next);
+  const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
+  const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
+  const { contactsHidden = false, onBulkRead } = props;
+  useEffect(() => { props.onChat?.(!!selected); }, [selected, props.onChat]);
+  return <div ref={grid} className={`relative grid h-full grid-cols-[minmax(0,1fr)] ${contactsHidden ? '' : 'min-[640px]:grid-cols-[var(--contacts-width)_minmax(0,1fr)]'}`} style={{ '--contacts-width': `${contactsWidth}px` } as CSSProperties}>
+    <div role="separator" aria-orientation="vertical" aria-label="Resize contacts" aria-valuenow={contactsWidth} aria-valuemin={CONTACTS_MIN} aria-valuemax={CONTACTS_MAX} tabIndex={0} title="Drag to resize; double-click to reset"
+      className={`absolute inset-y-0 z-[3] w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-border focus-visible:bg-border focus-visible:outline-none max-[639px]:hidden ${contactsHidden ? 'min-[640px]:hidden' : ''}`} style={{ left: contactsWidth }}
+      onPointerDown={event => { event.preventDefault(); const handle = event.currentTarget, left = grid.current!.getBoundingClientRect().left; handle.setPointerCapture(event.pointerId); const move = (e: PointerEvent) => resize(e.clientX - left); const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); }; handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); }}
+      onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resize(contactsWidth + (event.key === 'ArrowLeft' ? -16 : 16)); } }}
+      onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
+    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={select} onBulkRead={onBulkRead} /></div>
+    <div className={`relative min-h-0 min-w-0 ${selected ? '' : 'max-[639px]:hidden'}`}>
+      {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
+      {next.map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
+    </div>
+  </div>;
+}
+const KeptChat = memo(InboxChat);
+function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, toolbarTargets, threadId }: InboxProps & { threadId?: string }) {
   const rpc = useRpc<AgentHubRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => { const update = () => setDocumentVisible(document.visibilityState !== 'hidden'); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
-  // useTabVisible is false outside a panel tab, and this page is not one, so only the document's visibility pauses polling.
+  // This page is outside panel tabs; Activity pauses hidden chats and document visibility pauses polling.
   const visible = documentVisible;
   const sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads, projects = sidebar.projects;
-  // The contact column is resizable at the chat's expense; the width is remembered like the rest of the page state.
-  const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
-  const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
+  const grid = useRef<HTMLDivElement>(null);
   // A plain send to a thread whose turn is running joins its queue (queue-if-active), so it shows there, not as a chat bubble.
   const willQueue = (threadId: string, options?: SendOptions) => options?.mode !== 'steer' && ['active', 'pending', 'starting', 'stopping'].includes(sidebarThreads.find(t => t.id === threadId)?.status ?? '');
-  const { selected, select: setSelected, setWorking } = useContactSelection();
+  const { select: setSelected, setWorking } = useContactSelection();
+  const selected = threadId;
   const contacts = useContacts(selected), { recipients, statusOf, descendants, ownWorking } = contacts;
   // Archiving or deleting the open thread (here or in bb) drops it from the sidebar; the chat closes with it.
   const seenOpen = useRef<string | null>(null);
@@ -373,7 +396,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const transcript = !!selected && transcriptOf === selected;
   const openTranscript = useCallback(() => { if (selected) { release(); transcriptScroll.current = scroll.current?.scrollTop ?? 0; setTranscriptOf(selected); } }, [selected]);
   const closeTranscript = () => { setTranscriptOf(null); requestAnimationFrame(() => { if (scroll.current) scroll.current.scrollTop = transcriptScroll.current; }); };
-  useEffect(() => { setTranscriptOf(null); }, [selected]);
+
   // Where the reader was in the open conversation, so leaving the screen and coming back keeps the place.
   const restore = useRef(useState(() => { const saved = selected ? readScrolls()[selected] : undefined; return saved && selected ? { threadId: selected, ...saved } : null; })[0]);
   const [depth, setDepth] = useState(() => restore.current && restore.current.threadId === selected ? restore.current.depth : 1), [loaded, setLoaded] = useState<{ threadId?: string; pages: ListResult[] }>({ pages: [] });
@@ -383,8 +406,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const windowRequest = useRef(0), jumpOffset = useRef<number | null>(null);
   const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = useMemo(() => activeWindow ? [{...activeWindow.page, items: activeWindow.page.newerCursor ? activeWindow.page.items : [...loadedPages.flatMap(p => p.items), ...activeWindow.page.items]}] : loaded.threadId === selected ? loadedPages : NO_PAGES, [activeWindow, loaded.threadId, selected, loadedPages]);
   const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[]; steer?: boolean }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, { usage: ContextUsage; at: number }>());
-  const previousSelection = useRef(selected);
-  useLayoutEffect(() => { if (previousSelection.current === selected) return; previousSelection.current = selected; if (!selected) return; const saved = readScrolls()[selected]; restore.current = saved ? { threadId: selected, ...saved } : null; setCompose(drafts[selected] ?? { text: '', files: [] }); setComposeError(''); setDepth(saved?.depth ?? 1); setSettled(false); position.current = { height: 0, top: 0, bottom: false, fresh: true, prepend: false }; }, [selected]);
+
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId || row.waitingOn?.kind === 'plugin'));
   // Why a queued message is held, worded and iconed as bb's own queue does (a plain wait behind the running turn, or a
   // schedule already shown as such, says nothing).
@@ -406,14 +428,14 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   };
   const [compose, setCompose] = useState<ComposeDraft>(() => selected ? composeDrafts()[selected] ?? { text: '', files: [] } : { text: '', files: [] }), [composeError, setComposeError] = useState(''), [composePending, setComposePending] = useState(false), [ownSearch, setOwnSearch] = useState(false), [query, setQuery] = useState(''), [matches, setMatches] = useState<Item[]>([]), [searchError, setSearchError] = useState(''), [jump, setJump] = useState<string | null>(null), [older, setOlder] = useState(false), [flash, setFlash] = useState<string | null>(null);
   const search = searchProp ?? ownSearch, setSearch = onSearch ?? setOwnSearch;
-  useEffect(() => { onChat?.(!!selected); }, [selected, onChat]);
+
   const [drafts] = useState(composeDrafts), draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollTimer = useRef<ReturnType<typeof setTimeout>>(undefined), scrollPending = useRef<({ threadId: string } & Scroll) | null>(null);
   // Empty drafts are dropped and only the 50 most recently edited threads kept (key order is edit order, see updateCompose).
-  const saveDrafts = () => { clearTimeout(draftTimer.current); const ids = Object.keys(drafts), kept = ids.filter(id => drafts[id]?.text.trim() || drafts[id]?.files.length || drafts[id]?.execution).slice(-50); for (const id of ids) if (!kept.includes(id)) delete drafts[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(drafts)); window.dispatchEvent(new Event(DRAFTS_EVENT)); } catch { /* storage unavailable */ } };
+  const saveDrafts = () => { clearTimeout(draftTimer.current); const current = composeDrafts(); if (selected) { if (drafts[selected]) current[selected] = drafts[selected]; else delete current[selected]; } const ids = Object.keys(current), kept = ids.filter(id => current[id]?.text.trim() || current[id]?.files.length || current[id]?.execution).slice(-50); for (const id of ids) if (!kept.includes(id)) delete current[id]; try { localStorage.setItem(COMPOSE_KEY, JSON.stringify(current)); window.dispatchEvent(new Event(DRAFTS_EVENT)); } catch { /* storage unavailable */ } };
   const saveScroll = () => { clearTimeout(scrollTimer.current); scrollTimer.current = undefined; if (scrollPending.current) { const { threadId, ...at } = scrollPending.current, all = readScrolls(); delete all[threadId]; all[threadId] = at; try { localStorage.setItem(SCROLL_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-50)))); } catch { /* storage unavailable */ } scrollPending.current = null; } };
-  useEffect(() => () => { saveDrafts(); saveScroll(); }, []);
+  useEffect(() => { saveDrafts(); return () => { saveDrafts(); saveScroll(); }; }, []);
   // A jump still looking for its message belongs to the chat it was asked in.
-  useEffect(() => { cancelAnimationFrame(latestFrame.current); latestFrame.current = 0; saveDrafts(); saveScroll(); setJump(null); setHistoryWindow(null); windowRequest.current++; }, [selected]);
+
   useEffect(() => {
     if (!selected || !search || !query.trim()) { setMatches([]); setSearchError(''); return; }
     let active = true; const timer = setTimeout(() => { void rpc.call('list', { view: 'all', threadId: selected, query: query.trim(), limit: 20 }).then(data => { if (active) { setMatches(data.items); setSearchError(''); } }).catch(e => { if (active) setSearchError(errorText(e)); }); }, 200);
@@ -492,7 +514,6 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
     const files:Attachment[]=input.flatMap<Attachment>(part=>part.type==='localFile'? [{...part,name:part.name ?? part.path.split('/').at(-1)!}] : part.type==='localImage' ? [{...part,name:part.path.split('/').at(-1)!}] : []);
     updateCompose(state.threadId,{...state.draft,text,files,historyInput:input});
   }
-  useEffect(() => { recall.current=null; },[selected]);
   useEffect(() => {
     const root=grid.current; if(!root || !selected) return;
     return bindChatCommands(root,{
@@ -622,7 +643,7 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
   const editHold = useRef<{ threadId: string; queuedMessageId: string } | null>(null), editLease = useRef(120000);
   const releaseEditHold = async () => { const target = editHold.current; editHold.current = null; if (target) await sdk.threads.queuedMessages.experimental_releaseEditHold(target); };
-  useEffect(() => { setQueueEdit(null); return () => { void releaseEditHold(); }; }, [selected]);
+  useEffect(() => () => { void releaseEditHold(); }, [selected]);
   // bb's edit hold is a lease (2 min); bb's own editor renews it every quarter lease, so a long edit never dispatches mid-way.
   useEffect(() => {
     const target = editHold.current; if (!queueEdit || !target) return;
@@ -913,13 +934,14 @@ export function Inbox({ contactsHidden = false, onBulkRead, bbChat = false, sear
   const headerTitle = selected && <><Avatar id={selected} title={current?.threadTitle ?? null} /><ThreadHeader thread={openThread} parent={sidebarThreads.find(thread => thread.id === openThread?.parentThreadId)} title={current?.threadTitle ?? 'Untitled thread'} onSelect={setSelected} actionsTarget={mergedHeader ? toolbarTargets!.actions : null} trailing={mergedHeader ? undefined : searchControls} /></>;
   const mobileHeader = selected && (mergedHeader ? <>{createPortal(headerTitle, toolbarTargets!.title!)}{createPortal(searchControls, toolbarTargets!.search!)}</> : <div ref={headerRef} className="sticky top-0 z-[2] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{headerTitle}</div>);
   const queueCard = useMemo(() => (<QueueCard rows={shownQueue.filter(row => row.threadId === selected)} waitReason={queueWait} sourceName={row => row.senderThreadId ? sidebarThreads.find(thread => thread.id === row.senderThreadId)?.title ?? null : (row.originPluginId ? pluginBrands.find(brand => brand.id === row.originPluginId)?.name ?? row.originPluginId : null) ?? (row.origin === 'cli' ? 'CLI' : null)} projectId={current?.projectId} edit={queueEdit} onEdit={(row, update) => update ? setQueueEdit(current => current?.id === row.id ? { ...current, ...update } : current) : void startQueueEdit(row)} onFinish={(row, save) => void finishQueueEdit(row, save)} onSend={row => void sendQueued(row)} onDelete={row => { dropped.current.add(row.id); void queueAction(() => sdk.threads.queuedMessages.delete({ threadId: row.threadId, queuedMessageId: row.id }), true); }} onSchedule={(row, sendAt) => void queueAction(() => sdk.threads.queuedMessages.update({ threadId: row.threadId, queuedMessageId: row.id, expectedUpdatedAt: row.updatedAt, sendAt }))} onReorder={(row, previousQueuedMessageId, nextQueuedMessageId) => void queueAction(() => sdk.threads.queuedMessages.reorder({ threadId: row.threadId, queuedMessageId: row.id, previousQueuedMessageId, nextQueuedMessageId }))} />), [queue, sentNow, leaving, selected, queueEdit, openThread?.providerId, openThread?.environment?.id, openThread?.host?.id, sidebarThreads, pluginBrands, current?.projectId, sdk, rpc]);
-  return <FullTranscriptContext.Provider value={openTranscript}><EditSentContext.Provider value={startSentEdit}><ComposerThread.Provider value={selected ?? null}><div ref={grid} className={`relative grid h-full grid-cols-[minmax(0,1fr)] ${contactsHidden ? '' : 'min-[640px]:grid-cols-[var(--contacts-width)_minmax(0,1fr)]'}`} style={{ '--contacts-width': `${contactsWidth}px` } as CSSProperties}>
-    <div role="separator" aria-orientation="vertical" aria-label="Resize contacts" aria-valuenow={contactsWidth} aria-valuemin={CONTACTS_MIN} aria-valuemax={CONTACTS_MAX} tabIndex={0} title="Drag to resize; double-click to reset"
-      className={`absolute inset-y-0 z-[3] w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-border focus-visible:bg-border focus-visible:outline-none max-[639px]:hidden ${contactsHidden ? 'min-[640px]:hidden' : ''}`} style={{ left: contactsWidth }}
-      onPointerDown={event => { event.preventDefault(); const handle = event.currentTarget, left = grid.current!.getBoundingClientRect().left; handle.setPointerCapture(event.pointerId); const move = (e: PointerEvent) => resize(e.clientX - left); const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); }; handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); }}
-      onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resize(contactsWidth + (event.key === 'ArrowLeft' ? -16 : 16)); } }}
-      onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
-    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={setSelected} onBulkRead={onBulkRead} /></div>
+  // Activity uses display:none, so restore the offset before the first visible paint.
+  const keptTop = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const node = scroll.current;
+    if (node && keptTop.current !== null) node.scrollTop = keptTop.current;
+    return () => { if (node) keptTop.current = node.scrollTop; };
+  }, []);
+  return <FullTranscriptContext.Provider value={openTranscript}><EditSentContext.Provider value={startSentEdit}><ComposerThread.Provider value={selected ?? null}><div ref={grid} className="relative grid h-full grid-cols-[minmax(0,1fr)]">
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
     <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} inert={transcript || undefined} aria-hidden={transcript || undefined} style={transcript ? {visibility:'hidden'} : undefined} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={event => { if (event.key !== 'Escape' && event.key !== 'Tab') capture(event); }} onKeyDown={event => { if (event.key === 'Tab' && selectionBar && !event.shiftKey) { event.preventDefault(); popup.current?.querySelector<HTMLElement>('button')?.focus(); } }} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}

@@ -4,11 +4,11 @@ import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
-const cards = vi.hoisted(() => ({ renders: 0 }));
+const cards = vi.hoisted(() => ({ renders: 0, byThread: {} as Record<string, number> }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, ThreadChat: ({threadId}: any) => <div data-thread-chat={threadId}>Raw thread transcript</div>, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
-vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
+vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; cards.byThread[props.item.threadId]=(cards.byThread[props.item.threadId] ?? 0)+1; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
@@ -408,7 +408,7 @@ it('shows Reply only on agent questions and keeps open ones out of the conversat
   expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
   expect(within(slot.getByRole('list', { name:'History' })).queryByText('Still open?')).toBeNull();
 });
-it('keeps the list and the previous conversation on screen while switching', async () => {
+it('keeps the contact list and hides the previous conversation while switching', async () => {
   let release!: () => void;
   const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Answer two' };
   const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId === 'thr_two' && input.view !== 'for_me'
@@ -418,10 +418,10 @@ it('keeps the list and the previous conversation on screen while switching', asy
   expect(await slot.findByText('Question one')).toBeTruthy();
   fireEvent.click(recipients.getAllByRole('option')[1]!);
   expect(recipients.getAllByRole('option')).toHaveLength(2);
-  expect(slot.getByText('Question one')).toBeTruthy();
+  expect(slot.getByText('Question one').closest('[inert]')).toBeTruthy();
   await act(async () => { release(); });
   expect(await slot.findByText('Question two')).toBeTruthy();
-  expect(slot.queryByText('Question one')).toBeNull();
+  expect(slot.getByText('Question one').closest('[inert]')).toBeTruthy();
 });
 it('wraps a contact in bb’s thread menu when bb lists the thread', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
@@ -1338,4 +1338,37 @@ it('moves the main composer message into its thread reply pool and clears it', a
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: 'thr_one', quote: '', note: 'Collect this message', attachments: [] }));
   await waitFor(() => expect(editor.textContent).toBe(''));
   expect(send).not.toHaveBeenCalled();
+});
+
+it('keeps five chats mounted, pauses hidden reads and restores DOM, composer, expansion and scroll', async () => {
+ const people=Array.from({length:6},(_,i)=>({...one,threadId:`thr_example_${i}`,threadTitle:`Example ${i}`}));
+ localStorage.setItem('bb-plugin-answers:page:compose',JSON.stringify({thr_example_0:{text:'',files:[{type:'localFile',path:'/tmp/example.txt',name:'example.txt'}]}}));
+ let answer='Original answer';
+ const {slot,recipients,list}=setup({recipients:people,list:input=>({items:[{...base,id:`ans_${input.threadId}`,threadId:input.threadId,question:input.threadId,answer}],nextCursor:input.threadId==='thr_example_0' && !input.cursor?'1|ans_example_old':null})});
+ const open=async(i:number)=>{fireEvent.click(await recipients.findByRole('option',{name:new RegExp(`Example ${i}`)}));await slot.findByText(`thr_example_${i}`);};
+ await open(0);const editor=slot.getByRole('textbox',{name:'Send message'}), history=slot.getByRole('list',{name:'History'}), scroll=history.closest('.overflow-auto') as HTMLElement;
+ change(editor,{target:{value:'Kept draft'}});scroll.scrollTop=123;
+ await open(1);const before=list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all').length;
+ const renders=cards.byThread.thr_example_0;answer='Updated answer';
+ await slot.behavior.experimental_invalidateRpc(['answers:items']);
+ expect(cards.byThread.thr_example_0).toBe(renders);
+ expect(list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all')).toHaveLength(before);
+ await open(0);expect(slot.getByRole('list',{name:'History'})).toBe(history);expect(slot.getByRole('textbox',{name:'Send message'})).toBe(editor);expect(editor.textContent).toBe('Kept draft');expect(slot.getByText('example.txt')).toBeTruthy();expect(scroll.scrollTop).toBe(123);
+ await waitFor(()=>expect(within(history).getByText('Updated answer')).toBeTruthy());
+ await waitFor(()=>expect(list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all')).toHaveLength(before+1));
+ for(const i of [1,2,3,4,5])await open(i);
+ expect(history.isConnected).toBe(false);
+ localStorage.setItem('bb-plugin-answers:page:scroll',JSON.stringify({thr_example_0:{top:77,depth:2}}));
+ await open(0);expect(slot.getByRole('list',{name:'History'})).not.toBe(history);
+ await waitFor(()=>expect(list.mock.calls.some(([input])=>input.threadId==='thr_example_0' && input.cursor==='1|ans_example_old')).toBe(true));
+});
+
+it('keeps expanded updates and the full transcript across cached chat switches', async()=>{
+ const people=[one,{...one,threadId:'thr_example',threadTitle:'Example'}];
+ const {slot,recipients}=setup({recipients:people,list:input=>({items:input.threadId==='thr_one'?[after,quiet(3,'Third report'),quiet(2,'Second report'),quiet(1,'First report')]:[{...base,id:'ans_example',threadId:'thr_example'}],nextCursor:null})});
+ fireEvent.click(await recipients.findByRole('option',{name:/One/}));const toggle=await slot.findByRole('button',{name:/3 background updates/});fireEvent.click(toggle);
+ fireEvent.click(slot.getByRole('button',{name:'Full transcript'}));const transcript=slot.getByRole('region',{name:'Full transcript'});
+ fireEvent.click(recipients.getByRole('option',{name:/Example/}));await slot.findByRole('list',{name:'History'});
+ fireEvent.click(recipients.getByRole('option',{name:/One/}));expect(slot.getByRole('region',{name:'Full transcript'})).toBe(transcript);
+ fireEvent.click(slot.getByRole('button',{name:'Back to Agent Hub'}));expect(slot.getByRole('button',{name:/3 background updates/})).toBe(toggle);expect(toggle.getAttribute('aria-expanded')).toBe('true');
 });
