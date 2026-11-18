@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { GateActivity } from "./activity";
+import { Button } from "./components/ui/button";
+import { Icon } from "./components/ui/icon";
 import { Input } from "./components/ui/input";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
@@ -11,12 +13,15 @@ import { SettingsSection, SettingsWithControl } from "./components/ui/settings-s
 type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; ttlMinutes: number };
 type Project = { id: string; name: string; values: Values };
 
-function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId: string, value: Values) => void }) {
-  const [value, setValue] = useState(project.values);
+type LaunchValues = Omit<Values, "enabled">;
+
+function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId: string, value: LaunchValues) => void }) {
+  const { enabled, ...settings } = project.values;
+  const [value, setValue] = useState(settings);
   const form = useRef<HTMLFormElement>(null);
   const lastChange = useRef(value);
   const [invalid, setInvalid] = useState(false);
-  const update = (patch: Partial<Values>) => setValue(current => ({ ...current, ...patch }));
+  const update = (patch: Partial<LaunchValues>) => setValue(current => ({ ...current, ...patch }));
   useEffect(() => {
     if (lastChange.current === value) return;
     lastChange.current = value;
@@ -25,9 +30,6 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
     if (valid) onSave(project.id, value);
   }, [value, project.id, onSave]);
   return <form ref={form} onSubmit={event => event.preventDefault()} className="space-y-5">
-      <SettingsWithControl label="Enable spawn gate for this project" description="New CLI and agent starts require admission. Your top-level starts from bb windows remain unrestricted.">
-        <Switch aria-label="Enable spawn gate for this project" checked={value.enabled} onCheckedChange={enabled => update({ enabled })} />
-      </SettingsWithControl>
       <SettingsWithControl label="Launch method">
         <Select value={value.method} onValueChange={method => update({ method: method as Values["method"] })}>
           <SelectTrigger aria-label="Launch method" className="w-full @min-[36rem]/settings:w-40"><SelectValue /></SelectTrigger>
@@ -39,7 +41,7 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
           <Input aria-label="Launch script" value={value.script} required maxLength={500} onChange={e => update({ script: e.target.value })} />
         </SettingsWithControl>
       </> : <SettingsWithControl label="Launch instructions" description="Steps for the agent to follow before creating a child session." controlPlacement="below">
-        <Textarea aria-label="Launch instructions" rows={6} maxLength={20_000} required={value.enabled} value={value.instruction} onChange={e => update({ instruction: e.target.value, method: "instruction" })} />
+        <Textarea aria-label="Launch instructions" rows={6} maxLength={20_000} required={enabled} value={value.instruction} onChange={e => update({ instruction: e.target.value, method: "instruction" })} />
       </SettingsWithControl>}
       <SettingsWithControl label="Admission lifetime, minutes" description="Time to use a newly issued one-use admission before it expires (1–60 minutes).">
         <Input aria-label="Admission lifetime, minutes" className="w-24" type="number" min={1} max={60} required value={Number.isNaN(value.ttlMinutes) ? "" : value.ttlMinutes} onChange={e => update({ ttlMinutes: e.target.valueAsNumber })} />
@@ -55,15 +57,19 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const [days, setDays] = useState("7");
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [savingGate, setSavingGate] = useState(false);
   const writes = useRef(Promise.resolve());
-  const save = useCallback((projectId: string, values: Values) => {
-    setProjects(current => current!.map(p => p.id === projectId ? { ...p, values } : p));
+  const save = useCallback((projectId: string, values: Partial<Values>) => {
+    const update = () => setProjects(current => current!.map(p => p.id === projectId ? { ...p, values: { ...p.values, ...values } } : p));
+    const toggling = values.enabled !== undefined;
+    if (!toggling) update();
     setSaveError("");
-    // Keep edits in order without disabling or replacing the controls.
+    // Keep edits in order and show the gate state only after it is saved.
     writes.current = writes.current.then(() => rpc.call("settings.write", { projectId, values })).then(
-      () => {},
+      () => { if (toggling) update(); },
       error => { setSaveError(`Could not save settings: ${error instanceof Error ? error.message : String(error)}. Edit the setting to retry.`); },
     );
+    return writes.current;
   }, [rpc]);
   useEffect(() => {
     let active = true;
@@ -78,25 +84,53 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   if (!projects) return <p>Loading projects…</p>;
   if (!projects.length) return <p>Create a project in bb first.</p>;
   const project = projects.find(p => p.id === selected)!;
-  return <div className="space-y-6">
-    <SettingsSection title="Project">
-      <SettingsWithControl label="Project" description="Settings and gate state are saved separately for each project.">
-        <Select value={selected} onValueChange={setSelected}>
-          <SelectTrigger aria-label="Project" className="w-full @min-[36rem]/settings:w-56"><SelectValue /></SelectTrigger>
-          <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}{p.values.enabled ? " — on" : " — off"}</SelectItem>)}</SelectContent>
-        </Select>
-      </SettingsWithControl>
-    </SettingsSection>
+  const controls = <div className="flex flex-wrap items-center gap-3">
+    <Select value={selected} onValueChange={setSelected}>
+      <SelectTrigger aria-label="Project" className="w-56 max-w-full"><SelectValue /></SelectTrigger>
+      <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+    </Select>
+    <label className="flex items-center gap-2 text-sm">
+      Gate
+      <Switch
+        aria-label="Enable spawn gate for this project"
+        checked={project.values.enabled}
+        disabled={savingGate}
+        onCheckedChange={async enabled => {
+          if (enabled && project.values.method === "instruction" && !project.values.instruction.trim()) {
+            setSaveError("Add launch instructions before enabling Spawn Gate.");
+            return;
+          }
+          setSavingGate(true);
+          await save(project.id, { enabled });
+          setSavingGate(false);
+        }}
+      />
+    </label>
+  </div>;
+  return <div className="space-y-5">
+    {showActivity ? <header className="flex flex-wrap items-center justify-between gap-3">
+      <h1 className="text-xl font-semibold">Spawn Gate</h1>
+      {controls}
+    </header> : <SettingsSection title="Project">
+      <SettingsWithControl label="Project">{controls}</SettingsWithControl>
+    </SettingsSection>}
+    <p role="alert" className="text-xs text-destructive empty:hidden">{saveError}</p>
     {showActivity ? <>
       <GateActivity key={selected} projectId={selected} days={days} onDaysChange={setDays} />
-      <details className="rounded-lg border border-border p-3">
-        <summary className="cursor-pointer text-sm font-medium">Project settings</summary>
-        <div className="pt-4"><ProjectForm key={selected} project={project} onSave={save} /></div>
+      <details className="group">
+        <Button asChild variant="outline" className="w-full cursor-pointer list-none justify-between px-3 font-normal [&::-webkit-details-marker]:hidden">
+          <summary>
+            Project settings
+            <Icon name="ChevronDown" className="size-4 opacity-50 group-open:rotate-180" />
+          </summary>
+        </Button>
+        <div className="@container/settings rounded-md border border-border p-4 mt-2">
+          <ProjectForm key={selected} project={project} onSave={save} />
+        </div>
       </details>
     </> : <SettingsSection title="Session launches">
       <ProjectForm key={selected} project={project} onSave={save} />
     </SettingsSection>}
-    <p role="alert" className="min-h-4 text-xs text-destructive">{saveError}</p>
   </div>;
 }
 
@@ -106,8 +140,7 @@ export function GateSettings() {
 
 function GatePage() {
   return <div className="h-full overflow-y-auto">
-    <main className="mx-auto w-full max-w-4xl space-y-5 p-4 md:p-6">
-      <h1 className="text-xl font-semibold">Spawn Gate</h1>
+    <main className="mx-auto w-full max-w-4xl p-4 md:p-6">
       <GateProjectView showActivity />
     </main>
   </div>;
