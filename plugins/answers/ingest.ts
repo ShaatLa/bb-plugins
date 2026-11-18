@@ -62,7 +62,7 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
-export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false): boolean {
+export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number) => void): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
  let hidden = 0;
@@ -144,10 +144,15 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
     // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
-    const asked = trackQuestions && update?.answer && !update.asked ? chatQuestion(update.answer) : null;
+    const warningTriggered = update?.source_id === 'answers' && update.question.startsWith('[answers]');
+    const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
+    if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
+     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with answers_ask (or on the Work Board card) and end the turn.', e.createdAt ?? 0);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[answers] Your last reply hands work to the owner but did not call answers_report; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
+    }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
-    const asks = trackQuestions && !!update?.answer && (!!update.report || asksOwner(update.answer));
+    const asks = trackQuestions && !!update?.answer && (!!update.report || (!warningTriggered && asksOwner(update.answer)));
     const early = turnUpdateId(threadId,turn), shown = !!db.prepare('SELECT 1 FROM items WHERE id=?').get(early), reply = update?.answer?.trim() && !db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='mine' AND (turn_id=? OR resolve_turn_id=?) AND steer_seq IS NULL").get(threadId,turn,turn);
     // The message shown at acceptance takes the turn's reply; with nothing to report it stays a read caption.
     if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);

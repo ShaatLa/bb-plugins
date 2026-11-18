@@ -11,9 +11,10 @@ const oversized = (e: unknown) => {
   return error?.status === 413 || error?.statusCode === 413 || error?.code === 'event_data_too_large';
 };
 type State = { last_seq: number; last_error: string | null; ingested_thread_updated_at: number | null };
-type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'projectId' | 'parentThreadId' | 'updatedAt'>;
+type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'projectId' | 'parentThreadId' | 'updatedAt' | 'archivedAt'>;
 const CATCH_UP = [...RELEVANT, CONTEXT_EVENT, COMPACTED_EVENT] as const;
-export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string, compactedAt?: number) => void = () => {}) {
+export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string, compactedAt?: number) => void = () => {}, handoffWarnings: () => Promise<boolean> = async () => true) {
+  const startedAt = Date.now();
   const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
   const scheduled = new Map<string, { dirty: boolean; listed?: Thread; promise: Promise<void> }>();
@@ -73,6 +74,15 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     try { thread = listed ?? await bb.sdk.threads.get({threadId:id,signal}); projectId = thread.projectId; questions = !thread.parentThreadId; }
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
     let changed = false;
+    async function apply(events: Event[]) {
+      const warnings: string[] = [];
+      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);}))() || changed;
+      for (const text of warnings) {
+        if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
+        try {await bb.sdk.threads.send({threadId:id,originPluginId:'answers',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
+        catch (e) {bb.log.warn(`Answers handoff warning: ${String(e)}`);}
+      }
+    }
     if (!questions) db.transaction(() => {
       db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);
       db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
@@ -89,7 +99,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
       }
-      changed = db.transaction(() => applyEvents(db,id,events.sort((a,b)=>a.seq-b.seq),projectId,Date.now(),questions,live.has(id)))() || changed;
+      await apply(events.sort((a,b)=>a.seq-b.seq));
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {
@@ -98,7 +108,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       const compacted = result.events.filter(e => e.type === COMPACTED_EVENT).at(-1);
       if (compacted || result.events.some(e => e.type === CONTEXT_EVENT)) onContext(id, compacted ? compacted.createdAt ?? Date.now() : undefined);
       if (result.events.length) {
-        changed = db.transaction(() => applyEvents(db,id,result.events,projectId,Date.now(),questions,live.has(id)))() || changed;
+        await apply(result.events);
         cursor = Math.max(...result.events.map(e=>e.seq));
       }
       if (result.events.length < result.size) break;

@@ -13,7 +13,7 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Answers plugin: user messages are tracked as questions paired with your final reply. If the answer comes later, call answers_defer; when a later turn delivers it, call answers_list, then answers_resolve. Ask the user's decisions via answers_ask, then end the turn. With no question pending, call answers_report when your final message carries a result the user awaits. A Work Board task's decision, check, acceptance or design review goes on the task (bb work-board question add KEY), never answers_ask or chat. Scripts waking your own thread via bb thread tell start the text with a [tag].";
+export const INSTRUCTIONS = "Answers tracks user messages and final replies. For a later answer, call answers_defer; when it arrives, answers_list then answers_resolve. Ask decisions via answers_ask, then end the turn. With no pending question, call answers_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Work Board decisions, checks, acceptance and design reviews go on the task (bb work-board question add KEY), never answers_ask or chat. Scripts waking their own thread via bb thread tell start with a [tag].";
 const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
 const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
@@ -55,7 +55,7 @@ export default function plugin(bb: BbPluginApi) {
   const contextStamps = new Map<string,{stamp:number;compactedAt:number|null}>();
   const notifier=createNotifier(bb,db);
   const onAttention = () => {void notifier.run();};
-  const driver = createDriver(bb,db,() => {invalidate(); onAttention();},(threadId,compactedAt) => {const last=contextStamps.get(threadId); contextStamps.set(threadId,{stamp:(last?.stamp ?? 0)+1,compactedAt:compactedAt ?? last?.compactedAt ?? null}); bb.rpc.experimental_invalidate([CONTEXT_TAG]);});
+  const driver = createDriver(bb,db,() => {invalidate(); onAttention();},(threadId,compactedAt) => {const last=contextStamps.get(threadId); contextStamps.set(threadId,{stamp:(last?.stamp ?? 0)+1,compactedAt:compactedAt ?? last?.compactedAt ?? null}); bb.rpc.experimental_invalidate([CONTEXT_TAG]);},async () => (await notifier.settings.get()).handoffWarnings);
   let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
   type DisplayThread = {id:string; title:string|null; projectId:string};
   const threadCache=new Map<string,{expires:number; thread:DisplayThread|undefined}>();
