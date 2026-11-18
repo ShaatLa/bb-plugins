@@ -270,6 +270,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     }
   }
   const handlers = {
+    'notifier.beat': notifier.beat,
     'config.get':config.get,
     'config.set':config.set,
     list, async counts() { await syncReadFromBb(); return counts(); },

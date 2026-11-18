@@ -2,6 +2,8 @@ import { configGet, configSet } from './config';
 import { preferencesSchema, preferencesPatch, PREFERENCES_TAG } from './preferences';
 import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+export const NOTIFICATIONS_CHANNEL = 'agent-hub:notifications';
+export const desktopNotificationSchema = z.object({id:z.string(),title:z.string(),body:z.string(),threadId:z.string().optional()});
 export const YOUR_CALL = 'Your call';
 export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools', QUEUE_TAG = 'answers:queue', CONTEXT_TAG = 'answers:context';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
@@ -53,6 +55,7 @@ export const inputs = {
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({
+ 'notifier.beat':{input:z.object({clientId:z.string().min(1).max(200),canNotify:z.boolean()}).strict(),output:z.object({ok:z.literal(true)})},
  'config.get':{input:configGet,output:z.unknown()},
  'config.set':{input:configSet,output:z.unknown()},
  getPreferences:{tags:()=>[PREFERENCES_TAG],input:z.object({}).strict(),output:preferencesSchema},

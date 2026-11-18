@@ -160,3 +160,5 @@ Choose **Add to reply pool** from the main composer’s send menu to move its te
 Drop files or images from the OS onto a reply pool header or its empty area to create an entry, or onto an existing entry to add attachments. Uploads use the thread’s project and the same ten-attachment limit as the composer. Attachment chips do not provide a custom drag-out format.
 
 If import fails, the empty database stays read-only and automatic ingestion pauses until restart, keeping retries safe. Preferences and migration status remain available. An already populated new database is preserved and reported as a migration conflict.
+
+Когда окно bb с Agent Hub открыто и уведомления разрешены, Agent Hub показывает уведомления сам; нажатие открывает его беседу (или страницу Agent Hub для сводки). Блокировка выбирает одну вкладку браузера. Без активного клиента используется Push Notifications; на телефоне нажатие открывает чат bb. Разрешением управляет Push Notifications.

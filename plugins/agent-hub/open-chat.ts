@@ -34,6 +34,7 @@ function choose(page: ContactPage, threadId: string | undefined) {
   page.listeners.forEach(listener => listener()); activatePage(page);
   window.dispatchEvent(new CustomEvent(CONTACT_SELECTED, { detail: page }));
 }
+export function isChatOpen(threadId: string) { return [...pages].some(page => page.open && page.threadId === threadId); }
 export function selectContact(threadId: string | undefined) {
   if (activePage) { choose(activePage, threadId); return true; }
   storeSelection(threadId); window.dispatchEvent(new Event(CONTACT_SELECTED)); return false;

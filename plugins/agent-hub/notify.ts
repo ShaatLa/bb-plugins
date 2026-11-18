@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { NOTIFICATIONS_CHANNEL } from './contract';
 import type Database from 'better-sqlite3';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
@@ -10,6 +12,12 @@ type Level='off'|'asked'|'questions'|'all';
 const clean=(s:string,n:number)=>s.replace(/\s+/g,' ').trim().slice(0,n);
 export function createNotifier(bb:BbPluginApi,db:Database.Database) {
  const settings=createPreferences(bb);
+ const notifiers=new Map<string,number>();
+ const beat=({clientId,canNotify}:{clientId:string;canNotify:boolean})=>{
+  for(const [id,at] of notifiers) if(Date.now()-at>=45000) notifiers.delete(id);
+  if(canNotify) notifiers.set(clientId,Date.now()); else notifiers.delete(clientId);
+  return {ok:true as const};
+ };
  let level:Level='asked',quiet='',disposed=false,chain=Promise.resolve(),flushTimer:ReturnType<typeof setTimeout>|undefined,endTimer:ReturnType<typeof setTimeout>|undefined,lastError=0;
  const queue=new Set<string>();
  const windowEnd=(now=Date.now())=>{
@@ -31,6 +39,9 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
  })();
  const log=(e:unknown)=>{if (Date.now()-lastError>=3600000 || !lastError) {lastError=Date.now(); bb.log.debug(`Agent Hub push unavailable: ${String(e)}`);}};
  const push=async(input:{title:string;body:string;threadId?:string})=>{
+  if([...notifiers.values()].some(at=>Date.now()-at<45000)) {
+   try {await bb.realtime.publish(NOTIFICATIONS_CHANNEL,{...input,id:randomUUID()});return;} catch(e){log(e);}
+  }
   const outputSchema=z.object({channels:z.array(z.string())});
   try {const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'push-notifications',method:'notifications.send',input,outputSchema})); if (!result.channels.length) log('no channels');}
   catch(e){log(e);}
@@ -74,5 +85,5 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
  });}
  settings.onChange((next)=>{level=next.notify as Level;quiet=next.quietHours;if(level==='off'){queue.clear();if(flushTimer)clearTimeout(flushTimer);flushTimer=undefined;db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();} arm();void run();});
  chain=settings.get().then(value=>{level=value.notify as Level;quiet=value.quietHours;db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;if(old && old.value!==windowEnd()){db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();}})();arm();}).catch(log);
- return {run,settings,dispose:async()=>{disposed=true;if(flushTimer)clearTimeout(flushTimer);if(endTimer)clearTimeout(endTimer);await chain;}};
+ return {run,settings,beat,dispose:async()=>{disposed=true;if(flushTimer)clearTimeout(flushTimer);if(endTimer)clearTimeout(endTimer);await chain;}};
 }

@@ -93,7 +93,7 @@ it('lets host shortcuts act only on the focused form when several share a page',
   const press = () => { let handled = 0; act(() => { handled = host.choices.filter(handler => handler(0)).length; }); return handled; };
   expect(press()).toBe(0);
   second!.focus();
-  expect(press()).toBe(1);
+  await waitFor(() => expect(press()).toBe(1));
   await waitFor(() => expect(second!.querySelector('button[aria-pressed="true"]')).toBeTruthy());
   expect(first!.querySelector('button[aria-pressed="true"]')).toBeNull();
 });

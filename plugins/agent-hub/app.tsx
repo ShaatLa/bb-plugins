@@ -1,3 +1,4 @@
+import { DesktopNotifier } from './desktop-notifier';
 import { useQuestionStack } from './question-stack';
 import { AgentHubSettings } from './settings-section';
 import { usePreferences } from './use-preferences';
@@ -690,6 +691,7 @@ function AgentHubPage() {
 }
 
 export default definePluginApp(app => {
+  app.slots.experimental_appOverlay({id:'desktop-notifier',component:DesktopNotifier});
   app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AgentHubSettings});
   registerChatCommands(app);
   app.slots.experimental_threadList({ id: 'agent-hub', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AgentHubContacts) });

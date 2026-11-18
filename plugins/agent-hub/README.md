@@ -112,7 +112,7 @@ With the **Tokenomos** plugin enabled, the conversation header displays the sess
 
 The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
 
-The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Delivery requires the Push Notifications plugin.
+The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Fallback delivery requires the Push Notifications plugin.
 
 `bb agent-hub digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb agent-hub digest --since 24h`.
 
@@ -171,3 +171,5 @@ Choose **Add to reply pool** from the main composer’s send menu to move its te
 Drop files or images from the OS onto a reply pool header or its empty area to create an entry, or onto an existing entry to add attachments. Uploads use the thread’s project and the same ten-attachment limit as the composer. Attachment chips do not provide a custom drag-out format.
 
 If import fails, the empty database stays read-only and automatic ingestion pauses until restart, keeping retries safe. Preferences and migration status remain available. An already populated new database is preserved and reported as a migration conflict.
+
+While a bb window with Agent Hub is open and notification permission is granted, Agent Hub shows desktop/web notifications itself; clicking opens its conversation (or the Agent Hub page for a summary). One tab per browser holds the notifier lock. With no fresh notifier, delivery falls back to Push Notifications; phone clicks open bb chat. Permission is managed by Push Notifications.
