@@ -71,7 +71,7 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
   const arcs = slices.map(x => { const len = total > 0 ? x.usd / total * CIRC : 0, start = from; from += len; return { x, start, dash: Math.max(0, len - GAP) }; });
   const group = 'mt-2 space-y-1 border-t border-border-hairline pt-2';
   const sub = cost.total.usd !== null && cost.own.usd !== null ? { ...cost.total, usd: Math.max(0, cost.total.usd - cost.own.usd) } : { ...cost.total, usd: null };
-  return at && createPortal(<div ref={box} role="dialog" aria-label="Cost details" className="fixed z-[100] w-72 rounded-lg border border-border bg-background p-3 text-xs shadow-lg" style={at}>
+  return at && createPortal(<div ref={box} role="dialog" aria-label="Cost details" className="fixed z-[100] w-80 rounded-lg border border-border bg-background p-3 text-xs shadow-lg" style={at}>
     <div className="space-y-1"><Row label="This session" value={money(cost.own)} />{subs > 0 && <Row label={`Sub-sessions (${subs})`} value={money(sub)} />}<Row label="Total" value={money(cost.total)} /></div>
     <div className={group}>{details !== 'loading' && !details.available ? <p className="text-muted-foreground">Details unavailable</p> : <><Row label="Today" value={period(ready?.today)} /><Row label="Last 7 days" value={period(ready?.week)} /></>}</div>
     {ready && ready.models.length > 0 && <div className={`${group} flex items-center gap-3`}>
