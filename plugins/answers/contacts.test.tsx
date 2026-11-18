@@ -29,3 +29,11 @@ it('selects in place from Questions and then changes the mounted conversation', 
   }
   expect(sidebar.inspection.navigateCalls).toEqual([]);
 });
+it('shows the unread count on the contact avatar, as messengers do', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  const slot = renderSlot(app.threadLists[0]!, props, { rpc });
+  const badge = (await slot.findAllByLabelText('1 unread'))[0]!;
+  // The badge sits in the avatar's corner wrapper, not at the end of the preview line.
+  expect(badge.parentElement!.className).toContain('relative shrink-0');
+  expect(badge.className).toContain('absolute');
+});
