@@ -554,7 +554,7 @@ it("omits the redundant waiting banner", async () => {
   expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
 });
 
-it("orders open questions newest first and moves a check under Earlier after answering", async () => {
+it("orders open questions oldest first and moves a check under Earlier after answering", async () => {
   const { task, rpc, structured, bb } = setup();
   const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
     const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
@@ -569,7 +569,7 @@ it("orders open questions newest first and moves a check under Earlier after ans
   const newestGroup = await slot.findByRole("group", { name: newest.prompt });
   const section = newestGroup.closest('section[aria-label="Questions"]')!;
   const groups = [...section.querySelectorAll("fieldset")];
-  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Newest check", "Older open", "Old answer"]);
+  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Newest check", "Old answer"]);
   expect(slot.getByText("Earlier (1)").closest("details")?.open).toBe(false);
   expect(within(newestGroup).getByText("Check")).toBeTruthy();
   expect(within(newestGroup).getByRole("textbox", { name: "Your answer" })).toBeTruthy();

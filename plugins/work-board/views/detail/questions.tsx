@@ -432,8 +432,9 @@ export function QuestionsSection({
           }}
         />
   );
+  // Open questions read in the order they were asked, like the Earlier list below.
   const open = (query.data ?? []).filter(isQuestionOpen)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const earlier = (query.data ?? []).filter(question => !isQuestionOpen(question))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;
