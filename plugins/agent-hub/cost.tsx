@@ -40,7 +40,8 @@ const Row = ({ label, value }: { label: string; value: string }) => <div classNa
 function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: ThreadCost; onClose: () => void }) {
   const rpc = useRpc<AgentHubRpcContract>(), [at, setAt] = useState<CSSProperties | null>(null), [details, setDetails] = useState<Details | 'loading'>('loading'), box = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const place = () => { const r = anchor.getBoundingClientRect(); setAt({ right: Math.max(8, window.innerWidth - r.right), top: r.bottom + 4 }); };
+    // The chip sits under the composer: open upward there, as RowPopover does.
+    const place = () => { const r = anchor.getBoundingClientRect(); setAt({ right: Math.max(8, window.innerWidth - r.right), ...(r.top > window.innerHeight / 2 ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }) }); };
     place(); window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [anchor]);
@@ -59,7 +60,7 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
   const subs = cost.descendantCount, ready = details !== 'loading' && details.available ? details : null;
   const period = (c: Cost | null | undefined) => details === 'loading' ? '…' : c ? money(c) : '—';
   const total = ready?.models.reduce((n, m) => n + (m.cost.usd ?? 0), 0) ?? 0, top = ready?.models.slice(0, 5) ?? [], rest = ready?.models.slice(5) ?? [];
-  const share = (usd: number | null) => total > 0 && usd !== null ? ` · ${Math.round(usd / total * 100)}%` : '';
+  const share = (usd: number | null) => total > 0 && usd !== null ? ` · ${usd > 0 && usd / total < 0.005 ? '<1' : Math.round(usd / total * 100)}%` : '';
   const other = rest.reduce((n, m) => n + (m.cost.usd ?? 0), 0);
   const group = 'mt-2 space-y-1 border-t border-border-hairline pt-2';
   const sub = cost.total.usd !== null && cost.own.usd !== null ? { ...cost.total, usd: Math.max(0, cost.total.usd - cost.own.usd) } : { ...cost.total, usd: null };
