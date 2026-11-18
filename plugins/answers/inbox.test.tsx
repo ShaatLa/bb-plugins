@@ -1131,3 +1131,10 @@ it('uses the provider default for a thread without a previous execution', async 
   const picker = await slot.findByRole('button', { name: 'model-default' });
   expect(JSON.parse(picker.getAttribute('data-routing')!)).toEqual({ kind: 'host', hostId: 'host_example' });
 });
+it('keeps the queue drag handle visible without hover, so touch screens and light themes show it', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Queued note', mentions:[] }], sendAt:null, updatedAt:1 };
+  const { slot, recipients } = setup({ queuedMessages:{ list: async () => [row] } });
+  fireEvent.click(await recipients.findByRole('option'));
+  const handle = await slot.findByRole('button', { name:'Reorder queued message 1' });
+  expect(handle.querySelector('[data-icon="DragDropVertical"], svg')!.getAttribute('class') ?? '').not.toMatch(/(^|\s)opacity-0(\s|$)/);
+});

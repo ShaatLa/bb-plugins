@@ -92,7 +92,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
       <RichEditor insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
       <div data-composer-toolbar className="relative flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1">
-          <Button type="button" size="icon" variant="ghost" className="size-8 shrink-0 text-muted-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
+          <Button type="button" size="icon" variant="ghost" className="-ml-2 size-8 shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground" aria-label="Attach files" disabled={!projectId || pending} onClick={() => picker.current?.click()}><Icon name="Paperclip" aria-hidden /></Button>
           {modelPicker && <ProviderModelPicker {...modelPicker} />}
         </div>
         <div className="flex shrink-0 items-center gap-3">

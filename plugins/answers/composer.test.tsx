@@ -357,3 +357,7 @@ it('keeps bb\'s voice button in the toolbar row: its wrapper fills the toolbar h
   const { slot } = editor();
   expect(slot.container.querySelector('[data-composer-toolbar] [data-composer-voice]')!.className).toContain('[&>.relative]:h-full');
 });
+it('lines the attach icon up with the text above it and gives it no background', () => {
+  const { slot } = editor();
+  expect(slot.getByRole('button', { name: 'Attach files' }).className.split(' ')).toEqual(expect.arrayContaining(['-ml-2', 'hover:bg-transparent']));
+});
