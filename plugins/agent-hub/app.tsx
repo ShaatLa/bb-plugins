@@ -236,6 +236,8 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
+// A question asked without choices still gets a one-tap yes and no, in the language it was asked in.
+export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(question) ? ['Да', 'Нет'] : ['Yes', 'No'];
 export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AgentHubRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
   // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
@@ -408,7 +410,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       </div>
       {item.kind !== 'for_me' && replyButton}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
-    {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
+    {item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
       {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}

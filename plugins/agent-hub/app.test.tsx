@@ -57,6 +57,18 @@ describe('Answers app', () => {
     await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_ask', dismissed: true }));
   });
 
+  it('offers yes and no in the question\'s language when the agent gave no choices', async () => {
+    const { ItemCard } = await import('./app');
+    const reply = vi.fn(() => ({ ok: true }));
+    const ask = (question: string) => ({ ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question, answer: null, options: null });
+    const ru = renderSlot({ component: () => <ul><ItemCard item={ask('Запушить?')} chat compact /></ul> }, {}, { rpc: { reply } } as any);
+    expect(ru.getByRole('button', { name: 'Да' })).toBeTruthy(); expect(ru.getByRole('button', { name: 'Нет' })).toBeTruthy();
+    ru.unmount();
+    const en = renderSlot({ component: () => <ul><ItemCard item={ask('Ship it?')} chat compact /></ul> }, {}, { rpc: { reply } } as any);
+    fireEvent.click(en.getByRole('button', { name: 'Yes' }));
+    await waitFor(() => expect(reply).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', text: 'Yes' })));
+  });
+
   it('names the dismiss action per item and hides it where it does nothing', async () => {
     const waiting = { ...item, id: 'ans_wait', status: 'waiting' as const, answer: null, question: 'Still open' };
     const setDismissed = vi.fn(() => ({ ok: true }));
