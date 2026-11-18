@@ -60,3 +60,7 @@ it('draws inline tokens in elicitation messages, warnings and descriptions', asy
   const slot = renderSlot({ component:PendingInteractions }, { threadId:'thr_inline', pending:true, shared:[{ id:'pending', status:'pending', payload:{ kind:'provider-codex/mcp-elicitation', title:'Permission', data:{ message:'/optimize message', warning:'/optimize warning', toolDescription:'/optimize description' } } }] as any }, { sdk } as any);
   await pills(slot, 3);
 });
+it('draws thread mentions in a deferred answer note', () => {
+  const slot = renderSlot({ component:ItemCard }, { item:{ ...base, status:'deferred', answer:null, answerSeq:null, note:'Worker @thread:thr_worker is on it' } }, { sdk } as any);
+  expect(Array.from(slot.container.querySelectorAll('[data-testid="bb-markdown"]')).map(m => m.textContent)).toContain('@thread:thr_worker');
+});
