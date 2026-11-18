@@ -28,10 +28,10 @@ it.each(['passage', 'comment', 'quote'])('draws inline tokens in an inline %s', 
   const text = site === 'quote' ? '> /optimize this /tmp/x' : `@short\nContext for @short (resolved by plugin "inline-comments"):\n\nThe user attached this passage from the conversation to their message:\n\n> ${site === 'passage' ? '/optimize this /tmp/x' : 'Passage'}\n\nTheir comment on it: ${site === 'comment' ? '/optimize this /tmp/x' : 'Comment'}`;
   const slot = renderSlot({ component:InlineCommentText }, { text, threadId:'thr_inline' }, { sdk } as any); await pills(slot);
 });
-it('routes background preview mentions through Markdown and keeps a single line', () => {
+it('routes background preview mentions through Markdown and keeps the two-line clamp', () => {
   const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...item, answer:'See @thread:thr_other_name#msg=4 and [docs](https://example.com)' }], children:() => null }, { sdk } as any);
   const preview = slot.container.querySelector('[data-update-group] p > span')!;
-  expect(preview.className).toContain('truncate');
+  expect(preview.className).toContain('line-clamp-2');
   expect(preview.querySelector('[data-testid="bb-markdown"]')?.textContent).toBe('@thread:thr_other_name#msg=4');
   expect(preview.querySelectorAll('[data-testid="bb-markdown"]')).toHaveLength(2);
 });
