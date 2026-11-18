@@ -234,18 +234,45 @@ export function TasksTopbar({
         );
       case "project":
         return (
-          <span className="flex min-w-0 items-center gap-2">
-            {project ? (
-              <span
-                aria-hidden
-                className="size-3 shrink-0 rounded-sm"
-                style={{ backgroundColor: project.color }}
-              />
-            ) : null}
-            <span className="truncate font-semibold">
-              {project?.name ?? "Project"}
-            </span>
-          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Switch project"
+                className="flex min-w-0 max-w-full items-center gap-2 rounded-md px-1 py-0.5 -mx-1 hover:bg-state-hover"
+              >
+                {project ? (
+                  <span
+                    aria-hidden
+                    className="size-3 shrink-0 rounded-sm"
+                    style={{ backgroundColor: project.color }}
+                  />
+                ) : null}
+                <span className="truncate font-semibold">
+                  {project?.name ?? "Project"}
+                </span>
+                <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+              {(projects ?? []).map((item) => (
+                <DropdownMenuItem
+                  key={item.id}
+                  disabled={item.id === project?.id}
+                  onSelect={() =>
+                    onNavigate({ kind: "project", projectId: item.id, view: null })
+                  }
+                >
+                  <span
+                    aria-hidden
+                    className="size-3 shrink-0 rounded-sm"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span className="truncate">{item.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         );
       case "task":
         return (

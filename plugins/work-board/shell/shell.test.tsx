@@ -185,6 +185,23 @@ describe("project view preference", () => {
     });
   });
 
+  it("switches projects from the project name in the top bar", async () => {
+    const other = { ...project, id: OTHER_PROJECT_ID, name: "Other Project", prefix: "OTH" };
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: PROJECT_ID },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }), listProjects: () => ({ projects: [project, other] }) }) },
+    );
+    const trigger = await slot.findByRole("button", { name: "Switch project" });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(await slot.findByRole("menuitem", { name: "Other Project" }));
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "work-board",
+      options: { subPath: OTHER_PROJECT_ID },
+    });
+  });
+
   it("still toggles when client storage rejects writes", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Storage is disabled", "SecurityError");
