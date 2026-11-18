@@ -12,7 +12,7 @@ it("renders one project form and saves only the selected project", async () => {
     { id: "proj_other", name: "Other", values: { ...defaults } },
     { id: "proj_third", name: "Third", values: { ...defaults } },
   ];
-  const write = vi.fn(async ({ projectId, values }) => { const project = projects.find(p => p.id === projectId)!; project.values = values; return values; });
+  const write = vi.fn(async ({ projectId, values }) => { const project = projects.find(p => p.id === projectId)!; project.values = { ...project.values, ...values }; return project.values; });
   const slot = renderSlot(app.settingsSections[0], {}, { rpc: { "settings.read": () => ({ projects }), "settings.write": write } });
   await slot.findByRole("combobox", { name: "Project" });
   async function choose(name: string) {
@@ -24,16 +24,16 @@ it("renders one project form and saves only the selected project", async () => {
   expect(slot.queryByRole("button", { name: "Save" })).toBeNull();
   expect(write).not.toHaveBeenCalled();
   expect(slot.getByLabelText("Launch script")).toBeTruthy();
-  await choose("Other — off");
+  await choose("Other");
   expect(slot.queryByLabelText("Launch script")).toBeNull();
   expect(slot.getByLabelText("Launch method")).toBeTruthy();
   expect(slot.getAllByRole("switch")).toHaveLength(1);
   await act(async () => { fireEvent.click(slot.getByRole("switch")); });
   expect(write).toHaveBeenCalledTimes(1);
   expect(write).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_other", values: expect.objectContaining({ enabled: true }) }));
-  await choose("Third — off");
+  await choose("Third");
   expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("false");
-  await choose("Other — on");
+  await choose("Other");
   expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("true");
   expect(projects[0].values.enabled).toBe(false);
 });
@@ -111,10 +111,18 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
   }
   await choose("Period", "Today");
   expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_sample", from: initial.to, to: initial.to });
-  await choose("Project", "Other — off");
+  await choose("Project", "Other");
   expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_other", from: initial.to, to: initial.to });
   expect(await slot.findByText("No refusals recorded in this period.")).toBeTruthy();
-  fireEvent.click(slot.getByText("Project settings"));
+  expect(slot.getByRole("heading", { name: "Spawn Gate" }).parentElement?.contains(slot.getByRole("switch"))).toBe(true);
+  write.mockRejectedValueOnce(new Error("Offline"));
   await act(async () => { fireEvent.click(slot.getByRole("switch")); });
-  expect(write).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_other", values: expect.objectContaining({ enabled: true }) }));
+  expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("false");
+  expect(slot.getByRole("alert").textContent).toContain("Offline");
+  await act(async () => { fireEvent.click(slot.getByRole("switch")); });
+  expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("true");
+  expect(write).toHaveBeenCalledWith({ projectId: "proj_other", values: { enabled: true } });
+  fireEvent.click(slot.getByText("Project settings"));
+  await act(async () => { fireEvent.change(slot.getByLabelText("Launch instructions"), { target: { value: "Follow the launch checklist." } }); });
+  expect(write.mock.calls.at(-1)?.[0].values).not.toHaveProperty("enabled");
 });
