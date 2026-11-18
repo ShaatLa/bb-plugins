@@ -78,3 +78,43 @@ it("keeps invalid drafts editable and reports failed autosaves without blocking 
   expect(slot.getByRole("alert").textContent).toBe("");
   expect(slot.getByLabelText("Admission lifetime, minutes")).toBe(input);
 });
+
+it("uses the sidebar's project and UTC period for activity and edits that same project's settings", async () => {
+  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", ttlMinutes: 10 };
+  const projects = [
+    { id: "proj_sample", name: "Sample", values: { ...defaults, method: "script" } },
+    { id: "proj_other", name: "Other", values: { ...defaults } },
+  ];
+  const report = vi.fn(({ projectId, from, to }) => ({
+    from, to, coverageStartedAt: "2025-01-01T12:00:00.000Z",
+    projects: [{
+      projectId, name: projectId === "proj_sample" ? "Sample" : "Other", starts: 4, dryRuns: 2, blockedStarts: 1,
+      refusals: projectId === "proj_sample" ? [{ operation: "dispatch", reason: "missing_admission", count: 1 }] : [],
+    }],
+  }));
+  const write = vi.fn(async ({ values }) => values);
+  const panel = app.navPanels[0]!;
+  expect(panel.title).toBe("Spawn Gate");
+  const slot = renderSlot(panel, { subPath: "" }, {
+    rpc: { "settings.read": () => ({ projects }), report, "settings.write": write },
+  });
+  expect(await slot.findByRole("cell", { name: "missing_admission" })).toBeTruthy();
+  const initial = report.mock.calls[0]![0];
+  expect(initial.projectId).toBe("proj_sample");
+  expect(Date.parse(initial.to) - Date.parse(initial.from)).toBe(6 * 86_400_000);
+  expect(slot.getByText(/Collecting data since 2025-01-01 12:00 UTC/)).toBeTruthy();
+
+  async function choose(label: string, optionName: string) {
+    fireEvent.keyDown(slot.getByRole("combobox", { name: label }), { key: "Enter" });
+    const option = await slot.findByRole("option", { name: optionName });
+    await act(async () => { fireEvent.keyDown(option, { key: "Enter" }); });
+  }
+  await choose("Period", "Today");
+  expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_sample", from: initial.to, to: initial.to });
+  await choose("Project", "Other — off");
+  expect(report.mock.calls.at(-1)?.[0]).toEqual({ projectId: "proj_other", from: initial.to, to: initial.to });
+  expect(await slot.findByText("No refusals recorded in this period.")).toBeTruthy();
+  fireEvent.click(slot.getByText("Project settings"));
+  await act(async () => { fireEvent.click(slot.getByRole("switch")); });
+  expect(write).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_other", values: expect.objectContaining({ enabled: true }) }));
+});

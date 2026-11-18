@@ -97,6 +97,9 @@ parameters. It must not mint or spawn children itself.
 
 ## Activity report
 
+Open **Spawn Gate** in the bb sidebar to filter activity by project and period,
+view refusal reasons, and edit the selected project’s launch settings.
+
 ```sh
 bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07
 ```

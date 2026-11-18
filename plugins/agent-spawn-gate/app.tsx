@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { GateActivity } from "./activity";
 import { Input } from "./components/ui/input";
 import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
@@ -47,10 +48,11 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
   </form>;
 }
 
-export function GateSettings() {
+function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [selected, setSelected] = useState("");
+  const [days, setDays] = useState("7");
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
   const writes = useRef(Promise.resolve());
@@ -85,13 +87,33 @@ export function GateSettings() {
         </Select>
       </SettingsWithControl>
     </SettingsSection>
-    <SettingsSection title="Session launches">
+    {showActivity ? <>
+      <GateActivity key={selected} projectId={selected} days={days} onDaysChange={setDays} />
+      <details className="rounded-lg border border-border p-3">
+        <summary className="cursor-pointer text-sm font-medium">Project settings</summary>
+        <div className="pt-4"><ProjectForm key={selected} project={project} onSave={save} /></div>
+      </details>
+    </> : <SettingsSection title="Session launches">
       <ProjectForm key={selected} project={project} onSave={save} />
-    </SettingsSection>
+    </SettingsSection>}
     <p role="alert" className="min-h-4 text-xs text-destructive">{saveError}</p>
+  </div>;
+}
+
+export function GateSettings() {
+  return <GateProjectView />;
+}
+
+function GatePage() {
+  return <div className="h-full overflow-y-auto">
+    <main className="mx-auto w-full max-w-4xl space-y-5 p-4 md:p-6">
+      <h1 className="text-xl font-semibold">Spawn Gate</h1>
+      <GateProjectView showActivity />
+    </main>
   </div>;
 }
 
 export default definePluginApp(app => {
   app.slots.settingsSection({ id: "project-settings", component: GateSettings });
+  app.slots.navPanel({ id: "spawn-gate", title: "Spawn Gate", icon: "Lock", path: "activity", component: GatePage });
 });
