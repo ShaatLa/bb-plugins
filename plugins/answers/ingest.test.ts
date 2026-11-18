@@ -144,7 +144,7 @@ describe('updates',()=>{
   expect(updates(replay).map(u=>[u.asks,u.notify_state])).toEqual([[1,0]]);
  });
  it('still counts owner messages that open with a task link or a checkbox as questions',()=>{
-  for (const t of ['[ANV-12](/plugins/work-board/work-board/task/ANV-12) ok?','[x] done','[]']) {const db=setup(); applyEvents(db,'t',[req(1,'r',{input:text(t)})]); expect(rows(db).map(r=>r.kind)).toEqual(['mine']);}
+  for (const t of ['[EXA-12](/plugins/work-board/work-board/task/EXA-12) ok?','[x] done','[]']) {const db=setup(); applyEvents(db,'t',[req(1,'r',{input:text(t)})]); expect(rows(db).map(r=>r.kind)).toEqual(['mine']);}
  });
  it('keeps the trigger across a retry, falls back to other, and pushes only live events',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'a',{initiator:'agent',senderThreadId:'thr_s'}),req(2,'b',{initiator:'system',retryOfRequestId:'a'}),start(3),accept(4,'b'),message(5),done(6),start(7,'y'),message(8,'no trigger seen','y'),done(9,'completed','y')]);
@@ -181,23 +181,23 @@ describe('asksOwner',()=>{
   ['Should I merge it?',true],['Мержить? Жду ответа.',true],['Готово. Мержить?',true],['Ship it (or wait?)',true],['**Merge now?**',true],['Ready?\n\nDetails below.',true],['Готово？',true],
   ['Done. See https://ci.example/run?id=4 for logs.',false],['Opened [the run](https://x.dev/r?id=1).',false],['Ran `git status?` fine.',false],
   ['Logs:\n```\nok? yes\n```\nAll green.',false],['> Can you merge?\n\nMerged as asked.',false],['Use ?query=1 in the URL.',false],['Готово, всё смёржено.',false],
-  ['ANV-673 готова к вашей проверке. CI зелёный.',true],['ANV-662 снова у вас.',true],['Исполнителем карточки поставил вас.',true],['PR is ready for your review.',true],
-  ['Чтобы смержить #2000, нужна ваша команда «мержи #2000».',true],['Оба ревьюера смотрят. Когда оба одобрят, нужна ваша команда «мержи #2000».',false],['**После одобрения нужна ваша команда «мержи #2000».**',false],['Ready for your review once CI passes.',false],['ANV-1 is back to you: CI is green.',true],['We need your go-ahead to merge #2000.',true],['Awaiting your approval on ANV-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
-  ['Потом ANV-673 придёт к вам с вопросом о приёмке. Пока действий нет.',false],['Вашу приёмку ANV-662 я сверил по карточке.',false],
+  ['EXA-2 готова к вашей проверке. Пример собран.',true],['EXA-3 снова у вас.',true],['Исполнителем карточки поставил вас.',true],['PR is ready for your review.',true],
+  ['Для публикации примера нужна ваша команда «опубликовать пример».',true],['Макет проверяют. Когда проверка закончится, нужна ваша команда «показать пример».',false],['**После проверки нужна ваша команда «показать пример».**',false],['Ready for your review once CI passes.',false],['EXA-1 is back to you: CI is green.',true],['We need your go-ahead to publish the example.',true],['Awaiting your approval on EXA-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
+  ['Потом EXA-2 придёт к вам с вопросом о проверке. Пока пример готовится.',false],['Вашу приёмку EXA-3 я сверил по учебной карточке.',false],
  ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
 });
 
 describe('questions asked in chat', () => {
  it.each([
   ['Готово, PR открыт. Хотите?', 'Готово, PR открыт. Хотите?'],
-  ['Причина в обходе. Поэтому вопрос: требовать пропуск для любого запуска из терминала в проекте anvil? Рекомендую «да».', 'Поэтому вопрос: требовать пропуск для любого запуска из терминала в проекте anvil?'],
-  ['В навык добавлен вопрос «можно ли сделать это проверкой?» для каждого урока.', null],
-  ['**Вопрос на карточке:** какой уровень дать моделям Gemini?', null],
+  ['Пример собран. Поэтому вопрос: добавить синюю рамку вокруг учебного макета? Рекомендую «да».', 'Поэтому вопрос: добавить синюю рамку вокруг учебного макета?'],
+  ['В учебнике есть вопрос «какой цвет выбрать?» после примера.', null],
+  ['**Вопрос на карточке:** какой цвет выбрать для учебного макета?', null],
   ['Вопрос к вам в Answers: удалить ветку?', null],
   ['Смотри `curl x?y` и https://example.com/a?b=1 — всё работает.', null],
   ['```\nwhy?\n```\nDone.', null],
-  ['> Брать ли ANV-725 сейчас?\n\nВзял в работу.', null],
-  ['| 17:24 | 17:25 | Брать ли ANV-725 сейчас? |\n\nВсе дошли.', null],
+  ['> Открыть ли EXA-4 сейчас?\n\nПример открыт.', null],
+  ['| 10:00 | 10:01 | Открыть ли EXA-4 сейчас? |\n\nТаблица примера заполнена.', null],
   ['Всё готово.', null],
  ])('%j → %j', (text, expected) => expect(chatQuestion(text)).toBe(expected));
  const tool = (seq: number, item: object) => ev(seq,'item/completed','x',{item:{id:'i'+seq,...item}});
@@ -208,7 +208,7 @@ describe('questions asked in chat', () => {
  });
  it.each([
   ['answers_ask', {type:'mcpToolCall',server:'bb',tool:'answers_ask'}],
-  ['a Work Board card question', {type:'commandExecution',command:'bb work-board question add ANV-1 --kind decision "Мержить?"'}],
+  ['a Work Board card question', {type:'commandExecution',command:'bb work-board question add EXA-1 --kind decision "Мержить?"'}],
  ])('files nothing when the turn asked through %s', (_, item) => {
   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),tool(4,item),message(5,'Спросил. Мержить сейчас?'),done(6)],'p',100,true,true);
   expect(filed(db)).toEqual([]);

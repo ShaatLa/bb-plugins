@@ -9,7 +9,7 @@ export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archiv
 export const ATTENTION_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Answers). A short one ("Хотите?") keeps the
-// sentence before it for context; table rows only list. On a day's 398 replies of all threads it fired on the 3 real misses.
+// sentence before it for context; table rows only list.
 const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers/i;
 export function chatQuestion(text: string): string | null {
  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
@@ -38,14 +38,14 @@ export function asksOwner(text: string) {
  return prose.split(/[.!;\n]+/).some(sentence => HANDOFF_RE.test(sentence) && !CONDITION_RE.test(sentence));
 }
 const CONDITION_RE = /(?:^|[^а-яё])(?:когда|после|как только|если|потом)(?![а-яё])|\b(?:when|once|after|if)\b/i;
-// Work handed to the owner with no '?': "ANV-1 готова к вашей проверке", "снова у вас", "ready for your review".
+// Work handed to the owner with no '?': "EXA-1 готова к вашей проверке", "снова у вас", "ready for your review".
 const HANDOFF_RE = /готов[аоы]? к ваш(?:ей|ему|им) (?:проверк|приёмк|приемк|ревью|решени|оценк)|(?:снова|теперь) у вас(?![а-яё])|жд[ёе]т ваш|ждут ваш|жд[ёе]т вас(?![а-яё])|нужн[оаы]? ваш|на вашей стороне|поставил вас|перев[её]л[аи]? (?:её |его |их )?на вас|ready for your (?:review|acceptance|approval|decision|check)|(?:waiting|wait) (?:for|on) you|awaits? your|awaiting your|needs? your (?:review|approval|decision|input|answer|go-ahead|command|ok)|(?:back|over) to you|assigned (?:it |this )?to you|your call(?![a-z])/i;
 export const INTERIM_RE = /делегир|доложу|сообщу, когда|отпишусь|вернусь с (ответом|результат)|как (только )?(будет|закончит)|жду (результат|ответ|завершени)|delegat|will report back|i'll (get back|report|follow up)|once (it|they|the \w+) (finish|complete)|waiting (for|on) (the )?(child|sub-?agent|thread|result)/i;
 // One failed attempt can arrive twice (live turn.failed hook, then the persisted rejection); record it once.
 export function failRequest(db: Database.Database, threadId:string, requestId:string, at:number, live:boolean, onlyNew=false) {
  return db.prepare(`UPDATE items SET failed_at=?,attempt_request_id=?,read_at=NULL,notify_state=?,updated_at=? WHERE thread_id=? AND status='waiting' AND (${onlyNew ? 'failed_at IS NULL' : '1=1'}) AND NOT (failed_at IS NOT NULL AND attempt_request_id IS ?) AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(at,requestId,Number(live),at,threadId,requestId,requestId,threadId,requestId).changes;
 }
-// A leading [tag] (a letter, 3–60 chars, then whitespace) marks a script's message; '[ANV-12](link)' and '[x]' do not match.
+// A leading [tag] (a letter, 3–60 chars, then whitespace) marks a script's message; '[EXA-12](link)' and '[x]' do not match.
 export const SCRIPT_TAG = /^\[([A-Za-z][^\]\n]{2,59})\]\s/;
 export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed','system/operation'] as const;
 // Read only while catching up (not on first sight, whose 1,500-event window it would crowd): it tells the open chat to

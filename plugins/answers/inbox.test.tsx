@@ -385,7 +385,7 @@ it('loads earlier pages by itself while the loaded window holds only quiet updat
   await waitFor(() => expect(list.mock.calls.some(([input]: any[]) => input.cursor === '1|ans_u1')).toBe(true));
 });
 it('walks the robot under a plugin\'s message while the agent works on it (a Work Board report, a CI notice)', async () => {
-  const update = { ...base, id:'ans_plug', kind:'update' as const, status:'waiting' as const, question:'**ANV-1 · READY** from a lead', questionSeq:null, answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'work-board', sourceTitle:null } };
+  const update = { ...base, id:'ans_plug', kind:'update' as const, status:'waiting' as const, question:'**EXA-1 · READY** from a lead', questionSeq:null, answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'work-board', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }) });
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText(/READY/);
