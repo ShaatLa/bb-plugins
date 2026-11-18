@@ -110,38 +110,46 @@ describe('server',()=>{
   const {harness,db}=setup(); seed(db,'ans_mine','mine','t'); seed(db,'ans_saved','saved','t');
   const call=(name:string,p:object,threadId='t')=>harness.behavior.callAgentTool(name,p,{threadId,projectId:'p'});
   for (const method of ['defer','resolve']) {
-    await expect(call('answers_'+method,{id:'ans_mine'},'other')).rejects.toThrow('calling thread');
-    await expect(call('answers_'+method,{id:'ans_saved'})).rejects.toThrow('calling thread');
+    await expect(call('agent_hub_'+method,{id:'ans_mine'},'other')).rejects.toThrow('calling thread');
+    await expect(call('agent_hub_'+method,{id:'ans_saved'})).rejects.toThrow('calling thread');
   }
-  await expect(call('answers_resolve',{id:'ans_mine'})).rejects.toThrow('no active turn');
-  await call('answers_defer',{note:'later'});
+  await expect(call('agent_hub_resolve',{id:'ans_mine'})).rejects.toThrow('no active turn');
+  await call('agent_hub_defer',{note:'later'});
   expect(db.prepare("SELECT status,note FROM items WHERE id='ans_mine'").get()).toEqual({status:'deferred',note:'later'});
   db.prepare("UPDATE threads_state SET active_turn_id='turn' WHERE thread_id='t'").run();
-  await call('answers_resolve',{id:'ans_mine'});
+  await call('agent_hub_resolve',{id:'ans_mine'});
   expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_mine'").get()).toEqual({resolve_turn_id:'turn'});
-  await call('answers_report',{}); await call('answers_report',{});
+  await call('agent_hub_report',{}); await call('agent_hub_report',{});
   expect(db.prepare("SELECT turn_id,report FROM turn_updates WHERE thread_id='t'").all()).toEqual([{turn_id:'turn',report:1}]);
-  const list=await call('answers_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
-  const id=await call('answers_ask',{question:'Small question'});
+  const list=await call('agent_hub_list',{}); expect(String(list)).toContain('ans_mine'); expect(String(list).length).toBeLessThanOrEqual(2000);
+  const id=await call('agent_hub_ask',{question:'Small question'});
   expect(db.prepare('SELECT kind,status FROM items WHERE id=?').get(id)).toEqual({kind:'for_me',status:'open'});
-  expect(String(await call('answers_list',{}))).toContain(`Your open questions to the user:\n${id} `);
-  await expect(harness.behavior.callAgentTool('answers_withdraw',{id,reason:'x'},{threadId:'other'})).rejects.toThrow('open question not found');
-  await expect(call('answers_withdraw',{id:'ans_mine',reason:'x'})).rejects.toThrow('open question not found');
+  expect(String(await call('agent_hub_list',{}))).toContain(`Your open questions to the user:\n${id} `);
+  await expect(harness.behavior.callAgentTool('agent_hub_withdraw',{id,reason:'x'},{threadId:'other'})).rejects.toThrow('open question not found');
+  await expect(call('agent_hub_withdraw',{id:'ans_mine',reason:'x'})).rejects.toThrow('open question not found');
   db.prepare('UPDATE items SET notify_state=1 WHERE id=?').run(id);
-  await call('answers_withdraw',{id,reason:' Found it '});
+  await call('agent_hub_withdraw',{id,reason:' Found it '});
   expect(db.prepare('SELECT status,answer_source,note,notify_state,dismissed_at IS NOT NULL AS gone FROM items WHERE id=?').get(id)).toEqual({status:'open',answer_source:'agent',note:'Found it',notify_state:0,gone:1});
-  expect(String(await call('answers_list',{}))).not.toContain(id);
-  await expect(call('answers_withdraw',{id,reason:'again'})).rejects.toThrow('open question not found');
+  expect(String(await call('agent_hub_list',{}))).not.toContain(id);
+  await expect(call('agent_hub_withdraw',{id,reason:'again'})).rejects.toThrow('open question not found');
+ });
+ it('registers agent_hub_* tools and keeps answers_* as deprecated aliases with the same behaviour',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_q','mine','t');
+  const tools=harness.inspection.registrations.agentTools, names=tools.map(t=>t.name);
+  for (const m of ['ask','report','defer','list','resolve','withdraw']) { expect(names).toContain('agent_hub_'+m); expect(tools.find(t=>t.name==='answers_'+m)?.description).toMatch(new RegExp('^Deprecated alias of agent_hub_'+m)); }
+  expect(tools.find(t=>t.name==='agent_hub_list')?.description).not.toMatch(/Deprecated/);
+  const call=(name:string)=>harness.behavior.callAgentTool(name,{},{threadId:'t',projectId:'p'});
+  expect(await call('answers_list')).toEqual(await call('agent_hub_list'));
  });
  it('defers and resolves the owner messages of one turn together, so its reply is not an answer to one and an interim to another',async()=>{
   const {harness,db}=setup(); seed(db,'ans_q','mine','t'); seed(db,'ans_steer','mine','t'); seed(db,'ans_other','mine','t');
   db.prepare("UPDATE items SET turn_id='u',question_seq=CASE id WHEN 'ans_q' THEN 1 ELSE 2 END WHERE id IN ('ans_q','ans_steer')").run();
   db.prepare("UPDATE items SET turn_id='v',question_seq=0 WHERE id='ans_other'").run();
   const call=(name:string,p:object)=>harness.behavior.callAgentTool(name,p,{threadId:'t',projectId:'p'});
-  await call('answers_defer',{id:'ans_steer'});
+  await call('agent_hub_defer',{id:'ans_steer'});
   expect(db.prepare("SELECT id,status FROM items ORDER BY id").all()).toEqual([{id:'ans_other',status:'waiting'},{id:'ans_q',status:'deferred'},{id:'ans_steer',status:'deferred'}]);
   db.prepare("UPDATE threads_state SET active_turn_id='w' WHERE thread_id='t'").run();
-  await call('answers_resolve',{id:'ans_q'});
+  await call('agent_hub_resolve',{id:'ans_q'});
   expect(db.prepare("SELECT id,resolve_turn_id FROM items ORDER BY id").all()).toEqual([{id:'ans_other',resolve_turn_id:null},{id:'ans_q',resolve_turn_id:'w'},{id:'ans_steer',resolve_turn_id:'w'}]);
  });
  it('rejects concurrent and second for_me replies, exposing queued delivery',async()=>{
@@ -172,7 +180,7 @@ describe('server',()=>{
   const input={threadId:'t',seq:50,role:'assistant',text:'saved text'};
   const saved=await harness.behavior.callRpc('save',input);
   expect(await harness.behavior.callRpc('save',input)).toEqual({...saved as object,created:false});
-  await harness.behavior.callAgentTool('answers_list',{}, {threadId:'t'});
+  await harness.behavior.callAgentTool('agent_hub_list',{}, {threadId:'t'});
   const result=await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})}); expect(result.errors).toEqual([]);
   expect(db.prepare('SELECT kind,thread_deleted FROM items').all()).toEqual([{kind:'saved',thread_deleted:1}]);
   expect(db.prepare('SELECT * FROM threads_state').all()).toEqual([]);
@@ -183,14 +191,14 @@ describe('server',()=>{
   const seen:string[]=[];
   const off=harness.inspection.experimental_onRpcInvalidation(()=>{seen.push((db.prepare("SELECT status FROM items WHERE id='ans_one'").get() as any)?.status ?? 'deleted');});
   await harness.behavior.callRpc('reply',{id:'ans_one',text:'yes'}); expect(seen.at(-1)).toBe('replied');
-  await harness.behavior.callAgentTool('answers_ask',{question:'hello'},{threadId:'t'});
+  await harness.behavior.callAgentTool('agent_hub_ask',{question:'hello'},{threadId:'t'});
   await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
   await vi.waitFor(()=>expect(seen.at(-1)).toBe('deleted')); // the burst collapses into one trailing invalidate
   expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
  });
  it('coalesces a burst of invalidations into a leading and one trailing call',async()=>{
   const {harness}=setup();
-  for(const q of ['a','b','c']) await harness.behavior.callAgentTool('answers_ask',{question:q},{threadId:'t'});
+  for(const q of ['a','b','c']) await harness.behavior.callAgentTool('agent_hub_ask',{question:q},{threadId:'t'});
   const n=harness.inspection.experimental_rpcInvalidations.length;
   expect(n).toBe(1); await vi.waitFor(()=>expect(harness.inspection.experimental_rpcInvalidations.length).toBe(2));
  });
@@ -229,18 +237,18 @@ describe('server',()=>{
   const {harness,db}=setup(),sub='thr_example_child';
   harness.sdk.stub('threads.get',async()=>makeThreadResponse({id:sub,parentThreadId:'thr_example'}));
   const push=vi.fn(async()=>({channels:['mobile']})); harness.sdk.stub('plugins.callRpc',push as any);
-  const id=await harness.behavior.callAgentTool('answers_ask',{question:'Choose an option',urgency:'blocking'},{threadId:sub});
+  const id=await harness.behavior.callAgentTool('agent_hub_ask',{question:'Choose an option',urgency:'blocking'},{threadId:sub});
   expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items.map((i:any)=>i.id)).toEqual([id]);
   expect((await harness.behavior.callRpc('counts',{}) as any).forMe).toBe(1);
   await vi.waitFor(()=>expect(push).toHaveBeenCalledWith(expect.objectContaining({pluginId:'push-notifications',input:expect.objectContaining({threadId:sub})})));
   expect((await harness.behavior.callRpc('recipients',{selected:sub}) as any).recipients).toEqual([]);
   db.prepare("UPDATE threads_state SET active_turn_id='turn_example' WHERE thread_id=?").run(sub);
-  expect(await harness.behavior.callAgentTool('answers_report',{},{threadId:sub})).toContain('sub-thread');
+  expect(await harness.behavior.callAgentTool('agent_hub_report',{},{threadId:sub})).toContain('sub-thread');
  });
  it('keeps saved sub-thread history out of aggregates after deletion',async()=>{
   const {harness,db}=setup(),sub='thr_example_child',thread=makeThreadResponse({id:sub,parentThreadId:'thr_example'});
   harness.sdk.stub('threads.get',async()=>thread);
-  await harness.behavior.callAgentTool('answers_ask',{question:'Choose an option'},{threadId:sub});
+  await harness.behavior.callAgentTool('agent_hub_ask',{question:'Choose an option'},{threadId:sub});
   seed(db,'ans_example_saved','saved',sub);
   await harness.behavior.emitThreadEvent('thread.deleted',{thread});
   await vi.waitFor(()=>expect(db.prepare("SELECT thread_deleted FROM items WHERE id='ans_example_saved'").get()).toEqual({thread_deleted:1}));
@@ -624,7 +632,7 @@ describe('ingestion driver',()=>{
   expect(invalidate).toHaveBeenCalledTimes(1);
   expect(harness.inspection.sdk.callsTo('threads.events.list')).toHaveLength(2);
  });
- // Only answers_defer defers: a reply stays the answer even while sub-sessions its turn started still run.
+ // Only agent_hub_defer defers: a reply stays the answer even while sub-sessions its turn started still run.
  it('keeps a turn answer while the children it started still run',async()=>{
   const kids=[{id:'k',createdAt:2000,status:'active'}], backfill=false;
   const {harness,db,driver}=driverSetup();
@@ -744,14 +752,14 @@ describe('0.3 server attention',()=>{
  });
  it('validates options, stores trimmed options and enters attention',async()=>{
   const {harness,db}=setup();
-  for(const options of [[],['a',' a '],['x'.repeat(201)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
-  for(const extra of [{recommended:'Maybe'},{reason:'why'},{options:undefined,recommended:'Yes'}]) await expect(harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:['Yes','No'],...extra},{threadId:'t'})).rejects.toThrow();
-  const id=await harness.behavior.callAgentTool('answers_ask',{question:'Pick',options:[' Yes ','x'.repeat(200)],recommended:' Yes',reason:'Cheaper'},{threadId:'t'});
+  for(const options of [[],['a',' a '],['x'.repeat(201)],Array(7).fill('a')]) await expect(harness.behavior.callAgentTool('agent_hub_ask',{question:'Pick',options},{threadId:'t'})).rejects.toThrow();
+  for(const extra of [{recommended:'Maybe'},{reason:'why'},{options:undefined,recommended:'Yes'}]) await expect(harness.behavior.callAgentTool('agent_hub_ask',{question:'Pick',options:['Yes','No'],...extra},{threadId:'t'})).rejects.toThrow();
+  const id=await harness.behavior.callAgentTool('agent_hub_ask',{question:'Pick',options:[' Yes ','x'.repeat(200)],recommended:' Yes',reason:'Cheaper'},{threadId:'t'});
   expect(db.prepare('SELECT options,recommended,recommend_reason,notify_state FROM items WHERE id=?').get(id)).toEqual({options:JSON.stringify(['Yes','x'.repeat(200)]),recommended:'Yes',recommend_reason:'Cheaper',notify_state:0});
   expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0]).toMatchObject({recommended:'Yes',recommendReason:'Cheaper'});
  });
  it('asks several questions at once or with checkboxes through one form',async()=>{
-  const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+  const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('agent_hub_ask',p,{threadId:'t'});
   for(const bad of [{question:'Pick',multiSelect:true},{question:'Pick',questions:[{question:'One'}]},{question:'Pick',options:['a'],questions:[{question:'One'},{question:'Two'}]},
     {question:'Pick',questions:[{question:'One',multiSelect:true},{question:'Two'}]},{question:'Pick',questions:[{question:'One',options:['a'],recommended:'b'},{question:'Two'}]}]) await expect(ask(bad)).rejects.toThrow();
   const multi=await ask({question:'Which?',options:['A','B'],multiSelect:'true',recommended:'B'});
@@ -867,9 +875,9 @@ describe('owed answers', () => {
   await expect(harness.behavior.callRpc('settleOwed',{id:'ans_wrong',action:'answered'})).rejects.toThrow('not owed');
   // The agent's later report still resolves the question the owner settled by hand; deferring it again is refused.
   db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,active_turn_id) VALUES ('t',0,0,'late') ON CONFLICT(thread_id) DO UPDATE SET active_turn_id='late'").run();
-  await harness.behavior.callAgentTool('answers_resolve',{id:'ans_answer'},{threadId:'t',projectId:'p'});
+  await harness.behavior.callAgentTool('agent_hub_resolve',{id:'ans_answer'},{threadId:'t',projectId:'p'});
   expect(db.prepare("SELECT resolve_turn_id FROM items WHERE id='ans_answer'").get()).toEqual({resolve_turn_id:'late'});
-  await expect(harness.behavior.callAgentTool('answers_defer',{id:'ans_answer'},{threadId:'t',projectId:'p'})).rejects.toThrow('not found');
+  await expect(harness.behavior.callAgentTool('agent_hub_defer',{id:'ans_answer'},{threadId:'t',projectId:'p'})).rejects.toThrow('not found');
   expect(await harness.behavior.callRpc('owed',{threadId:'t'})).toEqual({items:[]});
   await vi.advanceTimersByTimeAsync(150);
   expect(JSON.stringify(harness.inspection.experimental_rpcInvalidations)).toContain(ITEMS_TAG);
@@ -894,7 +902,7 @@ describe('owed answers', () => {
   vi.useFakeTimers(); vi.setSystemTime(now);
   const {db,harness}=setup(); owedSeed(db,'ans_expired',now-3*day); owedSeed(db,'ans_fresh'); seed(db,'ans_waiting','mine'); seed(db,'ans_dismissed','mine');
   db.prepare("UPDATE items SET dismissed_at=? WHERE id='ans_dismissed'").run(now);
-  const result=await harness.behavior.callAgentTool('answers_list',{}, {threadId:'t'});
+  const result=await harness.behavior.callAgentTool('agent_hub_list',{}, {threadId:'t'});
   expect(String(result)).toContain('ans_fresh'); expect(String(result)).toContain('ans_waiting');
   expect(String(result)).not.toContain('ans_expired'); expect(String(result)).not.toContain('ans_dismissed');
   expect(db.prepare("SELECT dismissed_at FROM items WHERE id='ans_expired'").get()).toEqual({dismissed_at:now});
@@ -902,7 +910,7 @@ describe('owed answers', () => {
 });
 
 it('defaults deadlines once and lets an earlier owner reply win',async()=>{
- vi.useFakeTimers(); const {harness,db,send}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ vi.useFakeTimers(); const {harness,db,send}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('agent_hub_ask',p,{threadId:'t'});
  for(const deadlineMinutes of [4,10081,5.5]) await expect(ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes})).rejects.toThrow();
  await expect(ask({question:'Pick',deadlineMinutes:5})).rejects.toThrow();
  const id=await ask({question:'Pick',options:['A'],recommended:'A',deadlineMinutes:5});
@@ -917,21 +925,21 @@ it('defaults deadlines once and lets an earlier owner reply win',async()=>{
 
 it('restores composite deadlines after restart',async()=>{
  vi.useFakeTimers();const h=setup();
- const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5},{threadId:'t'});
+ const id=await h.harness.behavior.callAgentTool('agent_hub_ask',{question:'Setup',questions:[{question:'One',options:['A'],recommended:'A'},{question:'Two'}],deadlineMinutes:5},{threadId:'t'});
  const next=await h.harness.lifecycle.reload(plugin); cleanup.push(()=>next.harness.lifecycle.dispose());
  await vi.advanceTimersByTimeAsync(300000);
  expect((next.bb.storage.database().prepare('SELECT answer FROM items WHERE id=?').get(id) as any).answer).toContain('1. One — A\n2. Two — Your call (decide yourself)');
 });
 
 it('stores urgency and keeps low questions visible without a push',async()=>{
- const {harness,db}=setup();const id=await harness.behavior.callAgentTool('answers_ask',{question:'Later?',urgency:'low'},{threadId:'t'});
+ const {harness,db}=setup();const id=await harness.behavior.callAgentTool('agent_hub_ask',{question:'Later?',urgency:'low'},{threadId:'t'});
  expect(db.prepare('SELECT urgency,notify_state FROM items WHERE id=?').get(id)).toEqual({urgency:'low',notify_state:0});
  expect((await harness.behavior.callRpc('list',{view:'for_me'}) as any).items[0].urgency).toBe('low');
- await expect(harness.behavior.callAgentTool('answers_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
+ await expect(harness.behavior.callAgentTool('agent_hub_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
 });
 
 it('merges same-turn asks preserving choices, reasons, intro and limits',async()=>{
- const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('answers_ask',p,{threadId:'t'});
+ const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('agent_hub_ask',p,{threadId:'t'});
  await ask({question:'Earlier turn'});db.prepare("UPDATE threads_state SET active_turn_id='turn1' WHERE thread_id='t'").run();
  const id=await ask({question:'Pick',options:['A','B'],recommended:'A',reason:'Cheap',deadlineMinutes:10,urgency:'low'});
  const result=await ask({question:'Which?',options:['C','D'],multiSelect:true,recommended:'D',reason:'Fast',deadlineMinutes:5,urgency:'blocking'});expect(String(result).split('\n')[0]).toBe(id);
@@ -946,7 +954,7 @@ it('merges same-turn asks preserving choices, reasons, intro and limits',async()
 
 it('reminds blocking questions at the configured interval, at most three times',async()=>{
  vi.useFakeTimers();const {harness,db}=setup();await harness.behavior.callRpc('updatePreferences',{remindHours:1});
- const ask=(question:string,urgency='blocking')=>harness.behavior.callAgentTool('answers_ask',{question,urgency},{threadId:'t'});
+ const ask=(question:string,urgency='blocking')=>harness.behavior.callAgentTool('agent_hub_ask',{question,urgency},{threadId:'t'});
  const id=await ask('Waiting?');const normal=await ask('Normal?','normal');
  await vi.advanceTimersByTimeAsync(3600000);expect(db.prepare('SELECT reminders,reminded_at FROM items WHERE id=?').get(id)).toEqual({reminders:1,reminded_at:Date.now()});
  await vi.advanceTimersByTimeAsync(3*3600000);expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:3});expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(normal)).toEqual({reminders:0});
@@ -956,7 +964,7 @@ it('reminds blocking questions at the configured interval, at most three times',
 
 it('restores reminder timing after restart and honors disabled saved settings',async()=>{
  vi.useFakeTimers();const h=setup();await h.harness.behavior.callRpc('updatePreferences',{remindHours:0});
- const id=await h.harness.behavior.callAgentTool('answers_ask',{question:'Waiting?',urgency:'blocking'},{threadId:'t'});
+ const id=await h.harness.behavior.callAgentTool('agent_hub_ask',{question:'Waiting?',urgency:'blocking'},{threadId:'t'});
  await vi.advanceTimersByTimeAsync(4*3600000);
  const next=await h.harness.lifecycle.reload(plugin);cleanup.push(()=>next.harness.lifecycle.dispose());await vi.advanceTimersByTimeAsync(1000);
  const db=next.bb.storage.database();expect(db.prepare('SELECT reminders FROM items WHERE id=?').get(id)).toEqual({reminders:0});

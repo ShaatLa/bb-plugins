@@ -16,7 +16,7 @@ export const migrations = [
   answer           TEXT,                      -- ≤ 20,000 chars
   answer_seq       INTEGER,
   answer_source    TEXT,                      -- 'turn' | 'agent' | 'user'
-  resolve_turn_id  TEXT,                      -- set by answers_resolve
+  resolve_turn_id  TEXT,                      -- set by agent_hub_resolve
   note             TEXT,                      -- agent note for deferred
   read_at          INTEGER,
   pinned           INTEGER NOT NULL DEFAULT 0,
@@ -66,7 +66,7 @@ ALTER TABLE items ADD COLUMN task_key TEXT;                               -- F12
 UPDATE items SET answered_at=CASE WHEN status='answered' THEN updated_at END, attempt_request_id=request_id;
 CREATE INDEX items_thread_recent ON items(thread_id, updated_at);
 CREATE TABLE notify_meta (key TEXT PRIMARY KEY, value INTEGER);       -- F5: 'held_for' = quiet window end`,
-  `ALTER TABLE items ADD COLUMN recommended TEXT;                         -- answers_ask: recommended option text
+  `ALTER TABLE items ADD COLUMN recommended TEXT;                         -- agent_hub_ask: recommended option text
 ALTER TABLE items ADD COLUMN recommend_reason TEXT;`,
   `CREATE TABLE archived_threads (thread_id TEXT PRIMARY KEY);              -- threads archived in bb drop out of the Inbox`,
   `ALTER TABLE items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';`,
@@ -103,17 +103,17 @@ WHEN NEW.status IS NOT OLD.status OR NEW.interim IS NOT OLD.interim OR NEW.inter
 BEGIN
   UPDATE items SET moved_at=NEW.updated_at WHERE id=NEW.id;
 END;`,
-  // The auto-defer safety net is gone (only answers_defer defers): questions it deferred get their turn's reply back as the answer.
+  // The auto-defer safety net is gone (only agent_hub_defer defers): questions it deferred get their turn's reply back as the answer.
   `UPDATE items SET status='answered',answer=interim,answer_seq=interim_seq,answer_source='turn',answered_at=coalesce(moved_at,updated_at),read_at=coalesce(moved_at,updated_at),interim=NULL,interim_seq=NULL,wait_children=NULL,wait_windows=NULL
 WHERE kind='mine' AND status='deferred' AND wait_children IS NOT NULL AND interim IS NOT NULL AND dismissed_at IS NULL;
 UPDATE items SET wait_children=NULL,wait_windows=NULL WHERE wait_children IS NOT NULL;`,
-  // turn_updates.report: the agent called answers_report, so the turn's reply is a report for the owner, not a quiet update.
+  // turn_updates.report: the agent called agent_hub_report, so the turn's reply is a report for the owner, not a quiet update.
   `ALTER TABLE turn_updates ADD COLUMN report INTEGER NOT NULL DEFAULT 0;`,
-  // turn_updates.asked: the turn asked the owner through a channel (answers_ask, a Work Board card question), so a '?' in
+  // turn_updates.asked: the turn asked the owner through a channel (agent_hub_ask, a Work Board card question), so a '?' in
   // its reply is not filed again. items.chat_asked: a 'for_me' question filed from an agent's plain-text reply.
   `ALTER TABLE turn_updates ADD COLUMN asked INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN chat_asked INTEGER NOT NULL DEFAULT 0;`,
-  // items.questions: the bb question form (JSON) of an answers_ask with multiSelect or with several questions in one.
+  // items.questions: the bb question form (JSON) of an agent_hub_ask with multiSelect or with several questions in one.
   `ALTER TABLE items ADD COLUMN questions TEXT;`,
   `ALTER TABLE items ADD COLUMN deadline_at INTEGER;`,
   `ALTER TABLE items ADD COLUMN urgency TEXT;`,

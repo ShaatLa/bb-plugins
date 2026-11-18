@@ -7,13 +7,13 @@ export const QUIET_SQL = "length(trim(question))<=60 AND instr(question,'?')=0 A
 export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)";
 // Archived threads leave the Inbox, counts and pushes; their items come back if the thread is unarchived.
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
-// Explicit asks still reach the owner when a sub-agent calls answers_ask.
+// Explicit asks still reach the owner when a sub-agent calls agent_hub_ask.
 export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0))";
 export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Agent Hub). A short one ("Хотите?") keeps the
 // sentence before it for context; table rows only list.
-const CHANNEL_RE = /на карточк|в answers|через answers|answers_ask|on the card|in answers|via answers|in agent hub|via agent hub|в agent hub|через agent hub/i;
+const CHANNEL_RE = /на карточк|в answers|через answers|agent_hub_ask|answers_ask|on the card|in answers|via answers|in agent hub|via agent hub|в agent hub|через agent hub/i;
 export function chatQuestion(text: string): string | null {
  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
  const mask = text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, blank).replace(/`[^`\n]*`/g, blank).replace(/^[ \t]*>.*$/gm, blank).replace(/^[ \t]*\|.*\|[ \t]*$/gm, blank)
@@ -134,7 +134,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // Any other top-level item: the turn is busy, and a tool result after a steer means the agent's next step sees it.
    hidden += db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=? AND busy=0').run(threadId,turn).changes;
    // Explicit channels suppress the chat-question fallback.
-   if (['answers_ask',...channelCommands].some(fragment => (`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`).includes(fragment))) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
+   if (['agent_hub_ask','answers_ask',...channelCommands].some(fragment => (`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`).includes(fragment))) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
    if (d.item.type !== 'reasoning') hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
    hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
@@ -143,13 +143,13 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
-    // A question put to the owner only as text in the reply (no answers_ask, no card question this turn) is filed in Questions
+    // A question put to the owner only as text in the reply (no agent_hub_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
     const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && /^\[(?:agent-hub|answers)\]/.test(update?.question ?? ''); // [answers] is the tag before the rename
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat; ask it with `answers_ask` and end the turn.', e.createdAt ?? 0);
-     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
+     if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat; ask it with `agent_hub_ask` and end the turn.', e.createdAt ?? 0);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.

@@ -131,7 +131,7 @@ describe('updates',()=>{
   applyEvents(db,'t',[message(4,'half'),done(5,'interrupted')],'p',200,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:null,read_at:100})]);
  });
- it('turns the final message of a turn the agent marked with answers_report into an unread, pushed report',()=>{
+ it('turns the final message of a turn the agent marked with agent_hub_report into an unread, pushed report',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept(),message(4,'Task done.')],'p',100,true,true);
   db.prepare('UPDATE turn_updates SET report=1').run();
   applyEvents(db,'t',[done(5)],'p',100,true,true);
@@ -150,7 +150,7 @@ describe('updates',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'a',{initiator:'agent',senderThreadId:'thr_s'}),req(2,'b',{initiator:'system',retryOfRequestId:'a'}),start(3),accept(4,'b'),message(5),done(6),start(7,'y'),message(8,'no trigger seen','y'),done(9,'completed','y')]);
   expect(updates(db).map(u=>[u.trigger_kind,u.trigger_source,u.notify_state])).toEqual([['agent','thr_s',0],['other',null,0]]);
  });
- it('adds nothing when the turn answered the owner: own question, steer-in, answers_resolve',()=>{
+ it('adds nothing when the turn answered the owner: own question, steer-in, agent_hub_resolve',()=>{
   const db=setup();
   applyEvents(db,'t',[req(1),start(),accept(),message(),done()]);
   applyEvents(db,'t',[req(6,'s',system),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
@@ -207,7 +207,7 @@ describe('questions asked in chat', () => {
   expect(filed(db)).toEqual([{kind:'for_me',status:'open',question:'Сделал. Мержить сейчас?',question_seq:4,chat_asked:1,notify_state:1}]);
  });
  it.each([
-  ['answers_ask', {type:'mcpToolCall',server:'bb',tool:'answers_ask'}],
+  ['agent_hub_ask', {type:'mcpToolCall',server:'bb',tool:'agent_hub_ask'}],
   ['a Work Board card question', {type:'commandExecution',command:'bb work-board question add EXA-1 --kind decision "Мержить?"'}],
  ])('files nothing when the turn asked through %s', (_, item) => {
   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),tool(4,item),message(5,'Спросил. Мержить сейчас?'),done(6)],'p',100,true,true);

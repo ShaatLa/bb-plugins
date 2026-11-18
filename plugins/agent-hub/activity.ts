@@ -59,7 +59,7 @@ export function commandLabel(command: string): string {
 export function labelOf(item: Item): string {
   // A provider's own one-line description of the command wins; bb's schema has it, though no provider here fills it yet.
   if (item.type === 'commandExecution') return item.description?.trim().split('\n')[0] || commandLabel(item.command ?? '');
-  // A tool's words follow its scene, so a reading robot never says "Running": "answers_list" reads, "web_search" searches.
+  // A tool's words follow its scene, so a reading robot never says "Running": "agent_hub_list" reads, "web_search" searches.
   if (item.type === 'toolCall' || item.type === 'mcpToolCall') { const scene = sceneOf(item), tool = (item.tool ?? 'a tool').replace(/_/g, ' '); return scene === 'search' ? `Searching: ${tool}` : scene === 'read' ? `Reading: ${tool}` : `Running ${tool}`; }
   if (item.presentation) return `${item.presentation.label.pending}${item.presentation.title ? ` ${item.presentation.title}` : ''}`;
   switch (item.type) {

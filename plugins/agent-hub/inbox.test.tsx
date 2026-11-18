@@ -363,12 +363,12 @@ it('shows the message a plugin sent as bb does: a user bubble with all of its te
   expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')).toBeNull();
 });
 it('names the plugin above its message and drops the plugin\'s own leading tag', async () => {
-  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'[answers] Call `answers_report` now.', questionSeq:null, answer:'Done', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'agent-hub', sourceTitle:null } };
+  const update = { ...base, id:'ans_plug', kind:'update' as const, question:'[answers] Call `agent_hub_report` now.', questionSeq:null, answer:'Done', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'agent-hub', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), // The brand list is cached per module, so it also carries the brand a later test reads.
     plugins: { list: async () => ({ plugins:[{ id:'agent-hub', name:'Agent Hub', icon:'MessageQuestion' }, { id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } });
   fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-sender]')?.textContent).toBe('Agent Hub'));
-  expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]')?.textContent).toBe('Call `answers_report` now.');
+  expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]')?.textContent).toBe('Call `agent_hub_report` now.');
 });
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[after, quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });

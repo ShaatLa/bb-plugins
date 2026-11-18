@@ -7,7 +7,7 @@ it.each([
   [{ type: 'reasoning' }, 'think'], [{ type: 'agentMessage' }, 'write'], [{ type: 'fileChange' }, 'fix'], [{ type: 'fileRead' }, 'read'],
   [{ type: 'webSearch' }, 'search'], [{ type: 'delegation' }, 'wait'], [{ type: 'commandExecution', command: 'npm test' }, 'terminal'],
   [{ type: 'commandExecution', command: 'rg -n foo src' }, 'search'], [{ type: 'commandExecution', command: 'node -e "document.querySelector(1)"' }, 'terminal'], [{ type: 'commandExecution', command: 'sed -n 1,40p app.tsx' }, 'read'],
-  [{ type: 'toolCall', server: 'bb-bridge', tool: 'answers_list' }, 'read'], [{ type: 'toolCall', server: 'codegraph', tool: 'codegraph_search' }, 'search'],
+  [{ type: 'toolCall', server: 'bb-bridge', tool: 'agent_hub_list' }, 'read'], [{ type: 'toolCall', server: 'codegraph', tool: 'codegraph_search' }, 'search'],
 ] as const)('%j → %s', (item, scene) => expect(sceneOf(item)).toBe(scene));
 it('reads the newest top-level event: an open item, thinking between items, waiting after the turn', () => {
   expect(activityOf([started({ type: 'commandExecution', command: 'npm run build' }), { type: 'item/completed', data: {} }])).toBe('terminal');
@@ -39,9 +39,9 @@ it('says a shell command in a few words', async () => {
 
 describe('scene and words agree', () => {
   it.each([
-    [{ type: 'toolCall', tool: 'answers_list' }, 'read', 'Reading: answers list'],
+    [{ type: 'toolCall', tool: 'agent_hub_list' }, 'read', 'Reading: agent hub list'],
     [{ type: 'mcpToolCall', server: 'bb', tool: 'web_search' }, 'search', 'Searching: web search'],
-    [{ type: 'toolCall', tool: 'answers_resolve' }, 'terminal', 'Running answers resolve'],
+    [{ type: 'toolCall', tool: 'agent_hub_resolve' }, 'terminal', 'Running agent hub resolve'],
     [{ type: 'commandExecution', command: 'ls -la' }, 'read', 'Reading files'],
     [{ type: 'commandExecution', command: 'cat a.log | grep error' }, 'read', 'Reading files'],
     [{ type: 'commandExecution', command: 'rg TODO src' }, 'search', 'Searching'],
