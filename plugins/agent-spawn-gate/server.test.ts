@@ -135,3 +135,45 @@ it("starts every project disabled without reading project-specific host settings
   expect(result.projects.map(p => p.values.enabled)).toEqual([false, false]);
   expect(result.projects.map(p => p.values.method)).toEqual(["instruction", "instruction"]);
 });
+
+it("reads and writes individual project settings over RPC and CLI with identical validation", async () => {
+  const h = await setup();
+  const rpc = (method: string, input: unknown) => h.harness.behavior.callRpc(method, input);
+  expect(await rpc("config.get", { projectId: PROJECT, key: "enabled" })).toEqual({ enabled: true });
+  expect(await rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: 15 })).toEqual({ ttlMinutes: 15 });
+  await expect(rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: "15" })).rejects.toThrow();
+  await expect(rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: 0 })).rejects.toThrow();
+  const saved = await h.harness.behavior.runCli(["config", "set", "script", "tools/spawn.py", "--project", PROJECT]);
+  expect(saved.exitCode).toBe(0);
+  expect(JSON.parse(saved.stdout!)).toEqual({ script: "tools/spawn.py" });
+  const read = await h.harness.behavior.runCli(["config", "get", "ttlMinutes", "--project", PROJECT]);
+  expect(read.exitCode).toBe(0);
+  expect(JSON.parse(read.stdout!)).toEqual({ ttlMinutes: 15 });
+  expect(await rpc("config.get", { projectId: PROJECT })).toMatchObject({ enabled: true, script: "tools/spawn.py", ttlMinutes: 15 });
+  expect(await rpc("config.get", { projectId: "proj_other", key: "ttlMinutes" })).toEqual({ ttlMinutes: 10 });
+});
+
+it("retains aggregated admission refusals across reloads and filters by UTC date and project", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2025-01-01T23:59:00Z"));
+  const h = await setup();
+  expect((await h.check()).action).toBe("reject");
+  expect((await h.check()).action).toBe("reject");
+  vi.setSystemTime(new Date("2025-01-02T00:01:00Z"));
+  expect((await h.check({ input: { text: "Review.\nagent-admission v1 token=invalid" } })).action).toBe("reject");
+  expect((await h.check({ project: { id: "proj_other" } })).action).toBe("proceed");
+  await h.reload();
+  const report = (input: unknown) => h.harness.behavior.callRpc("report", input);
+  const first = await report({ from: "2025-01-01", to: "2025-01-01", projectId: PROJECT });
+  expect(first).toMatchObject({
+    coverageStartedAt: "2025-01-01T23:59:00.000Z",
+    projects: [{ projectId: PROJECT, blockedStarts: 2, refusals: [{ operation: "dispatch", reason: "missing_admission", count: 2 }] }],
+  });
+  expect(await report({ from: "2025-01-02", to: "2025-01-02" })).toMatchObject({
+    projects: [
+      { projectId: PROJECT, blockedStarts: 1, refusals: [{ operation: "dispatch", reason: "invalid_admission", count: 1 }] },
+      { projectId: "proj_other", blockedStarts: 0, refusals: [] },
+    ],
+  });
+  await expect(report({ from: "2025-01-02", to: "2025-01-01" })).rejects.toThrow();
+});

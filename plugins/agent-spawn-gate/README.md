@@ -52,6 +52,20 @@ Example settings.json (use an existing bb project ID):
 {"projectId":"proj_example","values":{"enabled":false,"method":"script","script":"tools/spawn.py"}}
 ```
 
+For one project or field:
+
+```sh
+bb agent-spawn-gate config get --project proj_example
+bb agent-spawn-gate config get enabled --project proj_example
+bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
+```
+
+RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
+`{projectId,key,value}`. Calls with a key return just that field, e.g.
+`{"ttlMinutes":15}`. A get without a key returns that project's settings.
+The CLI accepts `true` or `false` for `enabled`, and an integer from 1 to 60
+for `ttlMinutes`. If omitted, `--project` defaults to the CLI context.
+
 ## Start command and RPC
 
 ```sh
@@ -80,6 +94,25 @@ and a combined 1 MiB stdout/stderr limit. Starts serialize per project.
 
 The builder is trusted repository code: it must only build the brief and spawn
 parameters. It must not mint or spawn children itself.
+
+## Activity report
+
+```sh
+bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07
+```
+
+RPC `report` takes `{projectId?,from?,to?}`. Both return JSON. Dates are
+inclusive UTC dates, defaulting to today and the preceding six days. Omit the
+project to report all projects. Each row counts successful Script-mode
+`start` calls, successful dry-runs, blocked admission dispatches and
+refusals by operation and reason. A successful start means bb accepted the
+spawn request. Legacy `mint` calls do not enter the start totals.
+A rejected spawn can appear in both the start and dispatch counts.
+
+The report includes `coverageStartedAt`. Counts start on first load of a
+version with metrics. Counters persist across reloads and contain only dates,
+project IDs, operations, reason codes and counts. Builder-defined refusals
+appear as `builder:<reasonCode>`. See [START-CONTRACT.md](START-CONTRACT.md).
 
 ## Mint RPC
 
