@@ -46,7 +46,7 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
     let live = true; const controller = new AbortController();
     const timer = setTimeout(() => { void (async () => {
       const thread = await sdk.threads.get({ threadId: composerThread, signal: controller.signal });
-      const result = await sdk.projects.paths({ projectId: thread.projectId, ...(thread.environmentId ? { environmentId: thread.environmentId } : thread.host?.id ? { hostId: thread.host.id } : {}), query: menu.query, includeFiles: 'true', includeDirectories: 'true', limit: '8', signal: controller.signal });
+      const result = await sdk.projects.paths({ projectId: thread.projectId, ...(thread.environmentId ? { environmentId: thread.environmentId } : 'host' in thread && thread.host?.id ? { hostId: thread.host.id } : {}), query: menu.query, includeFiles: 'true', includeDirectories: 'true', limit: '8', signal: controller.signal });
       if (live) setPaths(result.paths.slice(0, 8));
     })().catch(() => {}); }, 200);
     return () => { live = false; clearTimeout(timer); controller.abort(); };

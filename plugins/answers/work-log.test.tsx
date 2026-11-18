@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { WorkLog, groupRows, summarize, type Row } from './work-log';
+import { WorkLog, ThreadPlan, groupRows, summarize, type Row } from './work-log';
 import { ActivityLabelContext } from './robot-loader';
 
 const work = (id: string, workKind = 'command', extra = {}): Row => ({ id, kind: 'work', workKind, threadId: 'thread', turnId: 'turn', sourceSeqStart: 1, sourceSeqEnd: 2, startedAt: 0, createdAt: 0, completedAt: 1000, status: 'completed', command: 'pwd', activityIntents: [], ...extra } as unknown as Row);
@@ -26,7 +26,7 @@ it('fetches only on expand and caches a finished turn across collapse and remoun
   const toggle = slot.getByRole('button', { name: /Worked for 13m 31s/ });
   expect(details).not.toHaveBeenCalled(); expect(subscribe).not.toHaveBeenCalled();
   fireEvent.click(toggle); await slot.findByText('Ran 1 command');
-  expect(details).toHaveBeenCalledExactlyOnceWith({ threadId: 'cache', turnId: 'turn', sourceSeqStart: '1', sourceSeqEnd: '20' });
+  expect(details).toHaveBeenCalledExactlyOnceWith({ threadId: 'cache', turnId: 'turn', sourceSeqStart: '1', sourceSeqEnd: '20', deferContent: 'true' });
   fireEvent.click(toggle); fireEvent.click(toggle); await slot.findByText('Ran 1 command');
   expect(details).toHaveBeenCalledOnce(); slot.unmount();
   const again = setup('cache', {}, details); fireEvent.click(again.slot.getByRole('button', { name: /Worked for/ }));
@@ -61,7 +61,7 @@ it('loads earlier rows and preserves the final answer exclusion', async () => {
   fireEvent.click(slot.getByRole('button', { name: /Worked for/ }));
   fireEvent.click(await slot.findByRole('button', { name: 'Earlier' }));
   await slot.findByText('progress'); expect(slot.queryByText('final')).toBeNull();
-  expect(details.mock.calls[1]![0]).toMatchObject({ beforeCursor: 'older', sourceSeqStart: '1', sourceSeqEnd: '20' });
+  expect(details.mock.calls[1]![0]).toMatchObject({ beforeCursor: 'older', sourceSeqStart: '1', sourceSeqEnd: '20', deferContent: 'true' });
 });
 it('discovers a live turn and uses its range for earlier pages', async () => {
   const details = vi.fn().mockResolvedValueOnce({ rows: [work('new')], olderCursor: 'cursor' }).mockResolvedValueOnce({ rows: [work('old')], olderCursor: null });
@@ -69,7 +69,7 @@ it('discovers a live turn and uses its range for earlier pages', async () => {
   const slot = renderSlot({ component: () => <WorkLog threadId="discovery" live /> }, {}, { sdk: { threads: { timeline, timelineTurnSummaryDetails: details }, subscribe: () => () => {} } } as any);
   expect(timeline).not.toHaveBeenCalled(); fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
   fireEvent.click(await slot.findByRole('button', { name: 'Earlier' })); await slot.findByText('Ran 2 commands');
-  expect(details.mock.calls[1]![0]).toEqual({ threadId: 'discovery', turnId: 'discovered', sourceSeqStart: '7', sourceSeqEnd: '42', beforeCursor: 'cursor' });
+  expect(details.mock.calls[1]![0]).toEqual({ threadId: 'discovery', turnId: 'discovered', sourceSeqStart: '7', sourceSeqEnd: '42', beforeCursor: 'cursor', deferContent: 'true' });
 });
 it('reads a running turn from its own steps: it has no turn row yet', async () => {
   const details = vi.fn().mockResolvedValue({ rows: [work('live')], olderCursor: null });
@@ -78,7 +78,7 @@ it('reads a running turn from its own steps: it has no turn row yet', async () =
   fireEvent.click(slot.getByRole('button', { name: /Working for/ }));
   await waitFor(() => expect(details).toHaveBeenCalled());
   expect((timeline.mock.calls as unknown as [Record<string, unknown>][])[0]![0]).not.toHaveProperty('summaryOnly');
-  expect(details.mock.calls[0]![0]).toEqual({ threadId: 'running-turn', turnId: 'running', sourceSeqStart: '9', sourceSeqEnd: String(Number.MAX_SAFE_INTEGER) });
+  expect(details.mock.calls[0]![0]).toEqual({ threadId: 'running-turn', turnId: 'running', sourceSeqStart: '9', sourceSeqEnd: String(Number.MAX_SAFE_INTEGER), deferContent: 'true' });
   expect(slot.queryByText('Turn details are not available yet')).toBeNull();
 });
 it('shows the skeleton only before the first response and reports errors', async () => {
@@ -105,4 +105,23 @@ it('ticks an expanded log without traversing its work rows', async () => {
   const before = reads;
   await act(async () => { vi.advanceTimersByTime(1000); });
   expect(reads).toBe(before);
+});
+
+it('fetches a work step only when opened and shows command output and errors', async () => {
+  const details = vi.fn(async (args?: any) => ({rows: [work('step', 'command', {output: args?.itemId ? 'Permission denied' : '', status:'error', exitCode:1})], olderCursor:null}));
+  const {slot} = setup('step-detail', {}, details);
+  fireEvent.click(slot.getByRole('button', {name:/Worked for/}));
+  fireEvent.click(await slot.findByRole('button', {name:/Ran 1 command/}));
+  expect(details).toHaveBeenCalledTimes(1);
+  fireEvent.click(slot.getByRole('button', {name:/Ran pwd/}));
+  await slot.findByText(/Permission denied/);
+  expect(details.mock.calls[1][0]).toMatchObject({itemId:'step', deferContent:'false'});
+  expect(slot.getByText(/Exit code: 1/)).toBeTruthy();
+});
+it('renders completed and pending plan entries from SDK status', async () => {
+  const get = vi.fn(async () => ({pendingTodos:{items:[{id:'a',text:'Read files',status:'completed'},{id:'b',text:'Implement change',status:'pending'}]}}));
+  const slot = renderSlot({component:() => <ThreadPlan threadId="thr_example" />}, {}, {sdk:{status:{get},subscribe:()=>()=>{}}} as any);
+  await slot.findByRole('list', {name:'Agent plan'});
+  expect(slot.getByText('Read files').className).toContain('line-through');
+  expect(slot.getByText('Implement change').className).not.toContain('line-through');
 });

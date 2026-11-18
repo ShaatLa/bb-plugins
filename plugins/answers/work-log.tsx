@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState, type ReactNode } from 'react';
 import { ActivityLabelContext } from './robot-loader';
-import { experimental_Icon as Icon, useSdk } from '@get-bb/plugin-sdk/app';
+import { experimental_Icon as Icon, UrlLink, useSdk } from '@get-bb/plugin-sdk/app';
 import { AgentMarkdown } from './inline-vis';
 import type { IconName } from './empty';
 
@@ -85,12 +85,47 @@ function workLabel(row: Work) {
     default: return row.workKind.replaceAll('-', ' ');
   }
 }
-function WorkGroup({ rows }: { rows: Work[] }) {
+function WorkGroup({ rows, threadId }: { rows: Work[]; threadId: string }) {
   const [open, setOpen] = useState(false), summary = summarize(rows);
   return <div className="text-xs text-muted-foreground">
     <button type="button" aria-expanded={open} className="max-w-full text-left" onClick={() => setOpen(!open)}>{summary.text}{summary.errors > 0 && <span className="ml-2 font-mono">{count(summary.errors, 'error')}</span>} <Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="inline size-3" /></button>
-    {open && rows.map(row => <div key={row.id} className="flex min-w-0 items-center gap-1.5 py-0.5" title={workLabel(row)}><Icon name={(('presentation' in row ? row.presentation?.icon.glyph : undefined) ?? (row.workKind === 'command' ? 'Terminal' : 'File')) as IconName} aria-hidden className="size-3 shrink-0" /><span className="truncate">{workLabel(row)}</span>{(row.status === 'error' || row.status === 'interrupted') && <span className="font-mono">{row.status}</span>}{'completedAt' in row && row.completedAt !== null && <span className="shrink-0 text-subtle-foreground">{duration(row.completedAt - row.startedAt)}</span>}</div>)}
+    {open && rows.map(row => <WorkStep key={row.id} row={row} threadId={threadId} />)}
   </div>;
+}
+
+function WorkStep({ row, threadId }: { row: Work; threadId: string }) {
+  const sdk = useSdk(), [open, setOpen] = useState(false), [detail, setDetail] = useState<Work>(), [error, setError] = useState('');
+  useEffect(() => {
+    if (!open || detail || !row.turnId) return;
+    let live = true;
+    void sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: row.turnId, sourceSeqStart: String(row.sourceSeqStart), sourceSeqEnd: String(row.sourceSeqEnd), itemId: row.id, deferContent: 'false' }).then(page => {
+      const found = page.rows.find((r): r is Work => r.kind === 'work' && r.id === row.id);
+      if (live) { if (found) setDetail(found); else setError('Step detail is unavailable'); }
+    }).catch(e => { if (live) setError(String(e)); });
+    return () => { live = false; };
+  }, [sdk, threadId, row, open, detail]);
+  const content = detail ?? (!row.turnId ? row : undefined);
+  const text = content?.workKind === 'command' ? [content.command, content.cwd, content.output, content.exitCode == null ? '' : `Exit code: ${content.exitCode}`].filter(Boolean).join('\n') : content?.workKind === 'tool' ? [JSON.stringify(content.toolArgs, null, 2), content.output].filter(Boolean).join('\n') : content?.workKind === 'file-change' ? content.change.diff : undefined;
+  return <div className="min-w-0 py-0.5">
+    <button type="button" aria-expanded={open} className="flex w-full min-w-0 items-center gap-1.5 text-left" onClick={() => setOpen(!open)}><Icon name={open ? 'ChevronDown' : 'ChevronRight'} aria-hidden className="size-3 shrink-0" /><span className="truncate">{workLabel(row)}</span>{(row.status === 'error' || row.status === 'interrupted') && <span>{row.status}</span>}{'completedAt' in row && row.completedAt != null && <span className="shrink-0 text-subtle-foreground">{duration(row.completedAt - row.startedAt)}</span>}</button>
+    {open && <div className="ml-4 rounded-md border border-border-seam p-2">{error ? <p role="alert">{error}</p> : !content ? <span>Loading detail…</span> : text ? <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{text}</pre> : <span>Detail is available in the full transcript.</span>}<UrlLink className="mt-1 block text-xs" href={`/threads/${threadId}?msg=${row.sourceSeqStart}`}>Full transcript</UrlLink></div>}
+  </div>;
+}
+
+export function ThreadPlan({ threadId }: { threadId: string }) {
+  const sdk = useSdk(), [todos, setTodos] = useState<Awaited<ReturnType<typeof sdk.status.get>>['pendingTodos']>(null);
+  useEffect(() => {
+    let live = true, timer: ReturnType<typeof setTimeout> | undefined, unsubscribe: (() => void) | undefined;
+    const read = async () => { try {
+      const result = await sdk.status.get({ threadId });
+      if (!live) return;
+      setTodos(result.pendingTodos);
+      unsubscribe ??= sdk.subscribe({ event: 'thread:changed', threadId, callback: () => { if (!timer) timer = setTimeout(() => { timer = undefined; void read(); }, 2000); } });
+    } catch { /* No plan is available. */ } };
+    void read();
+    return () => { live = false; clearTimeout(timer); unsubscribe?.(); };
+  }, [sdk, threadId]);
+  return todos?.items.length ? <ul aria-label="Agent plan" className="px-6 py-2 text-xs text-muted-foreground">{todos.items.map(item => <li key={item.id} className="flex items-center gap-2 py-0.5"><Icon name={item.status === 'completed' ? 'Check' : item.status === 'in_progress' ? 'CircleDot' : 'Circle'} aria-hidden className="size-3 shrink-0" /><span className={item.status === 'completed' ? 'line-through' : ''}>{item.text}</span><span className="sr-only">{item.status}</span></li>)}</ul> : null;
 }
 
 type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; live?: boolean; children?: ReactNode };
@@ -138,7 +173,7 @@ function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Pr
             else throw new Error('Turn details are not available yet');
           }
           entry.turn = { turnId: id, sourceSeqStart: start, sourceSeqEnd: end, startedAt: started ?? entry.turn?.startedAt };
-          return sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: id, sourceSeqStart: String(start), sourceSeqEnd: String(end) });
+          return sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: id, sourceSeqStart: String(start), sourceSeqEnd: String(end), deferContent: 'true' });
         })();
         const next = await entry.pending;
         if (entry.page && live) { const ids = new Set(next.rows.map(r => r.id)); next.rows = [...entry.page.rows.filter(r => !ids.has(r.id) && r.sourceSeqEnd < (next.rows[0]?.sourceSeqStart ?? 0)), ...next.rows]; next.olderCursor = entry.page.olderCursor; }
@@ -157,7 +192,7 @@ function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Pr
     if (!page?.olderCursor || !turn || loading) return;
     setLoading(true); setError('');
     try {
-      const older = await sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: turn.turnId, sourceSeqStart: String(turn.sourceSeqStart), sourceSeqEnd: String(turn.sourceSeqEnd), beforeCursor: page.olderCursor });
+      const older = await sdk.threads.timelineTurnSummaryDetails({ threadId, turnId: turn.turnId, sourceSeqStart: String(turn.sourceSeqStart), sourceSeqEnd: String(turn.sourceSeqEnd), beforeCursor: page.olderCursor, deferContent: 'true' });
       const next = { ...older, rows: [...older.rows, ...page.rows] }; cache.get(key)!.page = next; setPage(next);
     } catch (cause) { setError(String(cause)); } finally { setLoading(false); }
   };
@@ -167,7 +202,7 @@ function LogDetails({ page, error, loading, earlier, threadId, answerSeq }: Retu
   return <div className="ml-1 space-y-2 border-l border-border-seam pl-3">
     {!page && !error && <div aria-label="Loading work log" className="space-y-2 py-1"><div className="h-2 w-36 rounded bg-muted" /><div className="h-2 w-24 rounded bg-muted" /></div>}
     {page?.olderCursor && <button type="button" className="text-xs text-muted-foreground" disabled={loading} onClick={() => void earlier()}>Earlier</button>}
-    {page && groupRows(page.rows, answerSeq).map(group => Array.isArray(group) ? <WorkGroup key={group[0]!.id} rows={group} /> : <div key={group.id} className="text-sm leading-relaxed"><AgentMarkdown content={group.text} threadId={threadId} /></div>)}
+    {page && groupRows(page.rows, answerSeq).map(group => Array.isArray(group) ? <WorkGroup key={group[0]!.id} rows={group} threadId={threadId} /> : <div key={group.id} className="text-sm leading-relaxed"><AgentMarkdown content={group.text} threadId={threadId} /></div>)}
     {error && <p role="alert" className="text-xs text-muted-foreground">{error}</p>}
   </div>;
 }
