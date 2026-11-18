@@ -10,12 +10,6 @@ const none = '__none__';
 const ranges = [[1, '24 hours'], [7, '7 days'], [30, '30 days']] as const;
 const muted = 'text-sm text-muted-foreground';
 
-function useProject(subPath: string) {
-  const query = useQuery({ contract: overviewContract, method: 'overview.projects', input: null });
-  const project = query.data?.find(item => item.id === subPath) ?? query.data?.[0];
-  return { query, project };
-}
-
 function ProjectPlaceholder({ error, ready, retry }: { error: boolean; ready: boolean; retry: () => void }) {
   if (error) return <div className="space-y-2">
     <p role="alert" className="text-sm text-destructive">Could not load Sweep projects.</p>
@@ -93,25 +87,6 @@ function RecipientPicker({ projectId }: { projectId: string }) {
   </div>;
 }
 
-export function SweepSidebar({ subPath }: { subPath: string }) {
-  const { query, project } = useProject(subPath);
-  const navigate = useBbNavigate();
-  const controlId = useId();
-  return <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3">
-    {!project ? <ProjectPlaceholder error={!!query.error} ready={!!query.data} retry={query.refetch} /> : <>
-      <div className="space-y-2">
-        <label htmlFor={controlId} className="block text-sm font-medium">Project</label>
-        <Select value={project.id} onValueChange={id => navigate.toPluginPanel(overviewPath, { subPath: id })}>
-          <SelectTrigger id={controlId} className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{query.data?.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-        </Select>
-        {!project.enabled && <p className={muted}>Scheduled checks are disabled.</p>}
-      </div>
-      <RecipientPicker key={project.id} projectId={project.id} />
-    </>}
-  </div>;
-}
-
 const itemLabels: Record<string, string> = { ACTION: 'Action', ANSWER: 'Owner answer', WAIT: 'Waiting', STATE: 'State change' };
 function itemLabel(kind: string) {
   const [tag, ...detail] = kind.split(' ');
@@ -131,7 +106,10 @@ function Breakdown({ title, rows, empty }: { title: string; rows: [string, numbe
 }
 
 export function SweepOverview({ subPath }: { subPath: string }) {
-  const { query: projects, project } = useProject(subPath);
+  const projects = useQuery({ contract: overviewContract, method: 'overview.projects', input: null });
+  const project = projects.data?.find(item => item.id === subPath) ?? projects.data?.[0];
+  const navigate = useBbNavigate();
+  const projectControlId = useId();
   const [days, setDays] = useState<number>(1);
   const stats = useQuery({ contract: overviewContract, method: 'stats', input: { projectId: project?.id ?? '', days }, enabled: !!project });
   const report = stats.data;
@@ -140,7 +118,7 @@ export function SweepOverview({ subPath }: { subPath: string }) {
     <main className="mx-auto w-full max-w-4xl space-y-4">
       {!project ? <ProjectPlaceholder error={!!projects.error} ready={!!projects.data} retry={projects.refetch} /> : <>
         <header className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="min-w-0 break-words text-lg font-semibold">{project.name}</h1>
+          <h1 className="text-lg font-semibold">Sweep</h1>
           <div className="flex flex-wrap items-center gap-2">
             <div role="group" aria-label="Statistics period" className="inline-flex h-8 items-center rounded-lg bg-muted p-0.5">
               {ranges.map(([value, label]) => (
@@ -152,6 +130,17 @@ export function SweepOverview({ subPath }: { subPath: string }) {
             <Button size="sm" variant="outline" disabled={stats.isFetching} onClick={stats.refetch}>Refresh</Button>
           </div>
         </header>
+        <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+          <div className="min-w-0 space-y-2">
+            <label htmlFor={projectControlId} className="block text-sm font-medium">Project</label>
+            <Select value={project.id} onValueChange={id => navigate.toPluginPanel(overviewPath, { subPath: id })}>
+              <SelectTrigger id={projectControlId} className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>{projects.data?.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+            </Select>
+            {!project.enabled && <p className={muted}>Scheduled checks are disabled.</p>}
+          </div>
+          <RecipientPicker key={project.id} projectId={project.id} />
+        </div>
         {stats.error && <p role="alert" className="text-sm text-destructive">Could not load Sweep statistics.</p>}
         {!report && !stats.error && <p role="status" className={muted}>Loading statistics…</p>}
         {report && (report.ticks === 0 ? <p className={muted}>No scheduled runs in this period.</p> : <>

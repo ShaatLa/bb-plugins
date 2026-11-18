@@ -64,8 +64,11 @@ it('shows the selected project’s analytics and changes the reporting window', 
     ticks: 5, executed: 5, deliveries: 2, manager: 1, answers: 1, repeats: 3, suppressedReports: 2,
     reminderReports: 1, refreshFailures: 0, scriptFailures: 1, deliveryFailures: 0, newItems: { 'ACTION stale-status': 2 },
   }));
-  const slot = renderSlot(app.navPanels[0], { subPath: 'proj_second' }, { rpc: { 'overview.projects': projects, stats } });
-  expect(await slot.findByRole('heading', { name: 'Second' })).toBeTruthy();
+  const slot = renderSlot(app.navPanels[0], { subPath: 'proj_second' }, {
+    rpc: { 'overview.projects': projects, stats, manager: () => ({ manager: null }) },
+    sdk: { threads: { list: async () => [] } },
+  });
+  expect((await slot.findByRole('combobox', { name: 'Project' })).textContent).toContain('Second');
   expect(await slot.findByText('Action · stale status')).toBeTruthy();
   expect(stats).toHaveBeenCalledWith({ projectId: 'proj_second', days: 1 });
   expect(slot.getByRole('button', { name: '24 hours', pressed: true })).toBeTruthy();
@@ -74,12 +77,13 @@ it('shows the selected project’s analytics and changes the reporting window', 
   await waitFor(() => expect(stats).toHaveBeenLastCalledWith({ projectId: 'proj_second', days: 7 }));
 });
 
-it('changes only the selected project’s manager from the left sidebar', async () => {
+it('changes only the selected project’s manager from the main panel', async () => {
   const panel = app.navPanels[0];
+  expect(panel.experimental_sidebar).toBeUndefined();
   const set = vi.fn(async () => ({ manager: 'thr_second' }));
   const list = vi.fn(async () => [{ id: 'thr_second', title: 'New session', projectId: 'proj_second', archivedAt: null, deletedAt: null } as ListedThread]);
-  const slot = renderSlot({ ...panel, component: panel.experimental_sidebar! }, { subPath: 'proj_second' }, {
-    rpc: { 'overview.projects': projects, manager: () => ({ manager: 'thr_first' }), 'config.set': set },
+  const slot = renderSlot(panel, { subPath: 'proj_second' }, {
+    rpc: { 'overview.projects': projects, stats: () => ({ ticks: 0 }), manager: () => ({ manager: 'thr_first' }), 'config.set': set },
     sdk: { threads: { list } },
   });
   const select = await slot.findByRole('combobox', { name: 'Notification session' });

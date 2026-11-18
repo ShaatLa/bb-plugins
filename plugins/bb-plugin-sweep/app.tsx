@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, useRpc } from '@get-bb/plugin-sdk/app';
 import type { contract, Config } from './server';
-import { overviewPath, SweepOverview, SweepSidebar } from './overview';
+import { overviewPath, SweepOverview } from './overview';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
 import { Switch } from './components/ui/switch';
@@ -130,5 +130,5 @@ export function SweepSettings() {
 }
 export default definePluginApp(app => {
   app.slots.settingsSection({ id: 'sweep-settings', component: SweepSettings });
-  app.slots.navPanel({ id: 'sweep', title: 'Sweep', icon: 'Activity', path: overviewPath, component: SweepOverview, experimental_sidebar: SweepSidebar });
+  app.slots.navPanel({ id: 'sweep', title: 'Sweep', icon: 'Activity', path: overviewPath, component: SweepOverview });
 });
