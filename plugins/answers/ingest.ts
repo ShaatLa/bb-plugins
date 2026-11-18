@@ -147,8 +147,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const warningTriggered = update?.source_id === 'answers' && update.question.startsWith('[answers]');
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with answers_ask (or on the Work Board card) and end the turn.', e.createdAt ?? 0);
-     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[answers] Your last reply hands work to the owner but did not call answers_report; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
+     if (asked) onWarning?.('[answers] Your last reply asks the owner a question in chat; ask it with `answers_ask` (or on the Work Board card) and end the turn.', e.createdAt ?? 0);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[answers] Your last reply hands work to the owner but did not call `answers_report`; call it now so the owner sees it as needing them.', e.createdAt ?? 0);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
