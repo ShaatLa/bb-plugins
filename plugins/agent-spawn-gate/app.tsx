@@ -32,7 +32,7 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
   return <form ref={form} onSubmit={event => event.preventDefault()} className="space-y-5">
       <SettingsWithControl label="Launch method">
         <Select value={value.method} onValueChange={method => update({ method: method as Values["method"] })}>
-          <SelectTrigger aria-label="Launch method" className="w-full @min-[36rem]/settings:w-40"><SelectValue /></SelectTrigger>
+          <SelectTrigger aria-label="Launch method" className="@min-[36rem]/settings:w-36"><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="script">Script</SelectItem><SelectItem value="instruction">Instruction</SelectItem></SelectContent>
         </Select>
       </SettingsWithControl>
@@ -83,7 +83,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
   const project = projects?.find(p => p.id === selected);
   const controls = project && projects ? <>
     <Select value={selected} onValueChange={setSelected} disabled={projects.length === 1}>
-      <SelectTrigger aria-label="Project" className={showActivity ? "h-7 w-auto gap-2 border-border/60 bg-card px-2 py-0 text-xs font-medium [&_[data-icon-root]]:text-muted-foreground [&_[data-icon-root]]:opacity-100 max-w-48 [&_[data-icon-root]]:shrink-0" : "w-56 max-w-full"}>
+      <SelectTrigger aria-label="Project" className={showActivity ? "w-auto max-w-48" : "w-36 max-w-full"}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>{projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
