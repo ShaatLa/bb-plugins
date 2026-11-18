@@ -825,9 +825,9 @@ it('keeps settled older pages without refetching them on item invalidation', asy
   expect(slot.getByText('Old question')).toBeTruthy();
 });
 
-it('does not poll usage while auto usage is hidden', async () => {
+it('never polls provider usage', async () => {
   const usageLimits = vi.fn(async () => ({}));
-  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system:{ usageLimits } }, settings:{ usage:'auto' } } as any);
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { recipients: () => ({ recipients:[one] }), list: () => ({ items:[], nextCursor:null }) }, sdk: { system:{ usageLimits } } } as any);
   await slot.findByRole('listbox', { name:'Recipients' });
   vi.useFakeTimers();
   try { await act(async () => { vi.advanceTimersByTime(600000); }); expect(usageLimits).not.toHaveBeenCalled(); }
