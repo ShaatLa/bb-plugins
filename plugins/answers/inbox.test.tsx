@@ -1273,3 +1273,16 @@ it('opens the selected full transcript and returns to the mounted feed at its sc
   expect(slot.getByRole('list', {name:'History'})).toBe(feed);
   expect(slot.queryByRole('region', {name:'Full transcript'})).toBeNull();
 });
+it('puts a steer straight into the running turn card instead of a separate sending row', async () => {
+  const running = { ...base, id:'ans_running', status:'waiting' as const, question:'First ask', turnId:'turn_example', answer:null, answerSeq:null, answerSource:null };
+  const thread = { activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, projectId: 'pr_one', providerId: 'provider_example', status: 'active', environment: { id: 'env_example' } };
+  const { slot, recipients } = setup({ list: () => ({ items:[running], nextCursor:null }), send: () => new Promise(() => {}), sidebarThreads: { threads: [{ ...thread, id: 'thr_one', title: 'One' }], projects: [] } });
+  fireEvent.click((await recipients.findAllByRole('option'))[0]);
+  await slot.findByText('First ask');
+  change(slot.getByRole('textbox', { name: 'Send message' }), { target: { value: 'Also check this' } });
+  fireEvent.click(slot.getByRole('button', { name: 'More send options' }));
+  fireEvent.click(slot.getByRole('menuitem', { name: 'Steer' }));
+  const bubble = await waitFor(() => slot.getAllByText('Also check this').find(node => !node.closest('[role=textbox]'))!);
+  expect(bubble.closest('[aria-label="Sending"]')).toBeNull();
+  expect(bubble.closest('li')).toBe(slot.getByText('First ask').closest('li'));
+});
