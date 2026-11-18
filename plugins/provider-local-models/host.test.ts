@@ -37,7 +37,7 @@ test('writes the shim once and prunes stale copies', async () => {
   }
 });
 
-test('usage reads use the real data dir and still answer', async () => {
+test('provider/usage answers unsupported', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'local-models-usage-'));
   const server = await startModelsServer();
   const output = capture();
@@ -50,7 +50,7 @@ test('usage reads use the real data dir and still answer', async () => {
       response = output.takeMessages().find((message: any) => message.id === 7);
     }
     assert.ok(response?.result, JSON.stringify(response));
-    assert.equal(response.result.usage.status, 'ok');
+    assert.deepEqual(response.result, { supported: false });
   } finally {
     output.restore();
     await server.close();

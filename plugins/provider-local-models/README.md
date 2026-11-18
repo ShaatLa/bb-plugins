@@ -37,7 +37,7 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
 
 - Models come from the server's `/v1/models`. The context window is read from
   the llama.cpp router's `--ctx-size` and shown by `bb local-models status`.
-- Provider usage shows a single row listing the installed models, with no bar or percent.
+- Local models have no quota, so the provider does not appear in Provider usage.
 - The shim runs its own agent loop against the llama.cpp router: streaming
   chat completions, built-in file and shell tools, MCP tools, reasoning effort
   mapping via `reasoning.ts`, and permission handling for accept-edits mode.
@@ -104,8 +104,7 @@ Every model request (thread steps, `local_models_ask`, `bb local-models ask`) ap
 
 The **Splash** settings section shows requirements, process state, and every
 Llama.app model's draft and context. The normal settings fields on the same page
-manage servers, enablement, binary, ports and idle minutes. The usage styles stay
-loaded through the existing app overlay.
+manage servers, enablement, binary, ports and idle minutes.
 
 Splash requires arm64, macOS 26.4+, and an Apple M3 or later. Detection shows
 unified memory, Llama.app's installed version and first-server router health,
@@ -119,7 +118,7 @@ output in the section and logs it, then detects requirements again. No sudo or
 telemetry is used.
 
 With Splash enabled, a verified `splash/<id>` variant replaces its exact plain
-Llama id in provider/shim/status/usage lists. Unsupported, missing-GGUF and
+Llama id in provider/shim/status lists. Unsupported, missing-GGUF and
 unverified-draft models remain on Llama.app. Saved threads with a hidden plain
 id keep routing to its original server. Existing drafts without a verification
 receipt need an explicit **Download** action (or `splash-setup`): valid existing
@@ -157,8 +156,8 @@ The loopback HTTP tests are written but cannot execute in a sandbox that rejects
 `listen(127.0.0.1)` with `EPERM`. The affected checks are:
 
 - `bridge.test.ts`: public provider bridge conformance.
-- `models.test.ts`: installed model/usage listing; caps-file reasoning; multi-server
-  merging; Splash preference/provider/usage and stored-id routing over HTTP.
+- `models.test.ts`: installed model listing; caps-file reasoning; multi-server
+  merging; Splash preference/provider and stored-id routing over HTTP.
 - `server.test.ts`: CLI/native-tool integration with the fake router.
 - `shim.test.ts`: native tool loop and session persistence; caps/tool guards/context
   trimming/waiting; Splash labels/failed-props cache; hidden Llama-id resume/routing.
