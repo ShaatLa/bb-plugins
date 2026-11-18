@@ -1037,6 +1037,41 @@ export function registerTasksCli(
           return input.options.json ? JSON.stringify(result) : `Released ${result.claim.rendered}`;
         }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
+        config: groupCommand("config", "Read or change one project setting at a time", [
+          ["get", "Show one project setting, or all of them"],
+          ["set", "Change one project setting"],
+        ]),
+        "config get": cliCommand({
+          summary: "Show one project setting, or all of them without a key",
+          positionals: [{ name: "key", description: "Setting key, e.g. staleIdleMinutes or git.requiredChecks" }],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const result = await domain["config.get"]({ projectId: project.id, key: input.positionals.key });
+              if (input.options.json) return JSON.stringify(result);
+              return Object.entries(result.values).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n");
+            });
+          },
+        }),
+        "config set": cliCommand({
+          summary: "Change one project setting; lists take JSON or a comma-separated value",
+          positionals: [
+            { name: "key", description: "Setting key; `config get` lists them", required: true },
+            { name: "value", description: "New value: JSON, or plain text", required: true },
+          ],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const raw = input.positionals.value;
+              let value: unknown = raw;
+              try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
+              return input.options.json ? JSON.stringify(result) : `${result.key}=${typeof result.value === "string" ? result.value : JSON.stringify(result.value)}`;
+            });
+          },
+        }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
         pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
         "pr wait": cliCommand({

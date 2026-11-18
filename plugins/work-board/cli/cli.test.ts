@@ -306,6 +306,27 @@ describe("bb work-board CLI", () => {
     } finally { await harness.dispose(); }
   });
 
+  it("reads and changes one project setting at a time", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Config", "--prefix", "CFG"]);
+    const config = async (...args: string[]) => harness.runCli(["config", ...args, "--project", "CFG"]);
+    try {
+      expect(stdout(await config("get", "staleIdleMinutes"))).toBe("staleIdleMinutes=45");
+      expect(stdout(await config("set", "staleIdleMinutes", "60"))).toBe("staleIdleMinutes=60");
+      expect(stdout(await config("set", "git.prWaitIgnoredChecks", "example/ready-check, example/other"))).toBe('git.prWaitIgnoredChecks=["example/ready-check","example/other"]');
+      expect(stdout(await config("set", "git.pollMinutes", "10"))).toBe("git.pollMinutes=10");
+      const all = JSON.parse(stdout(await config("get", "--json"))).values;
+      expect(all).toMatchObject({ staleIdleMinutes: "60", autoArchiveAfterDays: "off", "git.pollMinutes": 10, "git.prWaitIgnoredChecks": ["example/ready-check", "example/other"], "git.enabled": false });
+      // Whole-object Git configuration keeps working beside single keys.
+      expect(JSON.parse(stdout(await harness.runCli(["git-config", "--project", "CFG"]))).config).toMatchObject({ pollMinutes: 10 });
+      for (const args of [["set", "staleIdleMinutes", "7"], ["set", "git.pollMinutes", "0"], ["get", "unknown"], ["set", "name", "x"]]) {
+        expect((await config(...args)).exitCode).toBe(1);
+      }
+      expect((await config("get", "unknown")).stderr).toContain("known: autoArchiveAfterDays");
+    } finally { await harness.dispose(); }
+  });
+
   it("lists the caller's open children with their cards and state notes", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);

@@ -664,6 +664,15 @@ const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
 export const tasksRpcContract = {
+  // One per-project setting at a time; without a key, get lists them all.
+  "config.get": {
+    input: z.object({ projectId: z.string(), key: z.string().optional() }).strict(),
+    output: z.object({ projectId: z.string(), values: z.record(z.string(), z.unknown()) }).strict(),
+  },
+  "config.set": {
+    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+    output: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+  },
   ...storageMethods,
   listTaskDependencies: {
     input: z.object({ taskId: idSchema }).strict(),

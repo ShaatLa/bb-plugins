@@ -1,11 +1,13 @@
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
-import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
+import { idleThreshold } from "../shared/project-settings";
+import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
+import { projectConfigHandlers } from "../config";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -688,21 +690,6 @@ async function listTaskPullRequests(
   };
 }
 
-const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
-
-async function readBadgeCriteria(bb: BbPluginApi) {
-  const stored = await bb.storage.kv.get<unknown>(BADGE_CRITERIA_KEY);
-  const upgraded = await bb.storage.kv.get<boolean>("navigation-badge:waiting-on-owner-upgraded");
-  if (!upgraded) {
-    if (Array.isArray(stored) && !stored.includes("waiting_on_owner")) {
-      stored.push("waiting_on_owner");
-      await bb.storage.kv.set(BADGE_CRITERIA_KEY, stored);
-    }
-    await bb.storage.kv.set("navigation-badge:waiting-on-owner-upgraded", true);
-  }
-  if (!Array.isArray(stored)) return [...DEFAULT_BADGE_CRITERIA];
-  return BADGE_CRITERIA.filter((criterion) => stored.includes(criterion));
-}
 
 export function registerHandlers(
   bb: BbPluginApi,
@@ -760,6 +747,7 @@ export function registerHandlers(
     listTaskClaims: (input) => ({ claims: store.tasks.listTaskClaims(input.taskId) }),
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
+    ...projectConfigHandlers(bb, store),
     ...createLockHandlers(bb, store),
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
@@ -788,11 +776,11 @@ export function registerHandlers(
     listFolders() {
       return { folders: store.tasks.listFolders() };
     },
-    async getBoardPreferences() {
-      return boardPreferencesSchema.parse(await bb.storage.kv.get(BOARD_PREFERENCES_KEY) ?? DEFAULT_BOARD_PREFERENCES);
+    getBoardPreferences() {
+      return getBoardPreferences(bb);
     },
     async setBoardPreferences(input) {
-      await bb.storage.kv.set(BOARD_PREFERENCES_KEY, input);
+      await setBoardPreferences(bb, input);
       publishProjectsChanged(bb, null);
       return input;
     },
@@ -1376,18 +1364,15 @@ export function registerHandlers(
       };
     },
     async getNavigationBadgeCriteria() {
-      return { criteria: await readBadgeCriteria(bb) };
+      return { criteria: await getBadgeCriteria(bb) };
     },
     async setNavigationBadgeCriteria({ criteria }) {
-      await readBadgeCriteria(bb);
-      // Store in a stable order and without repeats so the badge never counts a criterion twice.
-      const saved = BADGE_CRITERIA.filter((criterion) => criteria.includes(criterion));
-      await bb.storage.kv.set(BADGE_CRITERIA_KEY, saved);
+      const saved = await setBadgeCriteria(bb, criteria);
       bb.realtime.publish("badge:changed", {});
       return { criteria: saved };
     },
     async navigationBadge() {
-      const criteria = await readBadgeCriteria(bb);
+      const criteria = await getBadgeCriteria(bb);
       return {
         ...navigationBadgeCounts(bb, store, criteria, Date.now()),
         criteria,

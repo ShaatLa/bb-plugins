@@ -20,7 +20,8 @@ describe("Tasks plugin scaffold", () => {
       await harness.callRpc("updateProject", { projectId: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" });
       const replacement = await harness.lifecycle.reload(plugin);
       try {
-        expect(replacement.harness.registrations.settingsDescriptors).toEqual({});
+        // Only the native global settings stay; the legacy migration fields are gone.
+        expect(Object.keys(replacement.harness.registrations.settingsDescriptors ?? {})).toEqual(["startScreen", "badgeOpen", "badgeWaitingOnOwner", "badgeInReview", "badgeNeedsAnswer", "badgeFailedThread", "badgeStaleIdle"]);
         const projects = await replacement.harness.callRpc("listProjects", {});
         expect(projects).toMatchObject({ projects: expect.arrayContaining([
           expect.objectContaining({ id: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" }),
