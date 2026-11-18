@@ -55,7 +55,7 @@ it('mutes read rows, shows the caught-up line, and previews failures', async () 
   expect(await recipients.findByText('Turn failed: Question one')).toBeTruthy();
   expect(slot.queryByText('All caught up')).toBeNull();
   expect(recipients.queryByLabelText(/unread/)).toBeNull();
-  expect(recipients.getByRole('option').className).toContain('opacity-70');
+  expect(recipients.getByRole('option').className).toContain('opacity-50');
 });
 it('sends through browser SDK without originPluginId and passes draft submission', async () => {
   const { slot, recipients, send } = setup(); fireEvent.click(await recipients.findByRole('option'));
