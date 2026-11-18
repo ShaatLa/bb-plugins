@@ -548,9 +548,12 @@ it('offers bb\'s Scroll to latest button once the last message is out of sight b
   expect(button.className).toContain('invisible');
   const view = slot.getByRole('list', { name:'History' }).closest('.overflow-auto') as HTMLElement, last = slot.getByRole('list', { name:'History' }).lastElementChild as HTMLElement;
   Object.defineProperty(view, 'clientHeight', { configurable:true, value:500 }); // a shown chat (a hidden one, 0 high, is left alone)
+  Object.defineProperty(view, 'scrollHeight', { configurable:true, value:1500 }); let top = 1000; Object.defineProperty(view, 'scrollTop', { configurable:true, get:() => top, set:v => { top = v; } });
   view.getBoundingClientRect = () => ({ top:0, bottom:500 }) as DOMRect; last.getBoundingClientRect = () => ({ top:900, bottom:1000 }) as DOMRect;
   const scrollTo = vi.fn(); view.scrollTo = scrollTo as any;
-  fireEvent.scroll(view);
+  // At the very end the button stays hidden even if the last row still measures below the stack (a stack settling).
+  fireEvent.scroll(view); await new Promise(r => setTimeout(r, 50)); expect(button.className).toContain('invisible');
+  top = 0; fireEvent.scroll(view);
   await waitFor(() => expect(button.className).not.toContain('invisible'));
   fireEvent.click(button); expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior:'smooth' }));
   last.getBoundingClientRect = () => ({ top:300, bottom:450 }) as DOMRect; fireEvent.scroll(view);

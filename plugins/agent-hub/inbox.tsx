@@ -727,8 +727,15 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // layout of the whole conversation at a size about to change. So the chat's scroll handler reads once a frame, the saved
   // anchor once scrolling settles, and the other scroll listeners skip a resize (its own observer keeps them right).
   const [farFromEnd, setFarFromEnd] = useState(false), latestFrame = useRef(0), resizedAt = useRef(0);
-  const checkLatest = () => { const node = scroll.current, last = node?.querySelector('[aria-label=History]')?.lastElementChild; setFarFromEnd(!!node && !!last && last.getBoundingClientRect().top > node.getBoundingClientRect().bottom - (stack.current?.offsetHeight ?? 0)); };
+  // Already at the very end, the newest is in view whatever the last row's geometry says (a stack still settling).
+  const checkLatest = () => { const node = scroll.current, last = node?.querySelector('[aria-label=History]')?.lastElementChild; setFarFromEnd(!!node && !!last && node.scrollHeight - node.scrollTop - node.clientHeight > AT_BOTTOM + 1 && last.getBoundingClientRect().top > node.getBoundingClientRect().bottom - (stack.current?.offsetHeight ?? 0)); };
   useEffect(() => { const frame = requestAnimationFrame(checkLatest); return () => cancelAnimationFrame(frame); }, [selected, pages]);
+  // The scroll handler skips resizes, so content growing or settling (a streamed reply, a card sliding in) rechecks here.
+  useEffect(() => {
+    const list = scroll.current?.querySelector('[aria-label=History]'); if (!list || typeof ResizeObserver === 'undefined') return;
+    let frame = 0; const observer = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(checkLatest); }); observer.observe(list);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [selected, pages.length > 0]);
   useEffect(() => {
     const node = scroll.current, box = stack.current; if (!node || !box || typeof ResizeObserver === 'undefined') return;
     // A reader at the bottom stays there as the stack grows or shrinks; one scrolled up even a little keeps their place.
