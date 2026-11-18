@@ -1255,7 +1255,7 @@ export function registerTasksCli(
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat at least once",
+              description: "Option text; repeat for each option (required for a decision; a check defaults to Confirmed / Problem found)",
             },
             multiple: {
               type: "boolean",
@@ -1320,7 +1320,7 @@ export function registerTasksCli(
               );
               const warnings = [
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
-                  ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
+                  ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
                 ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
                   ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
               ];
@@ -2290,10 +2290,12 @@ export function registerTasksCli(
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2510,6 +2512,7 @@ export function registerTasksCli(
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2951,10 +2954,12 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2971,7 +2976,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               placeholder: "status-id",
               aliases: ["state"],
               description:
-                "New workflow status; in_review when implementation needs review, done when the criteria are met",
+                "Project workflow status id (project show --json lists them); the project's review status when implementation needs review, done when the criteria are met",
             },
             priority: {
               type: "enum",
@@ -3968,7 +3973,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },
@@ -4074,7 +4079,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },

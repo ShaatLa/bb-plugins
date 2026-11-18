@@ -1,3 +1,4 @@
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
@@ -1257,7 +1258,9 @@ export function registerHandlers(
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const blockedBy = dependencies.blockers(ids);
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
-      const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
+      const projects = store.tasks.listProjects();
+      const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
+      const reviewStatuses = new Map(projects.map((project) => [project.id, getWorkflowPolicy(project).reviewStatus]));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
         const task = activity.get(taskId);
@@ -1269,7 +1272,7 @@ export function registerHandlers(
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? reviewStatuses.get(task.projectId) ?? null : null),
         };
       }) };
     },

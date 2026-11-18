@@ -1,6 +1,6 @@
 import type { TaskThread, ThreadHealth } from "./contract.js";
 
-const IDLE_EXEMPT_STATUSES = new Set(["done", "canceled", "in_review"]);
+const IDLE_EXEMPT_STATUSES = new Set(["done", "canceled"]);
 // A dead thread on finished work needs no attention.
 const FAILED_EXEMPT_STATUSES = new Set(["done", "canceled"]);
 
@@ -9,13 +9,15 @@ export function evaluateThreadHealth(
   links: readonly TaskThread[],
   lastActivityAt: string,
   thresholdMinutes: number | null,
+  /** The project's review status (workflow policy); a task waiting for review is not idle. */
+  reviewStatus: string | null = "in_review",
 ): ThreadHealth {
   const failed = FAILED_EXEMPT_STATUSES.has(taskStatus) ? [] : links
     .filter((link) => link.liveStatus === "failed")
     .map((link) => ({ threadId: link.threadId, title: link.title, failedAt: link.updatedAt }));
   const idleLinks = links.filter((link) => link.liveStatus === "idle");
   const busy = links.some((link) => link.liveStatus === "working" || link.liveStatus === "starting");
-  if (thresholdMinutes === null || IDLE_EXEMPT_STATUSES.has(taskStatus) || busy || idleLinks.length === 0) {
+  if (thresholdMinutes === null || IDLE_EXEMPT_STATUSES.has(taskStatus) || taskStatus === reviewStatus || busy || idleLinks.length === 0) {
     return { failed, idle: null };
   }
   // The most recently idled thread counts: the task is only stale once every idle thread has been quiet.

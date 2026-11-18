@@ -182,7 +182,9 @@ describe("@task mention provider", () => {
         "first run: bb work-board attach MEN-1 (attaches THIS thread so the task shows you as working)",
       );
       expect(context).toContain("bb work-board comment MEN-1 --body ...");
-      expect(context).toContain("bb work-board update MEN-1 --status ...");
+      expect(context).toContain("bb work-board update MEN-1 --status <id> (ids: backlog, todo, in_progress, in_review, done, canceled).");
+      expect(context).toContain("bb work-board question add MEN-1 --kind decision|check");
+      expect(context).toContain("## Current state\n\nNone.");
     } finally {
       await harness.dispose();
     }

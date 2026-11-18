@@ -1,3 +1,5 @@
+import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -619,7 +621,7 @@ describe("delegation seed prompt", () => {
 
       ## Report-back contract
 
-      You are working on task TASK-1; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update TASK-1 --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment TASK-1 --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add TASK-1 --kind decision|check (steps in --step), not in a comment. When done, move the task to review (bb work-board update TASK-1 --status in_review).
+      You are working on task TASK-1; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update TASK-1 --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment TASK-1 --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add TASK-1 --kind decision|check (steps in --step), not in a comment. When done, move the task to In Review (bb work-board update TASK-1 --status in_review). If this thread has a parent thread, tell it what it must act on with bb work-board report TASK-1 --kind ready|question|blocker --body "..." (ready when the work is ready, blocker when you are stuck): Current state alone wakes nobody.
 
       ## Preset instructions
 
@@ -630,8 +632,11 @@ describe("delegation seed prompt", () => {
       Run the backend gates.
       "
     `);
-    const noReview = buildSeedPrompt({ task, project: { ...project, statuses: [{ id: "todo", name: "Todo" }, { id: "shipped", name: "Shipped" }] }, subtasks: [], attachments: [], recentComments: [], presetInstructions: "" });
-    expect(noReview).toContain("When done, move the task to the status that means review or done (bb work-board update TASK-1 --status <id>; ids: todo, shipped).");
+    const statuses = [...DEFAULT_TASK_STATUSES, { id: "code_review", name: "Code review" }];
+    const custom = buildSeedPrompt({ task, project: { ...project, statuses, workflowPolicy: getWorkflowPolicy({ workflowPolicy: { reviewStatus: "code_review" } }) }, subtasks: [], attachments: [], recentComments: [], presetInstructions: "" });
+    expect(custom).toContain("When done, move the task to Code review (bb work-board update TASK-1 --status code_review).");
+    const noReview = buildSeedPrompt({ task, project: { ...project, statuses, workflowPolicy: getWorkflowPolicy({ workflowPolicy: { reviewStatus: null } }) }, subtasks: [], attachments: [], recentComments: [], presetInstructions: "" });
+    expect(noReview).toContain("--status <id>; ids: backlog, todo, in_progress, in_review, done, canceled, code_review).");
   });
 
   it("parents the spawned thread only when the caller thread is given", async () => {

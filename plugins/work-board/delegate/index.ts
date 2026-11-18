@@ -4,6 +4,7 @@ import type { DependencyTask } from "../shared/contract";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createStructuredStore } from "../structured/store";
@@ -109,12 +110,12 @@ function formatComments(comments: readonly Comment[]): string {
 }
 
 function reportBackContract(key: string, project: Project): string {
+  const policy = getWorkflowPolicy(project);
   const statuses = project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES;
-  // Projects may rename or drop In Review; name the ids they actually have.
-  const done = statuses.some((status) => status.id === "in_review")
-    ? `move the task to review (bb work-board update ${key} --status in_review)`
+  const done = policy.reviewStatus
+    ? `move the task to ${statusLabel(policy.reviewStatus, statuses)} (bb work-board update ${key} --status ${policy.reviewStatus})`
     : `move the task to the status that means review or done (bb work-board update ${key} --status <id>; ids: ${statuses.map((status) => status.id).join(", ")})`;
-  return `You are working on task ${key}; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update ${key} --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment ${key} --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add ${key} --kind decision|check (steps in --step), not in a comment. When done, ${done}.`;
+  return `You are working on task ${key}; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update ${key} --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment ${key} --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add ${key} --kind decision|check (steps in --step), not in a comment. When done, ${done}. If this thread has a parent thread, tell it what it must act on with bb work-board report ${key} --kind ready|question|blocker --body "..." (ready when the work is ready, blocker when you are stuck): Current state alone wakes nobody.`;
 }
 
 export function buildSeedPrompt(input: SeedPromptInput): string {
@@ -400,7 +401,7 @@ export function handlers(
           liveStatus: taskThreadLiveStatus(thread),
         });
         if (task.status === "backlog" || task.status === "todo") {
-          store.tasks.updateTask(task.id, { status: "in_progress" });
+          store.tasks.updateTask(task.id, { status: getWorkflowPolicy(project).inProgressStatus ?? "in_progress" });
         }
         createSystemComment(store.tasks, {
           taskId: task.id,
@@ -484,13 +485,14 @@ export function handlers(
           liveStatus: "starting",
         });
 
+        const inProgress = getWorkflowPolicy(project).inProgressStatus ?? "in_progress";
         if (task.status === "backlog" || task.status === "todo") {
-          store.tasks.updateTask(task.id, { status: "in_progress" });
+          store.tasks.updateTask(task.id, { status: inProgress });
           createSystemComment(store.tasks, {
             taskId: task.id,
             presetName: preset.name,
             threadId: thread.id,
-            body: `Status changed to ${statusLabel("in_progress", store.tasks.getProject(task.projectId)?.statuses)} · dispatched to ${preset.name}`,
+            body: `Status changed to ${statusLabel(inProgress, project.statuses)} · dispatched to ${preset.name}`,
           });
         }
 

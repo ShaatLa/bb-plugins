@@ -26,8 +26,9 @@ function steerPrompt(
     `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
     `- From: ${authorName}\n\n${body}` +
     (replyHint
-      ? "\n\nTreat this as updated context for your work on this task; " +
-        `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+      ? "\n\nTreat this as updated context for your work on this task. Reflect it in Current state " +
+        `(\`bb work-board update ${taskKey} --progress ...\`); comment only results or evidence, and ask the owner ` +
+        `with \`bb work-board question add ${taskKey}\` when you need a decision.`
       : "")
   );
 }
