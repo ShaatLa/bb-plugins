@@ -40,6 +40,10 @@ Open **Sweep** from the bb navigation rail. Use the controls above the statistic
 
 `bb sweep stats --project <id> --days <1-30>` (default one day) and the `stats {projectId,days?}` RPC report scheduled ticks, executed checks, confirmed deliveries by channel, new distinct items by kind, repeated item sightings, suppressed reports and failures by stage. The `answers` counter includes notices delivered to either plugin. The `reminderReports` counter preserves historical totals. New items are fingerprints first seen within the requested window. Sweep keeps counters and fingerprints locally for a rolling 30 days. Manual runs do not enter these totals.
 
+## Archived thread worktrees
+
+Scheduled checks also inspect the project's Git checkouts on the BB server machine. Sweep reports self-created registered worktrees inside an archived project thread's storage, excluding BB-managed worktrees. Each affected thread gets one line with paths, allocated size and Git status. Sweep repeats a path only after it has cleared and recurred. The manager verifies clean paths, lists dirty paths separately and requests the owner's approval in Agent Hub. See the Sweep skill for the removal steps.
+
 Install: `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin sweep --tag-prefix sweep/`.
 
 For migration, configure the project with its branch and script, disable it with `bb sweep config set enabled false --project proj_example`, and wait for any active check to finish. Then call RPC `seed-state` with the original committed JSON contents as a string, for example `{"projectId":"proj_example","snapshot":"{}"}`. If committed state or a pending report already exists, skip the import. Committed bytes are stored in plugin SQLite. The script receives a fresh temporary read-only file on each run.

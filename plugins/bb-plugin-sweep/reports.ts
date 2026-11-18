@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const summaryLine = /^sweep: (\d+) threads, (\d+) cards checked, (\d+) actions$/;
+export const archivedWorktreeKind = 'ACTION archived-worktree';
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 
 export function reportContents(exitCode: number, output: string) {
@@ -23,13 +24,17 @@ export function reportContents(exitCode: number, output: string) {
     items.set(hash(JSON.stringify([tag, stable])), kind);
   }
   const noteworthy: string[] = [], waiting: string[] = [];
+  const comparisonItems: string[] = [];
   for (const [id, kind] of items) {
+    // Sweep tracks worktree delivery by path until a scan observes it cleared.
+    if (kind === archivedWorktreeKind) continue;
+    comparisonItems.push(id);
     if (kind === 'ANSWER' || kind.startsWith('ACTION')) noteworthy.push(id);
     if (kind === 'WAIT') waiting.push(id);
   }
   return {
     items,
-    fingerprint: hash(JSON.stringify([exitCode, [...items.keys()].sort(), diagnostics])),
+    fingerprint: hash(JSON.stringify([exitCode, comparisonItems.sort(), diagnostics])),
     changes: { noteworthy, waiting: waiting.length ? hash(JSON.stringify(waiting.sort())) : '' },
   };
 }

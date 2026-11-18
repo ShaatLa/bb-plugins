@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -7,6 +7,7 @@ import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/tes
 import { deliveryStore } from './delivery.ts';
 import plugin from './server.ts';
 import { formatNotification } from './notification.ts';
+import { reportContents } from './reports.ts';
 import { managerTag, projectsTag, statsTag } from './overview-contract.ts';
 const repo = await mkdtemp(join(tmpdir(), 'sweep-test-'));
 const git = (...args) => execFileSync('git', args, {cwd:repo, stdio:'ignore'});
@@ -238,6 +239,72 @@ try {
   assert.deepEqual(unresolved.issues,['unresolved-task-key']);
   assert.deepEqual(unresolved.findings,[{taskKey:'EXA-2',taskId:null,signal:'no_active_thread'}]);
 } finally { await shadowHost.harness.lifecycle.dispose(); }
+
+const worktreeTest = await mkdtemp(join(tmpdir(), 'sweep-worktrees-'));
+const storageRoot = join(worktreeTest, 'thread-storage');
+const cleanTree = join(storageRoot, 'thr_archived', 'clean tree');
+const dirtyTree = join(storageRoot, 'thr_archived', 'dirty-tree');
+const managedTree = join(storageRoot, 'thr_archived', 'managed-tree');
+const activeTree = join(storageRoot, 'thr_active', 'active-tree');
+const outsideTree = join(worktreeTest, 'thread-storage-other', 'thr_archived', 'outside-tree');
+const worktreeReports = [];
+let worktreeSendFails = true;
+const worktreeHost = createFakePluginHost({pluginId:'sweep',sdk:{
+  system:{config:async()=>({primaryHostId:'host_example'})},
+  hosts:{get:async()=>({threadStorageRootPath:storageRoot})},
+  projects:{...projectSettings(),get:async()=>({id:projectId,name:'Example',gitRemoteUrl:repo,sources:[{hostId:'host_example',path:repo}]})},
+  environments:{list:async()=>[
+    {projectId:'proj_other',managed:true,isGitRepo:true,status:'ready',path:managedTree},
+    {projectId,managed:false,isGitRepo:true,status:'ready',path:dirtyTree},
+  ]},
+  threads:{get:async()=>makeThreadResponse(),list:async({threadIds})=>threadIds.includes('thr_archived') ? [makeThreadResponse({id:'thr_archived',projectId,archivedAt:1})] : [],send:async request=>{
+    if (worktreeSendFails) throw new Error('offline');
+    worktreeReports.push(request.input[0].text);
+  }},
+  plugins:{list:async()=>({plugins:[]}),callRpc:async({pluginId})=>{
+    if (pluginId === 'push-notifications') return {};
+    throw new Error('optional plugin unavailable');
+  }},
+}});
+try {
+  await mkdir(join(storageRoot,'thr_archived'),{recursive:true});
+  for (const path of [cleanTree,dirtyTree,managedTree,activeTree,outsideTree]) git('worktree','add','--detach',path);
+  await writeFile(join(dirtyTree,'changes.txt'),'unsaved example');
+  await plugin(worktreeHost.bb);
+  const {harness} = worktreeHost;
+  const quiet = {...config,script:'repeat.py',args:['5','none','none'],snapshots:false};
+  const run = async () => {
+    await harness.behavior.callRpc('configure',{projectId,config:quiet});
+    await harness.behavior.runSchedule('sweep');
+    return harness.behavior.callRpc('status',{projectId});
+  };
+  const staged = await run();
+  assert.match(staged.pending,/^ACTION archived-worktree thr_archived: .*/m);
+  assert.match(staged.pending,/clean tree" \(\d+ KiB, clean\)/);
+  assert.match(staged.pending,/dirty-tree" \(\d+ KiB, dirty\)/);
+  assert.doesNotMatch(staged.pending,/managed-tree|active-tree|outside-tree/);
+  assert.equal(staged.pending.match(/^ACTION archived-worktree/gm).length,1);
+  worktreeSendFails = false;
+  await run();
+  await run();
+  assert.equal(worktreeReports.length,1);
+  assert.match(worktreeReports[0],/@thread:thr_archived/);
+  git('worktree','remove',cleanTree);
+  await run();
+  git('worktree','add','--detach',cleanTree);
+  await run();
+  assert.equal(worktreeReports.length,2);
+  assert.match(worktreeReports[1],/clean tree.*clean\)/);
+  assert.doesNotMatch(worktreeReports[1],/dirty-tree/);
+  assert.equal(await readFile(join(dirtyTree,'changes.txt'),'utf8'),'unsaved example');
+  const finding = 'ACTION archived-worktree thr_archived: "/example/tree" (4 KiB, clean)';
+  const failure = 'ERROR checkout unavailable';
+  assert.equal(reportContents(2,`${failure}\n${finding}`).fingerprint,reportContents(2,failure).fingerprint);
+  assert.match(formatNotification(2,`${failure}\n${finding}`),/\*\*Archived worktrees\*\*\n\n- @thread:thr_archived/);
+} finally {
+  await worktreeHost.harness.lifecycle.dispose();
+  await rm(worktreeTest,{recursive:true,force:true});
+}
 
 const reports=[];
 let projectRemote=repo;

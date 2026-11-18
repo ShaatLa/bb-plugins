@@ -1,4 +1,4 @@
-import { summaryLine } from './reports.ts';
+import { archivedWorktreeKind, summaryLine } from './reports.ts';
 
 const sections = { ANSWER: 'Owner answers', ACTION: 'Actions', WAIT: 'Waiting', STATE: 'State changes' };
 const taskKey = '[A-Z][A-Z0-9]{0,9}-\\d+';
@@ -41,19 +41,26 @@ function outputBlock(output: string) {
 }
 
 export function formatNotification(status: 'alive' | number, output: string) {
+  const lines = output.split(/\r?\n/);
+  const worktreePrefix = `${archivedWorktreeKind} `;
+  const worktrees = lines.filter(line => line.startsWith(worktreePrefix));
   if (typeof status === 'number' && status >= 2) {
     const title = `\`Check failed\` (exit ${status})`;
-    return output.trim() ? `${title}\n\n${outputBlock(output.trimEnd())}` : title;
+    const diagnostics = lines.filter(line => !line.startsWith(worktreePrefix)).join('\n').trimEnd();
+    const blocks = [title];
+    if (worktrees.length) blocks.push(`**Archived worktrees**\n\n${worktrees.map(line => `- ${formatReference(line.slice(worktreePrefix.length))}`).join('\n')}`);
+    if (diagnostics.trim()) blocks.push(outputBlock(diagnostics));
+    return blocks.join('\n\n');
   }
 
   const title = status === 'alive' ? 'No new actions' : status === 1 ? 'Needs attention' : 'Check complete';
   const blocks = [`\`${title}\``];
   const groups = new Map<string, string[]>();
   const other: string[] = [];
-  for (const line of output.split(/\r?\n/)) {
+  for (const line of lines) {
     const summary = summaryLine.exec(line);
     if (summary) {
-      blocks[0] += ` · ${summary[3]} to review · ${summary[1]} threads · ${summary[2]} cards checked`;
+      blocks[0] += ` · ${Number(summary[3]) + worktrees.length} to review · ${summary[1]} threads · ${summary[2]} cards checked`;
       continue;
     }
     const item = /^(ANSWER|ACTION|WAIT|STATE) (\S.*)$/.exec(line);

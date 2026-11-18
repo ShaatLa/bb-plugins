@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { attentionObservations, attentionStore, type ShadowRun } from './attention.ts';
+import { scanArchivedWorktrees } from './archived-worktrees.ts';
 import { deliveryStore } from './delivery.ts';
 import { sendOrAppend } from './queued-notice.ts';
 import { sweepHistory } from './history.ts';
@@ -34,7 +35,7 @@ export const contract = defineRpcContract({
   run: { experimental_description: 'Refresh the checkout and execute the configured script. Sweep does not deliver or acknowledge the result. The script can have side effects.', input, output: z.unknown() },
 });
 type ReportReceipt = { fingerprint: string; manager?: string };
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; attentionShadow?: ShadowRun; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; attentionShadow?: ShadowRun; reportedWorktrees?: string[]; pendingWorktrees?: string[]; lastMeasuredWorktree?: string; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 const maxRefreshBackoffMs = 3600000;
 const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
@@ -130,6 +131,10 @@ export default async function plugin(bb: BbPluginApi) {
       if (code >= 2) current.lastFailure = { fingerprint, manager };
       else current.lastReport = { fingerprint, changes, at: current.deliveredAt, manager };
     }
+    if (current.pendingWorktrees) {
+      current.reportedWorktrees = [...new Set([...(current.reportedWorktrees ?? []), ...current.pendingWorktrees])];
+      current.pendingWorktrees = undefined;
+    }
     db.transaction(() => {
       deliveries.acknowledge(id);
       if (current.deliveredTickId) attention.accept(current.deliveredTickId, acceptedAt, receipt);
@@ -189,9 +194,10 @@ export default async function plugin(bb: BbPluginApi) {
       const committed = deliveries.read(id)?.committed ?? null;
       const scanStartedAt = Date.now();
       let result;
+      let project: Awaited<ReturnType<typeof bb.sdk.projects.get>> | undefined;
       let refreshFailed = false;
       try {
-        const project = await bb.sdk.projects.get({ projectId: id }).catch(cause => {
+        project = await bb.sdk.projects.get({ projectId: id }).catch(cause => {
           throw new CheckoutRefreshError('Could not read the bb project repository settings', { cause });
         });
         const remote = repositoryUrl.safeParse(project?.gitRemoteUrl);
@@ -211,39 +217,53 @@ export default async function plugin(bb: BbPluginApi) {
         observationRecorded = true;
         controller.signal.throwIfAborted();
       }
-      current.exitCode = result.code;
+      const worktrees = project ? await scanArchivedWorktrees(bb, project, current.reportedWorktrees ?? [], current.lastMeasuredWorktree, AbortSignal.any([controller.signal, AbortSignal.timeout(60000)])).catch(error => {
+        controller.signal.throwIfAborted();
+        bb.log.warn(`Archived worktree scan failed for ${id}: ${String(error)}`);
+        return null;
+      }) : null;
+      if (worktrees) current.lastMeasuredWorktree = worktrees.lastMeasuredPath;
+      if (worktrees?.complete && current.reportedWorktrees) {
+        const present = new Set(worktrees.present);
+        current.reportedWorktrees = current.reportedWorktrees.filter(path => present.has(path));
+      }
+      const newWorktrees = worktrees?.newPaths.length ? worktrees.newPaths : undefined;
+      const output = worktrees?.lines.length ? [result.output.trimEnd(), ...worktrees.lines].filter(Boolean).join('\n') : result.output;
+      const code = newWorktrees && result.code === 0 ? 1 : result.code;
+      current.exitCode = code;
       current.refreshFailures = refreshFailed ? (current.refreshFailures ?? 0) + 1 : 0;
       current.refreshRetryAt = refreshFailed
         ? Date.now() + Math.min(interval * 2 ** Math.min(current.refreshFailures - 1, 6), Math.max(interval, maxRefreshBackoffMs))
         : undefined;
-      const report = reportContents(result.code, result.output);
-      history.result(id, tickId, now, report.items, refreshFailed ? 'refresh' : result.code >= 2 ? 'script' : undefined);
+      const report = reportContents(code, output);
+      history.result(id, tickId, now, report.items, refreshFailed ? 'refresh' : code >= 2 ? 'script' : undefined);
       const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
       const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes('ANSWER');
       const lastReport = current.lastReport?.manager === config.manager ? current.lastReport : undefined;
       const previous = lastReport?.changes;
       const sameLegacyReport = !previous && lastReport?.fingerprint === report.fingerprint;
-      const waitingChanged = result.code < 2 && !sameLegacyReport &&
+      const waitingChanged = code < 2 && !sameLegacyReport &&
         report.changes.waiting !== (previous?.waiting ?? '');
       const knownItems = new Set(previous?.noteworthy);
       const newItem = !sameLegacyReport && report.changes.noteworthy.some(id => !knownItems.has(id));
       const lastFailure = current.lastFailure;
       const changedFailure = lastFailure?.manager !== config.manager || lastFailure?.fingerprint !== report.fingerprint;
-      const changedDiagnostic = result.code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
-      const notify = result.code >= 2 ? changedFailure :
-        waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic;
-      if (result.code < 2) current.lastFailure = undefined;
+      const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
+      const notify = newWorktrees || (code >= 2 ? changedFailure :
+        waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic);
+      if (code < 2) current.lastFailure = undefined;
       if (notify) {
-        const output = waitingChanged && !report.changes.waiting
-          ? `${result.output.trimEnd()}\nSTATE Waiting list is clear.\n` : result.output;
-        const message = `[sweep] exit ${result.code} tick=${tickId}\n${output}`;
+        const body = waitingChanged && !report.changes.waiting
+          ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        const message = `[sweep] exit ${code} tick=${tickId}\n${body}`;
+        current.pendingWorktrees = newWorktrees;
         db.transaction(() => {
           deliveries.stage(id, message, result.snapshot);
           if (shadowTick) attention.stage(shadowTick.id, Date.now());
           save(id, current);
         })();
         await deliver(id, current, tickId);
-      } else if (result.code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
+      } else if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
       if (current.refreshRetryAt) current.nextRun = current.refreshRetryAt;
       current.error = result.code >= 2 ? result.output : null;
       current.alertError = null;
