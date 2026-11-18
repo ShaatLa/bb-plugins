@@ -267,13 +267,13 @@ describe("bb work-board CLI", () => {
       expect(await comments()).toEqual([]);
 
       // A helper of the attached session only wakes that session.
-      expect(stdout(await report("thr_helper", "--kind", "blocker", "--body", "Flaky test"))).toBe("Reported blocker on REP-1 to @thread:thr_child");
+      expect(stdout(await report("thr_helper", "--kind", "blocker", "--need", "Rerun CI.", "--body", "Flaky test"))).toBe("Reported blocker on REP-1 to @thread:thr_child");
       expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
       expect(await sessions()).toEqual(["thr_child"]);
 
       for (const [thread, args, error] of [
-        ["thr_orphan", ["--kind", "blocker", "--body", "x"], "no parent thread"],
-        [undefined, ["--kind", "question", "--body", "x"], "inside a bb thread"],
+        ["thr_orphan", ["--kind", "blocker", "--need", "x", "--body", "x"], "no parent thread"],
+        [undefined, ["--kind", "question", "--need", "x", "--body", "x"], "inside a bb thread"],
         ["thr_child", ["--kind", "progress", "--body", "x"], ""],
       ] as const) {
         const failed = await report(thread, ...args);
@@ -282,17 +282,33 @@ describe("bb work-board CLI", () => {
       }
       expect(await comments()).toEqual([]);
 
-      const long = await report("thr_child", "--kind", "question", "--body", "é".repeat(3000));
+      // A question or blocker that asks nothing is refused before anything is delivered.
+      const sends = harness.sdk.callsTo("threads.send").length;
+      for (const need of [[], ["--need", "  "]]) {
+        const refused = await report("thr_child", "--kind", "question", ...need, "--body", "Status update");
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.stderr).toContain("needs --need");
+        expect(refused.stderr).toContain("update KEY --progress");
+      }
+      expect(harness.sdk.callsTo("threads.send")).toHaveLength(sends);
+      expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
+
+      const asked = await report("thr_child", "--kind", "question", "--need", "Pick option A or B.", "--body", "Details");
+      expect(asked.exitCode).toBe(0);
+      expect((harness.sdk.callsTo("threads.send").at(-1)![0] as { input: { text: string }[] }).input[0]!.text).toMatch(/^\*\*REP-1 · QUESTION\*\* from @thread:thr_child\n\nNeeded: Pick option A or B\.\n\nDetails/);
+      expect((await card()).progressNote).toBe("**QUESTION**\n\nNeeded: Pick option A or B.\n\nDetails");
+
+      const long = await report("thr_child", "--kind", "question", "--need", "Decide.", "--body", "é".repeat(3000));
       expect(long.exitCode).toBe(0);
       const note = (await card()).progressNote as string;
       expect(Buffer.byteLength(note)).toBeLessThanOrEqual(4096);
-      expect(note).toMatch(/^\*\*QUESTION\*\*\n\né+\n\n… \(cut; the full report went to @thread:thr_parent\)$/);
+      expect(note).toMatch(/^\*\*QUESTION\*\*\n\nNeeded: Decide\.\n\né+\n\n… \(cut; the full report went to @thread:thr_parent\)$/);
 
       harness.sdk.stub("threads.send", async () => { throw new Error("offline"); });
-      const unsent = await report("thr_child", "--kind", "blocker", "--body", "CI is red");
+      const unsent = await report("thr_child", "--kind", "blocker", "--need", "Fix the runner.", "--body", "CI is red");
       expect(unsent.exitCode).toBe(1);
       expect(unsent.stderr).toContain("Saved the blocker report as Current state of REP-1, but could not wake parent thr_parent");
-      expect((await card()).progressNote).toBe("**BLOCKER**\n\nCI is red");
+      expect((await card()).progressNote).toBe("**BLOCKER**\n\nNeeded: Fix the runner.\n\nCI is red");
 
       harness.sdk.stub("threads.send", async () => ({}) as never);
       await harness.runCli(["update", "REP-1", "--progress", "Working on it\nHandoff: /notes/example.md"], { threadId: "thr_child" });

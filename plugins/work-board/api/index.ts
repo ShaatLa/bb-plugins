@@ -515,6 +515,15 @@ export async function createComment(
 export const REPORT_KINDS = ["ready", "question", "blocker"] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
+export const REPORT_NEED_HINT = 'Progress that asks nothing goes to bb work-board update KEY --progress "<text>", which wakes nobody.';
+
+/** A question or blocker must say what the recipient has to decide or do; ready needs nothing. */
+export function reportNeed(kind: ReportKind, need: string | undefined): string | null {
+  const text = need?.trim() ?? "";
+  if (kind !== "ready" && !text) throw new Error(`A ${kind} report needs --need "<what the recipient must decide or do>"`);
+  return text || null;
+}
+
 /** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
 export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
   const thread = await bb.sdk.threads.get({ threadId });
@@ -540,8 +549,10 @@ function fitState(text: string, overflow: string): string {
 export async function reportToParent(
   bb: BbPluginApi,
   store: TasksApiStore,
-  input: { taskId: string; threadId: string; kind: ReportKind; body: string },
+  input: { taskId: string; threadId: string; kind: ReportKind; body: string; need?: string },
 ): Promise<{ parentThreadId: string; notified: boolean; stateUpdated: boolean }> {
+  const need = reportNeed(input.kind, input.need);
+  const body = need ? `Needed: ${need}\n\n${input.body}` : input.body;
   const role = await cardRole(bb, store, input.taskId, input.threadId);
   const parentThreadId = role.parentThreadId;
   if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);
@@ -554,7 +565,7 @@ export async function reportToParent(
   if (stateUpdated) {
     // A "Handoff:" line points a compacted or successor session at its notes; a report must not drop it.
     const handoff = (task.progressNote ?? "").split("\n").filter((line) => line.startsWith("Handoff:"));
-    const progressNote = fitState([...handoff, `**${label}**\n\n${input.body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
+    const progressNote = fitState([...handoff, `**${label}**\n\n${body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
     store.transaction(() => store.tasks.updateTask(task.id, { progressNote, authorName: input.threadId }));
     publishTasksChanged(bb, task.id, task.projectId);
   }
@@ -563,7 +574,7 @@ export async function reportToParent(
     await notifyThread(
       bb,
       parentThreadId,
-      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
+      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
     );
     notified = true;
   } catch (error) {

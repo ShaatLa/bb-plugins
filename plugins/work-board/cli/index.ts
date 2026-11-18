@@ -23,6 +23,8 @@ import {
   REPORT_KINDS,
   cardRole,
   reportToParent,
+  reportNeed,
+  REPORT_NEED_HINT,
   childrenCards,
   publishProjectsChanged,
   registerHandlers,
@@ -3432,6 +3434,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               required: true,
               description: "ready, question or blocker; progress goes to `update --progress` and wakes nobody",
             },
+            need: {
+              type: "string",
+              placeholder: "text",
+              description: "Required for question and blocker: what the recipient must decide or do, in one or two sentences; shown first",
+            },
             body: {
               type: "string",
               placeholder: "markdown",
@@ -3455,6 +3462,9 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               const threadId = ctx.threadId ?? process.env.BB_THREAD_ID;
               if (!threadId)
                 throw new CliError("report must run inside a bb thread; its parent thread is the recipient", { code: "missing_thread" });
+              try { reportNeed(input.options.kind, input.options.need); } catch (error) {
+                throw new CliError(errorMessage(error), { code: "missing_need", hint: REPORT_NEED_HINT });
+              }
               const task = await resolveTask(domain, input.positionals["key-or-id"]);
               const bodyFile = input.options["body-file"];
               const clientHostId = bodyFile !== undefined
@@ -3467,6 +3477,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 threadId,
                 kind: input.options.kind,
                 body,
+                need: input.options.need,
               });
               const attach = await attachCardSession(task.id, threadId);
               if (!result.notified)
