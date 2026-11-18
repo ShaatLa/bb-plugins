@@ -89,7 +89,8 @@ it('keeps a sub-session that asks the owner visible under its collapsed parent',
     const { slot } = setup(false, false, parent, [...asking], fields);
     const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
     expect(subs.textContent).toContain('Child'); expect(subs.textContent).not.toContain('Quiet');
-    expect(slot.getByRole('img', { name: 'Asking you' })).toBeTruthy();
+    // The sub-session's row and its parent contact both show the question mark.
+    expect(within(subs).getByRole('img', { name: 'Asking you' })).toBeTruthy(); expect(slot.getAllByRole('img', { name: 'Asking you' })).toHaveLength(2);
     expect(slot.getByRole('button', { name: 'Show sub-sessions' })).toBeTruthy();
     slot.unmount();
   }
@@ -108,4 +109,9 @@ it('dims sub-sessions like contacts, except one that asks the owner', async () =
   const asking = setup(false, false, parent, [child]);
   const row = await subRow(asking.slot, 'Child');
   expect(row).not.toContain('opacity-50'); expect(row).not.toContain('opacity-80');
+});
+it('shows the question mark, not the working spinner, on a sub-session that asks while it works', async () => {
+  const { slot } = setup(false, false, parent, [child], { status: 'active', runtimeStatus: 'active', indicator: 'runtime' });
+  const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
+  expect(within(subs).getByRole('img', { name: 'Asking you' })).toBeTruthy(); expect(within(subs).queryByRole('img', { name: 'Working' })).toBeNull();
 });

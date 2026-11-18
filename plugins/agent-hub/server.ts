@@ -336,7 +336,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const chosenAttention=contactAttention.replaceAll('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
-        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
+        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,sum(CASE WHEN ${contactAttention} AND kind='for_me' THEN 1 ELSE 0 END) AS questions,max(updated_at) AS last_at
         FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
         GROUP BY thread_id
         -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
@@ -373,7 +373,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
       const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
-      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
+      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},

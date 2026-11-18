@@ -393,8 +393,8 @@ describe('reply pools and inbox',()=>{
   harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,title:id.toUpperCase(),projectId:id==='b'?'p2':'p1'})));
   harness.sdk.stub('projects.list',async()=>[{id:'p1',name:'One'},{id:'p2',name:'Two'}] as any);
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients).toEqual([
-    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,lastAt:30,preview:'B question?'},
-    {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,lastAt:10,preview:'A answer'},
+    {threadId:'b',threadTitle:'B',projectId:'p2',projectName:'Two',unread:1,questions:1,lastAt:30,preview:'B question?'},
+    {threadId:'a',threadTitle:'A',projectId:'p1',projectName:'One',unread:1,questions:0,lastAt:10,preview:'A answer'},
   ]);
  });
  it('stores contact-list preferences in plugin settings and rejects anything else',async()=>{

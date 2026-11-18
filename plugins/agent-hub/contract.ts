@@ -29,7 +29,7 @@ export const inlinePreviewSchema = z.discriminatedUnion('kind',[
   z.object({kind:z.literal('markdown'),content:z.string(),rootPath:z.string(),target:z.union([z.object({kind:z.literal('workspace'),environmentId:z.string(),path:z.string()}),z.object({kind:z.literal('thread-storage'),threadId:z.string(),path:z.string()})])}),
   z.object({kind:z.literal('not-found')}), z.object({kind:z.literal('error'),message:z.string()})]);
 export type InlinePreview = z.infer<typeof inlinePreviewSchema>;
-export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,lastAt:time,preview:z.string()});
+export const recipientSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),projectName:z.string().nullable(),unread:time,questions:time.default(0),lastAt:time,preview:z.string()});
 export const poolSchema = z.object({threadId,threadTitle:z.string().nullable(),projectId:z.string().nullable(),entries:z.array(poolEntrySchema)});
 const bulkRead=z.object({ok:z.literal(true),batch:z.string().nullable(),count:time});
 const costSchema=z.object({usd:z.number().nullable(),tokens:z.object({freshIn:z.number(),cacheRead:z.number(),cacheWrite:z.number(),output:z.number()}),estimated:z.boolean(),partial:z.boolean()});
