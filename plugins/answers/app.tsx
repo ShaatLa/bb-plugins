@@ -152,7 +152,8 @@ export function usePluginBrands(enabled = true) {
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    (pluginBrands ??= sdk.plugins.list().then(r => r.plugins.map(p => ({ id: p.id, name: p.name ?? p.id, icon: p.icon ?? null })), () => { pluginBrands = null; return []; })).then(list => { if (live) setBrands(list); });
+    // Through a promise, so a host without the plugin list (or one that throws) just shows no brands.
+    (pluginBrands ??= Promise.resolve().then(() => sdk.plugins.list()).then(r => r.plugins.map(p => ({ id: p.id, name: p.name ?? p.id, icon: p.icon ?? null })), () => { pluginBrands = null; return []; })).then(list => { if (live) setBrands(list); });
     return () => { live = false; };
   }, [enabled]);
   return brands;
@@ -230,7 +231,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
-  const rpc = useRpc<AnswersRpcContract>();
+  const rpc = useRpc<AnswersRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
   // Answers' own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const editSent = useContext(EditSentContext);
@@ -339,7 +340,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div data-bubble-row className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
       {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
-      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={item.question} /></div></div>
+      {/* bb gives a plugin's message no sender line; here it names the plugin, and its leading [tag] (how a plugin marks its own notes) is left out. */}
+      {sender && <span data-plugin-sender className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"><PluginIcon pluginId={sender.id} icon={sender.icon} className="size-3.5 shrink-0" />{sender.name}</span>}
+      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={sender ? item.question.replace(new RegExp(`^\\[(?:${[sender.id, sender.name].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\]\\s*`, 'i'), '') : item.question} /></div></div>
       {time}<span className="flex gap-0.5"><MessageCopy small text={item.question} /><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
     </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
       {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
