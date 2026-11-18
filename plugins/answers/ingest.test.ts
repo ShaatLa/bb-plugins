@@ -214,3 +214,11 @@ describe('questions asked in chat', () => {
   expect(filed(db)).toEqual([]);
  });
 });
+
+it('keeps the typed failure reason and marks interrupted deferred questions as no longer owed', () => {
+ const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),ev(4,'turn/completed','x',{status:'failed',error:{message:'Provider unavailable'}})]);
+ expect(row(db).failure_reason).toBe('Provider unavailable');
+ db.prepare("UPDATE items SET status='deferred'").run();
+ applyEvents(db,'t',[ev(5,'turn/completed','x',{status:'interrupted'})]);
+ expect(row(db).interrupted_at).not.toBeNull(); expect(row(db).dismissed_at).not.toBeNull(); expect(row(db).failed_at).toBeNull();
+});

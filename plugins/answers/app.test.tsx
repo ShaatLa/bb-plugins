@@ -884,3 +884,9 @@ it('copies the agent Markdown and its message link from More', async () => {
   await slot.findByRole('menuitem', { name: 'Copied' });
   expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' });
 });
+
+it('shows the failure reason and a quiet interruption label', async () => {
+ const { slot } = await setup({ list: () => ({ items: [{ ...item, id:'ans_failure', status:'waiting', failedAt:1, failureReason:'Provider unavailable' }, { ...item, id:'ans_interrupted', question:'Stopped question', status:'waiting', interruptedAt:2, dismissedAt:2 }], nextCursor:null }) });
+ expect(await slot.findByText('Provider unavailable')).toBeTruthy();
+ expect(slot.getByText('Turn interrupted').className).not.toContain('text-destructive');
+});

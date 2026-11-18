@@ -165,11 +165,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND kind='mine' AND status='answered' AND read_at IS NULL AND ${QUIET_SQL}`).run(now,threadId,turn,turn);
    } else if (d.status === 'failed' || d.status === 'interrupted') {
     db.prepare(`UPDATE items SET interim=candidate,interim_seq=candidate_seq,updated_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND length(trim(candidate))>0`).run(now,threadId,turn,turn);
-    if (d.status==='failed') db.prepare("UPDATE items SET failed_at=?,read_at=NULL,notify_state=?,updated_at=? WHERE thread_id=? AND turn_id=? AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL").run(e.createdAt ?? now,Number(live),now,threadId,turn);
+    if (d.status==='failed') db.prepare("UPDATE items SET failure_reason=?,interrupted_at=NULL,failed_at=?,read_at=NULL,notify_state=?,updated_at=? WHERE thread_id=? AND turn_id=? AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL").run(typeof d.error?.message === 'string' ? cap(d.error.message,4000) : null,e.createdAt ?? now,Number(live),now,threadId,turn);
     // The user pressed Stop: like bb, the chat keeps the message with no reply, but it leaves the inbox and its waiting.
     if (d.status === 'interrupted') {
-     const cancelled = `thread_id=? AND turn_id=? AND kind='mine' AND status='waiting' AND resolve_turn_id IS NULL AND steer_seq IS NULL`;
-     db.prepare(`UPDATE items SET dismissed_at=?,updated_at=? WHERE ${cancelled} AND dismissed_at IS NULL`).run(now,now,threadId,turn);
+     const cancelled = `thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND kind='mine' AND status IN ('waiting','deferred')`;
+     db.prepare(`UPDATE items SET dismissed_at=COALESCE(dismissed_at,?),interrupted_at=?,failed_at=NULL,failure_reason=NULL,updated_at=? WHERE ${cancelled}`).run(now,e.createdAt ?? now,now,threadId,turn,turn);
     }
    }
    hidden += db.prepare("UPDATE items SET status='answered',answered_at=?,updated_at=? WHERE id=? AND status='waiting'").run(e.createdAt ?? now,now,turnUpdateId(threadId,turn)).changes;

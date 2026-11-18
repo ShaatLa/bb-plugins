@@ -130,4 +130,6 @@ WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for
 BEGIN
   UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
 END;`,
+  `ALTER TABLE items ADD COLUMN failure_reason TEXT;
+ALTER TABLE items ADD COLUMN interrupted_at INTEGER;`,
 ];

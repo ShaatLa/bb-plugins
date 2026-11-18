@@ -120,3 +120,5 @@ The selected chat header shows the host-rendered title, a parent link that opens
 Copy link is in the existing More menu for agent messages; owner bubbles and interim replies without their own menu use an icon action.
 
 With a chat open on desktop, its avatar and title, section selector, inline search, Mark all read and thread actions share one toolbar row. Phones keep Back, title, inline search and thread actions in the chat header.
+
+Failed turns show the provider’s completion error when available and retain Retry. Interrupted turns have a quiet label and leave waiting and Owed, including deferred questions.
