@@ -40,9 +40,9 @@ it('grows the hovered slice and marks its legend row, from either side', async (
   await waitFor(() => expect(slot.container.ownerDocument.querySelector('[data-slice="model-1"]')).not.toBeNull());
   const doc = slot.container.ownerDocument, slice = (n: string) => doc.querySelector(`[data-slice="${n}"]`)!, row = (n: string) => doc.querySelector(`[data-legend="${n}"]`)!;
   fireEvent.mouseEnter(slice('model-1'));
-  expect(slice('model-1').getAttribute('stroke-width')).toBe('14'); expect(row('model-1').hasAttribute('data-hot')).toBe(true); expect(slice('model-2').getAttribute('stroke-width')).toBe('10');
+  expect(slice('model-1').getAttribute('stroke-width')).toBe('12'); expect(row('model-1').hasAttribute('data-hot')).toBe(true); expect(slice('model-2').getAttribute('stroke-width')).toBe('10');
   fireEvent.mouseLeave(slice('model-1')); fireEvent.mouseEnter(row('Other'));
-  expect(slice('Other').getAttribute('stroke-width')).toBe('14'); expect(row('model-1').hasAttribute('data-hot')).toBe(false);
+  expect(slice('Other').getAttribute('stroke-width')).toBe('12'); expect(row('model-1').hasAttribute('data-hot')).toBe(false);
 });
 it('closes the details on Escape and on a click outside', async () => {
   const slot = await open(() => details), chip = slot.getByRole('button');
