@@ -31,20 +31,18 @@ it('previews a contact with sub-sessions as their tally: direct and nested, work
   const busy = { ...idle, status:'active', runtimeStatus:'active', indicator:'runtime' };
   const { slot, recipients } = setup({ sidebarThreads: { threads:[{ ...idle, id:'thr_one', title:'One' }, { ...busy, id:'thr_a', title:'Lead A', parentThreadId:'thr_one' }, { ...idle, id:'thr_b', title:'Idle B', parentThreadId:'thr_one' }, { ...busy, id:'thr_c', title:'Nested C', parentThreadId:'thr_a' }], projects:[] } });
   expect(await recipients.findByText('2 sub + 1 nested · 2 working · 1 idle')).toBeTruthy();
-  // A second click on the open contact lists the sub-sessions in tree order, as bb's sidebar nests them; a third hides them.
   const contact = recipients.getByRole('option', { name:/One/ });
   fireEvent.click(contact); expect(recipients.queryByRole('list', { name:'Sub-sessions of One' })).toBeNull();
-  fireEvent.click(contact);
+  fireEvent.click(recipients.getByRole('button', { name:'Show sub-sessions' }));
   const subs = within(recipients.getByRole('list', { name:'Sub-sessions of One' }));
-  expect(subs.getAllByRole('listitem').map(li => [li.textContent, !!within(li).queryByRole('img', { name:'Working' }), li.style.paddingLeft])).toEqual([['Lead A', true, '32px'], ['Nested C', true, '56px'], ['Idle B', false, '32px']]);
-  expect(subs.queryAllByRole('option')).toHaveLength(0); expect(subs.queryAllByRole('button')).toHaveLength(0);
+  expect(subs.getAllByRole('listitem').map(li => [li.textContent, !!within(li).queryByRole('img', { name:'Working' }), li.querySelector('button')!.style.paddingLeft])).toEqual([['Lead A', true, '32px'], ['Nested C', true, '56px'], ['Idle B', false, '32px']]);
+  expect(subs.queryAllByRole('option')).toHaveLength(0); expect(subs.queryAllByRole('button')).toHaveLength(3);
   // Unbroken guides as bb draws them: a level's line runs under its parent's icon down to the middle of its last child.
   expect(subs.getAllByRole('listitem').map(li => Array.from(li.querySelectorAll<HTMLElement>('[data-guide]'), g => `${g.style.left} ${g.classList.contains('h-1/2') ? 'half' : 'full'}`))).toEqual([['24px full'], ['24px full', '40px half'], ['24px half']]);
-  // They do not open; bb's thread menu on right-click gains Copy ID.
   fireEvent.contextMenu(subs.getByText('Nested C'));
   fireEvent.click(await slot.findByRole('menuitem', { name:'Copy ID' }));
   await waitFor(() => expect(slot.experimental_clipboardWrites).toEqual([{ text:'thr_c' }]));
-  fireEvent.click(contact);
+  fireEvent.click(recipients.getByRole('button', { name:'Hide sub-sessions' }));
   expect(recipients.queryByRole('list', { name:'Sub-sessions of One' })).toBeNull();
 });
 it('badges a contact avatar with its thread\'s agent provider', async () => {
