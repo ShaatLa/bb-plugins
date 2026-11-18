@@ -637,9 +637,10 @@ it('edits queued text and attachments through the composer, holding it while edi
   const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
   expect(hold).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' });
   expect(slot.getByText('old.txt')).toBeTruthy();
-  fireEvent.click(await slot.findByRole('button', { name:'auto' }));
+  // The thread's permission mode is chosen in the main composer; the queued editor keeps the row's own.
+  expect(editor.closest('[data-queued-message-inline-editor]')!.querySelector('[data-permission-picker]')).toBeNull();
   change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
-  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'full', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
   await waitFor(() => expect(release).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
   fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
   await waitFor(() => expect(release).toHaveBeenCalledTimes(2)); expect(update).toHaveBeenCalledTimes(1);
