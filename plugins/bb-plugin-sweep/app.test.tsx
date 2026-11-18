@@ -99,6 +99,18 @@ it('changes only the selected project’s manager from the main panel', async ()
   await act(async () => { fireEvent.keyDown(project, { key: 'Enter' }); });
   expect(slot.inspection.navigateCalls.at(-1)).toEqual({ method: 'toPluginPanel', path: 'overview', options: { subPath: 'proj_first' } });
 });
+
+it('links to plugin settings and displays the sole project without opening a selector', async () => {
+  const slot = renderSlot(app.navPanels[0], { subPath: '' }, {
+    rpc: { 'overview.projects': () => projects().slice(0, 1), stats: () => ({ ticks: 0 }), manager: () => ({ manager: null }) },
+    sdk: { threads: { list: async () => [] } },
+  });
+  expect(slot.getByRole('link', { name: 'Plugin settings' }).getAttribute('href')).toBe('/settings/plugins/sweep');
+  const project = await slot.findByRole('combobox', { name: 'Project' });
+  expect(project.textContent).toContain('First');
+  expect(project.hasAttribute('disabled')).toBe(true);
+});
+
 it('hides and restores the host raw configuration without changing its values',async()=>{
  const host=document.createElement('div');host.innerHTML='<input aria-label="Script PATH (empty inherits server)" value="/one:/two"><input aria-label="BB CLI absolute path" value="/bb"><textarea aria-label="Project sweeps (JSON)">{}</textarea>';document.body.append(host);
  const slot=renderSlot(app.settingsSections[0],{}, {rpc:{'settings.read':()=>({projects:[{id:'proj_first',name:'First',hasRepository:true,config:null}],threads:[],environment:{bbCli:'/bb',runtimePath:'/one:/two'}})}});

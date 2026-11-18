@@ -16,10 +16,7 @@ function ProjectPlaceholder({ error, ready, retry }: { error: boolean; ready: bo
     <Button variant="outline" size="sm" onClick={retry}>Retry</Button>
   </div>;
   if (!ready) return <p role="status" className={muted}>Loading projects…</p>;
-  return <div className="space-y-2">
-    <p className={muted}>No projects configured for Sweep.</p>
-    <UrlLink href="/settings/plugins/sweep" className="text-sm text-primary underline underline-offset-4">Open Sweep settings</UrlLink>
-  </div>;
+  return <p className={muted}>No projects configured for Sweep.</p>;
 }
 
 type Session = { id: string; title: string };
@@ -116,10 +113,10 @@ export function SweepOverview({ subPath }: { subPath: string }) {
 
   return <div className="h-full min-h-0 overflow-y-auto p-4 md:p-5">
     <main className="mx-auto w-full max-w-4xl space-y-4">
-      {!project ? <ProjectPlaceholder error={!!projects.error} ready={!!projects.data} retry={projects.refetch} /> : <>
-        <header className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-lg font-semibold">Sweep</h1>
-          <div className="flex flex-wrap items-center gap-2">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-lg font-semibold">Sweep</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          {project && <>
             <div role="group" aria-label="Statistics period" className="inline-flex h-8 items-center rounded-lg bg-muted p-0.5">
               {ranges.map(([value, label]) => (
                 <Button
@@ -135,13 +132,18 @@ export function SweepOverview({ subPath }: { subPath: string }) {
               ))}
             </div>
             <Button size="sm" variant="outline" disabled={stats.isFetching} onClick={stats.refetch}>Refresh</Button>
-          </div>
-        </header>
+          </>}
+          <Button asChild size="sm" variant="ghost">
+            <UrlLink href="/settings/plugins/sweep">Plugin settings</UrlLink>
+          </Button>
+        </div>
+      </header>
+      {!project ? <ProjectPlaceholder error={!!projects.error} ready={!!projects.data} retry={projects.refetch} /> : <>
         <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
           <div className="min-w-0 space-y-2">
             <label htmlFor={projectControlId} className="block text-sm font-medium">Project</label>
-            <Select value={project.id} onValueChange={id => navigate.toPluginPanel(overviewPath, { subPath: id })}>
-              <SelectTrigger id={projectControlId} className="w-full"><SelectValue /></SelectTrigger>
+            <Select value={project.id} disabled={projects.data?.length === 1} onValueChange={id => navigate.toPluginPanel(overviewPath, { subPath: id })}>
+              <SelectTrigger id={projectControlId} className="w-full disabled:cursor-default disabled:opacity-100 disabled:[&_[data-icon-root]]:hidden"><SelectValue /></SelectTrigger>
               <SelectContent>{projects.data?.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
             </Select>
             {!project.enabled && <p className={muted}>Scheduled checks are disabled.</p>}
