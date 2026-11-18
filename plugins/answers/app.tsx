@@ -560,7 +560,7 @@ function AnswersPanelContent({ threadId }: { threadId?: string }) {
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
   return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background">
     {threadId && <Pools threadId={threadId} />}
-    <div className="space-y-2 border-b border-border-seam bg-background px-3 py-2">
+    <div className="space-y-2 border-b border-border-seam bg-background px-4 py-2">
       <div className="flex items-center gap-1">
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
           // Markup of bb's Preview/Source switch.
